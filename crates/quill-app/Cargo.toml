@@ -1,0 +1,37 @@
+[package]
+name = "quill-app"
+description = "The Quill window: file explorer, editor surface, formatting toolbar, transparency."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+default-run = "quill"
+
+[lib]
+name = "quill_app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "quill"
+path = "src/main.rs"
+
+[dependencies]
+quill-core.workspace = true
+egui.workspace = true
+eframe.workspace = true
+fontdb.workspace = true
+ab_glyph.workspace = true
+unicode-segmentation.workspace = true
+rfd.workspace = true
+
+[[example]]
+name = "sample_design"
+path = "examples/sample_design.rs"
+
+[[example]]
+name = "crop"
+path = "examples/crop.rs"
+
+[dev-dependencies]
+egui_kittest.workspace = true
+image.workspace = true

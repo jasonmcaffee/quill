@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = ["crates/quill-core", "crates/quill-app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+quill-core = { path = "crates/quill-core" }
+unicode-segmentation = "1.13"
+egui = "0.36"
+eframe = { version = "0.36", default-features = false, features = ["wgpu", "default_fonts"] }
+fontdb = "0.24"
+ab_glyph = "0.2"
+arboard = "3.6"
+egui_kittest = { version = "0.36", features = ["wgpu", "snapshot", "eframe"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+rfd = "0.17"
+
+[profile.release]
+opt-level = 3
+lto = "thin"

@@ -1,0 +1,23 @@
+# Where the screenshots go (relative to each crate, so this is crates/quill-app/tests/snapshots) and how
+# much difference between two runs is allowed.
+#
+# `threshold` is the colour distance allowed for one pixel and `max_failed_pixels` is how many pixels may
+# exceed it. The allowance exists because font rasterising differs between machines, so an exact match
+# would fail for reasons that have nothing to do with Quill.
+#
+# It is kept small on purpose. A generous allowance lets a real change through: an earlier setting of
+# 2000 pixels on macOS hid a change to the folder markers in the explorer, and the test passed while the
+# window looked different. Small enough to catch a changed glyph is the point.
+output_path = "tests/snapshots"
+threshold = 0.8
+max_failed_pixels = 60
+
+[mac]
+threshold = 1.0
+max_failed_pixels = 60
+
+# Windows has not been run yet, so this allowance is a guess and should be tightened once there is a
+# baseline from a Windows machine.
+[windows]
+threshold = 1.0
+max_failed_pixels = 4000

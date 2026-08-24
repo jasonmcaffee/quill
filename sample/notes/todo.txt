@@ -1,0 +1,3 @@
+A plain text file, to show that .txt opens as well as .md.
+
+Quill lists every file in a folder now. The ones it cannot open are dimmed.

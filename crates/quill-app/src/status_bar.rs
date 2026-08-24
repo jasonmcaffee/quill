@@ -1,0 +1,93 @@
+//! The bar along the bottom of the window.
+//!
+//! Shows which file is open, whether it has unsaved changes, what kind of file it is, where the caret is,
+//! and the font family and size at the caret.
+
+use egui::{CornerRadius, Pos2, Rect};
+
+use crate::theme::{color, size};
+
+/// Where the caret is, counted the way a person counts: the first line is line 1 and the first column is
+/// column 1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Position {
+    pub line: usize,
+    pub column: usize,
+}
+
+/// Work out the line and column of a byte offset.
+///
+/// The column counts grapheme clusters rather than bytes, because a column number is meant to say how
+/// many characters along the line the caret is, and a letter with a combining accent is one character to
+/// a reader however many bytes it takes.
+pub fn position_of(text: &quill_core::Rope, offset: usize) -> Position {
+    let line = text.byte_to_line(offset);
+    let start = text.line_to_byte(line);
+    let before = text.byte_slice(start..offset);
+    let column = unicode_segmentation::UnicodeSegmentation::graphemes(before.as_str(), true).count();
+    Position { line: line + 1, column: column + 1 }
+}
+
+/// What the status bar has to say.
+#[derive(Debug, Clone)]
+pub struct Status<'a> {
+    pub name: &'a str,
+    pub unsaved: bool,
+    /// What kind of file it is, as a person would say it: `Markdown` or `Plain text`.
+    pub kind: &'a str,
+    pub position: Position,
+    pub family: &'a str,
+    pub font_size: f32,
+}
+
+/// Draw the status bar into `area`.
+pub fn show(ui: &egui::Ui, area: Rect, status: &Status<'_>, opacity: f32) {
+    let Status { name, unsaved, kind, position, family, font_size } = *status;
+    let painter = ui.painter_at(area);
+    // The bottom two corners are rounded to match the window.
+    painter.rect_filled(
+        area,
+        CornerRadius { nw: 0, ne: 0, sw: size::WINDOW_CORNER, se: size::WINDOW_CORNER },
+        crate::theme::faded(color::STATUS_BAR, opacity),
+    );
+
+    let font = egui::FontId::proportional(11.0);
+    let mut pen = area.left() + 16.0;
+    let middle = area.center().y;
+
+    let label = |painter: &egui::Painter, pen: &mut f32, text: String, colour| {
+        let galley = painter.layout_no_wrap(text, font.clone(), colour);
+        painter.galley(Pos2::new(*pen, middle - galley.size().y / 2.0), galley.clone(), colour);
+        *pen += galley.size().x;
+    };
+
+    label(&painter, &mut pen, name.to_owned(), color::TEXT_CONTROL);
+    pen += 12.0;
+    if unsaved {
+        painter.circle_filled(Pos2::new(pen + 3.0, middle), 3.0, color::UNSAVED);
+        pen += 12.0;
+        label(&painter, &mut pen, "Unsaved".to_owned(), color::TEXT_DIM);
+        pen += 12.0;
+    }
+    label(&painter, &mut pen, "\u{2502}".to_owned(), color::DIVIDER);
+    pen += 10.0;
+    label(&painter, &mut pen, kind.to_owned(), color::TEXT_DIM);
+    pen += 12.0;
+    label(&painter, &mut pen, "\u{2502}".to_owned(), color::DIVIDER);
+    pen += 10.0;
+    label(
+        &painter,
+        &mut pen,
+        format!("Ln {}, Col {}", position.line, position.column),
+        color::TEXT_DIM,
+    );
+
+    // The family and size sit against the right edge.
+    let right_text = format!("{family} \u{00B7} {font_size:.0} pt");
+    let galley = painter.layout_no_wrap(right_text, font, color::TEXT_DIM);
+    painter.galley(
+        Pos2::new(area.right() - 16.0 - galley.size().x, middle - galley.size().y / 2.0),
+        galley,
+        color::TEXT_DIM,
+    );
+}

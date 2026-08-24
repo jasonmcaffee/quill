@@ -1,0 +1,8 @@
+/target
+reference/
+**/tests/snapshots/*.new.png
+**/tests/snapshots/*.diff.png
+**/tests/snapshots/*.old.png
+
+# IntelliJ workspace state, which is per machine rather than part of the project.
+.idea/
