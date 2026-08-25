@@ -3609,3 +3609,346 @@ fn the_preview_under_the_results_follows_the_one_that_is_chosen() {
         assert_eq!(find.scrolled_to(), Some((now.path.as_path(), now.line)));
     }
 }
+
+// ============================================================================================
+// The command line, driven through a real window.
+//
+// `task-1661`. These go through the whole of the command line path apart from the socket: the
+// words are parsed against `quill_cli::catalogue`, dispatched by `QuillApp::run_cli`, and what is
+// checked afterwards is the window's own state — not the reply's opinion of itself. A command that
+// says it opened a file and a window with that file open are two different claims, and only the
+// second one is worth testing.
+//
+// No pictures. What a command does to the rendering is already covered by the screenshot tests
+// above, which set the same states up by hand; what is unproven, and what these prove, is that the
+// command line reaches those states at all.
+
+/// Run a command line against the window and take the reply, insisting it was answered.
+fn run(harness: &mut Harness<'static, QuillApp>, line: &str) -> quill_cli::protocol::Reply {
+    let ctx = harness.ctx.clone();
+    let reply = harness
+        .state_mut()
+        .run_command_line(line, &ctx)
+        .unwrap_or_else(|| panic!("`{line}` was not answered on the frame it was asked"));
+    harness.run();
+    reply
+}
+
+/// The same, insisting it worked.
+fn did(harness: &mut Harness<'static, QuillApp>, line: &str) -> serde_json::Value {
+    let reply = run(harness, line);
+    assert!(reply.ok, "`{line}` was refused: {}", reply.message);
+    reply.result
+}
+
+/// The same, insisting it was refused, and returning the code it was refused with.
+fn refused(harness: &mut Harness<'static, QuillApp>, line: &str) -> String {
+    let reply = run(harness, line);
+    assert!(!reply.ok, "`{line}` should have been refused, and was not");
+    reply.error.expect("a refusal carries an error").code
+}
+
+#[test]
+fn the_command_line_opens_a_file_into_a_tab() {
+    let mut harness = harness_in(&sample_folder());
+    let result = did(&mut harness, "tab open readme.md");
+    assert!(result["path"].as_str().unwrap().ends_with("readme.md"));
+    let app = harness.state();
+    assert_eq!(app.files.active().name(), "readme.md");
+    assert!(
+        app.document().text().to_string().contains('#'),
+        "the file's real text should be in the document"
+    );
+}
+
+#[test]
+fn a_file_that_is_not_there_is_refused_with_a_code_a_script_can_match_on() {
+    let mut harness = harness_in(&sample_folder());
+    assert_eq!(refused(&mut harness, "tab open nowhere.md"), "not-found");
+    assert_eq!(refused(&mut harness, "tab show 99"), "not-found");
+    assert_eq!(refused(&mut harness, "settings get appearance.font.colour"), "not-found");
+    assert_eq!(refused(&mut harness, "editor undo"), "not-applicable");
+}
+
+#[test]
+fn the_command_line_moves_between_tabs_by_number_and_by_name() {
+    let mut harness = harness_in(&sample_folder());
+    did(&mut harness, "tab open readme.md --permanent");
+    did(&mut harness, "tab open notes.txt --permanent");
+    assert_eq!(harness.state().files.len(), 2);
+    did(&mut harness, "tab show readme.md");
+    assert_eq!(harness.state().files.active().name(), "readme.md");
+    did(&mut harness, "tab next");
+    assert_eq!(harness.state().files.active().name(), "notes.txt");
+    did(&mut harness, "tab show 0");
+    assert_eq!(harness.state().files.active().name(), "readme.md");
+}
+
+#[test]
+fn the_command_line_types_into_the_document_and_undoes_it() {
+    let mut harness = harness_in(&sample_folder());
+    did(&mut harness, "tab open notes.txt --permanent");
+    let before = harness.state().document().text().to_string();
+    did(&mut harness, "editor caret --line 1 --column 1");
+    did(&mut harness, "editor insert MARKER");
+    assert!(harness.state().document().text().to_string().starts_with("MARKER"));
+    did(&mut harness, "editor undo");
+    assert_eq!(
+        harness.state().document().text().to_string(),
+        before,
+        "one undo should put the whole insertion back"
+    );
+}
+
+#[test]
+fn the_caret_lands_where_a_line_and_a_column_say() {
+    let mut harness = harness_in(&sample_folder());
+    did(&mut harness, "tab open notes.txt --permanent");
+    // The sample files are one line each, so the document is given some lines to aim at first.
+    did(&mut harness, "editor set-text alpha\\nbravo\\ncharlie");
+    let result = did(&mut harness, "editor caret --line 2 --column 3");
+    assert_eq!(result["line"], serde_json::json!(2));
+    assert_eq!(result["column"], serde_json::json!(3));
+    let at = harness.state().caret_position();
+    assert_eq!((at.line, at.column), (2, 3), "the status bar should agree");
+    // Past the end of a line lands at the end of it rather than being refused.
+    let far = did(&mut harness, "editor caret --line 1 --column 99");
+    assert_eq!(far["column"], serde_json::json!(6), "the end of `alpha`");
+}
+
+#[test]
+fn the_command_line_replaces_the_whole_document_in_one_undo_step() {
+    let mut harness = harness_in(&sample_folder());
+    did(&mut harness, "tab open notes.txt --permanent");
+    let before = harness.state().document().text().to_string();
+    did(&mut harness, "editor set-text one\\ntwo");
+    assert_eq!(harness.state().document().text().to_string(), "one\ntwo");
+    did(&mut harness, "editor undo");
+    assert_eq!(harness.state().document().text().to_string(), before);
+}
+
+#[test]
+fn a_view_mode_that_cannot_apply_to_this_file_is_refused_rather_than_silently_ignored() {
+    let mut harness = harness_in(&sample_folder());
+    did(&mut harness, "tab open readme.md --permanent");
+    did(&mut harness, "editor view preview");
+    assert_eq!(harness.state().view_mode(), ViewMode::Preview);
+    did(&mut harness, "tab open program.rs --permanent");
+    assert_eq!(refused(&mut harness, "editor view preview"), "not-applicable");
+    assert_eq!(harness.state().view_mode(), ViewMode::Raw, "and nothing changed");
+}
+
+#[test]
+fn a_setting_changed_from_the_command_line_reaches_every_open_tab() {
+    // The same rule `set_the_font_everywhere` exists for: the editor's font is one setting for the
+    // window, so a change from the command line must not reach only the tab that happens to show.
+    let mut harness = harness_in(&sample_folder());
+    did(&mut harness, "tab open readme.md --permanent");
+    did(&mut harness, "tab open notes.txt --permanent");
+    did(&mut harness, "settings set appearance.font.size 24");
+    assert_eq!(harness.state().settings.font_size, 24.0);
+    for file in harness.state().files.iter() {
+        assert_eq!(
+            file.document.active_style().size,
+            24.0,
+            "{} was left in the old size",
+            file.name()
+        );
+    }
+}
+
+#[test]
+fn a_setting_outside_its_limits_is_brought_inside_and_one_that_is_not_a_number_is_refused() {
+    let mut harness = harness_in(&sample_folder());
+    did(&mut harness, "settings set appearance.background.opacity 9");
+    assert_eq!(harness.state().settings.opacity, 1.0, "clamped, not refused");
+    assert_eq!(refused(&mut harness, "settings set appearance.font.size huge"), "usage");
+    assert_eq!(refused(&mut harness, "settings set editor.line_numbers maybe"), "usage");
+}
+
+#[test]
+fn the_command_line_puts_the_panes_where_it_is_told() {
+    let mut harness = harness_in(&sample_folder());
+    did(&mut harness, "explorer hide");
+    assert!(!harness.state().explorer_visible);
+    did(&mut harness, "explorer show");
+    assert!(harness.state().explorer_visible);
+    did(&mut harness, "explorer width 400");
+    assert_eq!(harness.state().panes.explorer_width, 400.0);
+    did(&mut harness, "explorer width 9999");
+    assert_eq!(
+        harness.state().panes.explorer_width,
+        settings::EXPLORER_MAX,
+        "a pane dragged past its limit comes back inside, however it was dragged"
+    );
+}
+
+#[test]
+fn the_explorer_filter_and_the_tree_are_readable_and_writable_from_the_command_line() {
+    let mut harness = harness_in(&sample_folder());
+    let result = did(&mut harness, "explorer filter notes");
+    assert!(result["matches"].as_u64().unwrap() >= 1);
+    assert_eq!(harness.state().filter, "notes");
+    did(&mut harness, "explorer filter");
+    assert!(harness.state().filter.is_empty(), "no text clears the box");
+    let tree = did(&mut harness, "explorer tree --limit 5");
+    assert!(tree["total"].as_u64().unwrap() > 0);
+    assert!(tree["rows"].as_array().unwrap().len() <= 5, "the limit is honoured");
+}
+
+#[test]
+fn go_to_file_is_opened_populated_and_accepted_from_the_command_line() {
+    let mut harness = harness_in(&sample_folder());
+    let opened = did(&mut harness, "modal open go-to-file --query readme");
+    assert!(opened["results"].as_u64().unwrap() >= 1);
+    assert!(harness.state().go_to_file.is_some(), "the modal is really open");
+    let results = did(&mut harness, "modal results --limit 5");
+    assert_eq!(results["results"][0]["name"], serde_json::json!("readme.md"));
+    let accepted = did(&mut harness, "modal accept 0");
+    assert!(accepted["path"].as_str().unwrap().ends_with("readme.md"));
+    assert!(harness.state().go_to_file.is_none(), "accepting shuts it");
+    assert_eq!(harness.state().files.active().name(), "readme.md");
+}
+
+#[test]
+fn every_modal_reports_which_one_is_open_and_shuts_when_it_is_cancelled() {
+    let mut harness = harness_in(&sample_folder());
+    assert_eq!(did(&mut harness, "modal state")["open"], serde_json::Value::Null);
+    for (name, extra) in [("go-to-file", ""), ("settings", ""), ("find-in-files", "")] {
+        did(&mut harness, &format!("modal open {name} {extra}"));
+        assert_eq!(
+            did(&mut harness, "modal state")["open"],
+            serde_json::json!(name),
+            "{name} should say it is the one that is open"
+        );
+        did(&mut harness, "modal cancel");
+        assert_eq!(did(&mut harness, "modal state")["open"], serde_json::Value::Null);
+    }
+}
+
+#[test]
+fn the_settings_modal_opens_on_the_page_it_is_asked_for() {
+    let mut harness = harness_in(&sample_folder());
+    did(&mut harness, "modal open settings --page terminal");
+    assert!(harness.state().settings_window.open);
+    assert_eq!(harness.state().settings_window.page, settings::Page::Terminal);
+    assert_eq!(refused(&mut harness, "modal open settings --page nonsense"), "usage");
+}
+
+#[test]
+fn the_terminal_is_opened_and_put_away_from_the_command_line() {
+    let mut harness = harness_in(&sample_folder());
+    // A shell of its own is not started here: what a real shell has said by any given frame is not
+    // something a test can know, which is the rule the terminal's own screenshot tests keep. What is
+    // under test is that the commands reach the panel.
+    harness.state_mut().new_detached_terminal_tab(6, 40);
+    harness.run();
+    assert!(harness.state().terminal.visible);
+    did(&mut harness, "terminal hide");
+    assert!(!harness.state().terminal.visible);
+    did(&mut harness, "terminal height 400");
+    assert_eq!(harness.state().panes.terminal_height, 400.0);
+    let listed = did(&mut harness, "terminal list");
+    assert_eq!(listed["count"], serde_json::json!(1));
+    did(&mut harness, "terminal close");
+    assert_eq!(did(&mut harness, "terminal list")["count"], serde_json::json!(0));
+}
+
+#[test]
+fn every_entry_on_every_menu_is_listed_and_can_be_run_by_name() {
+    // The rule `task-1661` asks for, checked against the real menus rather than against a list.
+    let mut harness = harness_in(&sample_folder());
+    let listed = did(&mut harness, "action list");
+    let actions = listed["actions"].as_array().expect("an array").clone();
+    assert!(actions.len() > 30, "the menus hold more than that");
+    for name in ["toggle-explorer", "toggle-line-numbers", "about", "view-preview", "git-commit"] {
+        assert!(
+            actions.iter().any(|entry| entry["name"] == serde_json::json!(name)),
+            "{name} should be on the list"
+        );
+    }
+    let before = harness.state().settings.line_numbers;
+    did(&mut harness, "action run toggle-line-numbers");
+    assert_eq!(harness.state().settings.line_numbers, !before);
+}
+
+#[test]
+fn the_three_actions_that_would_open_a_file_chooser_are_refused_with_the_command_to_use_instead() {
+    // A file chooser asked for from a script is a window nobody is looking at.
+    let mut harness = harness_in(&sample_folder());
+    for (name, instead) in
+        [("open-file", "tab open"), ("open-folder", "project open"), ("save-as", "tab save-as")]
+    {
+        let reply = run(&mut harness, &format!("action run {name}"));
+        assert!(!reply.ok, "{name} should be refused");
+        assert!(
+            reply.message.contains(instead),
+            "{name}'s refusal should name `{instead}`, and said: {}",
+            reply.message
+        );
+    }
+}
+
+#[test]
+fn status_answers_for_every_part_of_the_window_at_once() {
+    let mut harness = harness_in(&sample_folder());
+    did(&mut harness, "tab open readme.md --permanent");
+    let status = did(&mut harness, "status");
+    for part in ["project", "tabs", "editor", "explorer", "terminal", "modal", "settings", "git"] {
+        assert!(status.get(part).is_some(), "status should carry {part}");
+    }
+    assert_eq!(status["tabs"].as_array().unwrap().len(), harness.state().files.len());
+    assert!(status["project"].as_str().unwrap().contains("quill-screenshot-folder"));
+}
+
+#[test]
+fn a_relative_path_is_relative_to_the_project_and_the_reply_says_which_path_it_used() {
+    // The one rule about paths, and the reason it is safe: every reply reports the absolute path, so
+    // a caller is never guessing about where a file came from or went.
+    let mut harness = harness_in(&sample_folder());
+    let result = did(&mut harness, "tab open notes.txt");
+    let used = result["path"].as_str().expect("a path");
+    assert!(std::path::Path::new(used).is_absolute(), "{used} should be absolute");
+    assert!(used.starts_with(&sample_folder().to_string_lossy().to_string()));
+}
+
+#[test]
+fn a_command_line_that_will_not_parse_is_refused_before_anything_happens() {
+    let mut harness = harness_in(&sample_folder());
+    let before = harness.state().files.active().name();
+    assert_eq!(refused(&mut harness, "tab opne readme.md"), "usage");
+    assert_eq!(refused(&mut harness, "tab open readme.md --purple"), "usage");
+    assert_eq!(refused(&mut harness, "tab open"), "usage");
+    assert_eq!(harness.state().files.active().name(), before, "and nothing was opened");
+}
+
+#[test]
+fn every_command_in_the_catalogue_is_one_the_window_knows() {
+    // The catalogue is shared, so the client will accept every command in it. This is the other half:
+    // the window must not answer any of them with "there is no such command". Each is run with no
+    // arguments at all, so most are refused — what is being checked is *how*.
+    let mut harness = harness_in(&sample_folder());
+    for command in quill_cli::catalogue::COMMANDS {
+        if command.local {
+            continue; // answered by the client; the window never sees it
+        }
+        // The ones that would take the window away from under the rest of the test.
+        if matches!(command.wire().as_str(), "quit" | "explorer.reveal" | "window.screenshot") {
+            continue;
+        }
+        let ctx = harness.ctx.clone();
+        let request = quill_cli::protocol::Request::new("", &command.wire(), Default::default());
+        let reply = match harness.state_mut().run_cli_for_test(&request, &ctx) {
+            Some(reply) => reply,
+            None => continue, // answered on a later frame, which is an answer
+        };
+        if let Some(failure) = reply.error {
+            assert_ne!(
+                failure.code, "unknown-command",
+                "the window does not know `{}`, which the catalogue offers",
+                command.typed()
+            );
+        }
+        harness.run();
+    }
+}

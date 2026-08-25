@@ -25,7 +25,9 @@
 //! is the only place an action turns into a change. The menu bar inside the window, the macOS menu bar and a
 //! test all go down that one path.
 
+pub mod action_names;
 pub mod actions;
+pub mod cli;
 pub mod files;
 pub mod git;
 
@@ -63,6 +65,7 @@ use crate::services::plugins::Plugins;
 use crate::services::preview_images::PreviewImages;
 use crate::services::project_state::{self, ProjectState};
 use crate::services::native_menu::NativeMenu;
+use crate::services::control;
 use crate::services::store::Store;
 use crate::services::text_renderer::TextRenderer;
 use crate::settings::{self, Panes, Settings};
@@ -305,6 +308,12 @@ pub struct QuillApp {
     /// Where the gutter's own menu is open, when it is. Held here rather than in egui's memory so
     /// that a test can open it: a screenshot test cannot press the right mouse button.
     pub gutter_menu: Option<Pos2>,
+    /// The command channel, once it has been opened. `None` in every window a test builds, and in a
+    /// released Quill started with `--control off`: a window with no channel is an ordinary window.
+    pub(crate) control: Option<control::Server>,
+    /// Commands that have been accepted and are waiting for something — a painted frame, a shell, a
+    /// search, git. See `app::cli`.
+    pub(crate) cli_waiting: Vec<(control::Pending, cli::Waiting)>,
 }
 
 impl QuillApp {
@@ -365,6 +374,8 @@ impl QuillApp {
             find_in_files: None,
             reveal_caret: false,
             gutter_menu: None,
+            control: None,
+            cli_waiting: Vec::new(),
         }
     }
 
@@ -374,6 +385,28 @@ impl QuillApp {
         app.document_mut().apply(Command::Insert(text.to_owned()));
         app.document_mut().apply(Command::MoveDocumentStart { extend: false });
         app
+    }
+
+    /// Open the command channel, so that `quill-cli` can drive this window.
+    ///
+    /// Called from `main.rs` and nowhere else, exactly as [`Self::load_settings`] and
+    /// [`Self::restore_project`] are, and for the same reason: a test must not open a port, write an
+    /// instance file into the person's settings folder, or leave a listener behind when it ends. A
+    /// window with no channel is an ordinary window in every other respect.
+    pub fn open_control_channel(&mut self, ctx: &egui::Context) {
+        let folder = self.tree.root().to_path_buf();
+        // The context rather than `thread_waker`, because this is called before the first frame and
+        // the window has not yet been given one to wake.
+        let context = ctx.clone();
+        self.control =
+            control::Server::start(folder, Arc::new(move || context.request_repaint()));
+        if let Some(server) = &self.control {
+            self.message = Some(format!(
+                "Quill {} \u{00B7} the command line is listening on port {}",
+                env!("CARGO_PKG_VERSION"),
+                server.port()
+            ));
+        }
     }
 
     /// Set the window's look up before the first frame is drawn.
@@ -813,7 +846,9 @@ impl QuillApp {
             Action::RevealPath(path) => {
                 launcher::reveal(&path);
             }
-            Action::ReloadPath(path) => self.reload_from_disk(&path),
+            Action::ReloadPath(path) => {
+                self.reload_from_disk(&path, false);
+            }
             Action::Git(what) => self.run_git(what),
             Action::About => {
                 self.message = Some(format!(
@@ -1459,16 +1494,20 @@ impl QuillApp {
     /// what is on disk, but nothing in the entry says "and lose what I typed", and quietly losing an
     /// edit is not a thing an editor should do without asking. So a file with unsaved changes says
     /// so and is left alone.
-    pub fn reload_from_disk(&mut self, path: &Path) {
+    pub fn reload_from_disk(&mut self, path: &Path, discard: bool) -> bool {
         self.tree.reload();
         let Some(index) = self.files.index_of(path) else {
             self.message = Some(format!("Reloaded {}", path.display()));
-            return;
+            return true;
         };
-        if self.files.get(index).is_some_and(|file| file.document.is_modified()) {
+        // A tab with unsaved changes is not reloaded, because reading the file again would throw
+        // them away and there is no undo for that. The explorer's own `Reload from Disk` never
+        // discards; the command line can ask to, because a script that means it has no way to say
+        // so through a menu.
+        if !discard && self.files.get(index).is_some_and(|file| file.document.is_modified()) {
             self.message =
                 Some(format!("{} has unsaved changes, so it was not reloaded", path.display()));
-            return;
+            return false;
         }
         match Document::open(path) {
             Ok(mut document) => {
@@ -1486,9 +1525,12 @@ impl QuillApp {
                     self.forget_layout();
                 }
                 self.message = Some(format!("Reloaded {}", path.display()));
+                true
             }
             Err(problem) => {
-                self.message = Some(format!("Quill could not reload {}: {problem}", path.display()))
+                self.message =
+                    Some(format!("Quill could not reload {}: {problem}", path.display()));
+                false
             }
         }
     }
@@ -1821,6 +1863,9 @@ impl QuillApp {
         if !self.git_looked {
             self.open_repository();
         }
+        // Before anything is drawn, so that what a command asked for is in the frame about to be
+        // painted and therefore in the next screenshot.
+        self.pump_control(ui.ctx());
         self.ask_git_about_the_open_file();
         self.colour_the_open_file();
         let full = ui.max_rect();

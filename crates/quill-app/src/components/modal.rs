@@ -92,6 +92,30 @@ fn remember_placement(ctx: &egui::Context, id: &str, placement: Placement) {
     ctx.data_mut(|data| data.insert_temp(placement_id(id), placement));
 }
 
+/// Put the modal with this id where a caller says, which is what `quill-cli modal move` and
+/// `modal size` do. Dragging the header and the grips go through the same value.
+pub fn set_placement(ctx: &egui::Context, id: &str, placement: Placement) {
+    remember_placement(ctx, id, placement);
+}
+
+fn drawn_id(id: &str) -> egui::Id {
+    egui::Id::new(id).with("drawn")
+}
+
+/// The rectangle the modal with this id last filled, in window points.
+///
+/// Remembered by [`show`] on every frame, because where a modal really is depends on the size of
+/// the window as well as on how far it has been dragged, and a caller asking to move it to a place
+/// needs the answer rather than the arithmetic behind it. `None` before the modal has been drawn
+/// once.
+pub fn drawn(ctx: &egui::Context, id: &str) -> Option<Rect> {
+    ctx.data(|data| data.get_temp::<Rect>(drawn_id(id)))
+}
+
+fn remember_drawn(ctx: &egui::Context, id: &str, rect: Rect) {
+    ctx.data_mut(|data| data.insert_temp(drawn_id(id), rect));
+}
+
 /// What a modal's own controls are called, worked out from its id.
 ///
 /// Every control in Quill has a plain name, and the drag strip and the eight grips are controls. The
@@ -117,6 +141,7 @@ pub fn show<R>(
 ) -> (R, bool) {
     let mut placement = placement(ctx, id);
     let (position, size) = place(ctx, width, height, &mut placement);
+    remember_drawn(ctx, id, Rect::from_min_size(position, size));
 
     let response = egui::Modal::new(egui::Id::new(id))
         .area(

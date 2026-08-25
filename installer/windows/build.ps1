@@ -116,14 +116,22 @@ $version = Get-QuillVersion
 Write-Host "Quill $version"
 
 if (-not $SkipBuild) {
-    Write-Step 'Building quill.exe'
+    Write-Step 'Building quill.exe and quill-cli.exe'
     & cargo build --release --manifest-path (Join-Path $Repo 'Cargo.toml') -p quill-app --bin quill
     if ($LASTEXITCODE -ne 0) { throw 'cargo build failed.' }
+    # The command line ships beside the editor, and `quill-cli` looks for `quill` next to itself, so
+    # the two have to be installed into one folder.
+    & cargo build --release --manifest-path (Join-Path $Repo 'Cargo.toml') -p quill-cli --bin quill-cli
+    if ($LASTEXITCODE -ne 0) { throw 'cargo build failed for quill-cli.' }
 }
 
 $exe = Join-Path $BinaryDir 'quill.exe'
 if (-not (Test-Path $exe)) {
     throw "There is no binary at $exe. Run without -SkipBuild."
+}
+$cli = Join-Path $BinaryDir 'quill-cli.exe'
+if (-not (Test-Path $cli)) {
+    throw "There is no binary at $cli. Run without -SkipBuild."
 }
 
 # The installer must not ship an unlabelled executable: if the resource block is missing then the
@@ -199,10 +207,12 @@ if ($Install) {
     $run = Start-Process -FilePath $setup -ArgumentList $arguments -Wait -PassThru
     if ($run.ExitCode -ne 0) { throw "The installer exited with $($run.ExitCode)." }
 
-    $installed = Join-Path $target 'quill.exe'
-    if (Test-Path $installed) {
-        Write-Host "Installed $installed" -ForegroundColor Green
-    } else {
-        Write-Warning "The installer reported success but $installed is not there."
+    foreach ($name in @('quill.exe', 'quill-cli.exe')) {
+        $installed = Join-Path $target $name
+        if (Test-Path $installed) {
+            Write-Host "Installed $installed" -ForegroundColor Green
+        } else {
+            Write-Warning "The installer reported success but $installed is not there."
+        }
     }
 }

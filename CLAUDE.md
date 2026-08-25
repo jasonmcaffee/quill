@@ -11,6 +11,7 @@ change looks like the rest of the code rather than like a second style laid over
 | `quill-terminal` | The terminal: the session over a pseudoterminal, the screen the painter reads, the colour palette, the key encoding and the mouse reports. | Any user interface dependency, for the same reason. |
 | `quill-git` | Reading and changing a git repository: the status, blame, the log, diffs, branches, and every operation on the Git menu, plus the thread they run on. | Any user interface dependency, and any decision about what a dialog looks like. Its tests build real repositories in a temporary folder and ask git what happened. |
 | `quill-app` | The window: drawing, input, real fonts, the settings on disk, the menus, and the plugin registry. | Editor behaviour, terminal emulation or git plumbing. Those belong in the crates above. |
+| `quill-cli` | The command line: the catalogue of commands, the wire format, and the client program. It lives in `quill-cli/` beside its own documentation rather than under `crates/`, because the two are read together. | Anything that depends on `quill-app`. The dependency points one way, so the client stays a small program with no window, no graphics card and no fonts behind it. |
 
 `quill-app` is laid out in four folders and a new file belongs in one of them:
 
@@ -18,8 +19,8 @@ change looks like the rest of the code rather than like a second style laid over
 - `components/` — drawing. One file for each piece of the window.
 - `services/` — everything that is not drawing: the file tree, the fonts and the glyph atlas, the settings
   and recent projects on disk, what one project remembers about itself, decoding a picture, starting a
-  second window, the macOS menu bar, and what Windows needs before the desktop will show through the
-  window.
+  second window, the macOS menu bar, the socket the command line drives the window down, and what
+  Windows needs before the desktop will show through the window.
 - `theme/` — the palette, the measurements and the drawn icons.
 
 ## The look is written down, and a new control is measured against it
@@ -219,6 +220,43 @@ the middle of a test.
 **Terminals come back as fresh shells.** What a program was doing when the window closed cannot be
 brought back; what is restored is the same number of shells in the project's folder.
 
+## Everything is reachable from the command line, and that is enforced
+
+`quill-cli` drives a **running** Quill: `quill-cli tab open README.md`, `quill-cli terminal send git
+status`, `quill-cli settings set appearance.font.size 20`, `quill-cli window screenshot after.png`.
+`task-1661` asks that every feature be reachable this way and be documented, and both are tests
+rather than promises.
+
+**A menu entry needs nothing at all.** `quill-cli action list` is built by walking the real menus, so
+an entry added tomorrow can be run from the command line tomorrow. A test in `app/action_names.rs`
+fails the day a menu entry has no name.
+
+**Anything with no menu entry** is a row in `quill-cli/src/catalogue.rs` and an arm in
+`app/cli.rs`. The catalogue is one list in a crate both halves depend on: the client parses against
+it and the window dispatches on it, so a command the CLI accepts is a command the window knows.
+
+**Documentation is a test.** `quill-cli/src/documentation.rs` fails while a command has no section in
+`quill-cli/docs/commands.md`, while a section's usage line is out of date, or while a section
+describes a command that no longer exists. `cargo run -p quill-cli --example reference` writes it. A
+second test parses every example in the catalogue and checks it runs the command it is filed under,
+because the examples are what an agent copies.
+
+`QuillApp::run_cli` is to the command line what `run_action` is to the menus: **the one place a
+command turns into a change**, and wherever there is already a way in it uses it. So a thing done
+from the command line and the same thing done by hand are the same thing.
+
+`services::control` is the channel: a thread on `127.0.0.1`, a port the operating system chose, one
+JSON object a line, and a per-run token in an instance file under the person's own settings folder.
+Loopback only, with a test for it. The window answers at the **top of a frame**, before anything is
+drawn, which is what makes a screenshot taken straight after a command show what the command did.
+`quill --control off` closes it. `tasks/quill-cli-tdd.md` records what was weighed;
+`quill-cli/docs/protocol.md` is what a client in another language needs.
+
+**How well it reads.** `quill-cli/agent-assessment/` measures it rather than assuming it: the local
+Qwen 3.8 27B, given only `docs/commands.md`, carries out 64 instructions phrased as a person would
+say them and scores **100%**, five rounds running, at two temperatures. The same 64 instructions with
+the documentation withheld score **3.13%**, which is what makes the first number mean something.
+
 ## One action, one place
 
 Everything a menu or a keyboard shortcut can ask for is an `app::actions::Action`, and
@@ -375,6 +413,12 @@ trade that away to be a shade nearer a screenshot.
   and pictures opening in a tab.
 - `tasks/task-1659-search-and-images-tdd.md` — `Go to File`, `Find in Files` and the thread it reads
   the project on, modals that can be dragged and resized, and pictures in the Markdown preview.
+- `tasks/quill-cli-tdd.md` — the command line: the transports that were weighed, the command surface,
+  the wire format, what the token is and is not worth, and how the 97% was to be measured.
+- `quill-cli/docs/commands.md` — **the reference, written to be handed to an AI agent whole.**
+- `quill-cli/docs/protocol.md` — the socket underneath, for a client in another language.
+- `quill-cli/agent-assessment/qwen-38-27B-assessment.md` — how well a local model does with it,
+  measured against a live window.
 - `tasks/quill-installer-tdd.md` — how Quill is delivered: the icon, the Windows installer and the
   macOS bundle, and the options that were weighed for each.
 - `installer/README.md` — how to build an installer, on either platform.

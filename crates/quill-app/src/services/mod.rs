@@ -1,5 +1,6 @@
 //! Everything the window needs that is not drawing.
 
+pub mod control;
 pub mod file_clipboard;
 pub mod file_kind;
 pub mod file_search;

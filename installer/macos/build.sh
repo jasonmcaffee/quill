@@ -102,9 +102,14 @@ if [ "$draw_icon" = 1 ]; then
 fi
 
 # ---------------------------------------------------------------------------------------------
-# The binary. Universal when both targets are installed, and whichever one is when only one is.
+# The binaries. Universal when both targets are installed, and whichever one is when only one is.
+#
+# Two of them: the editor, and `quill-cli`, which drives a running one from a terminal. The command
+# line goes inside the bundle beside the editor because that is where it looks for it — see
+# `quill_cli::client::quill_program` — so putting `Quill.app/Contents/MacOS` on the PATH, or making
+# one symlink into it, gives you both with nothing configured.
 # ---------------------------------------------------------------------------------------------
-step "Building quill"
+step "Building quill and quill-cli"
 targets=()
 for target in aarch64-apple-darwin x86_64-apple-darwin; do
     if rustup target list --installed 2>/dev/null | grep -qx "$target"; then
@@ -113,16 +118,21 @@ for target in aarch64-apple-darwin x86_64-apple-darwin; do
 done
 
 built=()
+built_cli=()
 if [ "${#targets[@]}" -eq 0 ]; then
     echo "Neither Apple target is installed; building for this machine only."
     echo "For a universal binary: rustup target add aarch64-apple-darwin x86_64-apple-darwin"
     cargo build --release --manifest-path "$repo/Cargo.toml" -p quill-app --bin quill
+    cargo build --release --manifest-path "$repo/Cargo.toml" -p quill-cli --bin quill-cli
     built+=("$repo/target/release/quill")
+    built_cli+=("$repo/target/release/quill-cli")
 else
     for target in "${targets[@]}"; do
         echo "  $target"
         cargo build --release --target "$target" --manifest-path "$repo/Cargo.toml" -p quill-app --bin quill
+        cargo build --release --target "$target" --manifest-path "$repo/Cargo.toml" -p quill-cli --bin quill-cli
         built+=("$repo/target/$target/release/quill")
+        built_cli+=("$repo/target/$target/release/quill-cli")
     done
 fi
 
@@ -135,12 +145,14 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 
 if [ "${#built[@]}" -gt 1 ]; then
     lipo -create -output "$app/Contents/MacOS/quill" "${built[@]}"
+    lipo -create -output "$app/Contents/MacOS/quill-cli" "${built_cli[@]}"
     echo "  universal: $(lipo -archs "$app/Contents/MacOS/quill")"
 else
     cp "${built[0]}" "$app/Contents/MacOS/quill"
+    cp "${built_cli[0]}" "$app/Contents/MacOS/quill-cli"
     echo "  single architecture: $(lipo -archs "$app/Contents/MacOS/quill")"
 fi
-chmod +x "$app/Contents/MacOS/quill"
+chmod +x "$app/Contents/MacOS/quill" "$app/Contents/MacOS/quill-cli"
 
 # The icon. `iconutil` is Apple's own tool and so is the definition of the format; the committed
 # quill.icns is the fallback, so that the icon can also be rebuilt on a machine that is not a Mac.
@@ -162,11 +174,23 @@ printf 'APPL????' > "$app/Contents/PkgInfo"
 step "Signing"
 identity="${CODESIGN_IDENTITY:--}"
 signed_properly=0
+# Inside out. `quill-cli` is a second Mach-O binary inside `Contents/MacOS`, and codesign treats a
+# nested binary as something that must carry its own signature: sealing it as though it were a
+# resource is what makes `codesign --verify --deep --strict` fail on a bundle that looked signed.
+# So it is signed first, and then the bundle round it.
+sign_the_cli() {
+    if [ "$1" = "-" ]; then
+        codesign --force --options runtime --sign - "$app/Contents/MacOS/quill-cli"
+    else
+        codesign --force --options runtime --timestamp --sign "$1" "$app/Contents/MacOS/quill-cli"
+    fi
+}
 if [ "$identity" = "-" ]; then
     # The hardened runtime is asked for even here. Notarising requires it, and a program that breaks
     # under it breaks whether or not the signature is a real one, so the ad-hoc build is the place to
     # find that out rather than the first signed build.
     echo "  ad-hoc, with the hardened runtime (set CODESIGN_IDENTITY for a Developer ID signature)"
+    sign_the_cli -
     codesign --force --options runtime --sign - "$app"
 else
     if ! security find-identity -v -p codesigning | grep -qF "$identity"; then
@@ -176,6 +200,7 @@ else
         exit 1
     fi
     echo "  $identity"
+    sign_the_cli "$identity"
     codesign --force --options runtime --timestamp --sign "$identity" "$app"
     signed_properly=1
 fi

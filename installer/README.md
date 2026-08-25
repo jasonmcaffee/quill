@@ -12,6 +12,20 @@ installer/
   dist/       what the two build scripts write. Not committed.
 ```
 
+Both installers ship **two** programs: `quill`, the editor, and `quill-cli`, which drives a running
+one from a terminal. They go into one folder on purpose — `quill-cli` looks for `quill` beside itself
+— so on Windows the PATH task puts both on the path together, and on macOS they are both inside
+`Quill.app/Contents/MacOS`, which is one symlink away from the path:
+
+```sh
+ln -sf /Applications/Quill.app/Contents/MacOS/quill-cli /usr/local/bin/quill-cli
+ln -sf /Applications/Quill.app/Contents/MacOS/quill     /usr/local/bin/quill
+```
+
+`quill-cli/README.md` says what it does. On macOS `quill-cli` is signed on its own before the bundle
+is signed round it, because codesign treats a second binary inside `Contents/MacOS` as something that
+must carry its own signature.
+
 The version comes from `Cargo.toml` and nowhere else. It reaches `quill.exe`'s version block, the
 installer's file name, the Add or Remove Programs entry and `Quill.app`'s `Info.plist` from there, so
 releasing a new version is changing one number.

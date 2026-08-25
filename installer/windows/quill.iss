@@ -15,6 +15,10 @@
 #define AppPublisher   "Jason McAffee"
 #define AppUrl         "https://github.com/jasonmcaffee/quill"
 #define ExeName        "quill.exe"
+; The command line, installed beside the editor. `quill-cli` looks for `quill` next to itself, so
+; being in the same folder is what makes `quill-cli launch` work with nothing configured, and the
+; PATH task below puts both of them on the path together.
+#define CliName        "quill-cli.exe"
 #define ProgId         "Quill.Document"
 
 ; Both of these are passed in by build.ps1. The fallbacks are here so that the script can be compiled
@@ -85,13 +89,14 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
-Name: "addtopath"; Description: "Add Quill to the PATH, so that ""quill"" opens a folder from a terminal"; GroupDescription: "Other:"
+Name: "addtopath"; Description: "Add Quill to the PATH, so that ""quill"" opens a folder and ""quill-cli"" drives it from a terminal"; GroupDescription: "Other:"
 Name: "contextfile"; Description: "Add ""Open with Quill"" to the right click menu of a file"; GroupDescription: "Other:"
 Name: "contextfolder"; Description: "Add ""Open with Quill"" to the right click menu of a folder"; GroupDescription: "Other:"
 Name: "associate"; Description: "Offer Quill in ""Open with"" for text, Markdown and source files"; GroupDescription: "Other:"
 
 [Files]
 Source: "{#BinaryDir}\{#ExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BinaryDir}\{#CliName}"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#ExeName}"

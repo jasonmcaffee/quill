@@ -6,7 +6,7 @@
 //! than a transparent window before anything shows through, and `services::windows_transparency` is
 //! where that lives and why.
 //!
-//! Usage: `quill [path] [--opacity N] [--view raw|side|preview] [--menu-bar native|in-window] [--terminal]`
+//! Usage: `quill [path] [--opacity N] [--view raw|side|preview] [--menu-bar native|in-window] [--terminal] [--control on|off]`
 //!
 //! `--print-menus` prints the menus and their shortcuts and stops. The macOS menu bar cannot be looked at
 //! from a test, so this is how what it was built from can be read.
@@ -14,6 +14,10 @@
 //! `path` is a folder to show in the explorer, or a file to open, in which case the explorer shows the
 //! folder that file is in. Several Quills can run at once, each on its own project, which is what
 //! `File -> New Window` and `File -> Recent Projects` start.
+//!
+//! `--control off` closes the command channel `quill-cli` drives the window down. It is open by
+//! default, because a command line that needs to be switched on first is a command line an agent
+//! cannot rely on being there; `services::control` records what it is and why it is safe.
 //!
 //! The switches are there so a starting state can be chosen without clicking, which is what makes it
 //! possible to capture the window in a particular state. `--opacity` and `--view` are the same settings the
@@ -37,6 +41,8 @@ struct Arguments {
     menu_bar: Option<MenuPlacement>,
     terminal: bool,
     print_menus: bool,
+    /// False when `--control off` was given, or `QUILL_CONTROL=off` is in the environment.
+    control: bool,
 }
 
 fn parse_arguments() -> Arguments {
@@ -46,6 +52,12 @@ fn parse_arguments() -> Arguments {
     let mut menu_bar = None;
     let mut terminal = false;
     let mut print_menus = false;
+    // The environment first, so that a switch on the command line beats it, which is the order
+    // `clig.dev` sets out for configuration: a flag, then the environment, then a file.
+    let mut control = !matches!(
+        std::env::var("QUILL_CONTROL").unwrap_or_default().trim(),
+        "off" | "no" | "0" | "false"
+    );
     let mut rest = std::env::args().skip(1);
     while let Some(argument) = rest.next() {
         match argument.as_str() {
@@ -68,23 +80,30 @@ fn parse_arguments() -> Arguments {
                 });
             }
             "--terminal" => terminal = true,
+            "--control" => {
+                control = !matches!(
+                    rest.next().unwrap_or_default().trim(),
+                    "off" | "no" | "0" | "false"
+                );
+            }
             "--print-menus" => print_menus = true,
             "--help" | "-h" => {
                 println!(
-                    "Usage: quill [path] [--opacity N] [--view raw|side|preview] [--menu-bar native|in-window] [--terminal] [--print-menus]"
+                    "Usage: quill [path] [--opacity N] [--view raw|side|preview] [--menu-bar native|in-window] [--terminal] [--control on|off] [--print-menus]"
                 );
                 println!("  path            a folder to show, or a file to open");
                 println!("  --opacity N     background opacity from 0.05 to 1.0");
                 println!("  --view MODE     raw, side or preview");
                 println!("  --menu-bar WHERE  native for the screen's own bar, in-window for the title bar");
                 println!("  --terminal      open the terminal at the bottom");
+                println!("  --control WHICH on to let quill-cli drive this window, off to close the channel. On by default.");
                 println!("  --print-menus   print the menus and their shortcuts, and stop");
                 std::process::exit(0);
             }
             other => path = Some(PathBuf::from(other)),
         }
     }
-    Arguments { path, opacity, view, menu_bar, terminal, print_menus }
+    Arguments { path, opacity, view, menu_bar, terminal, print_menus, control }
 }
 
 /// Print the menus, the way both menu bars are built from them.
@@ -190,6 +209,10 @@ fn main() -> eframe::Result {
             if arguments.terminal {
                 app.terminal.visible = true;
                 app.new_terminal_tab();
+            }
+            // Last, so that a command arriving at once finds the window as the switches left it.
+            if arguments.control {
+                app.open_control_channel(&cc.egui_ctx);
             }
             Ok(Box::new(app))
         }),

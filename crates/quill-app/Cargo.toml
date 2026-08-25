@@ -19,6 +19,10 @@ path = "src/main.rs"
 quill-core.workspace = true
 quill-git.workspace = true
 quill-terminal.workspace = true
+# The catalogue of command line commands and the wire format, shared with the client so that the
+# two cannot come to disagree about what a command is called. It brings no window with it.
+quill-cli.workspace = true
+serde_json.workspace = true
 egui.workspace = true
 eframe.workspace = true
 fontdb.workspace = true

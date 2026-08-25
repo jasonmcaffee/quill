@@ -22,6 +22,21 @@ installer/macos/build.sh --install                        # macOS
 on macOS a `Quill.app` and a disk image to drag into `/Applications`. `installer/README.md` says what
 each switch does; `tasks/quill-installer-tdd.md` says why it is built the way it is.
 
+## Driving it from the command line
+
+```sh
+quill-cli launch .                                   # start a Quill here and wait for it
+quill-cli tab open README.md                         # open a file
+quill-cli editor view preview                        # look at its Markdown preview
+quill-cli terminal send cargo test                   # run something in the terminal
+quill-cli terminal read --wait-for "test result"     # wait for it, and read what it said
+quill-cli window screenshot shot.png                 # a real picture of the window
+```
+
+Everything the menus, the keyboard and the mouse can ask for is a command, and `--json` makes every
+answer machine-readable. `quill-cli/README.md` says how it works; `quill-cli/docs/commands.md` is the
+reference, written to be handed to an AI agent whole.
+
 ## Running it
 
 ```
