@@ -9,3 +9,8 @@ pub mod native_menu;
 pub mod plugins;
 pub mod store;
 pub mod text_renderer;
+
+// Letting the desktop show through the window needs a DirectComposition swapchain and a cleared
+// redirection surface on Windows, and nothing at all anywhere else.
+#[cfg(windows)]
+pub mod windows_transparency;

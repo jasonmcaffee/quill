@@ -89,17 +89,16 @@ pages down the left under their headings, and the chosen page on the right.
   it pushes nothing onto the undo history and does not mark the file as having unsaved changes, because what
   Quill saves is plain text and carries no formatting.
 - `Appearance & Behavior -> Appearance -> Background` sets the background opacity, which is what lets the
-  desktop show through the window. **It has no visible effect on Windows**, and the reason is below the
-  application: wgpu's DX12 backend offers only `CompositeAlphaMode::Opaque` for a swapchain made from a
-  plain window handle, so `egui-wgpu` finds no transparent mode to ask for and the window is composited
-  solid. Building the swapchain from a DirectComposition visual instead
-  (`WGPU_DX12_PRESENTATION_SYSTEM=visual`) does offer `PreMultiplied`, and the window then really does
-  blend — but not with the desktop: at an opacity of 0.05 over a solid red window, the panels measure
-  `#F3F4F4`, which is 5% of the theme over pure white. It is compositing over the window's own
-  redirection bitmap. Suppressing that needs `WS_EX_NOREDIRECTIONBITMAP`, which winit offers as
-  `with_no_redirection_bitmap` and eframe gives no way to reach, its only hook taking an
-  `egui::ViewportBuilder`. So the setting is left doing nothing on Windows rather than turning the
-  window into a white pane, and it will work there when eframe can pass that attribute through.
+  desktop show through the window. It works on both platforms, though Windows takes three things to get
+  there that macOS does not need, all of them in `services/windows_transparency.rs`: wgpu is told to use
+  DX12, because left to choose it picked Vulkan, whose surface offers no transparent composite mode;
+  the swapchain is built from a DirectComposition visual, because one built from a plain window handle
+  can only be `Opaque`; and the window's redirection surface — the GDI bitmap the desktop window manager
+  composites the window from — is filled with black once a frame, because winit asks the manager to
+  honour its alpha but never clears it, so it holds undefined bytes that read as opaque white. Without
+  the last of those the window really does fade, but towards white rather than towards the desktop.
+  Section 9.2 of `tasks/quill-technical-design-document.md` records how each was measured and what was
+  rejected.
 - `Editor -> Editor -> Gutter` shows or hides the line numbers.
 - `Plugins` is the marketplace and what is installed.
 - `Tools -> Terminal` sets the size the terminal draws its grid at.

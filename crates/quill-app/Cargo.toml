@@ -36,6 +36,11 @@ image.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-foundation.workspace = true
 
+# Clearing the window's redirection surface, which is what lets the desktop show through on Windows.
+# See `services/windows_transparency.rs`.
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
 # The icon and the version block inside `quill.exe`, put there by `build.rs`. Windows takes a
 # program's icon, its taskbar name and its Add or Remove Programs version from a resource compiled
 # into the executable, and nothing outside the executable can supply one.

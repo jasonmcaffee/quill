@@ -6,7 +6,9 @@
 //!
 //! Transparency works because the background and the text are two separate paints. `clear_color` gives the
 //! operating system compositor an alpha taken from the opacity setting, so the desktop shows through the
-//! window. Every glyph is painted at full alpha, so the writing stays sharp at every setting.
+//! window. Every glyph is painted at full alpha, so the writing stays sharp at every setting. That is the
+//! whole of it on macOS; on Windows the compositor has to be talked into honouring the alpha at all, which
+//! is `services::windows_transparency` and is the one platform call this file makes.
 //!
 //! The window has no operating system title bar, because rounded corners and transparency need the
 //! decorations turned off, so the bars at the top and bottom are painted here and the top one moves the
@@ -2230,6 +2232,9 @@ impl eframe::App for QuillApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // Nothing on macOS: the compositor there takes the surface's alpha on its own.
+        #[cfg(windows)]
+        crate::services::windows_transparency::keep_transparent(_frame);
         QuillApp::ui(self, ui);
     }
 

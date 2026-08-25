@@ -2,7 +2,9 @@
 //!
 //! The window is created transparent so that the background opacity setting can let the desktop show
 //! through. On macOS the window shadow is turned off as well, because the egui documentation records
-//! that a translucent window with a shadow leaves ghosting artefacts behind it.
+//! that a translucent window with a shadow leaves ghosting artefacts behind it. Windows needs more
+//! than a transparent window before anything shows through, and `services::windows_transparency` is
+//! where that lives and why.
 //!
 //! Usage: `quill [path] [--opacity N] [--view raw|side|preview] [--menu-bar native|in-window] [--terminal]`
 //!
@@ -151,6 +153,11 @@ fn main() -> eframe::Result {
             .with_has_shadow(false),
         ..Default::default()
     };
+
+    // The desktop shows through the window on macOS with nothing more than `with_transparent`. Windows
+    // also needs a swapchain that can carry alpha, which is a wgpu setting rather than a window one.
+    #[cfg(windows)]
+    let options = quill_app::services::windows_transparency::with_direct_composition(options);
 
     eframe::run_native(
         "Quill",

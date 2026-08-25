@@ -25,6 +25,11 @@ muda = "0.19"
 alacritty_terminal = "0.26"
 unicode-width = "0.2"
 winresource = "0.1"
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
+] }
 objc2-foundation = { version = "0.3", default-features = false, features = [
     "std",
     "NSProcessInfo",

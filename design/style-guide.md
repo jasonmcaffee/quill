@@ -20,6 +20,7 @@ finished until it has one.
 | `intial-design-screenshot.png` | The whole window: the palette, the bar heights, the explorer, the editing area. Every colour in `theme::color` was sampled from it. |
 | `quill mac screenshot.png` | The running window on macOS, with the terminal open. What "it looks right" means. |
 | `verification/live-window-over-desktop.png` | The window over a real desktop, which is the only way to see that the transparency works. |
+| `verification/live-window-over-desktop-windows.png` | The same on Windows, over a backdrop of solid colours so that both halves of the requirement can be read off it: the background takes the colour behind it and every glyph stays solid. |
 | `verification/terminal-claude.png`, `terminal-codex.png` | A full screen program running in the terminal, and the same after the tile was resized. |
 | `components/*.png` | One capture per component added after this guide was written. |
 

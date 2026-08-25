@@ -17,7 +17,8 @@ change looks like the rest of the code rather than like a second style laid over
 - `app/` — the window's own state, and `app/actions.rs`, which is what the menus and the keyboard ask for.
 - `components/` — drawing. One file for each piece of the window.
 - `services/` — everything that is not drawing: the file tree, the fonts and the glyph atlas, the settings
-  and recent projects on disk, starting a second window, the macOS menu bar.
+  and recent projects on disk, starting a second window, the macOS menu bar, and what Windows needs
+  before the desktop will show through the window.
 - `theme/` — the palette, the measurements and the drawn icons.
 
 ## The look is written down, and a new control is measured against it
@@ -104,6 +105,22 @@ Every control calls `response.widget_info` with a plain name: `Save`, `Bold`, `R
 that moves does not break a test, and a control with no name cannot be tested at all. Two controls must not
 share a name: the Settings window's button says `Done` rather than `Close` because the window already has a
 `Close` button.
+
+## The desktop shows through, and Windows needs three things for it that macOS does not
+
+The window is created with `with_transparent(true)`, the background is painted with the opacity
+setting's alpha and every glyph is painted at alpha 255. On macOS that is the whole story.
+
+On Windows the same code drew a solid window, and `services/windows_transparency.rs` is what fixes
+it. Three separate faults, each of which alone is enough to leave the window opaque: wgpu picked
+Vulkan, whose surface offers no transparent composite mode, so DX12 is named; a DXGI swapchain built
+from a window handle can only be `Opaque`, so it is built from a DirectComposition visual instead;
+and the window's redirection surface is never cleared by winit, so it holds undefined bytes that
+composite as opaque white, and it is filled with black — which is how GDI writes a zero alpha — once
+a frame. **Filling it once does not work**, because eframe keeps the window hidden until it has
+painted its first frame, so the fill lands before Windows has allocated the surface. Section 9.2 of
+`tasks/quill-technical-design-document.md` records how each was measured and what was rejected;
+`design/verification/live-window-over-desktop-windows.png` is what it should look like.
 
 ## Shipping it is a folder of its own
 

@@ -501,6 +501,66 @@ Second, a glyph is drawn at exactly the size it was rasterised at, so its rectan
 pixels and the atlas is sampled without filtering. Landing a glyph on a fraction of a pixel resamples
 it and softens every letter on screen.
 
+### 9.2 What Windows needs on top
+
+Everything above is enough on macOS: the window is created transparent, the compositor takes the
+surface's alpha, and that is the end of it. On Windows the same code produced a window that was
+completely solid at every setting, and the reason turned out to be three separate things, each of
+which on its own is enough to leave the window opaque. All three were settled by measurement, with a
+throwaway winit and wgpu program that painted half of a window at a quarter alpha over a coloured
+backdrop and read the pixels back, rather than by reasoning about the documentation.
+
+**wgpu was not using DX12.** Left to choose, wgpu picked Vulkan, whose surface on this driver offers
+`CompositeAlphaMode::Opaque` and nothing else. `egui-wgpu` asks for `PreMultiplied` when the viewport
+was built transparent, finds it is not offered, warns, and falls back to `Auto`. This is why an
+earlier attempt at `WGPU_DX12_PRESENTATION_SYSTEM=visual` appeared to do nothing: the DX12 backend it
+configures was never in play.
+
+**A swapchain made from a window handle cannot carry alpha.** Even on DX12 the alpha modes are
+`[Opaque]` for a swapchain built from an `HWND`. Built from a DirectComposition visual instead they
+are `[Auto, Inherit, Opaque, PostMultiplied, PreMultiplied]`, and `egui-wgpu` then picks
+`PreMultiplied` by itself with nothing further asked of it. wgpu builds that kind when
+`Dx12BackendOptions::presentation_system` is `DxgiFromVisual`.
+
+**The window's redirection surface is never cleared.** Every ordinary window has one: a GDI bitmap
+the desktop window manager composites the window from. Winit asks the manager to honour its alpha —
+`DwmEnableBlurBehindWindow` over an empty region — but registers the window class with no background
+brush and never paints into it, so the surface keeps the undefined bytes it was allocated with. Those
+read as opaque white, which is what the window showed once the first two were fixed: at 25 per cent
+the panels measured `#C6C7C9`, which is the theme faded towards white rather than towards the
+desktop, whatever was actually behind the window. GDI writes zero into the alpha byte of every pixel
+it touches, so one `PatBlt` of black over the client area makes the surface disappear. GLFW has the
+same fault and the same fix is open against it as [PR
+2815](https://github.com/glfw/glfw/pull/2815); the reference this was taken from is
+[jeweg/win32-window-transparency](https://github.com/jeweg/win32-window-transparency), which
+catalogues the Win32 combinations that do and do not work.
+
+Two things that were tried and are deliberately not used.
+
+`WS_EX_NOREDIRECTIONBITMAP` removes the surface rather than clearing it, and was measured to work
+just as well. It is not used for two reasons: eframe offers no way to pass a winit window attribute
+through — its only hook takes an `egui::ViewportBuilder` — and the Win32 reference implementations
+advise against it anyway, because it breaks any presentation path that blits into that surface.
+Reaching it would mean forking or vendoring `egui-winit` for one line, which is a large maintenance
+cost for no gain over the fill.
+
+Filling the surface once, at start up, is not enough, and the reason is worth recording because it
+looks as though it should be. eframe creates the window with `visible: false` and calls
+`set_visible(true)` in `post_rendering`, after the first frame has been painted, so that the window
+does not flash white while wgpu starts. A fill during that first frame therefore reaches a surface
+the window manager has not allocated yet and is thrown away, and the window comes up solid and stays
+solid. There is no event that says a new surface has been handed over, and guessing at the occasions
+— shown, resized, moved to a screen at another scale, restored from the taskbar — would be a list to
+keep up to date rather than a rule. So it is filled once a frame instead. That is affordable because
+it is a write into a surface the compositor owns rather than anything the card draws: measured at
+0.06 ms for an 1100 by 720 window and 0.04 ms for one filling a 4K screen.
+
+All of this lives in `quill-app/src/services/windows_transparency.rs` behind `#[cfg(windows)]`, with
+`windows-sys` under `[target.'cfg(windows)'.dependencies]`, so macOS compiles none of it. Both wgpu
+choices are made through `Backends::from_env` and `Dx12SwapchainKind::with_env`, so `WGPU_BACKEND`
+and `WGPU_DX12_PRESENTATION_SYSTEM` remain a way out on a machine where DX12 is the wrong answer; the
+window is then opaque, which is what it was before.
+
 ## 10. The file explorer
 
 A tree of nodes, each a file or a directory, with directories holding an expanded flag and their

@@ -2898,6 +2898,7 @@ dependencies = [
  "quill-terminal",
  "rfd",
  "unicode-segmentation",
+ "windows-sys 0.61.2",
  "winresource",
 ]
 
