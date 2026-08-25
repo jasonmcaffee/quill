@@ -1,5 +1,5 @@
 # Implement: the improvements in tasks/improvements.md
-
+ 
 > Source ask: work through `tasks/improvements.md` in full — move the font controls and the background
 > opacity into a Settings modal, open any text file, make every pane draggable, allow several Quill
 > instances with a recent projects list, add a terminal with tabs, put the menus in the macOS menu bar
