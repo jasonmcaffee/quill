@@ -60,14 +60,16 @@ so setup cannot close it by itself: a person is shown the list and closes Quill,
 ## macOS
 
 ```bash
-installer/macos/build.sh              # Quill.app and Quill-<version>.dmg, in installer/dist
+installer/macos/build.sh              # Quill.app in installer/dist, quill-<version>.dmg in releases
 installer/macos/build.sh --install    # and copy the bundle into /Applications
 installer/macos/build.sh --no-dmg     # just the bundle
 installer/macos/build.sh --icon       # redraw the icon first
+installer/macos/build.sh --notarize   # sign, send the image to Apple, staple the ticket to it
 ```
 
 It uses nothing that is not in a stock Xcode command line install: `cargo`, `lipo`, `iconutil`,
-`codesign`, `hdiutil`, `plutil`. For a universal binary, have both targets installed first:
+`codesign`, `hdiutil`, `plutil`, and `notarytool` and `stapler` when notarising. For a universal binary,
+have both targets installed first:
 
 ```bash
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
@@ -75,17 +77,63 @@ rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
 With only one installed it builds that one and says so.
 
-**Signing.** With nothing set the bundle is signed ad-hoc, which is what makes Gatekeeper treat it as
-an unsigned application to be allowed through once — right click, Open — rather than a damaged one to
-be refused. With a Developer ID:
+The image goes to `releases/quill-<version>.dmg`. `installer/dist/` is the working area and is
+rewritten on every run.
+
+### Signing, in three levels
+
+The script says which one it did, and checks with `spctl` afterwards rather than leaving it to be
+guessed at.
+
+| | What it takes | What a person who downloads it sees |
+|---|---|---|
+| **Ad-hoc** | nothing | "Apple cannot check it for malicious software", and a right click and *Open* gets past it, once. A copy built on the machine it runs on has no quarantine flag and opens with no warning at all. |
+| **Developer ID** | `CODESIGN_IDENTITY` naming an identity in the keychain | The same warning. A signature alone is not enough on macOS 10.15 and later; the notarisation is what removes it. |
+| **Notarised** | that, plus `--notarize` and credentials | Nothing. It opens. |
+
+The bundle is signed with the **hardened runtime** at every level, including ad-hoc. Notarising requires
+it, and an application that breaks under it breaks whether the signature is real or not, so the ad-hoc
+build is where that shows up rather than the first signed one. Quill runs under it: no entitlements are
+needed, because it loads only system frameworks and the processes it starts — `git`, a shell — are not
+restricted by the runtime.
+
+### Notarising
 
 ```bash
 export CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
-installer/macos/build.sh
-xcrun notarytool submit installer/dist/Quill-<version>.dmg \
-  --apple-id you@example.com --team-id TEAMID --password <app-specific-password> --wait
-xcrun stapler staple installer/dist/Quill-<version>.dmg
+xcrun notarytool store-credentials quill \
+    --apple-id you@example.com --team-id TEAMID --password <app-specific-password>
+export NOTARY_PROFILE=quill
+installer/macos/build.sh --notarize
 ```
+
+`NOTARY_APPLE_ID`, `NOTARY_TEAM_ID` and `NOTARY_PASSWORD` work instead of a stored profile, for a
+machine where storing one is not wanted. Nothing is printed or written by the script either way.
+
+`--notarize` signs the application and the image with the identity, sends the image to Apple, waits for
+the answer, staples the ticket to the image and then asks `spctl` and `stapler validate` whether it
+took. The staple is the point: the ticket is checked locally, so the image opens for somebody with no
+network.
+
+### What is needed before any of that works
+
+None of it can be done from a checkout alone, and each one is a thing only the account holder can do:
+
+1. **A paid Apple Developer Program membership.** A free Apple ID cannot have a Developer ID
+   Application certificate, which is the only kind of signature Gatekeeper accepts outside the App
+   Store.
+2. **The certificate, in the login keychain.** The short way is Xcode: *Settings*, *Accounts*, sign in,
+   select the team, *Manage Certificates*, the `+`, *Developer ID Application*. It needs the Account
+   Holder or Admin role. The long way is a certificate signing request from Keychain Access uploaded at
+   developer.apple.com and the issued certificate downloaded and double clicked.
+3. **The Team ID**, ten characters, from developer.apple.com under Membership. It is the part in
+   brackets in the identity's name.
+4. **An app-specific password** for the Apple ID, from appleid.apple.com under *Sign-In and Security*.
+   The Apple ID's own password is refused. An App Store Connect API key works too, with `--key`.
+
+`security find-identity -v -p codesigning` lists what the machine actually has. Until step 2 is done it
+says `0 valid identities found`, and the script stops with that same list rather than producing
+something that looks signed and is not.
 
 **What has been run.** Both sides now. The Windows side was built, installed, run, uninstalled and
 reinstalled on a real machine. The macOS side was run on an Apple silicon Mac on 2026-08-25 and needed
@@ -106,11 +154,11 @@ What was checked afterwards:
 | Installing | `--install` puts it in `/Applications`, `open -a` launches it, and the folder passed after `--args` reaches the window: it turns up at the top of `recent.txt` |
 | Installing over a running copy | works, because a Mac replaces the bundle and leaves the running process on its old inode. There is nothing here like the Restart Manager problem the Windows side has |
 
-**The one thing still not done** is a real identity. The bundle is signed ad-hoc, so `spctl --assess`
-rejects it, and a person who *downloads* the image sees "Apple cannot check it for malicious software"
-and has to right click and choose Open once. A copy built on the machine it runs on is not quarantined
-and opens with no prompt at all. Finishing this needs an Apple Developer identity and the two
-`notarytool` commands above.
+**The one thing still not done** is a real identity, and it is not something a checkout can carry: this
+machine has `0 valid identities found`. Everything up to that point is in place and was exercised — the
+hardened runtime is on and the application runs under it, the image is built and signed, and `--notarize`
+stops with the list of identities and the four steps above rather than producing something that looks
+signed. The moment the certificate is in the keychain, one run does the rest.
 
 Two smaller things left as they are, deliberately. The binary is **arm64 only** on a machine with only
 that target installed — `rustup target add x86_64-apple-darwin` and another run makes it universal, and

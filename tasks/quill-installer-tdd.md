@@ -238,15 +238,49 @@ run the discrete one for a text editor.
 installed the script builds both and joins them with `lipo`; if only one is, it builds that one and
 says which. Either way the bundle works on the machine that built it.
 
-**Signing.** The script signs the bundle ad-hoc — `codesign --sign -` — which is what makes Gatekeeper
-treat it as an unsigned application to be allowed through once rather than a damaged one to be
-refused outright. Real signing and notarisation need an Apple Developer identity, so the script uses
-`$CODESIGN_IDENTITY` when it is set in the environment and falls back to ad-hoc when it is not, and
-`README.md` records the two `notarytool` commands that finish the job. That is the line this ticket
-stops at, and it is where it says it stops: everything up to the identity is done.
+**Signing, and notarising.** Three levels, and the script says which one it did rather than leaving it to
+be worked out: ad-hoc when `CODESIGN_IDENTITY` is not set, Developer ID when it names an identity in the
+keychain, and notarised when `--notarize` is given as well. After each one it asks `spctl` what the
+system makes of the result, because that is the question the person downloading it will ask and the
+answer is cheap to get.
+
+Two decisions inside that are worth recording.
+
+**The hardened runtime is on at every level, including ad-hoc.** Notarising requires it, and an
+application that breaks under it breaks whether or not the signature is real, so the ad-hoc build is
+where that has to show up — otherwise the first thing a new certificate does is produce a bundle that
+will not run and it is not obvious which of the two changes did it. Quill needs no entitlements under it:
+it loads only system frameworks, and the processes it starts, `git` and a shell, are the sandbox's
+business rather than the runtime's. Checked by installing the hardened ad-hoc build and running it.
+
+**The image is signed too, not only the application inside it.** An unsigned image around a signed
+application is a thing a person can be handed and told to trust, and Apple refuses to notarise one.
+
+**What notarising actually does here.** `notarytool submit --wait` sends the image and waits, because
+without waiting the script would finish before Apple had looked at anything and there would be nothing to
+staple. `stapler staple` then attaches the ticket to the image, and that is the part that matters: a
+stapled ticket is checked locally, so the image opens for somebody with no network. `stapler validate`
+and `spctl --assess --type open` confirm it took, and the script fails if they disagree.
+
+Credentials come from the environment — either `NOTARY_PROFILE`, a profile stored once by
+`notarytool store-credentials`, or `NOTARY_APPLE_ID`, `NOTARY_TEAM_ID` and `NOTARY_PASSWORD` — and
+nothing here prints or stores one.
+
+**What a checkout cannot carry.** A Developer ID Application certificate needs a paid membership, and it
+lives in a keychain rather than in a repository. `installer/README.md` lists the four things only the
+account holder can do: the membership, the certificate, the Team ID and an app-specific password. Until
+the certificate is there, `security find-identity -v -p codesigning` says `0 valid identities found`, and
+the script stops with that list rather than producing something that looks signed and is not.
 
 The disk image is `hdiutil create` over a staging folder holding `Quill.app` and a symlink to
 `/Applications`, converted to a compressed read-only `UDZO` image.
+
+It is written to `releases/quill-<version>.dmg` rather than left in `installer/dist/`. Those are two
+different things and were being kept in one place: `installer/dist/` is a working area, holding the bundle
+and the staging folder, and it is rewritten on every run; `releases/` is what is kept, one file per
+version, named from `Cargo.toml` so that two builds cannot be mistaken for one another and an older
+version can still be handed to somebody. `releases/README.md` says what a person receiving one sees on
+each platform, and how to read from the file itself which of the three signing levels it got.
 
 **Run on a Mac, and what came of it.** This section was written on Windows with no Mac attached, and
 said so. It has since been run on an Apple silicon Mac, on 2026-08-25, and needed no correction:
