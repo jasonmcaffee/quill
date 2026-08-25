@@ -87,8 +87,13 @@ pub mod color {
 pub mod size {
     /// Height of the bar holding the window buttons and the file name.
     pub const TITLE_BAR: f32 = 50.0;
-    /// Height of the bar holding the formatting controls.
-    pub const TOOLBAR: f32 = 44.0;
+    /// Width of the rail of pane buttons down the far left of the window.
+    ///
+    /// Narrower than IntelliJ's, which is about forty points, because `task-1658` asks for that and
+    /// because Quill's holds three buttons rather than a dozen. Twenty four for the button, six either
+    /// side — and the six on the left is exactly what `components::resize_edges` takes, so a button and
+    /// the window's own left grip never fight over the same point.
+    pub const ACTIVITY_BAR: f32 = 36.0;
     /// Height of the bar along the bottom of the window.
     pub const STATUS_BAR: f32 = 32.0;
     /// Width of the file explorer.

@@ -168,6 +168,10 @@ fn main() -> eframe::Result {
             // The settings, the pane sizes and the recent projects come from disk here rather than in
             // `QuillApp::new`, so that a test never reads or writes the settings of the person running it.
             app.load_settings();
+            // What was left open in this project last time. After the settings, because it opens files
+            // and they have to be set in the font the settings name; before the file argument, so a file
+            // named on the command line is the tab that ends up showing.
+            app.restore_project();
             if let Some(file) = file {
                 app.open_path(&file);
             }

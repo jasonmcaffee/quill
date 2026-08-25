@@ -87,7 +87,13 @@ impl Values {
     }
 
     pub fn to_text(&self) -> String {
-        let mut out = String::from("# Quill settings. Written by Quill, and safe to edit by hand.\n");
+        self.to_text_headed("# Quill settings. Written by Quill, and safe to edit by hand.")
+    }
+
+    /// The same, under a heading of the caller's own. The project state is written in this format too
+    /// and is not the settings, so it says so at the top of its own file.
+    pub fn to_text_headed(&self, heading: &str) -> String {
+        let mut out = format!("{heading}\n");
         for (name, value) in &self.0 {
             out.push_str(name);
             out.push_str(" = ");

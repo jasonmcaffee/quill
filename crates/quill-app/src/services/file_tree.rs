@@ -202,6 +202,26 @@ impl FileTree {
         }
     }
 
+    /// Every directory that is open, in the order the rows are drawn in.
+    ///
+    /// This is what `services::project_state` writes down, so that a project reopened tomorrow shows the
+    /// same folders opened out that it showed when it was closed.
+    pub fn expanded_folders(&self) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        fn walk(entries: &[Entry], out: &mut Vec<PathBuf>) {
+            for entry in entries {
+                if entry.is_directory && entry.expanded {
+                    out.push(entry.path.clone());
+                    if let Some(children) = &entry.children {
+                        walk(children, out);
+                    }
+                }
+            }
+        }
+        walk(&self.entries, &mut out);
+        out
+    }
+
     pub fn find(&self, path: &Path) -> Option<&Entry> {
         fn walk<'a>(entries: &'a [Entry], path: &Path) -> Option<&'a Entry> {
             for entry in entries {
@@ -321,10 +341,14 @@ mod tests {
         std::fs::write(root.join("program.rs"), "fn main() {}").expect("write program.rs");
         std::fs::write(root.join("notes/one.md"), "one").expect("write notes/one.md");
         std::fs::write(root.join("notes/deeper/two.txt"), "two").expect("write the deep file");
-        // A file that is not text, so a test can check that one of those is listed and dimmed. The bytes
-        // are the start of a PNG, including the zero byte that says it is not text.
+        // A picture. It is not text, and since `task-1658` it opens all the same, in a tab that shows it.
+        // The bytes are the start of a PNG, including the zero byte that says it is not text.
         std::fs::write(root.join("picture.png"), [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0])
             .expect("write picture.png");
+        // A file that is neither text nor a picture, so a test can check that one of those is listed
+        // and dimmed.
+        std::fs::write(root.join("bundle.zip"), [0x50, 0x4B, 0x03, 0x04, 0])
+            .expect("write bundle.zip");
         root
     }
 
@@ -335,7 +359,8 @@ mod tests {
         assert!(is_openable(Path::new("a.MD")), "the extension check ignores case");
         assert!(is_openable(Path::new("a.rs")), "a source file opens as plain text");
         assert!(is_openable(Path::new("a.js")));
-        assert!(!is_openable(Path::new("a.png")), "an image is not text");
+        assert!(is_openable(Path::new("a.png")), "a picture is not text but it opens all the same");
+        assert!(!is_openable(Path::new("a.zip")), "an archive is neither text nor a picture");
     }
 
     #[test]
@@ -343,7 +368,13 @@ mod tests {
         let root = sample_folder("quill-tree-order");
         let tree = FileTree::new(&root);
         let names: Vec<&str> = tree.rows().iter().map(|row| row.entry.name.as_str()).collect();
-        assert_eq!(names, vec!["archive", "notes", "notes.txt", "picture.png", "program.rs", "readme.md"]);
+        assert_eq!(
+            names,
+            vec![
+                "archive", "notes", "bundle.zip", "notes.txt", "picture.png", "program.rs",
+                "readme.md"
+            ]
+        );
         assert!(!names.contains(&".hidden"), "hidden entries are not listed");
         std::fs::remove_dir_all(&root).ok();
     }
@@ -362,9 +393,10 @@ mod tests {
         assert!(entry("readme.md").openable);
         assert!(entry("notes.txt").openable);
         assert!(entry("program.rs").openable, "a Rust file opens as plain text");
-        let picture = entry("picture.png");
-        assert!(!picture.openable, "an image is shown but cannot be opened");
-        assert_eq!(picture.refusal, Some(Refusal::NotText), "and it says why");
+        assert!(entry("picture.png").openable, "a picture opens in a tab that shows it");
+        let archive = entry("bundle.zip");
+        assert!(!archive.openable, "an archive is shown but cannot be opened");
+        assert_eq!(archive.refusal, Some(Refusal::NotText), "and it says why");
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -372,15 +404,15 @@ mod tests {
     fn a_folder_is_closed_until_it_is_opened() {
         let root = sample_folder("quill-tree-closed");
         let mut tree = FileTree::new(&root);
-        assert_eq!(tree.rows().len(), 6);
+        assert_eq!(tree.rows().len(), 7);
         tree.toggle(&root.join("notes"));
         let rows = tree.rows();
         let names: Vec<&str> = rows.iter().map(|row| row.entry.name.as_str()).collect();
         assert_eq!(
             names,
             vec![
-                "archive", "notes", "deeper", "one.md", "notes.txt", "picture.png", "program.rs",
-                "readme.md"
+                "archive", "notes", "deeper", "one.md", "bundle.zip", "notes.txt", "picture.png",
+                "program.rs", "readme.md"
             ]
         );
         std::fs::remove_dir_all(&root).ok();
@@ -403,6 +435,7 @@ mod tests {
                 (1, "deeper"),
                 (2, "two.txt"),
                 (1, "one.md"),
+                (0, "bundle.zip"),
                 (0, "notes.txt"),
                 (0, "picture.png"),
                 (0, "program.rs"),
@@ -418,9 +451,9 @@ mod tests {
         let root = sample_folder("quill-tree-close");
         let mut tree = FileTree::new(&root);
         tree.toggle(&root.join("notes"));
-        assert_eq!(tree.rows().len(), 8);
+        assert_eq!(tree.rows().len(), 9);
         tree.toggle(&root.join("notes"));
-        assert_eq!(tree.rows().len(), 6);
+        assert_eq!(tree.rows().len(), 7);
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -463,9 +496,9 @@ mod tests {
     fn the_file_count_includes_files_in_folders_that_have_not_been_opened() {
         let root = sample_folder("quill-tree-count");
         let tree = FileTree::new(&root);
-        // readme.md, notes.txt, picture.png, program.rs, notes/one.md, notes/deeper/two.txt.
-        assert_eq!(tree.file_count(), 6, "found {:?}", tree.all_files());
-        assert_eq!(tree.openable_count(), 5, "every file but the image can be opened");
+        // readme.md, notes.txt, picture.png, program.rs, bundle.zip, notes/one.md, notes/deeper/two.txt.
+        assert_eq!(tree.file_count(), 7, "found {:?}", tree.all_files());
+        assert_eq!(tree.openable_count(), 6, "every file but the archive can be opened");
         std::fs::remove_dir_all(&root).ok();
     }
 

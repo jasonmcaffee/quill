@@ -6,7 +6,9 @@ pub mod file_tree;
 pub mod icons;
 pub mod launcher;
 pub mod native_menu;
+pub mod picture;
 pub mod plugins;
+pub mod project_state;
 pub mod store;
 pub mod text_renderer;
 

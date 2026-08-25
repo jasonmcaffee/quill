@@ -16,6 +16,14 @@
 //! permanent — editing a file you were only glancing at plainly means you meant to open it. This is
 //! what IntelliJ does, and it is what `task-1649` describes when it says a double click opens a file
 //! in a new tab.
+//!
+//! ## A tab holding a picture
+//!
+//! `task-1658` asks to be able to look at an image, so a tab holds either text or a picture. It still
+//! holds a `Document` either way — one made by `Document::at_path`, which carries the path and nothing
+//! else — so the tab is named after the file, the explorer marks the row as open and the tab strip needs
+//! no second kind of tab. What tells them apart is [`OpenFile::picture`], and the window asks that one
+//! question in the two places it matters: what to draw in the editing area, and what to refuse to save.
 
 use std::path::{Path, PathBuf};
 
@@ -23,6 +31,7 @@ use quill_core::Document;
 
 use crate::app::ViewMode;
 use crate::components::gutter::{BlameRow, Change};
+use crate::services::picture::Picture;
 
 /// One open file, and everything about it that is not about the window.
 pub struct OpenFile {
@@ -40,6 +49,8 @@ pub struct OpenFile {
     pub transient: bool,
     /// Set once git has been asked what it thinks of this file, so it is not asked every frame.
     pub git_asked: bool,
+    /// The picture, when this tab holds one rather than text.
+    pub picture: Option<Picture>,
 }
 
 impl OpenFile {
@@ -53,7 +64,19 @@ impl OpenFile {
             line_changes: Vec::new(),
             transient: false,
             git_asked: false,
+            picture: None,
         }
+    }
+
+    /// A tab holding a picture rather than text.
+    pub fn picture(path: &Path) -> Self {
+        Self { picture: Some(Picture::open(path)), ..Self::new(Document::at_path(path)) }
+    }
+
+    /// True when this tab holds a picture, which is what decides how the editing area is drawn and
+    /// what `Save` refuses to do.
+    pub fn is_picture(&self) -> bool {
+        self.picture.is_some()
     }
 
     /// What the tab is called: the file's name, or `untitled` when it has never been saved.
@@ -194,6 +217,7 @@ impl OpenFiles {
                 file.scroll = 0.0;
                 file.preview_scroll = 0.0;
                 file.transient = !permanent;
+                file.picture = None;
                 file.forget_git();
                 self.active = index;
                 index
@@ -201,6 +225,44 @@ impl OpenFiles {
             None => {
                 let mut file = OpenFile::new(document);
                 file.transient = !permanent;
+                let at = (self.active + 1).min(self.files.len());
+                self.files.insert(at, file);
+                self.active = at;
+                at
+            }
+        }
+    }
+
+    /// Open a tab that is already built, which is how a picture gets one: it is not a document that
+    /// was read, so it cannot come in through [`Self::open`].
+    ///
+    /// It follows exactly the same rules — a file that is already open is shown rather than opened
+    /// twice, a transient tab is reused, a new tab lands beside the one it was opened from — because
+    /// they are the rules about tabs rather than about text.
+    pub fn open_file(&mut self, file: OpenFile, permanent: bool) -> usize {
+        if let Some(path) = file.path().map(Path::to_path_buf) {
+            if let Some(index) = self.index_of(&path) {
+                self.active = index;
+                if permanent {
+                    self.files[index].transient = false;
+                }
+                return index;
+            }
+        }
+        let transient = self.files.iter().position(|held| held.transient);
+        let empty = self.files.iter().position(|held| {
+            held.path().is_none() && held.document.text().is_empty() && !held.document.is_modified()
+        });
+        let reuse = if permanent { empty } else { transient.or(empty) };
+        let mut file = file;
+        file.transient = !permanent;
+        match reuse {
+            Some(index) => {
+                self.files[index] = file;
+                self.active = index;
+                index
+            }
+            None => {
                 let at = (self.active + 1).min(self.files.len());
                 self.files.insert(at, file);
                 self.active = at;
@@ -344,5 +406,36 @@ mod tests {
         assert_eq!(files.active_index(), 0);
         files.previous();
         assert_eq!(files.active_index(), 1);
+    }
+
+    #[test]
+    fn a_picture_takes_a_tab_by_the_same_rules_as_a_file_of_text() {
+        let mut files = OpenFiles::new(Document::new());
+        let path = std::env::temp_dir().join("quill-open-files").join("photo.png");
+        std::fs::create_dir_all(path.parent().expect("a parent")).expect("make the folder");
+        std::fs::write(&path, b"not really a png").expect("write it");
+
+        files.open_file(OpenFile::picture(&path), true);
+        assert_eq!(files.len(), 1, "the empty untitled tab was reused");
+        assert!(files.active().is_picture());
+        assert_eq!(files.active().name(), "photo.png");
+
+        // Opening it again shows the tab it is already in rather than reading it twice.
+        files.open(document("one.md"), true);
+        files.open_file(OpenFile::picture(&path), true);
+        assert_eq!(files.len(), 2);
+        assert_eq!(files.active_index(), 0);
+    }
+
+    #[test]
+    fn a_tab_that_held_a_picture_and_is_reused_for_text_stops_being_a_picture() {
+        let mut files = OpenFiles::new(Document::new());
+        let path = std::env::temp_dir().join("quill-open-files").join("reused.png");
+        std::fs::create_dir_all(path.parent().expect("a parent")).expect("make the folder");
+        std::fs::write(&path, b"not really a png").expect("write it");
+        files.open_file(OpenFile::picture(&path), false);
+        assert!(files.active().is_picture());
+        files.open(document("after.md"), false);
+        assert!(!files.active().is_picture(), "the transient tab was reused for a file of text");
     }
 }

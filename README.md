@@ -43,26 +43,36 @@ possible to capture the window in a particular state:
 | `--print-menus` | Print the menus and their shortcuts, and stop. The macOS menu bar cannot be read by a test, so this is how what went into it can be checked. |
 
 Several Quills can run at once, each on its own project. `File -> New Window` opens another window on the
-same project, `File -> Open Folder in New Window` opens one on a folder you choose, and
-`File -> Recent Projects` opens one on a folder that has been open before. Each is its own process, so they
-share nothing but the settings file.
+same project, `File -> Open Folder` opens one on a folder you choose, and `File -> Recent Projects` opens
+one on a folder that has been open before. Each is its own process, so they share nothing but the settings
+file. What each project had open — its tabs, which of them was showing, which folders in the explorer were
+opened out, and whether the terminal was up — is kept in a `.quill` folder beside the project and put back
+when it is opened again.
 
 ## What the window looks like
 
-A title bar Quill draws itself, a strip holding the text options and the three Markdown view modes, the
-file explorer down the left with a filter box, the editing area, the terminal along the bottom when it is
-showing, and a status bar. The strip is drawn only above a file its controls mean something for: a `.rs` or
-a `.json` file has none, and the editing area takes the room. The palette was read
-out of `design/intial-design-screenshot.png` rather than chosen by eye; run `cargo run --example sample_design`
-to print the colour of each region of that image.
+A title bar Quill draws itself, holding the menus at the left, the project's name after them, and the text
+options and the three Markdown view modes at the right beside the window buttons. Down the far left a thin
+rail with a button for each pane: the explorer, git, and the terminal at the bottom. Then the explorer with
+its filter box, a tab for each open file, the editing area, the terminal along the bottom when it is
+showing, and a status bar. The text options are drawn only for a file whose controls mean something for it:
+a `.rs` file, a `.json` file and a picture have none, and because they live in the title bar rather than in
+a strip of their own, a file without them does not move anything below it. The palette was read out of
+`design/intial-design-screenshot.png` rather than chosen by eye; run `cargo run --example sample_design` to
+print the colour of each region of that image.
 
-`documentation/overview.md` is the whole of this file in pictures: eighteen captures of the running window,
-each cropped with a margin of desktop round it so that what shows through the background is visible.
+The window is dragged by its title bar and resized by any of its four edges or four corners, which Quill
+draws itself because a window with no operating system frame has none of its own.
+
+`documentation/overview.md` is the whole of this file in pictures: twenty-two captures of the running
+window, each cropped with a margin of desktop round it so that what shows through the background is
+visible.
 
 `design/verification/live-window-over-desktop.png` is a capture of the running window over a real desktop.
 The wallpaper is visible through the explorer, the editing area and the status bar, and every piece of text
 is solid on top of it, which is what the opacity setting is for. It was taken before the font controls moved
-into the settings, so its toolbar has two boxes at the left that the toolbar no longer has.
+into the settings and before the text options moved into the title bar, so it has a strip across the top
+that the window no longer has.
 `design/verification/terminal-claude.png` and `terminal-codex.png` are captures of `claude` and `codex`
 running in Quill's terminal, with `terminal-claude-resized.png` and `terminal-codex-resized.png` showing the
 same programs after the tile was made shorter and the explorer wider.
@@ -76,7 +86,7 @@ and the three window buttons move to the right hand end, where Windows puts them
 | Menu | What is in it |
 |---|---|
 | `Quill` | About Quill, Settings, Quit. |
-| `File` | New Window, Open File, Open Folder, Open Folder in New Window, Recent Projects, Save, Save As, Close Window. |
+| `File` | New Window, Open File, Open Folder, Recent Projects, Save, Save As, Close Window. Opening a folder opens it in a window of its own, the way Recent Projects does. |
 | `Edit` | Undo, Redo, Cut, Copy, Paste, Select All, Settings. |
 | `View` | The three view modes, show or hide the explorer, show or hide the line numbers, close a tab and move between tabs, show or hide the terminal, a new terminal tab. |
 | `Git` | Commit, Add, Show Diff, Compare with Revision, Show History, Show Current Revision, Annotate with Git Blame, Rollback, Push, Pull, Fetch, Merge, Rebase, Branches, New Branch, New Tag, Reset HEAD, Stash, Unstash, Manage Remotes, Clone. Dimmed when the folder is not in a repository, and it grows `Continue` and `Abort` while a merge or a rebase has stopped on a conflict. |
@@ -169,8 +179,8 @@ Editing, in the modes that show the source: select with the mouse or with shift 
 paste, move the caret by character, by word, to the start or end of a line, and to the start or end of the
 document, undo and redo.
 
-Character formatting: bold, italic, underline, strikethrough and colour, behind the `F` button at the left
-of the strip, with the family and the size in the settings.
+Character formatting: bold, italic, underline, strikethrough and colour, behind the `F` button at the right
+of the title bar, with the family and the size in the settings.
 
 Paragraph formatting: left, centre, right and justified alignment, and single, one and a half or double line
 spacing, behind the same button.
@@ -183,12 +193,17 @@ Whichever of them is used, it is the one setting, so it is still there next time
 
 Files: any file holding text opens. A `.md` file is Markdown, which means the preview shows it rendered;
 everything else opens as plain text, whether Quill knows the file type or not, so a `.rs` or a `.js` file
-opens as what it is. A file that is not text, such as an image or an archive, is listed in the explorer,
-dimmed, and says why it cannot be opened when the pointer rests on it. So is a file larger than 16 MB.
+opens as what it is. A picture opens too, in a tab that shows it: `.png`, `.jpg`, `.gif`, `.bmp`, `.ico`,
+`.webp` and `.tiff`, scaled to fit the editing area to begin with, zoomed with command or control and plus
+and minus, with the wheel and that modifier held, or with a pinch, dragged about with the mouse, and put
+back to filling the area with a double click. A file that is neither text nor a picture, such as an archive,
+is listed in the explorer, dimmed, and says why it cannot be opened when the pointer rests on it. So is a
+file larger than 16 MB.
 
 Panes: the explorer's width, the split between the Markdown source and its preview, and the terminal's
 height are all set by dragging the divider, and a double click puts one back to its usual size. Where they
-were left is remembered.
+were left is remembered. The rail down the far left puts each pane away and brings it back, in the same
+place whether the pane is showing or not.
 
 The terminal: a tile along the bottom of the window with tabs, opened with control and backtick or from the
 `View` menu. Each tab runs the shell in `$SHELL` in the folder the explorer is showing. It handles colour
@@ -246,7 +261,7 @@ options were considered, and what was read while writing it.
 cargo test
 ```
 
-Four layers, 347 tests.
+Four layers, 548 tests.
 
 `quill-core` has 124 unit tests, including 24 for the Markdown parser and a randomised comparison of the
 rope against a plain `String` over 1500 edits with the tree invariants checked after every one. Layout tests
@@ -258,10 +273,13 @@ colour cube, what the screen holds after a run of escape sequences, the alternat
 resizing, the mouse reports and the tabs. Two of them start a real shell and wait for its output, which is
 what proves the pseudoterminal, the reader thread and the writing work together.
 
-`quill-app` has 81 unit tests covering the file explorer, its filter, what counts as a text file, the
-settings file, the menus and their shortcuts, real font measurement and glyph packing.
+`quill-git` has 41 unit tests and 23 that build real repositories in a temporary folder.
 
-`crates/quill-app/tests/screenshots.rs` has 72 tests that build the whole application, feed it real events,
+`quill-app` has 153 unit tests covering the file explorer, its filter, what counts as a text file or a
+picture, the settings file, the project's own state, the menus and their shortcuts, real font measurement
+and glyph packing.
+
+`crates/quill-app/tests/screenshots.rs` has 116 tests that build the whole application, feed it real events,
 render it through `wgpu` and write a PNG for each one to `crates/quill-app/tests/snapshots`. Those images
 are meant to be looked at: they are how a person or an agent confirms that bold text is bolder, that the
 settings window is laid out like the design, and that the terminal's colours are right. Once accepted they

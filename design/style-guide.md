@@ -40,7 +40,7 @@ different greys, and it must not happen.
 |---|---|
 | `EDITOR` | Behind the text. The opacity setting's alpha is applied to this. |
 | `TITLE_BAR` | The bar with the window buttons; also a modal's header. |
-| `TOOLBAR` | The formatting bar, and the terminal tile. |
+| `TOOLBAR` | The file tab strip, and the terminal tile. |
 | `EXPLORER`, `EXPLORER_FOOTER` | The file list, and the strip counting the files. Also a modal's body and its list column. |
 | `STATUS_BAR` | The bar along the very bottom. |
 | `CONTROL`, `CONTROL_BORDER` | Inside a button or a dropdown that is not active, and the line round it. |
@@ -66,7 +66,7 @@ egui's layout, because the window follows an image and the numbers come from tha
 | Constant | Points |
 |---|---|
 | `TITLE_BAR` | 50 |
-| `TOOLBAR` | 44 |
+| `ACTIVITY_BAR` | 36 (24 for the button, 6 either side) |
 | `STATUS_BAR` | 32 |
 | `EXPLORER` | 248 (150 to 620 by dragging) |
 | `EXPLORER_FOOTER` | 28 |
@@ -76,7 +76,14 @@ egui's layout, because the window follows an image and the numbers come from tha
 | `WINDOW_CORNER`, `CONTROL_CORNER` | 12, 6 |
 
 Per-component numbers that more than one component needs live beside them: the terminal tile's header
-is 32, a file tab strip is 32, a menu row is 24.
+is 32, a file tab strip is 32, a menu row is 24, and the window's own resize grip is 6 at the edges
+and 16 at the corners.
+
+There is no `TOOLBAR` height any more. The strip that held the text options and the Markdown view
+modes was 44 points and was drawn only for a file its controls meant something for, so switching from
+a `.md` file to a `.rs` one moved the tabs, the explorer and the editing area up and down by 44
+points. `task-1658` moved those controls into the right hand end of the title bar, whose height never
+changes. `color::TOOLBAR` stays: it is the fill behind the file tabs and the terminal tile.
 
 **A row is 28 points.** In the explorer, in the settings list, in the git changes tree, in the plugin
 list. A menu row is 24, and that is the only other row height in Quill. A third one is not added
@@ -97,7 +104,7 @@ fill until it is hovered, when it fills `CONTROL` at corner radius 4.
 **A dropdown.** `controls::dropdown`. Never `egui::ComboBox`, which brings its own styling.
 
 **A flyout.** `controls::flyout`. An icon button that opens a panel of controls under itself and
-stays open until the pointer goes elsewhere, which is what the toolbar's `F` button is. It is a
+stays open until the pointer goes elsewhere, which is what the title bar's `F` button is. It is a
 sibling of the dropdown rather than a setting on it, because they are different things: a dropdown
 shows a value and choosing one shuts it, a flyout is a panel used several times in a row. The panel
 is `MENU` filled with a one point `CONTROL_BORDER` stroke, and inside it every row is named down the
@@ -134,6 +141,20 @@ the git dialogs, the prompt and the confirmation are all built the same way.
 
 **A section heading inside a page.** The name in `TEXT_STRONG` at 12.5 points, then a `DIVIDER` rule
 running to the right margin, as IntelliJ draws one. `settings_dialog::section`.
+
+**A rail button.** `components::activity_bar`. A 24 point square in the 36 point rail down the far
+left, inset 6 from its left edge — which is exactly what `components::resize_edges` takes, so a button
+and the window's own resize grip never want the same point. On, it is the selection pill in
+`SELECTED_ROW` with the icon in `TEXT_STRONG`; hovered, the same pill in `CONTROL`; otherwise no fill
+and the icon in `TEXT_DIM`. Not a filled `ACCENT` square: a pane being open is a state rather than a
+press, and three bright blue squares in a rail that is nearly always in that state would be the
+loudest thing in the window.
+
+**A grip on the window's own edge.** `components::resize_edges`, and nothing is painted — the window
+already has its rounded rectangle, and a visible frame is what turning the decorations off was for.
+Four edges 6 points wide and four corners 16 points square, each setting the pointer for the direction
+it moves. **They are added to the `Ui` last**, after every pane, for the reason a divider is added
+after the panes either side of it.
 
 **A divider between panes.** `components::splitter`, always. It decides the grab width, the highlight
 under the pointer, the pointer shape and the double click that puts the pane back. A new pane adds
@@ -172,13 +193,19 @@ which is why menu shortcuts are spelled in words.
 
 An icon is drawn inside about a 10 point square around its centre, at a 1.3 to 1.6 point stroke.
 
-**A letter shaped icon is drawn too**, and `theme::icon::font` — the `F` on the toolbar's text
+**A letter shaped icon is drawn too**, and `theme::icon::font` — the `F` on the title bar's text
 options button — is the one there is. It is three strokes, not the letter `F` set in a font and not
 a picture. A picture cannot be tinted, and every icon in Quill is tinted where it is used: `TEXT_DIM`
 sitting there, `TEXT_STRONG` when what it opens is open. Nor can a picture be drawn at another scale
 without resampling it. `task-1657` offered to have an image generated for this one, and this is why
-it was refused. Setting it as text is no better: the toolbar's `B` is real text, and it needs
-`theme::BOLD_FAMILY` bound before the first frame to look like anything.
+it was refused. Setting it as text is no better: the text options panel's `B` is real text, and it
+needs `theme::BOLD_FAMILY` bound before the first frame to look like anything.
+
+`task-1658` asked the same question again for the three icons in the activity bar and the answer is
+the same, for a reason its own rail makes plain: each of those three is drawn in `TEXT_DIM` sitting
+there, `TEXT_STRONG` when its pane is open and `TEXT_FAINT` when it cannot be used. A picture can
+carry one of those three, and only at the size it was made. If a drawn icon is not liked, the answer
+is to draw it better.
 
 ## Every control has a name
 
@@ -206,10 +233,11 @@ It does not change the document, start a git command, install a plugin or write 
 changes in `app`, in one place, so two components cannot disagree about what happened and a component
 can be drawn by a test with nothing behind it.
 
-**A control is drawn only when it means something for the file that is open.** The formatting strip
-is not drawn at all above a `.rs` file, and the three view mode buttons are not drawn above a `.txt`
-one; the window gives the room to the editing area instead. The questions are asked of
-`services::file_kind` — `formatting_applies` and `preview_applies` — so the toolbar and the View menu
+**A control is drawn only when it means something for the file that is open.** The `F` button is not
+drawn at all for a `.rs` file or a picture, and the three view mode buttons are not drawn for a `.txt`
+one. They sit at the right hand end of the title bar, whose height does not change, so a file with no
+tools leaves that room empty rather than moving everything below it. The questions are asked of
+`services::file_kind` — `formatting_applies` and `preview_applies` — so the tools and the View menu
 cannot come to different answers, and a file kind is decided in one place. Dimming is for a control
 that could be used in a moment, such as undo with nothing yet to undo; a control that can never apply
 to this file is absent.

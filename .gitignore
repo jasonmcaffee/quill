@@ -12,6 +12,10 @@ reference/
 # IntelliJ workspace state, which is per machine rather than part of the project.
 .idea/
 
+# What Quill remembers about a project it has open: the tabs, the folders that were opened out, the
+# terminal. Per person and per machine rather than part of the project, the same as `.idea` above.
+.quill/
+
 # What the two installer build scripts write.
 /installer/dist/
 

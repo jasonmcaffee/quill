@@ -131,6 +131,16 @@ impl Document {
         }
     }
 
+    /// An empty document that names a file it did not read.
+    ///
+    /// A picture opens in a tab like any other file, and a tab holds a document, but there is no text
+    /// in a picture to hold. So the tab holds this: it carries the path, so the tab is named after the
+    /// file and the explorer marks the row as open, and it holds nothing else. It is never modified and
+    /// so is never written, and `quill_app` refuses to save a tab showing a picture in any case.
+    pub fn at_path(path: &Path) -> Self {
+        Self { path: Some(path.to_owned()), ..Self::new() }
+    }
+
     pub fn open(path: &Path) -> std::io::Result<Self> {
         let text = std::fs::read_to_string(path)?;
         // Files written on Windows use a carriage return and a line feed for each line break. The

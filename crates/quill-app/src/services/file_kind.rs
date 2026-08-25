@@ -15,6 +15,13 @@
 //!
 //! Rule 3 is last because it touches the disk, and the explorer asks this question about every file in a
 //! folder. Rules 1 and 2 answer it for nearly every file without reading anything.
+//!
+//! ## Pictures
+//!
+//! A picture is not text and never will be, but `task-1658` asks to be able to look at one, so it is a
+//! second kind of thing Quill opens rather than a file it refuses. [`is_image`] is the whole of the
+//! question, answered from the extension alone: a decoder is what decides whether the bytes really are
+//! a picture, and it says so when the tab is opened rather than on every row of the explorer.
 
 use std::path::Path;
 
@@ -47,6 +54,12 @@ const BINARY_EXTENSIONS: &[&str] = &[
     "mkv", "webm", "wmv", "ttf", "otf", "ttc", "woff", "woff2", "eot", "so", "dylib", "dll", "exe",
     "o", "a", "rlib", "rmeta", "class", "pyc", "pyo", "wasm", "bin", "dat", "db", "sqlite",
     "sqlite3", "bundle", "keystore", "p12", "pfx", "der",
+];
+
+/// Extensions Quill can show as a picture. Every one of them is a format the `image` crate is built
+/// with, so a name here that the decoder does not know would be a tab that opens and stays empty.
+const IMAGE_EXTENSIONS: &[&str] = &[
+    "png", "jpg", "jpeg", "gif", "bmp", "ico", "webp", "tif", "tiff",
 ];
 
 /// Names with no extension that are text, so the file does not have to be read to find out.
@@ -82,11 +95,20 @@ pub fn openable(path: &Path) -> Result<(), Refusal> {
             return Err(Refusal::TooLarge);
         }
     }
-    if is_text(path) {
+    if is_text(path) || is_image(path) {
         Ok(())
     } else {
         Err(Refusal::NotText)
     }
+}
+
+/// True for a file Quill shows as a picture rather than as text.
+///
+/// Decided from the extension alone. The explorer asks this of every row, so it must not read the
+/// file, and a `.png` that turns out not to be a PNG is a tab that says so — which is a better place
+/// for that answer than a row that quietly refuses to open.
+pub fn is_image(path: &Path) -> bool {
+    matches!(extension(path).as_deref(), Some(found) if IMAGE_EXTENSIONS.contains(&found))
 }
 
 /// Whether Quill can open this file.
@@ -153,6 +175,9 @@ pub fn kind_name(path: Option<&Path>) -> &'static str {
         if name.eq_ignore_ascii_case("Dockerfile") {
             return "Dockerfile";
         }
+    }
+    if is_image(path) {
+        return "Image";
     }
     match extension(path).as_deref() {
         Some("md" | "markdown" | "mdx") => "Markdown",
@@ -255,10 +280,27 @@ mod tests {
 
     #[test]
     fn a_file_that_is_not_text_is_not_offered() {
-        for name in ["photo.png", "archive.zip", "song.mp3", "library.dylib", "book.pdf"] {
+        for name in ["archive.zip", "song.mp3", "library.dylib", "book.pdf"] {
             assert!(!is_text(Path::new(name)), "{name} should not be offered");
             assert_eq!(openable(Path::new(name)), Err(Refusal::NotText));
         }
+    }
+
+    #[test]
+    fn a_picture_is_offered_even_though_it_is_not_text() {
+        for name in ["photo.png", "scan.JPEG", "sprite.gif", "favicon.ico", "shot.webp"] {
+            let path = Path::new(name);
+            assert!(!is_text(path), "{name} is not text");
+            assert!(is_image(path), "{name} is a picture");
+            assert_eq!(openable(path), Ok(()), "{name} opens as a picture");
+            assert_eq!(kind_name(Some(path)), "Image");
+        }
+        // A picture Quill has no decoder for stays refused, rather than opening into an empty tab.
+        assert!(!is_image(Path::new("photo.heic")));
+        assert_eq!(openable(Path::new("photo.heic")), Err(Refusal::NotText));
+        // `.svg` is text, and stays text: it is a file you edit rather than one you look at.
+        assert!(!is_image(Path::new("logo.svg")));
+        assert!(is_text(Path::new("logo.svg")));
     }
 
     #[test]
@@ -320,6 +362,7 @@ mod tests {
         assert_eq!(kind_name(Some(Path::new("a.ts"))), "TypeScript");
         assert_eq!(kind_name(Some(Path::new("Makefile"))), "Makefile");
         assert_eq!(kind_name(Some(Path::new("a.quillnotes"))), "Plain text");
+        assert_eq!(kind_name(Some(Path::new("a.png"))), "Image");
         assert_eq!(kind_name(None), "Plain text");
     }
 
@@ -331,6 +374,11 @@ mod tests {
         assert!(formatting_applies(None), "a document with no path yet is prose");
         for code in ["main.rs", "Cargo.toml", "Cargo.lock", "a.json", "a.ts", "a.css", "Makefile"] {
             assert!(!formatting_applies(Some(Path::new(code))), "{code} is not prose");
+        }
+        // A picture is not prose either, so it gets neither the text tools nor the view modes.
+        for picture in ["photo.png", "scan.jpg"] {
+            assert!(!formatting_applies(Some(Path::new(picture))), "{picture} is not prose");
+            assert!(!preview_applies(Some(Path::new(picture))));
         }
     }
 

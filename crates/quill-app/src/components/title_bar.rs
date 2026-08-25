@@ -1,22 +1,39 @@
 //! The bar along the top of the window.
 //!
-//! Quill draws its own, because the design asks for the file name centred with its folder after it and an
-//! amber dot when there are unsaved changes, and because the window has no operating system title bar:
-//! the rounded corners and the transparency need the decorations turned off.
+//! Quill draws its own, because the window has no operating system title bar: the rounded corners and the
+//! translucent background need the decorations turned off.
 //!
-//! Where the menus and the window buttons go depends on the platform, and the two swap sides.
+//! It holds four things, and where each of them goes depends on the platform, because the menus and the
+//! window buttons swap sides.
 //!
 //! On macOS the menus belong in the bar along the top of the screen, so this bar holds no menus and the
-//! three window buttons sit at the left, where macOS puts them. Everywhere else the menus are drawn in
-//! this bar, starting with `Quill` at the very left, and the window buttons move to the right hand end,
-//! where Windows puts them. Either way `Quill` is the first thing in the top bar, which is what
+//! three window buttons sit at the left, where macOS puts them. Everywhere else the menus are drawn here,
+//! starting with `Quill` at the very left, and the window buttons move to the right hand end, where
+//! Windows puts them. Either way `Quill` is the first thing in the top bar, which is what
 //! `tasks/improvements.md` asks for.
+//!
+//! **The project's name comes after the menus**, which is what `task-1658` asks for — after `Git`, the
+//! last of them, and after the window buttons on macOS where there are no menus here to follow.
+//!
+//! **The open file's name is not here at all.** It used to be centred, with its folder after it and an
+//! amber dot for unsaved changes, and all three are now somewhere better: the file's name is on its tab,
+//! the dot is on the tab as well, and the folder was the project, which is what the bar now says once
+//! rather than repeating on every file.
+//!
+//! **The text tools sit at the right hand end**, in front of the window buttons. The bar does not draw
+//! them — `components::text_tools` does — but it decides where they go, through [`tools_rect`], so that
+//! nothing it draws itself and nothing that is dragged to move the window ever runs underneath one.
 
 use egui::{Color32, CornerRadius, Pos2, Rect, Sense, Stroke, Vec2};
 
 use crate::app::actions::{Action, Menu};
 use crate::components::menu_bar;
 use crate::theme::{color, size};
+
+/// From the middle of one window button to the middle of the next.
+const BUTTON_STEP: f32 = 21.0;
+/// How much room the three window buttons want either side of themselves.
+const BUTTON_MARGIN: f32 = 16.0;
 
 /// Where this window's menus are.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,37 +65,58 @@ pub struct TitleBarOutcome {
     pub action: Option<Action>,
 }
 
+/// Where the middle of the first window button is.
+///
+/// At the left with the menus in the screen's own bar, at the right when the menus are in this one.
+fn first_button(area: Rect, placement: MenuPlacement) -> Pos2 {
+    if placement == MenuPlacement::Native {
+        Pos2::new(area.left() + 22.0, area.center().y)
+    } else {
+        Pos2::new(area.right() - 64.0, area.center().y)
+    }
+}
+
+/// The rectangle the text tools are drawn into, `width` points wide.
+///
+/// They finish in front of the window buttons where those are at the right, and against the right hand
+/// edge where they are not. A width of nothing gives an empty rectangle there, which is what a file with
+/// no tools gets.
+pub fn tools_rect(area: Rect, placement: MenuPlacement, width: f32) -> Rect {
+    let right = match placement {
+        MenuPlacement::InWindow => first_button(area, placement).x - BUTTON_MARGIN - 10.0,
+        MenuPlacement::Native => area.right() - BUTTON_MARGIN,
+    };
+    Rect::from_min_max(
+        Pos2::new(right - width, area.top()),
+        Pos2::new(right, area.bottom()),
+    )
+}
+
 /// Draw the title bar into `area`.
 ///
-/// `name` is the file name, `folder` is the folder it sits in, and `unsaved` puts an amber dot after them.
+/// `project` is the name of the folder that is open, and `tools_width` is how much room to leave clear
+/// at the right for the text tools the window draws over the top afterwards.
 pub fn show(
     ui: &mut egui::Ui,
     area: Rect,
-    name: &str,
-    folder: Option<&str>,
-    unsaved: bool,
+    project: Option<&str>,
     opacity: f32,
     placement: MenuPlacement,
     menus: &[Menu],
+    tools_width: f32,
 ) -> TitleBarOutcome {
     let mut outcome = TitleBarOutcome::default();
     let painter = ui.painter_at(area);
-    // The top two corners are rounded to match the window; the bottom two are square because the toolbar
-    // sits directly underneath.
+    // The top two corners are rounded to match the window; the bottom two are square because the tabs
+    // sit directly underneath.
     painter.rect_filled(
         area,
         CornerRadius { nw: size::WINDOW_CORNER, ne: size::WINDOW_CORNER, sw: 0, se: 0 },
         crate::theme::faded(color::TITLE_BAR, opacity),
     );
 
-    // The three window buttons: at the left with the menus in the screen's own bar, at the right when the
-    // menus are in this one.
     let buttons_at_left = placement == MenuPlacement::Native;
-    let first_centre = if buttons_at_left {
-        Pos2::new(area.left() + 22.0, area.center().y)
-    } else {
-        Pos2::new(area.right() - 64.0, area.center().y)
-    };
+    let first_centre = first_button(area, placement);
     let buttons: [(Color32, &str); 3] = if buttons_at_left {
         // The order macOS puts them in.
         [(color::CLOSE, "Close"), (color::MINIMISE, "Minimise"), (color::MAXIMISE, "Maximise")]
@@ -87,7 +125,7 @@ pub fn show(
         [(color::MINIMISE, "Minimise"), (color::MAXIMISE, "Maximise"), (color::CLOSE, "Close")]
     };
     for (index, (fill, label)) in buttons.into_iter().enumerate() {
-        let centre = Pos2::new(first_centre.x + index as f32 * 21.0, first_centre.y);
+        let centre = Pos2::new(first_centre.x + index as f32 * BUTTON_STEP, first_centre.y);
         let hit = Rect::from_center_size(centre, Vec2::splat(16.0));
         let response = ui
             .interact(hit, ui.id().with(("window-button", label)), Sense::click())
@@ -109,8 +147,8 @@ pub fn show(
         }
     }
 
-    // The menus, when they are drawn here.
-    let mut drag_from = area.left() + 132.0;
+    // The menus, when they are drawn here, and then the project's name after them.
+    let mut name_from = first_centre.x + 2.0 * BUTTON_STEP + BUTTON_MARGIN;
     let mut drag_to = area.right();
     match placement {
         MenuPlacement::InWindow => {
@@ -119,30 +157,36 @@ pub fn show(
                 Pos2::new(area.left() + menu_bar::width(menus), area.bottom()),
             );
             outcome.action = menu_bar::show(ui, bar, menus);
-            drag_from = bar.right() + 6.0;
-            drag_to = first_centre.x - 16.0;
+            name_from = bar.right() + 10.0;
+            drag_to = first_centre.x - BUTTON_MARGIN;
         }
         MenuPlacement::Native => {}
     }
 
-    // The file name, centred, with the folder after it in a dimmer colour and then the unsaved dot.
-    let font = egui::FontId::proportional(13.0);
-    let name_galley = painter.layout_no_wrap(name.to_owned(), font.clone(), color::TEXT_STRONG);
-    let folder_text = folder.map(|folder| format!("  \u{2014} {folder}")).unwrap_or_default();
-    let folder_galley = painter.layout_no_wrap(folder_text, font.clone(), color::TEXT_DIM);
-    let dot_width = if unsaved { 16.0 } else { 0.0 };
-    let total = name_galley.size().x + folder_galley.size().x + dot_width;
-    let mut pen = area.center().x - total / 2.0;
-    let baseline_y = area.center().y - name_galley.size().y / 2.0;
-    painter.galley(Pos2::new(pen, baseline_y), name_galley.clone(), color::TEXT_STRONG);
-    pen += name_galley.size().x;
-    painter.galley(Pos2::new(pen, baseline_y), folder_galley.clone(), color::TEXT_DIM);
-    pen += folder_galley.size().x;
-    if unsaved {
-        painter.circle_filled(Pos2::new(pen + 8.0, area.center().y), 4.0, color::UNSAVED);
+    // The project's name, cut short with an ellipsis rather than run underneath the tools.
+    let tools = tools_rect(area, placement, tools_width);
+    let name_to = if tools_width > 0.0 { tools.left() - 12.0 } else { drag_to };
+    if let Some(project) = project {
+        let galley = painter.layout(
+            project.to_owned(),
+            egui::FontId::proportional(13.0),
+            color::TEXT_STRONG,
+            (name_to - name_from).max(1.0),
+        );
+        if name_to > name_from {
+            painter.galley(
+                Pos2::new(name_from, area.center().y - galley.size().y / 2.0),
+                galley.clone(),
+                color::TEXT_STRONG,
+            );
+            name_from += galley.size().x;
+        }
     }
 
-    // Dragging anywhere else on the bar moves the window, which is what a title bar is for.
+    // Dragging anywhere else on the bar moves the window, which is what a title bar is for. It stops
+    // short of the tools, so pressing the `F` never begins a drag of the window behind it.
+    let drag_to = drag_to.min(if tools_width > 0.0 { tools.left() - 4.0 } else { drag_to });
+    let drag_from = name_from + 8.0;
     if drag_to > drag_from {
         let drag_area =
             Rect::from_min_max(Pos2::new(drag_from, area.top()), Pos2::new(drag_to, area.bottom()));
@@ -158,7 +202,43 @@ pub fn show(
     outcome
 }
 
-/// The line under the toolbar and above the status bar, and the line between the explorer and the editor.
+/// The line under a bar and above the status bar, and the line between the explorer and the editor.
 pub fn divider(painter: &egui::Painter, from: Pos2, to: Pos2) {
     painter.line_segment([from, to], Stroke::new(1.0, color::DIVIDER));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bar() -> Rect {
+        Rect::from_min_size(Pos2::new(0.0, 0.0), Vec2::new(1180.0, size::TITLE_BAR))
+    }
+
+    #[test]
+    fn the_tools_stop_before_the_window_buttons_when_the_buttons_are_at_the_right() {
+        let area = bar();
+        let tools = tools_rect(area, MenuPlacement::InWindow, 124.0);
+        let nearest_button = first_button(area, MenuPlacement::InWindow).x - 8.0;
+        assert!(
+            tools.right() < nearest_button,
+            "the tools finish at {} and the first button starts at {nearest_button}",
+            tools.right()
+        );
+        assert_eq!(tools.width(), 124.0);
+    }
+
+    #[test]
+    fn the_tools_go_against_the_right_edge_when_the_buttons_are_at_the_left() {
+        let area = bar();
+        let tools = tools_rect(area, MenuPlacement::Native, 124.0);
+        assert_eq!(tools.right(), area.right() - BUTTON_MARGIN);
+        assert!(tools.left() > first_button(area, MenuPlacement::Native).x, "clear of the buttons");
+    }
+
+    #[test]
+    fn a_file_with_no_tools_leaves_an_empty_rectangle_rather_than_a_gap() {
+        let tools = tools_rect(bar(), MenuPlacement::InWindow, 0.0);
+        assert_eq!(tools.width(), 0.0);
+    }
 }

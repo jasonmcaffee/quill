@@ -17,8 +17,9 @@ change looks like the rest of the code rather than like a second style laid over
 - `app/` — the window's own state, and `app/actions.rs`, which is what the menus and the keyboard ask for.
 - `components/` — drawing. One file for each piece of the window.
 - `services/` — everything that is not drawing: the file tree, the fonts and the glyph atlas, the settings
-  and recent projects on disk, starting a second window, the macOS menu bar, and what Windows needs
-  before the desktop will show through the window.
+  and recent projects on disk, what one project remembers about itself, decoding a picture, starting a
+  second window, the macOS menu bar, and what Windows needs before the desktop will show through the
+  window.
 - `theme/` — the palette, the measurements and the drawn icons.
 
 ## The look is written down, and a new control is measured against it
@@ -37,6 +38,18 @@ accepts a new one after somebody has opened the image and looked at it.
 rectangle, the footer, the buttons, the rows, a field and a tick box. The Settings window, the commit
 panel, the git dialogs, the text prompt and the confirmation are all built from it. A tenth modal
 that draws its own header would be a tenth modal that almost agrees with the other nine.
+
+`components::activity_bar` is the thin rail down the far left, one button a pane: the explorer and git
+at the top, the terminal at the bottom left. It is the only way a pane is put away and brought back,
+and its buttons are inset by exactly what `components::resize_edges` takes from the window's left edge,
+so a button and the window's own resize grip never want the same point.
+
+`components::resize_edges` is the eight grips the window is resized by. Quill's window has no
+operating system frame — the rounded corners and the transparency need the decorations off — so it has
+no resize grip of its own and draws its own, invisibly, four edges and four corners. **They are added
+to the `Ui` last**, after every pane, for the reason a divider is added after the panes either side of
+it: egui gives a pointer to the last widget that wants it, and the editing area, the explorer and the
+status bar all take drags over the whole of their rectangles.
 
 `components::controls` is the same idea for the small things: the dropdown, the flyout, a menu row, a
 button with a word on it, an icon button, and `field_text_rect` — the rectangle a field hands to the
@@ -71,15 +84,22 @@ exactly like a crash. One at a time, because two commands at once in one reposit
 
 ## A control is absent when it cannot apply, not dimmed
 
-The formatting strip is not drawn above a `.rs` file, and the three view mode buttons are not drawn
-above a `.txt` one. Quill saves plain text and carries no formatting to disk, so everything in that
-strip is about how prose is *shown*, and above a source file it is fourteen controls that mean
+The `F` button is not drawn for a `.rs` file or a picture, and the three view mode buttons are not
+drawn for a `.txt` one. Quill saves plain text and carries no formatting to disk, so everything behind
+that button is about how prose is *shown*, and for a source file it is fourteen controls that mean
 nothing — the three view modes offering the Markdown parser's reading of a file that was never
-Markdown. The window gives the forty four points to the editing area instead.
+Markdown.
+
+They used to sit in a strip of their own, forty four points tall, between the title bar and the tabs,
+and the strip went with them: drawn for a `.md` file and not for a `.rs` one, it moved the tabs, the
+explorer and the whole editing area up and down by forty four points every time the tab changed. A
+control that appears is fine; a window that jumps is not. `task-1658` moved them to the right hand end
+of the title bar, whose height never changes, and `components::text_tools` is what draws them.
 
 Two functions in `services::file_kind` answer it, and nothing else does: `formatting_applies` and
-`preview_applies`. The toolbar and the `View` menu both ask them, so they cannot come to different
-answers about the same file, and a file kind stays decided in one place.
+`preview_applies`. The tools and the `View` menu both ask them, so they cannot come to different
+answers about the same file, and a file kind stays decided in one place. `is_image` is the third
+question of the same shape, and it decides whether a tab holds a picture rather than text.
 
 Dimming means something different and is still right where it was: a control that could be used in a
 moment, such as undo with nothing yet to undo, or the whole Git menu outside a repository. A control
@@ -117,6 +137,25 @@ Two things to know when adding one:
 - Its size belongs in `settings::Panes`, which is written to the settings file, so the pane is where it was
   left next time Quill starts. Give it a smallest and a largest size and clamp both when reading the file
   and when dragging.
+
+## A project remembers what was open in it, beside the project
+
+`services::project_state` writes a `.quill` folder **inside the project** — beside `.idea` and
+`.vscode` rather than in the person's own settings folder, so copying the project copies its state and
+two people on one folder do not fight over one file. Three plain text files in the format
+`services::store` already uses: `workspace.conf` for the flags, `open-files.txt` and
+`expanded-folders.txt` for the two lists, one path a line. Paths are written relative to the project
+wherever they are inside it, so a project that moves still opens the files it was left with.
+
+Two rules that a change here must keep.
+
+**Only the released binary reads or writes it.** `QuillApp::restore_project` is called from `main.rs`
+and by nothing else, exactly as `load_settings` is. A test must not touch a person's files, and a
+`.quill` written into a screenshot test's own sample project would change what the explorer draws in
+the middle of a test.
+
+**Terminals come back as fresh shells.** What a program was doing when the window closed cannot be
+brought back; what is restored is the same number of shells in the project's folder.
 
 ## One action, one place
 
@@ -269,6 +308,9 @@ trade that away to be a shade nearer a screenshot.
 - `tasks/task-1657-text-options-tdd.md` — the `F` button and its flyout, the font becoming one
   setting for the window, zooming with a pinch and with the keyboard, and the two drawing faults
   that were fixed alongside them.
+- `tasks/task-1658-window-improvements-tdd.md` — the window's own resize grips, the rail of pane
+  buttons, the `.quill` folder a project remembers itself in, the tools moving into the title bar,
+  and pictures opening in a tab.
 - `tasks/quill-installer-tdd.md` — how Quill is delivered: the icon, the Windows installer and the
   macOS bundle, and the options that were weighed for each.
 - `installer/README.md` — how to build an installer, on either platform.

@@ -1,7 +1,8 @@
-//! The strip along the top of the window, and the panel of text options behind its `F` button.
+//! The text tools in the title bar: the `F` button, the panel of text options behind it, and the three
+//! view mode buttons beside it.
 //!
-//! Every control sends a `quill_core::Command`. None of them changes the document directly, so the
-//! toolbar and the keyboard go down the same path and cannot disagree about what bold means.
+//! Every control sends a `quill_core::Command`. None of them changes the document directly, so the tools
+//! and the keyboard go down the same path and cannot disagree about what bold means.
 //!
 //! Each control is given an accessible name, because the screenshot tests find controls by name rather
 //! than by position, so moving a button does not break a test.
@@ -10,28 +11,31 @@
 //! underlined and the S is struck through, so each one looks like what it does, and the four alignment
 //! buttons are small pictures of a paragraph. The colours are circles with a ring round the chosen one.
 //!
+//! ## Where they are, and why they moved
+//!
+//! They used to sit in a strip of their own, forty four points tall, between the title bar and the tabs.
+//! `task-1658` moved them into the right hand end of the title bar, next to the window buttons, and the
+//! strip went with them. The reason is what the strip did to everything below it: it was drawn for a
+//! `.md` file and not for a `.rs` one, so switching tabs moved the tabs, the explorer and the whole
+//! editing area up and down by forty four points. A control that appears is fine; a window that jumps is
+//! not. In the title bar the room is already there whether the tools are in it or not.
+//!
 //! ## What is shown, and when
 //!
-//! The strip used to be drawn identically above `welcome.md` and above `main.rs`, holding fourteen
-//! controls that mean nothing for a source file: Quill saves plain text and carries no formatting to
-//! disk, so bold on a `.rs` file lasts until the file is reopened, and the three view mode buttons
-//! switch between the Markdown source and a Markdown preview of a file that is not Markdown.
+//! Two questions are asked of the open file, and neither is answered anywhere but in
+//! `services::file_kind`:
 //!
-//! So two questions are asked of the open file, and neither is answered anywhere but here:
-//!
-//! - [`applies`] — is there a strip at all. Prose only: Markdown, a text file, a document that has
-//!   not been saved yet. Everything else gets no strip, and `QuillApp::ui` gives the forty four
-//!   points to the editing area instead.
-//! - [`file_kind::preview_applies`] — are the three view mode buttons drawn. Markdown, and a
-//!   document that has not been saved anywhere yet. A `.txt` file has nothing to preview.
+//! - [`applies`] — are there any tools at all. Prose only: Markdown, a text file, a document that has
+//!   not been saved yet. A source file and a picture get none.
+//! - [`file_kind::preview_applies`] — are the three view mode buttons drawn. Markdown, and a document
+//!   that has not been saved anywhere yet. A `.txt` file has nothing to preview.
 //!
 //! ## Where the formatting went
 //!
-//! Behind one 28 point button carrying a drawn `F`, named `Text options`, which opens a flyout
-//! holding the four character formats, the five colours, the four alignments and the three line
-//! spacings. Nine controls that are set rarely no longer take the width of the window permanently,
-//! and each keeps the name it had, so a test asks for `Bold` exactly as it did before — after
-//! opening the panel.
+//! Behind one 28 point button carrying a drawn `F`, named `Text options`, which opens a flyout holding
+//! the four character formats, the five colours, the four alignments and the three line spacings. Nine
+//! controls that are set rarely no longer take the width of the window permanently, and each keeps the
+//! name it had, so a test asks for `Bold` exactly as it did before — after opening the panel.
 //!
 //! Three things that were here before that are still gone. The font family and the font size are in
 //! `Edit -> Settings -> Appearance -> Font` and on the keyboard at command or control with plus and
@@ -47,7 +51,7 @@ use crate::components::controls;
 use crate::services::file_kind;
 use crate::theme::{color, icon, size};
 
-/// The colours the toolbar offers, with the name shown when hovering over each one.
+/// The colours the text options panel offers, with the name shown when hovering over each one.
 pub const COLORS: &[(&str, Color)] = &[
     ("White", Color::WHITE),
     ("Red", Color::RED),
@@ -59,6 +63,13 @@ pub const COLORS: &[(&str, Color)] = &[
 /// The line spacings the spacing control offers, with the name shown for each.
 pub const SPACINGS: &[(&str, f32)] = &[("Single", 1.0), ("One and a half", 1.5), ("Double", 2.0)];
 
+/// How big one tool button is, and from the left edge of one to the left edge of the next.
+pub const BUTTON: f32 = 28.0;
+const STEP: f32 = 32.0;
+/// Between the `F` button and the three view modes, so they read as two groups rather than four
+/// buttons in a row.
+const GROUP_GAP: f32 = 10.0;
+
 /// How wide the panel behind the `F` button is. Wide enough for `One and a half` to sit beside the
 /// other two spacings without the row wrapping, which is the longest thing in it.
 const PANEL: f32 = 316.0;
@@ -67,38 +78,55 @@ const PANEL_LABEL: f32 = 78.0;
 /// From the middle of one row of the panel to the middle of the next.
 const PANEL_ROW: f32 = 34.0;
 
-/// What the toolbar produced this frame.
+/// What the tools produced this frame.
 #[derive(Debug, Default)]
-pub struct ToolbarOutcome {
+pub struct ToolsOutcome {
     pub commands: Vec<Command>,
     /// Set when one of the three view mode buttons was pressed.
     pub view_mode: Option<crate::app::ViewMode>,
 }
 
-/// Whether the strip is drawn at all for this file.
+/// Whether any of the tools are drawn at all for this file.
 ///
-/// Everything in it is about how prose is shown, so it is drawn for prose and not for code. The
-/// window asks this before it lays anything out, because the answer decides whether the forty four
-/// points belong to the toolbar or to the editing area.
+/// Everything in them is about how prose is shown, so they are drawn for prose and not for code. The
+/// title bar asks this before it lays itself out, because the answer decides how much of its right hand
+/// end is spoken for.
 pub fn applies(path: Option<&Path>) -> bool {
     file_kind::formatting_applies(path)
 }
 
-/// Draw the toolbar into `area`.
+/// How much room the tools need for this file, which is nothing at all for most files.
+///
+/// The title bar leaves this much clear at its right hand end, in front of the window buttons, so
+/// nothing it draws ever runs underneath a tool.
+pub fn width(path: Option<&Path>) -> f32 {
+    if !applies(path) {
+        return 0.0;
+    }
+    let modes = crate::app::ViewMode::ALL.len() as f32;
+    let with_modes = GROUP_GAP + modes * STEP - (STEP - BUTTON);
+    BUTTON + if file_kind::preview_applies(path) { with_modes } else { 0.0 }
+}
+
+/// Draw the tools into `area`, which is the rectangle the title bar left clear for them.
+///
+/// Nothing is painted behind them: the title bar is already there, and a second fill over it would be a
+/// panel inside a panel. `area` is exactly [`width`] wide, so the `F` starts at its left edge and the
+/// view modes finish at its right.
 pub fn show(
     ui: &mut egui::Ui,
     area: Rect,
     document: &Document,
-    opacity: f32,
     bold_family: &egui::FontFamily,
     view_mode: crate::app::ViewMode,
-) -> ToolbarOutcome {
-    let mut outcome = ToolbarOutcome::default();
-    let background = crate::theme::faded(color::TOOLBAR, opacity);
-    ui.painter_at(area).rect_filled(area, CornerRadius::ZERO, background);
-
+) -> ToolsOutcome {
+    let mut outcome = ToolsOutcome::default();
     let middle = area.center().y;
-    let button = Rect::from_min_size(Pos2::new(area.left() + 16.0, middle - 14.0), Vec2::splat(28.0));
+
+    let button = Rect::from_min_size(
+        Pos2::new(area.left(), middle - BUTTON / 2.0),
+        Vec2::splat(BUTTON),
+    );
     if let Some(commands) =
         controls::flyout(ui, button, "Text options", icon::font, PANEL, |panel| {
             text_options(panel, document, bold_family)
@@ -107,18 +135,17 @@ pub fn show(
         outcome.commands.extend(commands);
     }
 
-    // The three view modes sit against the right edge, and only for a file there is something to
-    // preview of.
+    // The three view modes sit beside the `F`, which is what `task-1658` asks for: one group of text
+    // tools rather than one at each end of a bar.
     if file_kind::preview_applies(document.path()) {
-        let modes = crate::app::ViewMode::ALL;
-        let modes_width = modes.len() as f32 * 32.0 - 4.0;
-        let mut pen = area.right() - 16.0 - modes_width;
-        for mode in modes {
-            let button = Rect::from_min_size(Pos2::new(pen, middle - 14.0), Vec2::splat(28.0));
+        let mut pen = button.right() + GROUP_GAP;
+        for mode in crate::app::ViewMode::ALL {
+            let button =
+                Rect::from_min_size(Pos2::new(pen, middle - BUTTON / 2.0), Vec2::splat(BUTTON));
             if view_mode_button(ui, button, mode, view_mode == mode) {
                 outcome.view_mode = Some(mode);
             }
-            pen += 32.0;
+            pen += STEP;
         }
     }
 
@@ -334,4 +361,29 @@ fn alignment_button(ui: &mut egui::Ui, area: Rect, align: Align, active: bool) -
         egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), active, name)
     });
     response.clicked()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn a_file_with_no_tools_takes_no_room_in_the_title_bar() {
+        for code in ["main.rs", "Cargo.toml", "photo.png"] {
+            assert_eq!(width(Some(Path::new(code))), 0.0, "{code} has no text tools");
+        }
+    }
+
+    #[test]
+    fn markdown_gets_the_f_and_the_three_view_modes_and_a_text_file_gets_only_the_f() {
+        let markdown = width(Some(Path::new("notes.md")));
+        let plain = width(Some(Path::new("notes.txt")));
+        assert_eq!(plain, BUTTON, "a text file has nothing to preview, so it is the F alone");
+        assert_eq!(markdown, BUTTON + GROUP_GAP + 3.0 * STEP - (STEP - BUTTON));
+        assert!(markdown > plain);
+        // A document that has never been saved is treated as the beginning of a Markdown file, which
+        // is what `file_kind::preview_applies` already decides for the View menu.
+        assert_eq!(width(None), markdown);
+    }
 }

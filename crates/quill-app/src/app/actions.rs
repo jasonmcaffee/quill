@@ -17,10 +17,13 @@ use crate::app::ViewMode;
 pub enum Action {
     /// Another Quill window, on its own project.
     NewWindow,
-    /// Choose a folder and show it in this window's explorer.
-    OpenFolder,
     /// Choose a folder and open it in a window of its own, leaving this one as it is.
-    OpenFolderInNewWindow,
+    ///
+    /// A project is a window, the way IntelliJ has it, so there is one entry rather than the two there
+    /// used to be. `Open Folder` used to replace the project in this window and `Open Folder in New
+    /// Window` sat under it doing what this does now; `task-1658` asks for the second behaviour and
+    /// two entries that do the same thing are worse than one.
+    OpenFolder,
     /// Choose a file and open it in the editor.
     OpenFile,
     /// Open a project that has been open before, in a window of its own.
@@ -112,7 +115,8 @@ impl Action {
 /// Git menu and a right click on a row in the explorer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GitAction {
-    /// Open the commit panel.
+    /// Open the commit panel, or shut it when it is already open. The rail's git button and the menu
+    /// entry are the same thing, so pressing the button twice puts the panel away again.
     Commit,
     /// Stage a path.
     Add(Option<PathBuf>),
@@ -513,17 +517,12 @@ fn file_menu(state: &MenuState) -> Menu {
         ),
         Entry::Separator,
         Entry::with_shortcut("Open File", Action::OpenFile, Shortcut::command(egui::Key::O)),
+        // A project of its own in a window of its own, which is how a second project is opened without
+        // giving up the one that is open.
         Entry::with_shortcut(
             "Open Folder",
             Action::OpenFolder,
             Shortcut::command_shift(egui::Key::O),
-        ),
-        // A project of its own in a window of its own, which is how a second project is opened without
-        // giving up the one that is open.
-        Entry::with_shortcut(
-            "Open Folder in New Window",
-            Action::OpenFolderInNewWindow,
-            Shortcut { alt: true, ..Shortcut::command(egui::Key::O) },
         ),
         Entry::Submenu { name: "Recent Projects".to_owned(), entries: recent_entries(state) },
         Entry::Separator,
@@ -893,16 +892,19 @@ mod tests {
     fn the_file_menu_holds_the_things_it_used_to_and_the_new_window() {
         let bar = menus(&MenuState::default());
         let file = names(&find(&bar, "File").entries);
-        for expected in [
-            "New Window",
-            "Open File",
-            "Open Folder",
-            "Open Folder in New Window",
-            "Save",
-            "Save As",
-        ] {
+        for expected in ["New Window", "Open File", "Open Folder", "Save", "Save As"] {
             assert!(file.contains(&expected.to_owned()), "File should hold {expected}, it has {file:?}");
         }
+    }
+
+    #[test]
+    fn opening_a_folder_is_one_entry_and_it_opens_a_window_of_its_own() {
+        // There used to be two, and they differed only in which window the project landed in.
+        // `task-1658` asks for a project to be a window, so there is one entry.
+        let file = names(&find(&menus(&MenuState::default()), "File").entries);
+        let opens: Vec<&String> =
+            file.iter().filter(|name| name.starts_with("Open Folder")).collect();
+        assert_eq!(opens, vec![&"Open Folder".to_owned()]);
     }
 
     #[test]

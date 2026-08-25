@@ -4,6 +4,7 @@
 //! returns what the user did in it. None of them changes the document or the window's state directly, so
 //! the state changes in one place, `app`, and two components cannot disagree about what happened.
 
+pub mod activity_bar;
 pub mod context_menu;
 pub mod controls;
 pub mod editor_view;
@@ -14,11 +15,13 @@ pub mod git_panel;
 pub mod gutter;
 pub mod menu_bar;
 pub mod modal;
+pub mod picture_view;
 pub mod plugins_page;
 pub mod prompt_dialog;
+pub mod resize_edges;
 pub mod settings_dialog;
 pub mod splitter;
 pub mod status_bar;
 pub mod terminal_panel;
+pub mod text_tools;
 pub mod title_bar;
-pub mod toolbar;

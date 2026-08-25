@@ -126,11 +126,38 @@ fn build_sample_folder() -> std::path::PathBuf {
     // A file Quill has no special handling for. It opens as plain text, which is what
     // `tasks/improvements.md` asks for.
     std::fs::write(root.join("program.rs"), "fn main() {}\n").expect("write program.rs");
-    // A file that is not text at all. It is listed, dimmed, and does not respond to a click. The bytes are
-    // the start of a PNG, including the zero byte that says it is not text.
-    std::fs::write(root.join("picture.png"), [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0])
-        .expect("write picture.png");
+    // A real picture. It is not text, and since `task-1658` it opens all the same, in a tab that shows
+    // it. Written rather than checked in, so the tests carry no binary fixture, and drawn as a plain
+    // gradient with a band across it so that a screenshot of it is obviously the picture and obviously
+    // the right way up.
+    write_sample_picture(&root.join("picture.png"));
+    // A file that is neither text nor a picture. It is listed, dimmed, and does not respond to a click.
+    // The bytes are the start of a zip, including the zero byte that says it is not text.
+    std::fs::write(root.join("bundle.zip"), [0x50, 0x4B, 0x03, 0x04, 0]).expect("write bundle.zip");
     root
+}
+
+/// Write a small PNG for the explorer's picture row and the picture tab to show.
+///
+/// A hundred and sixty by a hundred, which is smaller than the editing area, so the tab shows it at its
+/// own size and a test that zooms has somewhere to go. A blue to green gradient with a lighter band
+/// across the top third, so that a person looking at the screenshot can see at a glance that it is the
+/// right picture, the right way up and the right size.
+fn write_sample_picture(path: &std::path::Path) {
+    let (width, height) = (160_u32, 100_u32);
+    let mut picture = image::RgbaImage::new(width, height);
+    for (x, y, pixel) in picture.enumerate_pixels_mut() {
+        let across = x as f32 / width as f32;
+        let down = y as f32 / height as f32;
+        let band = if (0.30..0.42).contains(&down) { 70 } else { 0 };
+        *pixel = image::Rgba([
+            (0x28 as f32 + across * 40.0) as u8 + band,
+            (0x60 as f32 + down * 90.0) as u8 + band,
+            (0xF0 as f32 - across * 110.0) as u8,
+            255,
+        ]);
+    }
+    picture.save(path).expect("write picture.png");
 }
 
 /// Build the application with `text` already in the document.
@@ -361,8 +388,12 @@ fn git_harness(name: &str) -> Harness<'static, QuillApp> {
 }
 
 #[test]
-fn startup_shows_the_explorer_the_toolbar_and_an_empty_editor() {
+fn startup_shows_the_rail_the_explorer_and_an_empty_editor() {
     let mut harness = harness("");
+    // The rail of pane buttons down the far left, which `task-1658` asks for.
+    for button in ["Project", "Version Control", "Terminal tile"] {
+        harness.get_by_label(button);
+    }
     harness.snapshot(shot("startup"));
 }
 
@@ -748,7 +779,7 @@ fn the_background_fades_with_the_slider_and_the_text_stays_opaque() {
     report(results);
 }
 
-/// Undo and redo are on the keyboard and in the Edit menu. The toolbar buttons they used to have are gone,
+/// Undo and redo are on the keyboard and in the Edit menu. The buttons they used to have are gone,
 /// because `tasks/improvements.md` asks for the keyboard alone.
 #[test]
 fn undo_and_redo_go_back_and_forward_through_the_history() {
@@ -771,14 +802,14 @@ fn undo_and_redo_go_back_and_forward_through_the_history() {
 }
 
 #[test]
-fn the_toolbar_no_longer_holds_the_font_the_opacity_or_undo_and_redo() {
+fn the_text_tools_no_longer_hold_the_font_the_opacity_or_undo_and_redo() {
     // They moved: the font and the background are in `Edit -> Settings`, and undo and redo are on the
     // keyboard. A button that is still there would mean the move was not finished.
     let harness = harness("some text");
     for gone in ["Undo", "Redo", "Font family", "Font size", "Background opacity"] {
         assert!(
             harness.query_by_label(gone).is_none(),
-            "{gone} should not be in the toolbar any more"
+            "{gone} should not be among the text tools any more"
         );
     }
 }
@@ -813,13 +844,23 @@ fn a_document_holding_every_feature_at_once_renders() {
 }
 
 #[test]
-fn the_title_bar_names_the_file_and_its_folder() {
+fn the_title_bar_names_the_project_and_carries_the_window_buttons_and_the_text_tools() {
+    // `task-1658` took the open file's name out of the bar, because it is on its own tab already, and
+    // put the project's name after the menus instead. The text tools moved in beside the window
+    // buttons at the same time.
     let mut harness = harness("");
     harness.get_by_label_contains("readme.md").click();
     harness.run();
-    // The three window buttons are there and can be found by name.
     for button in ["Close", "Minimise", "Maximise"] {
         harness.get_by_label(button);
+    }
+    let title_bar = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), vec2(WINDOW[0], 50.0));
+    for tool in ["Text options", "Raw Markdown", "Side by side", "Markdown preview"] {
+        let at = harness.get_by_label(tool).rect();
+        assert!(
+            title_bar.contains_rect(at),
+            "{tool} should be in the title bar, and it is at {at:?}"
+        );
     }
     harness.snapshot(shot("title_bar"));
 }
@@ -871,11 +912,11 @@ fn the_column_counts_characters_rather_than_bytes() {
 fn the_filter_box_narrows_the_list_to_matching_files() {
     let mut harness = harness("");
     let all = harness.state().tree.file_count();
-    assert_eq!(all, 8, "the sample folder holds eight files");
+    assert_eq!(all, 9, "the sample folder holds nine files");
     assert_eq!(
         harness.state().tree.openable_count(),
-        7,
-        "every one but the image can be opened, including the Rust file"
+        8,
+        "every one but the archive can be opened, including the Rust file and the picture"
     );
     harness.state_mut().filter = "two".to_owned();
     harness.run();
@@ -898,7 +939,10 @@ fn the_explorer_can_be_hidden_and_brought_back() {
         "hiding the explorer should give the editor its width: {editor_with} then {editor_without}"
     );
     harness.snapshot(shot("explorer_hidden"));
-    harness.get_by_label("Show the explorer").click();
+    // The rail is what brings it back. There used to be a small button floating over the editing area
+    // for this, and the rail replaced it: it is in the same place whether the explorer is showing or
+    // not, which a button drawn only when the pane is hidden is not.
+    harness.get_by_label("Project").click();
     harness.run();
     assert!(harness.state().explorer_visible);
 }
@@ -930,14 +974,19 @@ fn the_formatting_controls_are_behind_the_font_button_and_all_reachable_by_name(
 }
 
 #[test]
-fn a_code_file_has_no_formatting_strip_and_gives_the_room_to_the_text() {
-    // Everything in the strip is about how prose is shown, and Quill saves plain text and carries no
+fn a_code_file_has_no_text_tools_and_nothing_below_them_moves() {
+    // Everything in the tools is about how prose is shown, and Quill saves plain text and carries no
     // formatting to disk, so bold on a `.rs` file is a decoration that lasts until the file is
-    // reopened. The strip is not drawn at all, and the forty four points go to the editing area.
+    // reopened. They are not drawn at all for one.
+    //
+    // They used to sit in a strip of their own, forty four points tall, so switching between a `.md`
+    // file and a `.rs` one moved the tabs, the explorer and the editing area up and down by forty four
+    // points. `task-1658` moved them into the title bar, whose height never changes, and this is the
+    // half of that which is worth a test: the window below them does not move.
     let mut prose = harness("");
     prose.get_by_label("readme.md").click();
     prose.run();
-    let with_strip = prose.state().editor_area().top();
+    let with_tools = prose.state().editor_area().top();
     prose.get_by_label("Text options");
 
     let mut code = harness("");
@@ -951,10 +1000,10 @@ fn a_code_file_has_no_formatting_strip_and_gives_the_room_to_the_text() {
         code.query_by_label("Raw Markdown").is_none(),
         "and nothing to preview either"
     );
-    let without_strip = code.state().editor_area().top();
+    let without_tools = code.state().editor_area().top();
     assert!(
-        (with_strip - without_strip - 44.0).abs() < 0.5,
-        "the editing area should start 44 points higher with no strip: {with_strip} against {without_strip}"
+        (with_tools - without_tools).abs() < 0.5,
+        "the editing area should start in the same place either way: {with_tools} against {without_tools}"
     );
     code.snapshot(shot("code_no_toolbar"));
 }
@@ -1265,7 +1314,7 @@ fn opening_a_folder_clears_the_filter_and_brings_the_explorer_back() {
 fn a_file_that_is_not_text_is_listed_and_does_nothing_when_clicked() {
     let mut harness = harness("");
     let before = harness.state().document().text().to_string();
-    harness.get_by_label_contains("picture.png").click();
+    harness.get_by_label_contains("bundle.zip").click();
     harness.run();
     assert_eq!(
         harness.state().document().text().to_string(),
@@ -1554,8 +1603,9 @@ fn the_filter_box_puts_its_words_on_the_same_line_as_the_magnifier() {
     let harness = harness("");
     let filter = harness.get_by_label("Filter files").rect();
     // The field is 24 points tall, 36 points down the explorer, which itself starts under the title
-    // bar and the toolbar: 50 + 44 + 36 is 130, so the middle of the field is at 142.
-    let field = egui::Rect::from_min_size(egui::pos2(12.0, 130.0), vec2(224.0, 24.0));
+    // bar: 50 + 36 is 86, so the middle of the field is at 98. The explorer starts after the rail, so
+    // the field starts 36 + 12 points in from the left.
+    let field = egui::Rect::from_min_size(egui::pos2(48.0, 86.0), vec2(224.0, 24.0));
     assert!(
         filter.height() < field.height(),
         "the box is one row of text, not the whole field: {filter:?}"
@@ -2708,6 +2758,18 @@ fn the_plugins_page_lists_the_three_that_ship_with_quill() {
 /// together — which is what made this fail about one run in five while passing every time on its
 /// own. Waiting longer costs nothing when nothing is slow.
 #[track_caller]
+/// A few frames, without insisting that the window goes quiet.
+///
+/// `Harness::run` gives the window four steps to settle and panics otherwise, which is right for a
+/// settled window and wrong while git is still working: the worker thread asks for a repaint whenever a
+/// command finishes, so a `run` that happens to land in the middle of one fails for a reason that is not
+/// a fault in Quill. This is what a step between git operations uses instead.
+fn nudge(harness: &mut Harness<'static, QuillApp>) {
+    for _ in 0..4 {
+        pump(harness);
+    }
+}
+
 fn settle(harness: &mut Harness<'static, QuillApp>, what: &str, ready: impl Fn(&QuillApp) -> bool) {
     for _ in 0..600 {
         pump(harness);
@@ -2745,7 +2807,7 @@ fn every_git_operation_can_be_driven_from_the_window() {
 
     // ---- stage a file -----------------------------------------------------------------------
     harness.state_mut().open_path_permanently(&root.join("version.ts"));
-    harness.run();
+    nudge(&mut harness);
     harness.state_mut().run_action(git(GitAction::Add(None)), &ctx);
     settle(&mut harness, "the file to be staged", |app| {
         app.git.as_ref().is_some_and(|git| {
@@ -2759,11 +2821,11 @@ fn every_git_operation_can_be_driven_from_the_window() {
 
     // ---- commit it, through the panel's own button -------------------------------------------
     harness.state_mut().run_action(git(GitAction::Commit), &ctx);
-    harness.run();
+    nudge(&mut harness);
     if let Some(state) = harness.state_mut().git.as_mut() {
         state.panel.message = "task-1649: driven from the window".to_owned();
     }
-    harness.run();
+    nudge(&mut harness);
     harness.get_by_label("COMMIT").click();
     settle(&mut harness, "the commit", |app| {
         app.git.as_ref().is_some_and(|git| git.snapshot.status.entry("version.ts").is_none())
@@ -2776,7 +2838,7 @@ fn every_git_operation_can_be_driven_from_the_window() {
 
     // ---- start a branch, through the prompt ---------------------------------------------------
     harness.state_mut().run_action(git(GitAction::NewBranch), &ctx);
-    harness.run();
+    nudge(&mut harness);
     let mut prompt = harness.state_mut().prompt.take().expect("a prompt for the name");
     prompt.value = "from-quill".to_owned();
     harness.state_mut().run_prompt_for_test(prompt);
@@ -2788,7 +2850,7 @@ fn every_git_operation_can_be_driven_from_the_window() {
     // ---- stash a change and bring it back ------------------------------------------------------
     std::fs::write(root.join("version.ts"), "export const version = 'stashed';\n").expect("change it");
     harness.state_mut().run_action(git(GitAction::Stash), &ctx);
-    harness.run();
+    nudge(&mut harness);
     let mut prompt = harness.state_mut().prompt.take().expect("a prompt for the message");
     prompt.value = "half done".to_owned();
     harness.state_mut().run_prompt_for_test(prompt);
@@ -2803,7 +2865,7 @@ fn every_git_operation_can_be_driven_from_the_window() {
 
     // Unstashing is the `Stashes` tab of the commit panel, and its POP button.
     harness.state_mut().run_action(git(GitAction::Unstash), &ctx);
-    harness.run();
+    nudge(&mut harness);
     harness.get_by_label("POP").click();
     settle(&mut harness, "the stash to come back", |app| {
         app.git.as_ref().is_some_and(|git| git.snapshot.stashes.is_empty())
@@ -2815,7 +2877,7 @@ fn every_git_operation_can_be_driven_from_the_window() {
 
     // ---- roll the change back, which is confirmed first ---------------------------------------
     harness.state_mut().run_action(git(GitAction::Rollback(None)), &ctx);
-    harness.run();
+    nudge(&mut harness);
     assert!(
         harness.state().confirmation.is_some(),
         "rollback cannot be undone, so it asks first"
@@ -2839,11 +2901,11 @@ fn every_git_operation_can_be_driven_from_the_window() {
         state.dialogs.target = "from-quill".to_owned();
     }
     harness.state_mut().run_action(git(GitAction::Merge), &ctx);
-    harness.run();
+    nudge(&mut harness);
     if let Some(state) = harness.state_mut().git.as_mut() {
         state.dialogs.target = "from-quill".to_owned();
     }
-    harness.run();
+    nudge(&mut harness);
     harness.get_by_label("MERGE").click();
     // Asked of git rather than of the window: the merge is finished when main really holds the
     // branch's commit, which is the only thing that matters about it.
@@ -2877,4 +2939,171 @@ fn every_git_operation_can_be_driven_from_the_window() {
     // No picture is taken here. A commit made during the test has a hash and a date that are new
     // every run, so a baseline of it could never match twice; `design/components/git_history.png`
     // is the capture to look at, and what this test is for is that the history is right.
+}
+
+// ---------------------------------------------------------------------------------------------
+// task-1658: the window's own resize grips, the rail of pane buttons, the project's state and
+// pictures in a tab.
+// ---------------------------------------------------------------------------------------------
+
+/// The window is created with no operating system frame, so it has no resize grip of its own and one
+/// is drawn at each edge and each corner. Before `task-1658` the only one that worked was the top,
+/// and the window could not be made wider or shorter at all.
+#[test]
+fn the_window_can_be_resized_from_every_edge_and_every_corner() {
+    let harness = harness("");
+    for grip in [
+        "top", "bottom", "left", "right", "top left", "top right", "bottom left", "bottom right",
+    ] {
+        harness.get_by_label(&format!("Resize window: {grip}"));
+    }
+}
+
+/// The rail down the far left is the one place a pane is put away and brought back from.
+#[test]
+fn the_rail_puts_each_pane_away_and_brings_it_back() {
+    let mut harness = harness("");
+    assert!(harness.state().explorer_visible);
+    harness.get_by_label("Project").click();
+    harness.run();
+    assert!(!harness.state().explorer_visible, "the rail's Project button hides the explorer");
+    harness.get_by_label("Project").click();
+    harness.run();
+    assert!(harness.state().explorer_visible, "and brings it back");
+
+    assert!(!harness.state().terminal.visible);
+    // A detached terminal, so nothing here depends on a shell starting.
+    harness.state_mut().new_detached_terminal_tab(8, 60);
+    harness.run();
+    assert!(harness.state().terminal.visible);
+    harness.get_by_label("Terminal tile").click();
+    harness.run();
+    assert!(!harness.state().terminal.visible, "the rail's terminal button puts the tile away");
+    harness.snapshot(shot("activity_bar"));
+}
+
+/// The commit panel is the rail's third button, and it is the same action the Git menu's `Commit...`
+/// entry is, so pressing it twice puts the panel away again.
+#[test]
+fn the_rails_version_control_button_opens_the_commit_panel_and_shuts_it() {
+    let root = git_folder("quill-rail-git");
+    let mut harness = harness_in(&root);
+    assert!(harness.state().git.is_some(), "the folder should be a repository");
+    harness.get_by_label("Version Control").click();
+    harness.run();
+    assert!(
+        harness.state().git.as_ref().is_some_and(|git| git.panel.open),
+        "the panel should be open"
+    );
+    harness.get_by_label("Version Control").click();
+    harness.run();
+    assert!(
+        harness.state().git.as_ref().is_some_and(|git| !git.panel.open),
+        "and pressing it again should shut it"
+    );
+}
+
+/// What was open in a project is written into a `.quill` folder beside it and read back next time.
+#[test]
+fn what_was_open_in_a_project_comes_back_when_it_is_opened_again() {
+    let root = copy_out_of_the_repository(&sample_folder(), "quill-project-state-window");
+    {
+        let mut harness = harness_in(&root);
+        harness.state_mut().restore_project();
+        harness.state_mut().open_path_permanently(&root.join("readme.md"));
+        harness.state_mut().open_path_permanently(&root.join("notes.txt"));
+        harness.state_mut().tree.expand(&root.join("chapters"));
+        harness.run();
+        // Written when the window closes, as it is when a person shuts Quill.
+        let ctx = harness.ctx.clone();
+        harness.state_mut().run_action(Action::CloseWindow, &ctx);
+    }
+    assert!(
+        root.join(".quill/open-files.txt").is_file(),
+        "the project's state should be beside the project"
+    );
+
+    let mut second = harness_in(&root);
+    second.state_mut().restore_project();
+    second.run();
+    let names: Vec<String> =
+        second.state().files.iter().map(quill_app::app::files::OpenFile::name).collect();
+    assert!(names.contains(&"readme.md".to_owned()), "the tabs came back, they are {names:?}");
+    assert!(names.contains(&"notes.txt".to_owned()), "both of them, they are {names:?}");
+    assert!(
+        second.state().tree.expanded_folders().iter().any(|path| path.ends_with("chapters")),
+        "and the folder that was opened out is opened out again"
+    );
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// A picture opens in a tab that shows it, fitted to the editing area to begin with.
+#[test]
+fn a_picture_opens_in_a_tab_that_shows_it() {
+    let mut harness = harness("");
+    harness.get_by_label_contains("picture.png").click();
+    harness.run();
+    assert!(harness.state().files.active().is_picture(), "the tab should be holding a picture");
+    let picture = harness.state().files.active().picture.as_ref().expect("a picture");
+    assert_eq!(picture.problem, None, "it should have decoded");
+    assert_eq!(picture.size, [160, 100]);
+    assert!(
+        harness.query_by_label("Text options").is_none(),
+        "a picture has no text to format"
+    );
+    harness.snapshot(shot("picture"));
+}
+
+/// Control and plus zooms the picture rather than the editor's font, and `Reset Font Size` fits it
+/// back into the area.
+#[test]
+fn the_keyboard_zooms_a_picture_and_leaves_the_editors_font_alone() {
+    let mut harness = harness("");
+    harness.get_by_label_contains("picture.png").click();
+    harness.run();
+    let font_before = harness.state().settings.font_size;
+    let area = harness.state().editor_area().size();
+    let scale = |harness: &Harness<'static, QuillApp>| {
+        harness.state().files.active().picture.as_ref().expect("a picture").scale_in(area)
+    };
+    let fitted = scale(&harness);
+
+    harness.key_press_modifiers(Modifiers::COMMAND, egui::Key::Equals);
+    harness.run();
+    harness.key_press_modifiers(Modifiers::COMMAND, egui::Key::Equals);
+    harness.run();
+    let zoomed = scale(&harness);
+    assert!(zoomed > fitted, "two presses should have made it bigger: {fitted} then {zoomed}");
+    assert_eq!(
+        harness.state().settings.font_size,
+        font_before,
+        "and the editor's own font should not have moved"
+    );
+    harness.snapshot(shot("picture_zoomed"));
+
+    let ctx = harness.ctx.clone();
+    harness.state_mut().run_action(Action::ResetFontSize, &ctx);
+    harness.run();
+    assert!(
+        (scale(&harness) - fitted).abs() < 0.001,
+        "resetting should fit it back into the area"
+    );
+}
+
+/// A picture cannot be edited, so saving one must not write an empty file over it.
+#[test]
+fn saving_a_tab_that_holds_a_picture_does_not_write_over_the_picture() {
+    let folder = copy_out_of_the_repository(&sample_folder(), "quill-picture-save");
+    let path = folder.join("picture.png");
+    let before = std::fs::read(&path).expect("read the picture");
+    let mut harness = harness_in(&folder);
+    harness.state_mut().open_path_permanently(&path);
+    harness.run();
+    assert!(harness.state().files.active().is_picture());
+    let ctx = harness.ctx.clone();
+    harness.state_mut().run_action(Action::Save, &ctx);
+    harness.run();
+    let after = std::fs::read(&path).expect("read it again");
+    assert_eq!(before, after, "the picture on disk must be untouched");
+    std::fs::remove_dir_all(&folder).ok();
 }

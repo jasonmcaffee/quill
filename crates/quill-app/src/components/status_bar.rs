@@ -2,6 +2,11 @@
 //!
 //! Shows which file is open, whether it has unsaved changes, what kind of file it is, where the caret is,
 //! and the font family and size at the caret.
+//!
+//! A tab holding a picture has neither a caret nor a font, so it has neither of those: the line and
+//! column are absent, and the right hand end says how big the picture is and how far it is zoomed
+//! instead. One field each rather than a second kind of status bar, because it is the same bar saying
+//! what it can about whatever is open.
 
 use egui::{CornerRadius, Pos2, Rect};
 
@@ -35,9 +40,10 @@ pub struct Status<'a> {
     pub unsaved: bool,
     /// What kind of file it is, as a person would say it: `Markdown` or `Plain text`.
     pub kind: &'a str,
-    pub position: Position,
-    pub family: &'a str,
-    pub font_size: f32,
+    /// Where the caret is. Absent for a tab holding a picture, which has no caret.
+    pub position: Option<Position>,
+    /// What is said at the right hand end: the font at the caret, or a picture's size and scale.
+    pub detail: &'a str,
     /// Something to say in place of the font: why a file could not be opened, or what version this is.
     /// It stays until something replaces it, because a message that goes away on its own is a message that
     /// is missed.
@@ -49,7 +55,7 @@ pub struct Status<'a> {
 
 /// Draw the status bar into `area`.
 pub fn show(ui: &egui::Ui, area: Rect, status: &Status<'_>, opacity: f32) {
-    let Status { name, unsaved, kind, position, family, font_size, message, git } = *status;
+    let Status { name, unsaved, kind, position, detail, message, git } = *status;
     let painter = ui.painter_at(area);
     // The bottom two corners are rounded to match the window.
     painter.rect_filled(
@@ -79,15 +85,18 @@ pub fn show(ui: &egui::Ui, area: Rect, status: &Status<'_>, opacity: f32) {
     label(&painter, &mut pen, "\u{2502}".to_owned(), color::DIVIDER);
     pen += 10.0;
     label(&painter, &mut pen, kind.to_owned(), color::TEXT_DIM);
-    pen += 12.0;
-    label(&painter, &mut pen, "\u{2502}".to_owned(), color::DIVIDER);
-    pen += 10.0;
-    label(
-        &painter,
-        &mut pen,
-        format!("Ln {}, Col {}", position.line, position.column),
-        color::TEXT_DIM,
-    );
+    // A picture has no caret, so it has no line and column either.
+    if let Some(position) = position {
+        pen += 12.0;
+        label(&painter, &mut pen, "\u{2502}".to_owned(), color::DIVIDER);
+        pen += 10.0;
+        label(
+            &painter,
+            &mut pen,
+            format!("Ln {}, Col {}", position.line, position.column),
+            color::TEXT_DIM,
+        );
+    }
 
     // A message, when there is one, sits after the caret position and before the right hand end.
     if let Some(message) = message {
@@ -97,10 +106,9 @@ pub fn show(ui: &egui::Ui, area: Rect, status: &Status<'_>, opacity: f32) {
         label(&painter, &mut pen, message.to_owned(), color::TEXT_CONTROL);
     }
 
-    // The family and size sit against the right edge, and the branch sits before them, which is
-    // where every editor with a status bar puts it.
-    let right_text = format!("{family} \u{00B7} {font_size:.0} pt");
-    let galley = painter.layout_no_wrap(right_text, font.clone(), color::TEXT_DIM);
+    // The font, or the picture's size, sits against the right edge, and the branch sits before it,
+    // which is where every editor with a status bar puts it.
+    let galley = painter.layout_no_wrap(detail.to_owned(), font.clone(), color::TEXT_DIM);
     let mut right = area.right() - 16.0 - galley.size().x;
     painter.galley(Pos2::new(right, middle - galley.size().y / 2.0), galley, color::TEXT_DIM);
     if let Some(git) = git {

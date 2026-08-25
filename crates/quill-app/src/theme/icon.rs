@@ -266,6 +266,65 @@ pub fn font(painter: &egui::Painter, centre: Pos2, color: Color32) {
     );
 }
 
+/// A folder with a tab on it, for the button that shows and hides the file explorer.
+///
+/// Drawn from four strokes rather than filled, so it reads at the same weight as the branch and the
+/// terminal beside it in the activity bar. The tab across the top left is what tells a folder from a
+/// plain rectangle at ten points across.
+pub fn folder(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    let stroke = Stroke::new(1.4, color);
+    let left = centre.x - 5.5;
+    let right = centre.x + 5.5;
+    let top = centre.y - 4.0;
+    let bottom = centre.y + 4.5;
+    // The tab, then the back edge it rises from.
+    painter.line_segment([Pos2::new(left, top), Pos2::new(left + 3.4, top)], stroke);
+    painter.line_segment([Pos2::new(left + 3.4, top), Pos2::new(left + 4.6, top + 1.6)], stroke);
+    painter.line_segment([Pos2::new(left + 4.6, top + 1.6), Pos2::new(right, top + 1.6)], stroke);
+    // The body.
+    painter.line_segment([Pos2::new(left, top), Pos2::new(left, bottom)], stroke);
+    painter.line_segment([Pos2::new(left, bottom), Pos2::new(right, bottom)], stroke);
+    painter.line_segment([Pos2::new(right, top + 1.6), Pos2::new(right, bottom)], stroke);
+}
+
+/// A prompt: a chevron and an underscore, for the button that shows and hides the terminal.
+pub fn terminal(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    let stroke = Stroke::new(1.5, color);
+    let left = centre.x - 5.0;
+    // The chevron, pointing the way a shell prompt does.
+    painter.line_segment(
+        [Pos2::new(left, centre.y - 3.6), Pos2::new(left + 3.6, centre.y - 0.2)],
+        stroke,
+    );
+    painter.line_segment(
+        [Pos2::new(left + 3.6, centre.y - 0.2), Pos2::new(left, centre.y + 3.2)],
+        stroke,
+    );
+    // The line waiting to be typed on.
+    painter.line_segment(
+        [Pos2::new(left + 5.6, centre.y + 3.6), Pos2::new(left + 10.0, centre.y + 3.6)],
+        stroke,
+    );
+}
+
+/// A picture: a frame with a hill and a sun in it, for a tab holding an image.
+pub fn image(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    let stroke = Stroke::new(1.3, color);
+    let frame = Rect::from_center_size(centre, egui::Vec2::new(12.0, 10.0));
+    painter.rect_stroke(frame, CornerRadius::same(2), stroke, egui::StrokeKind::Inside);
+    painter.circle_filled(Pos2::new(frame.left() + 3.4, frame.top() + 3.0), 1.3, color);
+    // The hill, which is what makes it read as a picture rather than as an empty box.
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            Pos2::new(frame.left() + 1.6, frame.bottom() - 1.4),
+            Pos2::new(frame.left() + 5.4, frame.bottom() - 5.0),
+            Pos2::new(frame.right() - 1.6, frame.bottom() - 1.4),
+        ],
+        color,
+        Stroke::NONE,
+    ));
+}
+
 /// An arrow with a head at each end, in front of the line spacing control.
 pub fn line_spacing(painter: &egui::Painter, centre: Pos2, color: Color32) {
     let stroke = Stroke::new(1.3, color);

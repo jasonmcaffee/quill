@@ -1,8 +1,9 @@
 //! The Quill window.
 //!
 //! Holds the open document, the file explorer, the terminal, the fonts and the settings, and lays the
-//! window out: a title bar Quill draws itself, the formatting toolbar, the explorer down the left, the
-//! editing area filling the rest, the terminal along the bottom when it is showing, and the status bar.
+//! window out: a title bar Quill draws itself, which carries the menus, the project's name and the text
+//! tools; a thin rail of pane buttons down the far left; the explorer beside it; the editing area filling
+//! the rest; the terminal along the bottom when it is showing; and the status bar.
 //!
 //! Transparency works because the background and the text are two separate paints. `clear_color` gives the
 //! operating system compositor an alpha taken from the opacity setting, so the desktop shows through the
@@ -34,6 +35,7 @@ use std::sync::Arc;
 use egui::{Color32, CornerRadius, Pos2, Rect, Vec2};
 use quill_core::{layout, Command, Document, Layout};
 
+use crate::components::activity_bar;
 use crate::components::context_menu;
 use crate::components::editor_view;
 use crate::components::explorer;
@@ -41,19 +43,22 @@ use crate::components::file_tabs::{self, TabView};
 use crate::components::git_dialogs::{self, Dialog};
 use crate::components::git_panel;
 use crate::components::gutter::{self, Gutter};
+use crate::components::picture_view;
 use crate::components::prompt_dialog::{self, Prompt, Purpose};
+use crate::components::resize_edges;
 use crate::components::settings_dialog::{self, SettingsWindow};
 use crate::components::splitter;
 use crate::components::status_bar;
 use crate::components::terminal_panel::{self, TerminalPanel};
+use crate::components::text_tools;
 use crate::components::title_bar::{self, MenuPlacement};
-use crate::components::toolbar;
 use crate::services::file_kind;
 use crate::services::file_tree::FileTree;
 use crate::services::file_clipboard::FileClipboard;
 use crate::services::launcher;
 use crate::services::icons::Icons;
 use crate::services::plugins::Plugins;
+use crate::services::project_state::{self, ProjectState};
 use crate::services::native_menu::NativeMenu;
 use crate::services::store::Store;
 use crate::services::text_renderer::TextRenderer;
@@ -194,6 +199,11 @@ pub struct QuillApp {
     store: Option<Store>,
     /// Set when a setting or a pane size changed and has not been written yet.
     unsaved_settings: bool,
+    /// What was last written to the project's own `.quill` folder, so it is written again only when
+    /// something has changed. `None` while this window is not remembering the project at all, which is
+    /// every window a test builds: the released binary turns it on by calling
+    /// [`QuillApp::restore_project`], so a test neither reads nor writes a `.quill` folder.
+    written_project: Option<ProjectState>,
     /// The macOS menu bar, once it has been installed.
     native_menu: Option<NativeMenu>,
     /// The most recent layout, kept so that a frame that changed nothing does not lay out again.
@@ -287,6 +297,7 @@ impl QuillApp {
             closing: false,
             store: None,
             unsaved_settings: false,
+            written_project: None,
             native_menu: None,
             layout: Layout::default(),
             laid_out_revision: 0,
@@ -380,6 +391,72 @@ impl QuillApp {
             self.write_settings();
         }
         self.set_the_font_everywhere();
+    }
+
+    /// Read what was left open in this project, put it back, and remember it from then on.
+    ///
+    /// Called by the released binary only, and for the same reason [`Self::load_settings`] is: a test
+    /// must not read or write anything belonging to the person running it, and a `.quill` folder written
+    /// into a test's own sample project would change what the explorer draws in the middle of a
+    /// screenshot test.
+    ///
+    /// The files are opened permanently rather than transiently, because a tab that was there when the
+    /// window closed is not a file somebody is glancing at.
+    pub fn restore_project(&mut self) {
+        let state = project_state::load(self.tree.root());
+        for folder in &state.expanded_folders {
+            self.tree.expand(folder);
+        }
+        for path in &state.open_files {
+            self.open_path_permanently(path);
+        }
+        if let Some(path) = state.open_files.get(state.active_file) {
+            if let Some(index) = self.files.index_of(path) {
+                self.show_tab(index);
+            }
+        }
+        self.explorer_visible = state.explorer_visible;
+        // The shells themselves cannot be brought back, so the same number of fresh ones are started in
+        // the project's own folder, which is what a person means by "my terminals were there".
+        if state.terminal_visible && state.terminal_tabs > 0 {
+            self.terminal.visible = true;
+            for _ in 0..state.terminal_tabs {
+                self.new_terminal_tab();
+            }
+        }
+        self.written_project = Some(self.project_state());
+    }
+
+    /// What is open in this project now.
+    fn project_state(&self) -> ProjectState {
+        let open_files = self.files.paths();
+        let active = self.files.active().path().and_then(|path| {
+            open_files.iter().position(|known| known == path)
+        });
+        ProjectState {
+            open_files,
+            active_file: active.unwrap_or(0),
+            expanded_folders: self.tree.expanded_folders(),
+            explorer_visible: self.explorer_visible,
+            terminal_visible: self.terminal.visible,
+            terminal_tabs: self.terminal.tabs.count(),
+        }
+    }
+
+    /// Write what is open down, if it has changed since it was last written.
+    ///
+    /// Called every frame and writes almost never: the comparison is against what is on disk, so
+    /// nothing is written until a tab, a folder or a pane actually changed.
+    fn remember_the_project(&mut self) {
+        if self.written_project.is_none() {
+            return;
+        }
+        let now = self.project_state();
+        if self.written_project.as_ref() == Some(&now) {
+            return;
+        }
+        project_state::save(self.tree.root(), &now);
+        self.written_project = Some(now);
     }
 
     /// Build the macOS menu bar. Called by the released binary only: a test has no application to attach a
@@ -481,7 +558,13 @@ impl QuillApp {
                     .set_directory(&start)
                     .pick_folder()
                 {
-                    self.open_folder(&folder);
+                    // A window of its own, which is what `Recent Projects` already did and what
+                    // `task-1658` asks for: a project is a window, so opening a second one keeps the
+                    // first. Only if a second process cannot be started does the folder take this
+                    // window, which is better than the entry doing nothing at all.
+                    if !launcher::open_window(&folder) {
+                        self.open_folder(&folder);
+                    }
                 }
             }
             Action::OpenFile => {
@@ -499,19 +582,6 @@ impl QuillApp {
                     self.open_path(&file);
                 }
             }
-            Action::OpenFolderInNewWindow => {
-                let start = self.tree.root().to_path_buf();
-                if let Some(folder) = rfd::FileDialog::new()
-                    .set_title("Open Folder in New Window")
-                    .set_directory(&start)
-                    .pick_folder()
-                {
-                    // The project that is open here stays open, which is the point of the entry.
-                    if !launcher::open_window(&folder) {
-                        self.open_folder(&folder);
-                    }
-                }
-            }
             Action::OpenRecent(folder) => {
                 // A window of its own, as IntelliJ does it, so the project that is open stays open.
                 if !launcher::open_window(&folder) {
@@ -525,6 +595,10 @@ impl QuillApp {
                 }
             }
             Action::Save => self.save(),
+            Action::SaveAs if self.files.active().is_picture() => {
+                self.message =
+                    Some("A picture cannot be edited, so there is nothing to save.".to_owned());
+            }
             Action::SaveAs => {
                 let start = self.tree.root().to_path_buf();
                 if let Some(target) =
@@ -538,6 +612,7 @@ impl QuillApp {
             Action::CloseWindow | Action::Quit => {
                 self.closing = true;
                 self.write_settings();
+                self.remember_the_project();
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
             Action::Settings => self.settings_window.open(),
@@ -599,9 +674,21 @@ impl QuillApp {
                 self.unsaved_settings = true;
             }
             Action::ChangeFontSize { larger } => {
-                self.set_font_size(settings::step_font_size(self.settings.font_size, larger));
+                // On a tab showing a picture the same keys zoom the picture. `task-1658` asks for
+                // control and plus to zoom an image, and one shortcut meaning "make what I am looking
+                // at bigger" is what a person expects of it.
+                let area = self.editor_area.size();
+                match self.files.active_mut().picture.as_mut() {
+                    Some(picture) => picture.step_zoom(larger, area),
+                    None => {
+                        self.set_font_size(settings::step_font_size(self.settings.font_size, larger))
+                    }
+                }
             }
-            Action::ResetFontSize => self.set_font_size(settings::DEFAULT_FONT_SIZE),
+            Action::ResetFontSize => match self.files.active_mut().picture.as_mut() {
+                Some(picture) => picture.fit(),
+                None => self.set_font_size(settings::DEFAULT_FONT_SIZE),
+            },
             Action::ToggleTerminal => {
                 self.terminal.visible = !self.terminal.visible;
                 if self.terminal.visible {
@@ -730,7 +817,15 @@ impl QuillApp {
     }
 
     /// Show `folder` in the explorer, and remember it as a recent project.
+    ///
+    /// What was open in the project being left is written down first, because after this the window no
+    /// longer knows which project its tabs belonged to. What the *new* project had open is deliberately
+    /// not restored here: this is also the path `Open File` takes when the file chosen is outside the
+    /// folder that is open, and quietly closing somebody's tabs and opening a different set because they
+    /// opened one file elsewhere would be a surprise. A project's state is restored when a window opens
+    /// on it, which is what `File -> Open Folder` now does.
     pub fn open_folder(&mut self, folder: &Path) {
+        self.remember_the_project();
         self.tree = FileTree::new(folder);
         self.filter.clear();
         self.explorer_visible = true;
@@ -757,8 +852,9 @@ impl QuillApp {
         self.open_path_in_tab(path, true);
     }
 
-    /// The one place a file is loaded. `permanent` decides whether it takes a tab of its own or
-    /// reuses the transient one; [`files::OpenFiles::open`] decides what that means.
+    /// The one place a file is loaded, whether it is text or a picture. `permanent` decides whether it
+    /// takes a tab of its own or reuses the transient one; [`files::OpenFiles::open`] decides what that
+    /// means.
     fn open_path_in_tab(&mut self, path: &Path, permanent: bool) {
         if let Err(refusal) = file_kind::openable(path) {
             self.message = Some(format!("{}: {}", path.display(), refusal.reason()));
@@ -771,6 +867,14 @@ impl QuillApp {
             if permanent {
                 self.files.make_permanent(index);
             }
+            return;
+        }
+        // A picture is a tab of its own kind. It is read here rather than in `files`, so that the one
+        // place a file is opened stays the one place a file is opened.
+        if file_kind::is_image(path) {
+            self.files.open_file(files::OpenFile::picture(path), permanent);
+            self.message = None;
+            self.forget_layout();
             return;
         }
         match Document::open(path) {
@@ -957,8 +1061,14 @@ impl QuillApp {
         let relative = target.as_deref().and_then(|path| git.relative(path));
         match what {
             GitAction::Commit => {
-                git.panel.open();
-                git.send(Request::Log { path: None, limit: git::HISTORY_LIMIT });
+                // The same entry shuts it again, because the rail's git button is this action and a
+                // button that only ever opens something is a button you can press once.
+                if git.panel.open {
+                    git.panel.open = false;
+                } else {
+                    git.panel.open();
+                    git.send(Request::Log { path: None, limit: git::HISTORY_LIMIT });
+                }
             }
             GitAction::Add(_) => {
                 if let Some(path) = relative {
@@ -1431,6 +1541,13 @@ impl QuillApp {
     }
 
     fn save(&mut self) {
+        // A tab showing a picture holds an empty document over the picture's path, so saving it would
+        // write nothing over the file. There is nothing in a picture Quill can change, so there is
+        // nothing to save.
+        if self.files.active().is_picture() {
+            self.message = Some("A picture cannot be edited, so there is nothing to save.".to_owned());
+            return;
+        }
         if self.document().path().is_none() {
             // With no file to save to, write into the folder the explorer is showing rather than silently
             // doing nothing.
@@ -1569,38 +1686,42 @@ impl QuillApp {
         );
 
         let title_rect = Rect::from_min_size(full.min, Vec2::new(full.width(), size::TITLE_BAR));
-        // The formatting strip is drawn only for a file its controls mean something for, and a file
-        // it does not apply to gets those forty four points for its text instead. Everything below
-        // measures from the strip's bottom edge, so a height of nothing needs no other change.
-        let toolbar_shown = toolbar::applies(self.document().path());
-        let toolbar_rect = Rect::from_min_size(
-            Pos2::new(full.left(), title_rect.bottom()),
-            Vec2::new(full.width(), if toolbar_shown { size::TOOLBAR } else { 0.0 }),
-        );
+        // The text tools live at the right hand end of the title bar rather than in a strip of their
+        // own. How much room they want depends on the open file, and the title bar leaves exactly that
+        // much clear — but the bar's own height never changes, so switching from a `.md` file to a
+        // `.rs` one no longer moves the tabs and the editing area up and down by forty four points.
+        let tools_width = text_tools::width(self.document().path());
+        let tools_rect = title_bar::tools_rect(title_rect, self.menu_placement, tools_width);
         let status_rect = Rect::from_min_size(
             Pos2::new(full.left(), full.bottom() - size::STATUS_BAR),
             Vec2::new(full.width(), size::STATUS_BAR),
         );
         let body = Rect::from_min_max(
-            Pos2::new(full.left(), toolbar_rect.bottom()),
+            Pos2::new(full.left(), title_rect.bottom()),
             Pos2::new(full.right(), status_rect.top()),
         );
 
-        // The terminal takes the bottom of the window across its whole width, as it does in IntelliJ, and
-        // the explorer and the editing area share what is left.
+        // The rail of pane buttons takes the far left of the body, the whole way down, so the terminal
+        // button sits at the bottom left corner of the window as `task-1658`'s capture shows it.
+        let rail_rect =
+            Rect::from_min_size(body.min, Vec2::new(size::ACTIVITY_BAR, body.height()));
+        let panes = Rect::from_min_max(Pos2::new(rail_rect.right(), body.top()), body.max);
+
+        // The terminal takes the bottom of the panes across their whole width, as it does in IntelliJ,
+        // and the explorer and the editing area share what is left.
         let terminal_height = if self.terminal.visible {
             self.panes
                 .terminal_height
-                .clamp(settings::TERMINAL_MIN, (body.height() - 120.0).max(settings::TERMINAL_MIN))
+                .clamp(settings::TERMINAL_MIN, (panes.height() - 120.0).max(settings::TERMINAL_MIN))
         } else {
             0.0
         };
         let upper = Rect::from_min_max(
-            body.min,
-            Pos2::new(body.right(), body.bottom() - terminal_height),
+            panes.min,
+            Pos2::new(panes.right(), panes.bottom() - terminal_height),
         );
         let terminal_rect =
-            Rect::from_min_max(Pos2::new(body.left(), upper.bottom()), body.max);
+            Rect::from_min_max(Pos2::new(panes.left(), upper.bottom()), panes.max);
 
         let explorer_width = if self.explorer_visible {
             self.panes.explorer_width.clamp(settings::EXPLORER_MIN, settings::EXPLORER_MAX)
@@ -1630,16 +1751,16 @@ impl QuillApp {
         let outcome = title_bar::show(
             ui,
             title_rect,
-            &self.file_name(),
             self.folder_name().as_deref(),
-            self.document().is_modified(),
             self.settings.opacity,
             self.menu_placement,
             &menus,
+            tools_width,
         );
         if outcome.close {
             self.closing = true;
             self.write_settings();
+            self.remember_the_project();
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
         if outcome.minimise {
@@ -1661,30 +1782,44 @@ impl QuillApp {
             }
         }
 
-        // The toolbar.
-        if toolbar_shown {
-            let toolbar_outcome = {
-                let mut toolbar_ui = ui.new_child(egui::UiBuilder::new().max_rect(toolbar_rect));
-                toolbar::show(
-                    &mut toolbar_ui,
-                    toolbar_rect,
+        // The text tools, drawn over the right hand end of the title bar. After the bar rather than
+        // before it, because the bar takes drags over the room between the menus and the buttons to move
+        // the window, and a control added earlier would sit underneath that and never be pressed.
+        if tools_width > 0.0 {
+            let tools_outcome = {
+                let mut tools_ui = ui.new_child(egui::UiBuilder::new().max_rect(tools_rect));
+                text_tools::show(
+                    &mut tools_ui,
+                    tools_rect,
                     self.document(),
-                    self.settings.opacity,
                     &self.bold_family,
                     self.view_mode(),
                 )
             };
-            for command in toolbar_outcome.commands {
+            for command in tools_outcome.commands {
                 self.document_mut().apply(command);
             }
-            if let Some(mode) = toolbar_outcome.view_mode {
+            if let Some(mode) = tools_outcome.view_mode {
                 self.set_view_mode(mode);
             }
-            title_bar::divider(
-                ui.painter(),
-                Pos2::new(toolbar_rect.left(), toolbar_rect.bottom()),
-                Pos2::new(toolbar_rect.right(), toolbar_rect.bottom()),
-            );
+        }
+
+        // The rail of pane buttons down the far left.
+        {
+            let state = activity_bar::RailState {
+                explorer_visible: self.explorer_visible,
+                git_open: self.git.as_ref().is_some_and(|git| git.panel.open),
+                in_repository: self.git.is_some(),
+                terminal_visible: self.terminal.visible,
+            };
+            let opacity = self.settings.opacity;
+            let chosen = {
+                let mut rail_ui = ui.new_child(egui::UiBuilder::new().max_rect(rail_rect));
+                activity_bar::show(&mut rail_ui, rail_rect, state, opacity)
+            };
+            if let Some(chosen) = chosen {
+                action = Some(chosen);
+            }
         }
 
         // The shortcuts belonging to the menus. Read here rather than in the editing area, because they work
@@ -1823,41 +1958,8 @@ impl QuillApp {
             }
         }
 
-        // The editing area, split according to the view mode.
-        match self.view_mode() {
-            ViewMode::Raw => self.show_editor(ui, editor_rect),
-            ViewMode::Preview => {
-                self.editor_area = editor_rect;
-                self.show_preview(ui, editor_rect);
-            }
-            ViewMode::SideBySide => {
-                let fraction = self.panes.preview_fraction.clamp(0.15, 0.85);
-                let split = (editor_rect.width() * fraction).floor();
-                let left =
-                    Rect::from_min_size(editor_rect.min, Vec2::new(split, editor_rect.height()));
-                let right = Rect::from_min_max(
-                    Pos2::new(editor_rect.left() + split, editor_rect.top()),
-                    editor_rect.max,
-                );
-                self.show_editor(ui, left);
-                self.show_preview(ui, right);
-                // The split between the source and the preview is a pane like any other, so it is dragged.
-                let edge = Rect::from_min_size(
-                    Pos2::new(right.left(), right.top()),
-                    Vec2::new(1.0, right.height()),
-                );
-                let drag = splitter::show(ui, edge, "preview", splitter::Axis::Upright);
-                if drag.delta != 0.0 && editor_rect.width() > 0.0 {
-                    self.panes.preview_fraction =
-                        (fraction + drag.delta / editor_rect.width()).clamp(0.15, 0.85);
-                    self.unsaved_settings = true;
-                }
-                if drag.reset {
-                    self.panes.preview_fraction = 0.5;
-                    self.unsaved_settings = true;
-                }
-            }
-        }
+        // The editing area: the picture, the source, the preview, or both side by side.
+        self.show_editing_area(ui, editor_rect);
 
         // The divider that sets the explorer's width. Added after the editing area rather than before it,
         // because the editing area takes drags over the whole of its rectangle and the divider overlaps its
@@ -1876,27 +1978,6 @@ impl QuillApp {
             if drag.reset {
                 self.panes.explorer_width = settings::EXPLORER_WIDTH;
                 self.unsaved_settings = true;
-            }
-        }
-
-        // With the explorer hidden there has to be a way to bring it back. It is drawn after the editing
-        // area rather than before it, because the editing area takes clicks over the whole of its
-        // rectangle and a widget added earlier would sit underneath and never be clicked.
-        if !self.explorer_visible {
-            let button = Rect::from_min_size(
-                Pos2::new(upper.left() + 8.0, upper.top() + 8.0),
-                Vec2::splat(24.0),
-            );
-            let response = ui
-                .interact(button, ui.id().with("show-explorer"), egui::Sense::click())
-                .on_hover_text("Show the explorer");
-            ui.painter().rect_filled(button, CornerRadius::same(4), color::CONTROL);
-            theme::icon::disclosure(ui.painter(), button.center(), false, color::TEXT_DIM);
-            response.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), "Show the explorer")
-            });
-            if response.clicked() {
-                self.explorer_visible = true;
             }
         }
 
@@ -1993,9 +2074,18 @@ impl QuillApp {
             self.last_focus = self.focus;
         }
 
-        // The status bar.
+        // The status bar. A picture has no caret and no font, so it says how big it is and how far it
+        // is zoomed instead.
         let style = self.document().active_style();
         let branch = self.git.as_ref().and_then(|git| git.status_label());
+        let picture = self.editor_area.size();
+        let (position, detail) = match self.files.active().picture.as_ref() {
+            Some(picture_in_the_tab) => (None, picture_in_the_tab.description(picture)),
+            None => (
+                Some(self.caret_position()),
+                format!("{} \u{00B7} {:.0} pt", style.family, style.size),
+            ),
+        };
         status_bar::show(
             ui,
             status_rect,
@@ -2003,9 +2093,8 @@ impl QuillApp {
                 name: &self.file_name(),
                 unsaved: self.document().is_modified(),
                 kind: file_kind::kind_name(self.document().path()),
-                position: self.caret_position(),
-                family: &style.family,
-                font_size: style.size,
+                position,
+                detail: &detail,
                 message: self
                     .git
                     .as_ref()
@@ -2091,9 +2180,21 @@ impl QuillApp {
             self.apply_settings(&before);
         }
 
+        // The eight places the window itself is resized from, added last so they sit over every pane:
+        // the editing area, the explorer and the status bar all take drags over the whole of their
+        // rectangles, and a grip added earlier would never see a pointer. See `components::resize_edges`
+        // for why they exist at all, which is that Quill's window has no operating system frame.
+        if let Some(direction) = resize_edges::show(ui, full) {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::BeginResize(direction));
+        }
+
         if let Some(chosen) = action {
             self.run_action(chosen, ui.ctx());
         }
+
+        // What is open in this project is written down for next time, on the same terms as the
+        // settings: once the pointer is up, and only when something has actually changed.
+        self.remember_the_project();
 
         // Settings are written once the pointer is up, so that dragging a divider or a slider writes the
         // file once at the end rather than on every frame of the drag.
@@ -2194,6 +2295,64 @@ impl QuillApp {
         self.preview = None;
     }
 
+    /// Draw whatever the open tab holds into `area`.
+    ///
+    /// A picture, the Markdown source, the preview, or the source and the preview side by side with a
+    /// draggable divider between them. Split out of [`Self::ui`] because it is the one place the four
+    /// answers are chosen between, and `ui` has enough to do laying the window out.
+    fn show_editing_area(&mut self, ui: &mut egui::Ui, area: Rect) {
+        if self.files.active().is_picture() {
+            self.editor_area = area;
+            self.show_picture(ui, area);
+            return;
+        }
+        match self.view_mode() {
+            ViewMode::Raw => self.show_editor(ui, area),
+            ViewMode::Preview => {
+                self.editor_area = area;
+                self.show_preview(ui, area);
+            }
+            ViewMode::SideBySide => {
+                let fraction = self.panes.preview_fraction.clamp(0.15, 0.85);
+                let split = (area.width() * fraction).floor();
+                let left = Rect::from_min_size(area.min, Vec2::new(split, area.height()));
+                let right = Rect::from_min_max(
+                    Pos2::new(area.left() + split, area.top()),
+                    area.max,
+                );
+                self.show_editor(ui, left);
+                self.show_preview(ui, right);
+                // The split between the source and the preview is a pane like any other, so it is dragged.
+                let edge = Rect::from_min_size(
+                    Pos2::new(right.left(), right.top()),
+                    Vec2::new(1.0, right.height()),
+                );
+                let drag = splitter::show(ui, edge, "preview", splitter::Axis::Upright);
+                if drag.delta != 0.0 && area.width() > 0.0 {
+                    self.panes.preview_fraction =
+                        (fraction + drag.delta / area.width()).clamp(0.15, 0.85);
+                    self.unsaved_settings = true;
+                }
+                if drag.reset {
+                    self.panes.preview_fraction = 0.5;
+                    self.unsaved_settings = true;
+                }
+            }
+        }
+    }
+
+    /// Draw the picture the open tab holds, and take the gestures that move and zoom it.
+    fn show_picture(&mut self, ui: &mut egui::Ui, area: Rect) {
+        let name = self.files.active().name();
+        let Some(picture) = self.files.active_mut().picture.as_mut() else {
+            return;
+        };
+        let outcome = picture_view::show(ui, area, picture, &name);
+        if outcome.take_focus {
+            self.focus = Focus::Editor;
+        }
+    }
+
     /// Draw the Markdown preview into `area`. It is read only, so it has no caret and no selection: there
     /// is nothing to type into, because what is shown is worked out from the source.
     fn show_preview(&mut self, ui: &mut egui::Ui, area: Rect) {
@@ -2250,6 +2409,13 @@ impl QuillApp {
         let response = ui.interact(area, ui.id().with("editor"), egui::Sense::click_and_drag());
         if response.clicked() || response.drag_started() {
             self.focus = Focus::Editor;
+        }
+        // Over the writing, the pointer is a vertical bar rather than an arrow, which is what it is in
+        // every editor and what `task-1658` asks for. Only over the text itself: the gutter is a
+        // rectangle of its own and the divider beside it sets its own pointer, and both are drawn after
+        // this, so the last one to speak wins where they overlap.
+        if response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
         }
         let has_keyboard = self.focus == Focus::Editor;
         let text_width = (area.width() - padding - size::EDITOR_PADDING_X).max(50.0);
@@ -2376,8 +2542,9 @@ impl eframe::App for QuillApp {
         QuillApp::ui(self, ui);
     }
 
-    /// Write the settings and the pane sizes before the window goes.
+    /// Write the settings, the pane sizes and what was open in the project before the window goes.
     fn on_exit(&mut self) {
         self.write_settings();
+        self.remember_the_project();
     }
 }
