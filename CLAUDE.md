@@ -36,8 +36,16 @@ accepts a new one after somebody has opened the image and looked at it.
 
 `components::modal` is the furniture every modal is made of: the frame, the header, the body
 rectangle, the footer, the buttons, the rows, a field and a tick box. The Settings window, the commit
-panel, the git dialogs, the text prompt and the confirmation are all built from it. A tenth modal
-that draws its own header would be a tenth modal that almost agrees with the other nine.
+panel, the git dialogs, the text prompt, the confirmation, `Go to File` and `Find in Files` are all
+built from it. A tenth modal that draws its own header would be a tenth modal that almost agrees with
+the other nine.
+
+**It also owns dragging and resizing**, which `task-1659` asks for: the header is the handle, eight
+invisible grips round the edge resize it, and a double click on the header puts it back in the middle
+at the size it asked for. They are in `modal::show` rather than in any one dialog, so a dialog written
+later has them without asking — which is why `prompt_dialog` and `settings_dialog`, which each held a
+copy of the frame, now call it instead. Where a modal has been dragged to lives in egui's memory under
+the modal's id: the window has no decision to make about it and nothing is written to disk.
 
 `components::activity_bar` is the thin rail down the far left, one button a pane: the explorer and git
 at the top, the terminal at the bottom left. It is the only way a pane is put away and brought back,
@@ -61,6 +69,60 @@ function is what stops a sixth field being the sixth chance to get it wrong.
 **A flyout must not hold a dropdown or another flyout.** egui keeps at most one popup open at a time,
 so opening the second shuts the first — which is why the three line spacings in the text options
 panel are three buttons rather than the dropdown they used to be.
+
+## Two ways of searching a project, and both of them are the modal's
+
+`task-1659` asks for IntelliJ's two: `Go to File` on `Ctrl/Cmd+Shift+O`, which narrows the project's
+files as a name is typed, and `Find in Files` on `Ctrl/Cmd+Shift+F`, which searches every file's text
+and shows the whole of the chosen one underneath the results. `Open Folder` moved to
+`Ctrl/Cmd+Alt+O` to make room, because two menu items claiming one key equivalent is a fault on macOS
+and there is a test for it.
+
+Neither component decides what matches. `services::file_search` ranks file names — a **subsequence**,
+so `mdrs` finds `markdown.rs`, with a match in the name outranking one in the folders above it — and
+`services::text_search` reads the project's text. Both are pure enough to be tested with no window,
+which is where nearly all of their tests are.
+
+**The text search runs on a thread**, arranged as `quill_git::Worker` and the terminal already are,
+with a waker that asks the window to draw again. Reading a project on every key press where the
+window draws would stop it drawing, which on a large folder looks exactly like a crash. Only the
+newest question is answered: each request carries a number, the newest is shared with the thread as
+an `AtomicU64`, and a search whose number has been passed stops where it is. That is what makes typing
+quick without a debounce timer, which would be wrong at both ends — too long on a small project and
+too short on a large one.
+
+**What a build wrote is not searched.** `FileTree::all_files` leaves out `target`, `node_modules` and
+`__pycache__`, which is what the filter box, `Go to File` and `Find in Files` all search. They are
+still **shown** in the explorer, because it is a picture of the folder. Three names only, and each is
+a folder nobody writes a source file into: `build`, `dist` and `out` are deliberately not among them,
+because a search that silently missed a real file would be worse than one offering a few too many.
+Measured on Quill's own repository, this took the list from 2022 files to 618 and the whole search
+from 60 ms to 20 — and it fixed a real fault, because the walk gives up after a fixed number of files
+and `target` had been eating that budget before the source was reached.
+
+## The Markdown preview draws pictures, and the layout engine knows nothing about pictures
+
+`![alt](picture.png)` on a line of its own draws the picture, in the preview and in the right hand
+pane of the side by side view. The preview is not a second renderer — `quill_core::markdown` turns
+the source into the same three things a document holds and the ordinary layout and painter draw it —
+so a picture had to become something the layout engine already understands.
+
+It is `ParagraphStyle::min_height`: a paragraph may ask to be at least so tall, and layout takes
+`(natural * line_spacing).max(min_height)`. A floor, never a ceiling. The line holding a picture is
+**empty**, and the window paints into the room it reserved: the picture, or the alt text in the quiet
+colour when the file cannot be read. An image mark **inside** a line of prose stays its alt text,
+because a picture in the middle of a paragraph needs inline layout the engine does not have.
+
+Two passes, and the reason is worth keeping: how tall a picture is drawn depends on how wide the pane
+is and on how large the picture turns out to be, and `quill-core` can know neither — it has no window
+and cannot decode an image. So `services::preview_images` reads the pictures, each asks its paragraph
+for the room it needs, and only then is the preview laid out.
+
+**Nothing is fetched.** A source with a scheme in it is refused rather than read, so a preview can
+never make a network request. **And nothing is uploaded that the graphics card will not take**:
+`services::picture::upload` shrinks a picture to the card's largest texture first, because egui
+*panics* when handed a bigger one and a four thousand pixel screenshot is an ordinary thing to put in
+a document. Both the picture tab and the preview go through it.
 
 ## Git runs the `git` program, on a thread
 
@@ -311,6 +373,8 @@ trade that away to be a shade nearer a screenshot.
 - `tasks/task-1658-window-improvements-tdd.md` — the window's own resize grips, the rail of pane
   buttons, the `.quill` folder a project remembers itself in, the tools moving into the title bar,
   and pictures opening in a tab.
+- `tasks/task-1659-search-and-images-tdd.md` — `Go to File`, `Find in Files` and the thread it reads
+  the project on, modals that can be dragged and resized, and pictures in the Markdown preview.
 - `tasks/quill-installer-tdd.md` — how Quill is delivered: the icon, the Windows installer and the
   macOS bundle, and the options that were weighed for each.
 - `installer/README.md` — how to build an installer, on either platform.

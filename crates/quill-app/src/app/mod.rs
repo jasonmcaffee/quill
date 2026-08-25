@@ -40,8 +40,10 @@ use crate::components::context_menu;
 use crate::components::editor_view;
 use crate::components::explorer;
 use crate::components::file_tabs::{self, TabView};
+use crate::components::find_in_files::{self, FindInFiles};
 use crate::components::git_dialogs::{self, Dialog};
 use crate::components::git_panel;
+use crate::components::go_to_file::{self, GoToFile};
 use crate::components::gutter::{self, Gutter};
 use crate::components::picture_view;
 use crate::components::prompt_dialog::{self, Prompt, Purpose};
@@ -58,6 +60,7 @@ use crate::services::file_clipboard::FileClipboard;
 use crate::services::launcher;
 use crate::services::icons::Icons;
 use crate::services::plugins::Plugins;
+use crate::services::preview_images::PreviewImages;
 use crate::services::project_state::{self, ProjectState};
 use crate::services::native_menu::NativeMenu;
 use crate::services::store::Store;
@@ -80,6 +83,12 @@ pub const DEFAULT_OPACITY: f32 = settings::DEFAULT_OPACITY;
 /// a platform's business — measured on this machine it is about 55, which is a third bigger than the
 /// number egui's own default assumes — and the ratio a gesture is asking for is the same everywhere.
 const ZOOM_STEP: f32 = 1.18;
+
+/// How much air is left under a picture in the Markdown preview.
+///
+/// The same idea as the space between two paragraphs: a picture with the next line of prose against
+/// its bottom edge reads as part of the picture.
+const PICTURE_GAP: f32 = 14.0;
 
 /// A question with two answers, and what to do when it is answered.
 ///
@@ -135,6 +144,22 @@ impl ViewMode {
     pub fn shows_preview(&self) -> bool {
         matches!(self, ViewMode::SideBySide | ViewMode::Preview)
     }
+}
+
+/// One picture in the Markdown preview, ready to draw.
+///
+/// The preview is laid out by the ordinary layout engine, which knows about glyphs and not about
+/// pictures. So a picture is a paragraph with no text in it that has been asked to be at least as
+/// tall as the picture is drawn, and this is what the window paints into that room. Held between
+/// frames because a preview is redrawn sixty times a second and a photograph is decoded once.
+pub struct PlacedPicture {
+    /// Which paragraph of the preview it belongs to, which is what says where it goes.
+    pub paragraph: usize,
+    /// How large it is drawn, in points.
+    pub size: Vec2,
+    /// The picture, or `None` when it could not be read — in which case the alt text is drawn.
+    pub texture: Option<egui::TextureHandle>,
+    pub alt: String,
 }
 
 /// What the keyboard is talking to.
@@ -232,6 +257,10 @@ pub struct QuillApp {
     preview_layout: Layout,
     preview_revision: u64,
     preview_width: f32,
+    /// The pictures in the preview, decoded and kept between frames.
+    preview_images: PreviewImages,
+    /// Where each of those pictures is drawn, worked out with the preview and drawn from every frame.
+    preview_pictures: Vec<PlacedPicture>,
     /// Set when the theme has been applied, which has to happen once the context exists.
     themed: bool,
     /// The family the toolbar uses for its bold B. It is the real bold face once [`Self::prepare`] has
@@ -265,6 +294,14 @@ pub struct QuillApp {
     pub explorer_menu: Option<(Pos2, PathBuf, bool)>,
     /// The text prompt, when one is open.
     pub prompt: Option<Prompt>,
+    /// The `Go to File` modal, when it is open.
+    pub go_to_file: Option<GoToFile>,
+    /// The `Find in Files` modal, when it is open. It holds the thread the searching runs on, so
+    /// shutting the modal is what stops that thread.
+    pub find_in_files: Option<FindInFiles>,
+    /// Set when something outside the editing area moved the caret — opening a `Find in Files`
+    /// result is the only one — so the next frame scrolls the file to show it.
+    reveal_caret: bool,
     /// Where the gutter's own menu is open, when it is. Held here rather than in egui's memory so
     /// that a test can open it: a screenshot test cannot press the right mouse button.
     pub gutter_menu: Option<Pos2>,
@@ -309,6 +346,8 @@ impl QuillApp {
             preview_layout: Layout::default(),
             preview_revision: 0,
             preview_width: 0.0,
+            preview_images: PreviewImages::new(),
+            preview_pictures: Vec::new(),
             themed: false,
             bold_family: egui::FontFamily::Proportional,
             context: None,
@@ -322,6 +361,9 @@ impl QuillApp {
             clipboard: FileClipboard::new(),
             explorer_menu: None,
             prompt: None,
+            go_to_file: None,
+            find_in_files: None,
+            reveal_caret: false,
             gutter_menu: None,
         }
     }
@@ -581,6 +623,19 @@ impl QuillApp {
                     }
                     self.open_path(&file);
                 }
+            }
+            Action::GoToFile => {
+                // The folder is read again first, so a file made since the window opened is in the
+                // list. It is one walk of the project, on a key press rather than on every frame,
+                // and a finder that cannot find a file you made a minute ago is not a finder.
+                self.tree.reload();
+                self.go_to_file = Some(GoToFile::default());
+            }
+            Action::FindInFiles => {
+                // The folder is read again first, for the reason `Go to File` reads it: a file made
+                // since the window opened is part of this project and has to be searched.
+                self.tree.reload();
+                self.find_in_files = Some(FindInFiles::open(self.thread_waker()));
             }
             Action::OpenRecent(folder) => {
                 // A window of its own, as IntelliJ does it, so the project that is open stays open.
@@ -901,12 +956,42 @@ impl QuillApp {
         }
     }
 
+    /// Open a file at a match found by `Find in Files`, with the match itself selected.
+    ///
+    /// Selecting it rather than only putting the caret there is what the ticket asks for when it
+    /// says the result should highlight the matching spot in the document: a selection is how a
+    /// document shows a piece of itself, and it is the same highlight a search inside a file leaves.
+    fn open_the_match(&mut self, path: &Path, range: std::ops::Range<usize>) {
+        // A tab of its own, because choosing a line out of a list of matches is not glancing.
+        self.open_path_permanently(path);
+        if self.files.active().path() != Some(path) {
+            return; // it would not open, and `open_path_permanently` has already said why
+        }
+        // The offsets came from the file on disk. A tab that was already open and has been edited
+        // since is a different text, so a range that runs past its end is left alone rather than
+        // selecting the wrong thing.
+        let length = self.document().text().len_bytes();
+        if range.end > length {
+            self.message = Some(format!(
+                "{} has changed since it was searched, so the match could not be shown.",
+                path.display()
+            ));
+            return;
+        }
+        self.document_mut().apply(Command::PlaceCaret { offset: range.start, extend: false });
+        self.document_mut().apply(Command::PlaceCaret { offset: range.end, extend: true });
+        // The file is nearly always taller than the editing area, so the match has to be scrolled to
+        // as well as selected.
+        self.reveal_caret = true;
+        self.focus = Focus::Editor;
+    }
+
     /// Start working on the repository the project is in, if it is in one.
     ///
     /// Called when a window opens and again when it is pointed at another folder, because the second
     /// folder may be a different repository, or none.
     pub fn open_repository(&mut self) {
-        let waker = self.git_waker();
+        let waker = self.thread_waker();
         self.git = GitState::open(self.tree.root(), waker);
         self.git_looked = true;
         self.files.forget_git();
@@ -1013,8 +1098,12 @@ impl QuillApp {
         }
     }
 
-    /// What the git thread calls to have the window drawn again when a command finishes.
-    fn git_waker(&self) -> std::sync::Arc<dyn Fn() + Send + Sync> {
+    /// What a thread calls to have the window drawn again when it has an answer.
+    ///
+    /// Two threads use it: the one that runs git, and the one `Find in Files` searches on. A reply
+    /// arriving while the window is idle has to ask for the frame itself, or it sits unseen until
+    /// the pointer next moves.
+    fn thread_waker(&self) -> std::sync::Arc<dyn Fn() + Send + Sync> {
         match &self.context {
             Some(context) => {
                 let context = context.clone();
@@ -1578,12 +1667,24 @@ impl QuillApp {
         self.preview.as_ref().map(|p| p.text.to_string()).unwrap_or_default()
     }
 
+    /// The pictures the preview is drawing, for a test.
+    pub fn preview_pictures(&self) -> &[PlacedPicture] {
+        &self.preview_pictures
+    }
+
     /// Work the preview out again if the source or the width changed.
     ///
     /// The preview is produced by `quill_core::markdown`, which turns the source into the same three
     /// things a document holds, so the ordinary layout engine and the ordinary painter draw it. Nothing
     /// here knows how to render Markdown.
-    fn refresh_preview(&mut self, width: f32) {
+    ///
+    /// Pictures are the one thing that takes two passes. `markdown` says which paragraph stands in
+    /// for a picture and what file it names, but how tall that paragraph has to be depends on how
+    /// wide the pane is and on how large the picture turns out to be — neither of which that crate
+    /// can know, because it has no window and cannot decode an image. So the pictures are read here,
+    /// each one asks its paragraph to be at least as tall as it is drawn, and only then is the
+    /// preview laid out.
+    fn refresh_preview(&mut self, ctx: &egui::Context, width: f32) {
         let revision = self.document().revision();
         if self.preview.is_some()
             && !self.layout_stale
@@ -1617,12 +1718,13 @@ impl QuillApp {
                 color::DIVIDER.b(),
             ),
         };
-        let preview = quill_core::markdown::render(
+        let mut preview = quill_core::markdown::render(
             &self.document().text().to_string(),
             &base,
             colors,
             self.renderer.monospaced_family(),
         );
+        self.preview_pictures = self.read_the_pictures(ctx, &mut preview, width);
         self.preview_layout = layout(
             &preview.text,
             &preview.chars,
@@ -1633,6 +1735,52 @@ impl QuillApp {
         self.preview = Some(preview);
         self.preview_revision = revision;
         self.preview_width = width;
+    }
+
+    /// Read every picture the preview names, and give each one's paragraph the room it needs.
+    ///
+    /// A picture is drawn at its own size, or scaled down to the width of the pane when it is wider
+    /// than that — never blown up, which is what `services::picture` decided for a picture in a tab
+    /// and is what "fit" means to anybody. A picture that will not decode leaves its paragraph the
+    /// height of a line of text and its alt text is drawn there instead, which is what the preview
+    /// did before there were pictures at all.
+    fn read_the_pictures(
+        &mut self,
+        ctx: &egui::Context,
+        preview: &mut quill_core::Preview,
+        width: f32,
+    ) -> Vec<PlacedPicture> {
+        let folder = self
+            .document()
+            .path()
+            .and_then(|path| path.parent())
+            .map(std::path::Path::to_path_buf);
+        let mut placed = Vec::new();
+        for image in preview.images.clone() {
+            let ready = self.preview_images.ready(ctx, folder.as_deref(), &image.source);
+            let size = match &ready {
+                Some(ready) => {
+                    let (pixels_across, pixels_down) =
+                        (ready.size[0] as f32, ready.size[1] as f32);
+                    let scale = if pixels_across > 0.0 { (width / pixels_across).min(1.0) } else { 1.0 };
+                    Vec2::new(pixels_across * scale, pixels_down * scale)
+                }
+                None => Vec2::ZERO,
+            };
+            if size.y > 0.0 {
+                let room = size.y + PICTURE_GAP;
+                preview
+                    .paragraphs
+                    .set(image.paragraph..image.paragraph + 1, |style| style.min_height = room);
+            }
+            placed.push(PlacedPicture {
+                paragraph: image.paragraph,
+                size,
+                texture: ready.map(|ready| ready.texture),
+                alt: image.alt.clone(),
+            });
+        }
+        placed
     }
 
     /// Lay the document out if the text, the formatting or the width changed since the last time.
@@ -2131,6 +2279,47 @@ impl QuillApp {
             }
         }
 
+        // `Go to File`, drawn after the prompt for the same reason the prompt is drawn after the git
+        // windows: the newest thing a person asked for belongs on top of the older ones.
+        if let Some(mut finder) = self.go_to_file.take() {
+            finder.refresh(self.tree.root(), self.tree.all_files());
+            let outcome = go_to_file::show(ui.ctx(), &mut finder);
+            if let Some(path) = outcome.open {
+                // A tab of its own, not the transient one: choosing a file out of a list of file
+                // names is not glancing at it.
+                self.open_path_permanently(&path);
+                self.focus = Focus::Editor;
+            }
+            if !outcome.close {
+                self.go_to_file = Some(finder);
+            }
+        }
+
+        // `Find in Files`, which is drawn beside `Go to File` because they are the same kind of
+        // thing: a question about the project, asked over the top of it.
+        if let Some(mut find) = self.find_in_files.take() {
+            find.pump(self.tree.all_files());
+            let outcome = find_in_files::show(ui.ctx(), &mut find, self.panes.find_split);
+            if outcome.drag != 0.0 {
+                // The divider is dragged in points and the split is a fraction, because the modal
+                // can be resized: a fraction keeps the two panes in proportion when it is.
+                let height = outcome.panes_height.max(1.0);
+                self.panes.find_split = (self.panes.find_split + outcome.drag / height)
+                    .clamp(find_in_files::SPLIT_MIN, find_in_files::SPLIT_MAX);
+                self.unsaved_settings = true;
+            }
+            if outcome.reset_split {
+                self.panes.find_split = find_in_files::SPLIT;
+                self.unsaved_settings = true;
+            }
+            if let Some((path, range)) = outcome.open {
+                self.open_the_match(&path, range);
+            }
+            if !outcome.close {
+                self.find_in_files = Some(find);
+            }
+        }
+
         // The Settings window, drawn last because it is a modal and sits over everything.
         let before = self.settings.clone();
         let project = self.folder_name().unwrap_or_default();
@@ -2358,7 +2547,8 @@ impl QuillApp {
     fn show_preview(&mut self, ui: &mut egui::Ui, area: Rect) {
         let response = ui.interact(area, ui.id().with("preview"), egui::Sense::hover());
         let text_width = (area.width() - size::EDITOR_PADDING_X * 2.0).max(50.0);
-        self.refresh_preview(text_width);
+        let ctx = ui.ctx().clone();
+        self.refresh_preview(&ctx, text_width);
 
         // The preview scrolls on its own, so reading the rendered page does not move the caret.
         let wheel = ui.input(|input| input.smooth_scroll_delta.y);
@@ -2377,6 +2567,49 @@ impl QuillApp {
         let mut painter_ui = ui.new_child(egui::UiBuilder::new().max_rect(area));
         painter_ui.set_clip_rect(ui.painter().clip_rect().intersect(area));
         editor_view::paint_text(&painter_ui, &self.renderer, &self.preview_layout, origin);
+        self.paint_the_pictures(&painter_ui, origin);
+    }
+
+    /// Draw the pictures into the room their paragraphs were given.
+    ///
+    /// Drawn after the text rather than before it, so a picture cannot be hidden behind the letters
+    /// of the empty line it sits on, and at the left of the text where every other block starts.
+    fn paint_the_pictures(&self, ui: &egui::Ui, origin: Pos2) {
+        let painter = ui.painter();
+        for picture in &self.preview_pictures {
+            let Some(line) =
+                self.preview_layout.lines.iter().find(|line| line.paragraph == picture.paragraph)
+            else {
+                continue;
+            };
+            let at = Pos2::new(origin.x, origin.y + line.y);
+            match &picture.texture {
+                Some(texture) => {
+                    let rect = Rect::from_min_size(at, picture.size);
+                    painter.image(
+                        texture.id(),
+                        rect,
+                        Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                        Color32::WHITE,
+                    );
+                }
+                None => {
+                    // Nothing to draw, so say what should have been there. The same words the
+                    // preview showed for a picture before it could draw one.
+                    let words = if picture.alt.trim().is_empty() {
+                        "a picture that could not be read".to_owned()
+                    } else {
+                        picture.alt.clone()
+                    };
+                    let galley = painter.layout_no_wrap(
+                        words,
+                        egui::FontId::proportional(13.0),
+                        color::TEXT_DIM,
+                    );
+                    painter.galley(at, galley, color::TEXT_DIM);
+                }
+            }
+        }
     }
 
     /// What the gutter is showing for the file that is open.
@@ -2464,7 +2697,7 @@ impl QuillApp {
         if wheel != 0.0 && response.hovered() {
             scroll -= wheel;
         }
-        if outcome.scroll_to_caret {
+        if outcome.scroll_to_caret || self.reveal_caret {
             let caret = self.layout.caret_at(self.document().selection().head);
             let view_height = area.height() - size::EDITOR_PADDING_Y * 2.0;
             if caret.y < scroll {
@@ -2473,6 +2706,7 @@ impl QuillApp {
                 scroll = caret.y + caret.height - view_height;
             }
         }
+        self.reveal_caret = false;
         let overflow = (self.layout.height - (area.height() - size::EDITOR_PADDING_Y * 2.0)).max(0.0);
         let scroll = scroll.clamp(0.0, overflow);
         self.files.active_mut().scroll = scroll;

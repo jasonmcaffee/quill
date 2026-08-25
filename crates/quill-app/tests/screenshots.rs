@@ -3107,3 +3107,505 @@ fn saving_a_tab_that_holds_a_picture_does_not_write_over_the_picture() {
     assert_eq!(before, after, "the picture on disk must be untouched");
     std::fs::remove_dir_all(&folder).ok();
 }
+
+// `Go to File`, `Find in Files`, and the modals that can be moved and resized (`task-1659`).
+
+/// Open `Go to File` the way the shortcut does, and let it settle.
+fn open_go_to_file(harness: &mut Harness<'static, QuillApp>) {
+    let ctx = harness.ctx.clone();
+    harness.state_mut().run_action(Action::GoToFile, &ctx);
+    harness.run();
+}
+
+/// Double click a control found by name, which egui has no helper for.
+///
+/// Two presses and releases in one frame: egui reads a second click as a double click when it comes
+/// within its own double click time of the first, and both of these carry the same frame's time.
+fn double_click(harness: &mut Harness<'static, QuillApp>, label: &str) {
+    let at = harness.get_by_label(label).rect().center();
+    harness.input_mut().events.push(egui::Event::PointerMoved(at));
+    for _ in 0..2 {
+        for pressed in [true, false] {
+            harness.input_mut().events.push(egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::default(),
+            });
+        }
+    }
+    harness.run();
+}
+
+/// The names the finder is currently offering, in the order it offers them.
+fn found_names(harness: &Harness<'static, QuillApp>) -> Vec<String> {
+    harness
+        .state()
+        .go_to_file
+        .as_ref()
+        .expect("the finder should be open")
+        .results()
+        .iter()
+        .map(|found| found.name.clone())
+        .collect()
+}
+
+#[test]
+fn go_to_file_lists_the_project_before_anything_is_typed() {
+    let mut harness = harness("");
+    open_go_to_file(&mut harness);
+    harness.get_by_label("Go to file");
+    let names = found_names(&harness);
+    assert!(names.contains(&"readme.md".to_owned()), "it lists what is there: {names:?}");
+    assert!(names.contains(&"one.md".to_owned()), "including files inside folders: {names:?}");
+}
+
+#[test]
+fn go_to_file_narrows_as_a_name_is_typed() {
+    let mut harness = harness("");
+    open_go_to_file(&mut harness);
+    harness.input_mut().events.push(egui::Event::Text("one".to_owned()));
+    harness.run();
+    let names = found_names(&harness);
+    assert_eq!(names.first().map(String::as_str), Some("one.md"), "best match first: {names:?}");
+    assert!(!names.contains(&"notes.txt".to_owned()), "and what does not match is gone: {names:?}");
+    harness.snapshot(shot("go_to_file"));
+}
+
+#[test]
+fn double_clicking_a_row_in_go_to_file_opens_the_file_and_shuts_the_modal() {
+    let mut harness = harness("");
+    open_go_to_file(&mut harness);
+    harness.input_mut().events.push(egui::Event::Text("readme".to_owned()));
+    harness.run();
+    double_click(&mut harness, "Go to readme.md");
+    assert!(harness.state().go_to_file.is_none(), "opening a file shuts the modal");
+    assert_eq!(harness.state().document().text().to_string(), "# Quill\n");
+    assert_eq!(
+        harness.state().files.active().path().and_then(|path| path.file_name()),
+        Some(std::ffi::OsStr::new("readme.md")),
+    );
+}
+
+#[test]
+fn the_arrow_keys_and_enter_open_a_file_from_go_to_file() {
+    let mut harness = harness("");
+    open_go_to_file(&mut harness);
+    harness.input_mut().events.push(egui::Event::Text("md".to_owned()));
+    harness.run();
+    let first = found_names(&harness)[0].clone();
+    harness.key_press(egui::Key::ArrowDown);
+    harness.run();
+    let second = found_names(&harness)[1].clone();
+    assert_ne!(first, second, "the sample folder has more than one Markdown file");
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    assert!(harness.state().go_to_file.is_none());
+    assert_eq!(
+        harness.state().files.active().name(),
+        second,
+        "Enter opens the row the arrow keys walked to"
+    );
+}
+
+#[test]
+fn escape_shuts_go_to_file_without_opening_anything() {
+    let mut harness = harness("");
+    let before = harness.state().files.active().name();
+    open_go_to_file(&mut harness);
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+    assert!(harness.state().go_to_file.is_none());
+    assert_eq!(harness.state().files.active().name(), before);
+}
+
+/// Open `Find in Files`, type `text`, and wait for the thread to finish reading the project.
+///
+/// The search runs on a thread, so the test waits for an answer rather than assuming one frame is
+/// enough. `pump` rather than `Harness::run` inside the loop, for the reason `task-1654` records:
+/// `run` gives the window four steps to go quiet and panics otherwise, which is right for a settled
+/// window and wrong while something is still being worked on.
+fn search_for(harness: &mut Harness<'static, QuillApp>, text: &str) {
+    let ctx = harness.ctx.clone();
+    harness.state_mut().run_action(Action::FindInFiles, &ctx);
+    harness.run();
+    harness.input_mut().events.push(egui::Event::Text(text.to_owned()));
+    harness.run();
+    for _ in 0..200 {
+        if !harness
+            .state()
+            .find_in_files
+            .as_ref()
+            .expect("the search should be open")
+            .is_searching()
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        harness.step();
+    }
+    harness.run();
+}
+
+/// Where the search found its matches, as `name:line` for each one.
+fn matches(harness: &Harness<'static, QuillApp>) -> Vec<String> {
+    harness
+        .state()
+        .find_in_files
+        .as_ref()
+        .expect("the search should be open")
+        .hits()
+        .iter()
+        .map(|hit| {
+            format!("{}:{}", hit.path.file_name().unwrap().to_string_lossy(), hit.line)
+        })
+        .collect()
+}
+
+#[test]
+fn find_in_files_finds_text_anywhere_in_the_project() {
+    let mut harness = harness("");
+    search_for(&mut harness, "Quill");
+    let found = matches(&harness);
+    assert!(found.contains(&"readme.md:1".to_owned()), "readme.md says `# Quill`: {found:?}");
+    harness.get_by_label("Find in files");
+    harness.get_by_label("Match case");
+    harness.snapshot(shot("find_in_files"));
+}
+
+#[test]
+fn find_in_files_narrows_to_nothing_when_nothing_matches() {
+    let mut harness = harness("");
+    search_for(&mut harness, "zzzznothinghere");
+    assert!(matches(&harness).is_empty());
+    assert!(!harness.state().find_in_files.as_ref().unwrap().is_searching());
+}
+
+#[test]
+fn opening_a_result_selects_the_match_in_the_document() {
+    let mut harness = harness("");
+    search_for(&mut harness, "tables");
+    let found = matches(&harness);
+    assert_eq!(found, vec!["tables.txt:1".to_owned()], "one file holds the word: {found:?}");
+    double_click(&mut harness, "Result tables.txt:1");
+    assert!(harness.state().find_in_files.is_none(), "opening a result shuts the modal");
+    assert_eq!(harness.state().files.active().name(), "tables.txt");
+    assert_eq!(
+        harness.state().document().selected_text(),
+        "tables",
+        "the match itself should be selected, which is what highlights it"
+    );
+}
+
+#[test]
+fn the_case_of_a_search_can_be_insisted_on() {
+    let mut harness = harness("");
+    search_for(&mut harness, "quill");
+    assert!(
+        !matches(&harness).is_empty(),
+        "`quill` should find `# Quill` while case is being ignored"
+    );
+    harness.get_by_label("Match case").click();
+    harness.run();
+    for _ in 0..200 {
+        if !harness.state().find_in_files.as_ref().unwrap().is_searching() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        harness.step();
+    }
+    harness.run();
+    let found = matches(&harness);
+    assert!(
+        !found.iter().any(|hit| hit.starts_with("readme.md")),
+        "with the case insisted on, `quill` no longer matches `Quill`: {found:?}"
+    );
+}
+
+#[test]
+fn escape_shuts_find_in_files() {
+    let mut harness = harness("");
+    let ctx = harness.ctx.clone();
+    harness.state_mut().run_action(Action::FindInFiles, &ctx);
+    harness.run();
+    assert!(harness.state().find_in_files.is_some());
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+    assert!(harness.state().find_in_files.is_none());
+}
+
+// A modal is moved by its header and resized by its edges (`task-1659`). Both live in
+// `components::modal`, so `Go to File` is what they are tested through and every other modal has
+// them for the same reason.
+
+/// Where the modal with this id sits and how big it is, read back from egui's own memory.
+fn placement(harness: &Harness<'static, QuillApp>, id: &str) -> quill_app::components::modal::Placement {
+    quill_app::components::modal::placement(&harness.ctx, id)
+}
+
+#[test]
+fn a_modal_is_moved_by_dragging_its_header() {
+    let mut harness = harness("");
+    open_go_to_file(&mut harness);
+    assert!(placement(&harness, "quill-go-to-file").is_untouched(), "it opens in the middle");
+    let bar = harness.get_by_label("Move go to file").rect();
+    let from = bar.center();
+    drag(&mut harness, from, from + egui::vec2(-120.0, 60.0));
+    let moved = placement(&harness, "quill-go-to-file");
+    assert!(moved.offset.x < -100.0, "dragged left: {moved:?}");
+    assert!(moved.offset.y > 40.0, "and down: {moved:?}");
+    // The modal really is somewhere else, rather than only the number having changed.
+    let after = harness.get_by_label("Move go to file").rect();
+    assert!(after.center().x < bar.center().x - 100.0);
+    harness.snapshot(shot("modal_dragged"));
+}
+
+#[test]
+fn a_modal_is_resized_by_dragging_a_corner() {
+    let mut harness = harness("");
+    open_go_to_file(&mut harness);
+    let before = harness.get_by_label("Move go to file").rect().width();
+    let corner = harness.get_by_label("Resize go to file: bottom right").rect().center();
+    drag(&mut harness, corner, corner + egui::vec2(80.0, 40.0));
+    let grown = placement(&harness, "quill-go-to-file");
+    assert!(grown.grown.x > 60.0, "wider: {grown:?}");
+    assert!(grown.grown.y > 20.0, "and taller: {grown:?}");
+    let after = harness.get_by_label("Move go to file").rect().width();
+    assert!(after > before + 60.0, "{before} then {after}");
+}
+
+#[test]
+fn dragging_the_left_edge_of_a_modal_leaves_its_right_edge_where_it_was() {
+    let mut harness = harness("");
+    open_go_to_file(&mut harness);
+    let before = harness.get_by_label("Move go to file").rect();
+    let edge = egui::pos2(before.left() + 3.0, before.center().y + 120.0);
+    drag(&mut harness, edge, edge + egui::vec2(-60.0, 0.0));
+    let after = harness.get_by_label("Move go to file").rect();
+    assert!(after.left() < before.left() - 40.0, "the edge that was dragged moved");
+    assert!(
+        (after.right() - before.right()).abs() < 2.0,
+        "and the other one did not: {} then {}",
+        before.right(),
+        after.right()
+    );
+}
+
+#[test]
+fn double_clicking_a_modals_header_puts_it_back_in_the_middle() {
+    let mut harness = harness("");
+    open_go_to_file(&mut harness);
+    let bar = harness.get_by_label("Move go to file").rect();
+    let from = bar.center();
+    drag(&mut harness, from, from + egui::vec2(-120.0, 60.0));
+    assert!(!placement(&harness, "quill-go-to-file").is_untouched());
+    double_click(&mut harness, "Move go to file");
+    assert!(
+        placement(&harness, "quill-go-to-file").is_untouched(),
+        "a double click puts it back, as it does to a pane divider"
+    );
+}
+
+#[test]
+fn a_modal_cannot_be_dragged_out_of_the_window() {
+    let mut harness = harness("");
+    open_go_to_file(&mut harness);
+    let bar = harness.get_by_label("Move go to file").rect();
+    let from = bar.center();
+    // Far past the right hand edge of a 1180 point window.
+    drag(&mut harness, from, from + egui::vec2(4000.0, 4000.0));
+    let after = harness.get_by_label("Move go to file").rect();
+    assert!(after.right() <= WINDOW[0], "still inside: {after:?}");
+    assert!(after.top() >= 0.0);
+}
+
+// Pictures in the Markdown preview (`task-1659`).
+
+/// A folder of its own holding a Markdown file with a picture in it.
+///
+/// Its own folder rather than the shared sample, because every explorer screenshot counts the files
+/// in that one, and a document made of pictures is not what the rest of the tests are about. Written
+/// each time, like `git_folder`, and kept apart by its name.
+fn picture_document_folder() -> std::path::PathBuf {
+    let root = std::env::temp_dir().join("quill-preview-pictures");
+    std::fs::create_dir_all(&root).expect("make the folder");
+    write_sample_picture(&root.join("picture.png"));
+    std::fs::write(
+        root.join("gallery.md"),
+        "# A picture\n\nSome words before it.\n\n![the sample picture](picture.png)\n\nAnd some after.\n\n![missing](nowhere.png)\n",
+    )
+    .expect("write gallery.md");
+    root
+}
+
+/// Open `gallery.md` in the preview, in a window on the folder holding it.
+fn preview_of_the_gallery() -> Harness<'static, QuillApp> {
+    let folder = picture_document_folder();
+    let mut harness = harness_in(&folder);
+    harness.state_mut().open_path_permanently(&folder.join("gallery.md"));
+    harness.run();
+    harness.state_mut().set_view_mode(ViewMode::Preview);
+    harness.run();
+    harness.run();
+    harness
+}
+
+#[test]
+fn the_markdown_preview_draws_a_picture() {
+    let mut harness = preview_of_the_gallery();
+    let pictures = harness.state().preview_pictures();
+    assert_eq!(pictures.len(), 2, "one picture that is there and one that is not");
+    let drawn = &pictures[0];
+    assert!(drawn.texture.is_some(), "the picture beside the document should have been read");
+    assert_eq!(drawn.size, egui::vec2(160.0, 100.0), "at its own size, which fits the pane");
+    harness.snapshot(shot("preview_picture"));
+}
+
+#[test]
+fn a_picture_that_is_not_there_leaves_its_alt_text() {
+    let harness = preview_of_the_gallery();
+    let missing = &harness.state().preview_pictures()[1];
+    assert!(missing.texture.is_none());
+    assert_eq!(missing.alt, "missing", "which is what is drawn in its place");
+    assert_eq!(missing.size, egui::vec2(0.0, 0.0), "and it takes no room of its own");
+}
+
+#[test]
+fn the_line_holding_a_picture_is_as_tall_as_the_picture() {
+    let harness = preview_of_the_gallery();
+    let picture = &harness.state().preview_pictures()[0];
+    let line = harness
+        .state()
+        .preview_layout()
+        .lines
+        .iter()
+        .find(|line| line.paragraph == picture.paragraph)
+        .expect("the picture's own line");
+    assert!(
+        line.height >= picture.size.y,
+        "the room reserved ({}) has to hold the picture ({})",
+        line.height,
+        picture.size.y
+    );
+    // And what follows it really is below it, rather than drawn over it.
+    let next = harness
+        .state()
+        .preview_layout()
+        .lines
+        .iter()
+        .find(|line| line.paragraph > picture.paragraph)
+        .expect("the line after the picture");
+    assert!(next.y >= line.y + picture.size.y);
+}
+
+#[test]
+fn a_wide_picture_is_scaled_down_to_the_width_of_the_pane() {
+    let folder = std::env::temp_dir().join("quill-preview-wide-picture");
+    std::fs::create_dir_all(&folder).expect("make the folder");
+    // Four thousand pixels across, which is wider than any pane in a 1180 point window.
+    let wide = image::RgbaImage::from_pixel(4000, 1000, image::Rgba([0x30, 0x70, 0xC0, 255]));
+    wide.save(folder.join("wide.png")).expect("write wide.png");
+    std::fs::write(folder.join("wide.md"), "![wide](wide.png)\n").expect("write wide.md");
+    let mut harness = harness_in(&folder);
+    harness.state_mut().open_path_permanently(&folder.join("wide.md"));
+    harness.run();
+    harness.state_mut().set_view_mode(ViewMode::Preview);
+    harness.run();
+    harness.run();
+    let picture = &harness.state().preview_pictures()[0];
+    assert!(picture.size.x <= WINDOW[0], "scaled to fit: {:?}", picture.size);
+    assert!(
+        (picture.size.x / picture.size.y - 4.0).abs() < 0.01,
+        "and kept its shape: {:?}",
+        picture.size
+    );
+    std::fs::remove_dir_all(&folder).ok();
+}
+
+#[test]
+fn the_shortcut_on_the_menu_opens_go_to_file() {
+    let mut harness = harness("");
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, egui::Key::O);
+    harness.run();
+    assert!(harness.state().go_to_file.is_some(), "Ctrl or Cmd, Shift and O");
+}
+
+#[test]
+fn the_shortcut_on_the_menu_opens_find_in_files() {
+    let mut harness = harness("");
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, egui::Key::F);
+    harness.run();
+    assert!(harness.state().find_in_files.is_some(), "Ctrl or Cmd, Shift and F");
+}
+
+#[test]
+fn typing_in_go_to_file_leaves_the_document_alone() {
+    // The same rule `task-1656` is about: egui leaves the events a text box consumed in the frame's
+    // list, so a new box is a new chance for the document behind it to read them too.
+    let mut harness = harness("the document");
+    let before = harness.state().document().text().to_string();
+    // `with_text` types the text in, so the document starts out modified; what matters is that
+    // nothing typed into the box changes it any further.
+    let modified = harness.state().document().is_modified();
+    open_go_to_file(&mut harness);
+    harness.input_mut().events.push(egui::Event::Text("readme".to_owned()));
+    harness.run();
+    harness.key_press(egui::Key::Backspace);
+    harness.run();
+    assert_eq!(harness.state().go_to_file.as_ref().unwrap().query, "readm");
+    assert_eq!(harness.state().document().text().to_string(), before);
+    assert_eq!(harness.state().document().is_modified(), modified);
+}
+
+#[test]
+fn typing_in_find_in_files_leaves_the_document_alone() {
+    let mut harness = harness("the document");
+    let before = harness.state().document().text().to_string();
+    let modified = harness.state().document().is_modified();
+    search_for(&mut harness, "quill");
+    harness.key_press(egui::Key::Backspace);
+    harness.run();
+    assert_eq!(harness.state().find_in_files.as_ref().unwrap().query, "quil");
+    assert_eq!(harness.state().document().text().to_string(), before);
+    assert_eq!(harness.state().document().is_modified(), modified);
+}
+
+#[test]
+fn the_divider_in_find_in_files_moves_the_split_between_the_results_and_the_preview() {
+    let mut harness = harness("");
+    let ctx = harness.ctx.clone();
+    harness.state_mut().run_action(Action::FindInFiles, &ctx);
+    harness.run();
+    let before = harness.state().panes.find_split;
+    let divider = harness.get_by_label("Resize find results").rect().center();
+    drag(&mut harness, divider, divider + egui::vec2(0.0, 90.0));
+    let after = harness.state().panes.find_split;
+    assert!(after > before + 0.05, "the results should have grown: {before} then {after}");
+    // And it is a pane like any other, so a double click puts it back.
+    double_click(&mut harness, "Resize find results");
+    assert!(
+        (harness.state().panes.find_split - quill_app::components::find_in_files::SPLIT).abs() < 0.001
+    );
+}
+
+#[test]
+fn the_preview_under_the_results_follows_the_one_that_is_chosen() {
+    let mut harness = harness("");
+    search_for(&mut harness, "Quill");
+    let find = harness.state().find_in_files.as_ref().expect("open");
+    let chosen = find.chosen_hit().expect("something matched").clone();
+    assert_eq!(
+        find.scrolled_to(),
+        Some((chosen.path.as_path(), chosen.line)),
+        "the preview should have been scrolled to the result that is chosen"
+    );
+    // Walking the list moves the preview with it.
+    if harness.state().find_in_files.as_ref().unwrap().hits().len() > 1 {
+        harness.key_press(egui::Key::ArrowDown);
+        harness.run();
+        let find = harness.state().find_in_files.as_ref().unwrap();
+        let now = find.chosen_hit().unwrap().clone();
+        assert_ne!((now.path.clone(), now.line), (chosen.path, chosen.line));
+        assert_eq!(find.scrolled_to(), Some((now.path.as_path(), now.line)));
+    }
+}

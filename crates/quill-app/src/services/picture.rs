@@ -90,8 +90,7 @@ impl Picture {
                 minification: egui::TextureFilter::Linear,
                 ..egui::TextureOptions::LINEAR
             };
-            self.texture =
-                Some(ctx.load_texture(format!("quill-picture-{name}"), image, options));
+            self.texture = Some(upload(ctx, format!("quill-picture-{name}"), image, options));
         }
         self.texture.clone()
     }
@@ -182,7 +181,81 @@ impl Picture {
 ///
 /// The reason is the one the decoder gave. Nothing here invents a message, which is the same rule
 /// `quill-git` follows: the library knows why better than Quill does.
-fn decode(path: &Path) -> Result<egui::ColorImage, String> {
+/// Put a picture on the graphics card, shrinking it first if the card will not hold it.
+///
+/// Every graphics device has a largest texture it will take, and egui **panics** when it is handed
+/// one bigger — `Texture has size 4000x1000, but the maximum texture side is 2048`. Four thousand
+/// pixels across is an ordinary screenshot, so without this, opening one in a tab or writing one
+/// into a Markdown document would end the program on any machine whose limit is low.
+///
+/// What is uploaded is smaller; what the picture *is* does not change. The status bar still says how
+/// many pixels the file holds and the zoom still counts from that, because those are facts about the
+/// file rather than about this machine's graphics card.
+pub fn upload(
+    ctx: &egui::Context,
+    name: String,
+    image: egui::ColorImage,
+    options: egui::TextureOptions,
+) -> egui::TextureHandle {
+    let limit = ctx.input(|input| input.max_texture_side);
+    ctx.load_texture(name, shrink_to_fit(image, limit), options)
+}
+
+/// A picture no larger than `limit` on either side, by averaging the pixels that fall into each new
+/// one.
+///
+/// Averaging rather than taking every nth pixel: a screenshot of text reduced by dropping rows and
+/// columns comes back as a mess of speckles, and the whole point of showing a picture in a preview is
+/// that it can be recognised.
+fn shrink_to_fit(image: egui::ColorImage, limit: usize) -> egui::ColorImage {
+    let [width, height] = image.size;
+    let longest = width.max(height);
+    if longest <= limit || limit == 0 || width == 0 || height == 0 {
+        return image;
+    }
+    let scale = limit as f32 / longest as f32;
+    let across = ((width as f32 * scale).floor() as usize).clamp(1, limit);
+    let down = ((height as f32 * scale).floor() as usize).clamp(1, limit);
+    let mut pixels = Vec::with_capacity(across * down);
+    for row in 0..down {
+        let top = row * height / down;
+        let bottom = (((row + 1) * height) / down).max(top + 1).min(height);
+        for column in 0..across {
+            let left = column * width / across;
+            let right = (((column + 1) * width) / across).max(left + 1).min(width);
+            let (mut r, mut g, mut b, mut a, mut count) = (0_u32, 0_u32, 0_u32, 0_u32, 0_u32);
+            for y in top..bottom {
+                for x in left..right {
+                    let pixel = image.pixels[y * width + x];
+                    r += pixel.r() as u32;
+                    g += pixel.g() as u32;
+                    b += pixel.b() as u32;
+                    a += pixel.a() as u32;
+                    count += 1;
+                }
+            }
+            // The pixels are stored premultiplied, so averaging them is averaging the colour and the
+            // transparency together, which is what a box filter on premultiplied pixels means.
+            pixels.push(egui::Color32::from_rgba_premultiplied(
+                (r / count) as u8,
+                (g / count) as u8,
+                (b / count) as u8,
+                (a / count) as u8,
+            ));
+        }
+    }
+    egui::ColorImage {
+        size: [across, down],
+        pixels,
+        source_size: egui::vec2(across as f32, down as f32),
+    }
+}
+
+/// Read a picture file into pixels egui can upload.
+///
+/// Public inside the crate because the Markdown preview decodes pictures too, and one decoder is
+/// what stops a picture in a tab and the same picture in a preview coming out differently.
+pub fn decode(path: &Path) -> Result<egui::ColorImage, String> {
     let bytes = std::fs::read(path).map_err(|problem| format!("{problem}"))?;
     let decoded = image::load_from_memory(&bytes).map_err(|problem| format!("{problem}"))?;
     let decoded = decoded.to_rgba8();
@@ -241,6 +314,29 @@ mod tests {
         assert!(picture.is_fitted());
         // Four pixels across in a nine hundred point window stays four points across.
         assert_eq!(picture.scale_in(egui::vec2(900.0, 600.0)), 1.0);
+    }
+
+    #[test]
+    fn a_picture_larger_than_the_graphics_card_will_hold_is_shrunk_before_it_is_uploaded() {
+        let wide = egui::ColorImage {
+            size: [4000, 1000],
+            pixels: vec![egui::Color32::from_rgb(10, 20, 30); 4000 * 1000],
+            source_size: egui::vec2(4000.0, 1000.0),
+        };
+        let smaller = shrink_to_fit(wide, 2048);
+        assert_eq!(smaller.size, [2048, 512], "no side past the limit, and the shape is kept");
+        assert_eq!(smaller.pixels.len(), 2048 * 512);
+        assert_eq!(smaller.pixels[0], egui::Color32::from_rgb(10, 20, 30), "and the colour with it");
+    }
+
+    #[test]
+    fn a_picture_the_card_will_hold_is_uploaded_as_it_is() {
+        let small = egui::ColorImage {
+            size: [8, 4],
+            pixels: vec![egui::Color32::WHITE; 32],
+            source_size: egui::vec2(8.0, 4.0),
+        };
+        assert_eq!(shrink_to_fit(small, 2048).size, [8, 4]);
     }
 
     #[test]

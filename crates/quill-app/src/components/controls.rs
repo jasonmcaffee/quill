@@ -34,6 +34,67 @@ pub fn field_text_rect(ui: &egui::Ui, field: Rect, left: f32) -> Rect {
     )
 }
 
+/// A box to search in: the field, a magnifier in front of it, and the words to show while it is
+/// empty.
+///
+/// The explorer's filter, `Go to File` and `Find in Files` are all this shape, and the field's own
+/// frame is `FIELD` with a one point stroke and the style guide's corner radius wherever it appears.
+/// `name` is what the box is called, which is what a test asks for and what assistive technology
+/// reads out — egui names a text box after whatever has been typed into it, so every field in Quill
+/// says its own name.
+pub fn search_field(
+    ui: &mut egui::Ui,
+    area: Rect,
+    name: &str,
+    hint: &str,
+    value: &mut String,
+) -> egui::Response {
+    let painter = ui.painter().clone();
+    painter.rect(
+        area,
+        CornerRadius::same(size::CONTROL_CORNER),
+        color::FIELD,
+        Stroke::new(1.0, color::CONTROL_BORDER),
+        egui::StrokeKind::Inside,
+    );
+    icon::magnifier(&painter, Pos2::new(area.left() + 15.0, area.center().y), color::TEXT_FAINT);
+    let text_rect = field_text_rect(ui, area, 28.0);
+    let mut field = ui.new_child(egui::UiBuilder::new().max_rect(text_rect));
+    let response = field.add(
+        egui::TextEdit::singleline(value)
+            .hint_text(egui::RichText::new(hint).color(color::TEXT_FAINT))
+            .frame(egui::Frame::NONE)
+            .desired_width(text_rect.width())
+            .text_color(color::TEXT_CONTROL),
+    );
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, name));
+    response
+}
+
+/// Text with some of its characters picked out in the accent colour, which is how a search result
+/// shows what it matched.
+///
+/// `marks` are character positions, not byte positions, because that is what a matcher counting
+/// letters produces. One `LayoutJob` rather than one galley per letter, so the text is still laid
+/// out as text: painting each character at a position worked out by adding up widths loses the
+/// kerning between them, which is visible at any size worth reading.
+pub fn marked_text(
+    painter: &egui::Painter,
+    text: &str,
+    marks: &[usize],
+    tint: Color32,
+    font: egui::FontId,
+) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::default();
+    let plain = egui::TextFormat { font_id: font.clone(), color: tint, ..Default::default() };
+    let marked = egui::TextFormat { font_id: font, color: color::ACCENT, ..Default::default() };
+    for (index, character) in text.chars().enumerate() {
+        let format = if marks.contains(&index) { marked.clone() } else { plain.clone() };
+        job.append(&character.to_string(), 0.0, format);
+    }
+    painter.layout_job(job)
+}
+
 /// A button showing the current value, which opens a list when clicked.
 ///
 /// `contents` draws the list and returns what was chosen, so the caller decides what a choice is: the

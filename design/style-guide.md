@@ -133,11 +133,29 @@ shortcut right aligned in `TEXT_FAINT`. A row that cannot be used is drawn in
 `TEXT_FAINT.gamma_multiply(0.6)` and takes no clicks. Every menu — the bar's, the explorer's context
 menu, the gutter's — goes through `controls::menu_rows`, so they cannot drift apart.
 
-**A modal.** `egui::Modal` with `backdrop_color(from_black_alpha(120))`, filled `EXPLORER`, a one
-point `CONTROL_BORDER` stroke, corner radius 10. A 46 point header filled `TITLE_BAR` with the title
-at the left in `TEXT_STRONG` and a close cross at the right. A 52 point footer with a `DIVIDER` line
-along its top and the buttons at its right. The Settings window is the reference; the commit panel,
-the git dialogs, the prompt and the confirmation are all built the same way.
+**A modal.** `components::modal::show`, always — never `egui::Modal` directly. Filled `EXPLORER`
+over a `from_black_alpha(120)` backdrop, a one point `CONTROL_BORDER` stroke, corner radius 10. A 46
+point header filled `TITLE_BAR` with the title at the left in `TEXT_STRONG` and a close cross at the
+right. A 52 point footer with a `DIVIDER` line along its top and the buttons at its right. The
+Settings window is the reference; the commit panel, the git dialogs, the prompt, the confirmation,
+`Go to File` and `Find in Files` are all built the same way.
+
+**A modal is dragged by its header and resized from any of its edges**, and neither is a dialog's
+business: both are in `modal::show`, so a dialog written later has them without asking. A double
+click on the header puts it back in the middle at the size it asked for, exactly as a double click
+on a pane divider does. Its geometry lives in egui's own memory under the modal's id — the window
+has no decision to make about it and nothing goes to disk. Two rules about ordering, both the same
+rule the window's own grips follow: the drag strip is added **before** the contents so the close
+cross sits over it, and the eight grips are added **after** them so a list at the modal's edge
+cannot take a drag meant for the edge.
+
+**A search modal.** `Go to File` and `Find in Files`. A `controls::search_field` across the top of
+the body, the list under it, and the count of what was found in the footer at the left in
+`TEXT_FAINT` at 11 points opposite the button. The letters a query matched are picked out in
+`ACCENT` through `controls::marked_text`; nothing is emboldened to show a match, because the accent
+colour already says it and two signals for one thing is one too many. A row is chosen by a single
+click and opened by a double click or by Enter, which is what IntelliJ does and what `task-1659`
+asks for.
 
 **A section heading inside a page.** The name in `TEXT_STRONG` at 12.5 points, then a `DIVIDER` rule
 running to the right margin, as IntelliJ draws one. `settings_dialog::section`.

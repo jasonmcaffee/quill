@@ -203,6 +203,10 @@ pub struct Panes {
     pub terminal_height: f32,
     /// How much of the editing area the source takes in the side by side view, from 0.15 to 0.85.
     pub preview_fraction: f32,
+    /// How much of the `Find in Files` modal the results take, the rest going to the preview of the
+    /// file under them. A pane inside a modal is still a pane, so where its divider was left is
+    /// remembered like every other one.
+    pub find_split: f32,
 }
 
 impl Panes {
@@ -211,6 +215,7 @@ impl Panes {
             explorer_width: EXPLORER_WIDTH,
             terminal_height: TERMINAL_HEIGHT,
             preview_fraction: 0.5,
+            find_split: crate::components::find_in_files::SPLIT,
         }
     }
 
@@ -225,6 +230,12 @@ impl Panes {
         if let Some(fraction) = values.number("panes.preview.fraction") {
             panes.preview_fraction = fraction.clamp(0.15, 0.85);
         }
+        if let Some(fraction) = values.number("panes.find.split") {
+            panes.find_split = fraction.clamp(
+                crate::components::find_in_files::SPLIT_MIN,
+                crate::components::find_in_files::SPLIT_MAX,
+            );
+        }
         panes
     }
 
@@ -232,6 +243,7 @@ impl Panes {
         values.set("panes.explorer.width", format!("{:.0}", self.explorer_width));
         values.set("panes.terminal.height", format!("{:.0}", self.terminal_height));
         values.set("panes.preview.fraction", format!("{:.3}", self.preview_fraction));
+        values.set("panes.find.split", format!("{:.3}", self.find_split));
     }
 }
 
@@ -304,7 +316,12 @@ mod tests {
 
     #[test]
     fn pane_sizes_survive_being_written_and_read_back() {
-        let panes = Panes { explorer_width: 320.0, terminal_height: 400.0, preview_fraction: 0.3 };
+        let panes = Panes {
+            explorer_width: 320.0,
+            terminal_height: 400.0,
+            preview_fraction: 0.3,
+            find_split: 0.6,
+        };
         let mut values = Values::new();
         panes.write_into(&mut values);
         assert_eq!(Panes::read_from(&values), panes);

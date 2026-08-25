@@ -2,15 +2,18 @@
 
 pub mod file_clipboard;
 pub mod file_kind;
+pub mod file_search;
 pub mod file_tree;
 pub mod icons;
 pub mod launcher;
 pub mod native_menu;
 pub mod picture;
 pub mod plugins;
+pub mod preview_images;
 pub mod project_state;
 pub mod store;
 pub mod text_renderer;
+pub mod text_search;
 
 // Letting the desktop show through the window needs a DirectComposition swapchain and a cleared
 // redirection surface on Windows, and nothing at all anywhere else.

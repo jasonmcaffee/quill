@@ -191,6 +191,16 @@ showing. The size is also on the keyboard at command or control with plus and mi
 Size` to put it back, and on a trackpad pinch or the wheel with the modifier held over the editing area.
 Whichever of them is used, it is the one setting, so it is still there next time Quill starts.
 
+Finding things: `Ctrl/Cmd+Shift+O` opens `Go to File`, which narrows the project's files as a name is
+typed — the letters are matched in order rather than as a substring, so `mdrs` finds `markdown.rs` —
+and a double click or Enter opens the one that is chosen. `Ctrl/Cmd+Shift+F` opens `Find in Files`,
+which searches every file's text as you type, on a thread so the window never stops drawing, with
+`Match case` beside the box. Choosing a result shows the whole of the file it is in underneath the
+results with the matching line picked out; opening one opens the file with the match itself selected.
+
+Modals: every dialog in Quill is dragged by its header and resized from any of its four edges or four
+corners, and a double click on its header puts it back in the middle at the size it started.
+
 Files: any file holding text opens. A `.md` file is Markdown, which means the preview shows it rendered;
 everything else opens as plain text, whether Quill knows the file type or not, so a `.rs` or a `.js` file
 opens as what it is. A picture opens too, in a tab that shows it: `.png`, `.jpg`, `.gif`, `.bmp`, `.ico`,
@@ -319,7 +329,9 @@ Right to left and complex writing systems. Version one places one grapheme clust
 left to right, which is correct for Latin, Greek and Cyrillic and wrong for Arabic and Hindi. The
 `FontMetrics` boundary is where a shaping step would go.
 
-Search and replace, and several carets at once.
+Search and replace inside the open file, and several carets at once. `Find in Files` searches the
+project and opens what it finds; it does not replace, which is a destructive operation across a whole
+project and wants a ticket and a confirmation of its own.
 
 Code folding. The 12 point gap beside the line numbers is where its arrows would go, and nothing else
 about the gutter would have to move; what it needs is a notion of a block, which needs a real parser.
@@ -331,9 +343,11 @@ In the syntax colouring: a regular expression literal, which cannot be told from
 parsing; nested block comments in Rust; interpolation inside a template literal; and JSX. Each
 plugin says so on its own page in `Settings -> Plugins`.
 
-In the Markdown preview: tables, footnotes, images shown as pictures rather than as their text, reference
-style links, nested block quotes and HTML. Tables need layout Quill does not have; the rest are rare in
-prose.
+In the Markdown preview: tables, footnotes, reference style links, nested block quotes and HTML.
+Tables need layout Quill does not have; the rest are rare in prose. A picture **is** drawn, when it is
+the whole of a line and it is a file on this machine — one inside a line of prose stays its alt text,
+because it would need inline layout the engine does not have, and one with a scheme in front of it is
+refused, because Quill makes no network requests.
 
 In the terminal: images, the Kitty keyboard protocol, a blinking cursor, searching the scrollback, and
 choosing the shell in the settings. `tasks/quill-terminal-tdd.md` lists them with the reasons.

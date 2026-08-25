@@ -336,11 +336,21 @@ pub struct ParagraphStyle {
     pub align: Align,
     /// A multiplier on the line height. 1.0 is single spacing.
     pub line_spacing: f32,
+    /// The least this paragraph may be, in points. Zero means "as tall as its own letters", which
+    /// is what every paragraph of a document is.
+    ///
+    /// It exists for the Markdown preview, where a line holding a picture has to be as tall as the
+    /// picture and the layout engine has no notion of anything but glyphs. The application works
+    /// out how tall the picture is drawn — which depends on the width of the pane, and so is known
+    /// only where the window draws — and asks for a paragraph at least that tall. Keeping it here
+    /// rather than teaching layout about images is what keeps this crate free of any user interface
+    /// dependency.
+    pub min_height: f32,
 }
 
 impl Default for ParagraphStyle {
     fn default() -> Self {
-        Self { align: Align::Left, line_spacing: 1.0 }
+        Self { align: Align::Left, line_spacing: 1.0, min_height: 0.0 }
     }
 }
 

@@ -184,7 +184,8 @@ pub fn layout(
         if clusters.is_empty() {
             // An empty paragraph is still a line, so the caret has somewhere to sit.
             let line_metrics = metrics.line_metrics(&empty_style);
-            let height = line_metrics.height() * paragraph_style.line_spacing;
+            let height =
+                (line_metrics.height() * paragraph_style.line_spacing).max(paragraph_style.min_height);
             lines.push(PlacedLine {
                 y,
                 height,
@@ -307,7 +308,10 @@ pub fn layout(
                 descent = line_metrics.descent;
                 natural = line_metrics.height();
             }
-            let height = natural * paragraph_style.line_spacing;
+            // A paragraph may ask to be at least so tall, which is how the Markdown preview leaves
+            // room for a picture. It is a floor and never a ceiling: a line of large letters is as
+            // tall as its letters whatever it asked for.
+            let height = (natural * paragraph_style.line_spacing).max(paragraph_style.min_height);
 
             let start = slice.first().map(|(_, c)| c.bytes.start).unwrap_or(bytes.start);
             let end = slice.last().map(|(_, c)| c.bytes.end).unwrap_or(bytes.start);
@@ -840,4 +844,25 @@ mod tests {
         assert_eq!(clusters[0].bytes, 0..3);
         assert_eq!(clusters[1].x, 10.0);
     }
+
+    #[test]
+    fn a_paragraph_can_ask_to_be_at_least_so_tall_which_is_how_a_picture_gets_its_room() {
+        let (rope, spans, mut paragraphs) = fixture("above\n\nbelow");
+        paragraphs.set(1..2, |style| style.min_height = 240.0);
+        let laid = layout(&rope, &spans, &paragraphs, &FixedMetrics::default(), 400.0);
+        assert_eq!(laid.lines.len(), 3);
+        assert_eq!(laid.lines[1].height, 240.0, "the empty line holding the picture");
+        assert!(laid.lines[0].height < 240.0, "and no other line moved");
+        assert_eq!(laid.lines[2].y, laid.lines[1].y + 240.0, "what is under it is pushed down");
+    }
+
+    #[test]
+    fn asking_for_a_height_shorter_than_the_letters_changes_nothing() {
+        let (rope, spans, mut paragraphs) = fixture("words");
+        let natural = layout(&rope, &spans, &paragraphs, &FixedMetrics::default(), 400.0).lines[0].height;
+        paragraphs.set(0..1, |style| style.min_height = 1.0);
+        let asked = layout(&rope, &spans, &paragraphs, &FixedMetrics::default(), 400.0).lines[0].height;
+        assert_eq!(asked, natural, "it is a floor, never a ceiling");
+    }
+
 }

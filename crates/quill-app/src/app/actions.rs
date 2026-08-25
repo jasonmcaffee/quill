@@ -26,6 +26,14 @@ pub enum Action {
     OpenFolder,
     /// Choose a file and open it in the editor.
     OpenFile,
+    /// Open the `Go to File` modal: type part of a name, and open the file it finds.
+    ///
+    /// A different thing from [`Action::OpenFile`], which asks the platform for a file anywhere on
+    /// the disk. This searches the project that is open, which is what a person means nine times out
+    /// of ten and is what IntelliJ's `Go to File` is.
+    GoToFile,
+    /// Open the `Find in Files` modal: search every file in the project for some text.
+    FindInFiles,
     /// Open a project that has been open before, in a window of its own.
     OpenRecent(PathBuf),
     /// Forget the recent projects.
@@ -517,12 +525,21 @@ fn file_menu(state: &MenuState) -> Menu {
         ),
         Entry::Separator,
         Entry::with_shortcut("Open File", Action::OpenFile, Shortcut::command(egui::Key::O)),
+        // Searching the project rather than the disk, which is what `task-1659` asks for and what
+        // IntelliJ puts on this key. It took the shortcut `Open Folder` used to have, because two
+        // menu items claiming one key equivalent is a fault on macOS and there is a test for it;
+        // `Open Folder` moved one modifier along, to the key nothing else was using.
+        Entry::with_shortcut(
+            "Go to File...",
+            Action::GoToFile,
+            Shortcut::command_shift(egui::Key::O),
+        ),
         // A project of its own in a window of its own, which is how a second project is opened without
         // giving up the one that is open.
         Entry::with_shortcut(
             "Open Folder",
             Action::OpenFolder,
-            Shortcut::command_shift(egui::Key::O),
+            Shortcut { alt: true, ..Shortcut::command(egui::Key::O) },
         ),
         Entry::Submenu { name: "Recent Projects".to_owned(), entries: recent_entries(state) },
         Entry::Separator,
@@ -581,6 +598,14 @@ fn edit_menu(state: &MenuState) -> Menu {
             Entry::with_shortcut("Paste", Action::Paste, Shortcut::command(egui::Key::V))
                 .not_from_the_keyboard(),
             Entry::with_shortcut("Select All", Action::SelectAll, Shortcut::command(egui::Key::A)),
+            Entry::Separator,
+            // IntelliJ keeps this under `Edit -> Find`, one level further down. Quill's Edit menu is
+            // eight entries long and a submenu holding one thing is a step for nothing.
+            Entry::with_shortcut(
+                "Find in Files...",
+                Action::FindInFiles,
+                Shortcut::command_shift(egui::Key::F),
+            ),
             Entry::Separator,
             Entry::with_shortcut("Settings", Action::Settings, Shortcut::command(egui::Key::Comma)),
         ],

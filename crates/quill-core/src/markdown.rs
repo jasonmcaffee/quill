@@ -10,11 +10,24 @@
 //! bottom of this comment.
 //!
 //! Handled: headings one to six, bold, italic, bold italic, strikethrough, inline code, fenced code blocks,
-//! indented bullet lists, numbered lists, block quotes, horizontal rules, links and hard line breaks.
+//! indented bullet lists, numbered lists, block quotes, horizontal rules, links, hard line breaks, and
+//! images on a line of their own.
 //!
-//! Not handled: tables, footnotes, images as pictures rather than as their text, reference style links,
-//! nested block quotes, and HTML. Each of those either needs layout Quill does not have yet, such as a
-//! table, or is rare in prose.
+//! Not handled: tables, footnotes, reference style links, nested block quotes, and HTML. Each of those
+//! either needs layout Quill does not have yet, such as a table, or is rare in prose.
+//!
+//! ## Images
+//!
+//! A line whose whole content is an image mark becomes an **empty paragraph** and an entry in
+//! [`Preview::images`]. Empty rather than carrying the alt text, because the application draws that
+//! line itself: the picture once it has decoded it, and the alt text in the quiet colour when it
+//! cannot. Nothing here reads a file or knows what a picture is — this crate has no user interface
+//! dependency and cannot decode one — so what it produces is the place the picture goes and the name
+//! of the file it is in.
+//!
+//! An image mark **inside** a line of prose is shown as its alt text in the quiet colour. A picture
+//! in the middle of a paragraph needs inline layout the engine does not have, and the alt text is
+//! what a reader wants in its place.
 
 use crate::rope::Rope;
 use crate::style::{Align, CharStyle, Color, ParagraphStyle, ParagraphStyles, StyleChange, StyleSpans};
@@ -49,12 +62,29 @@ impl Default for PreviewColors {
     }
 }
 
+/// A picture the preview should draw, and where in the preview it goes.
+///
+/// The paragraph it names holds no text. Whoever draws the preview decides how large the picture is
+/// — which depends on the width of the pane and so cannot be known here — asks that paragraph to be
+/// at least that tall through `ParagraphStyle::min_height`, and paints the picture into it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreviewImage {
+    /// Which paragraph of [`Preview::text`] stands in for the picture.
+    pub paragraph: usize,
+    /// What was between the brackets: a path, usually relative to the document's own folder.
+    pub source: String,
+    /// The words to show when the picture cannot be drawn.
+    pub alt: String,
+}
+
 /// Markdown turned into text that Quill can lay out.
 #[derive(Debug, Clone)]
 pub struct Preview {
     pub text: Rope,
     pub chars: StyleSpans,
     pub paragraphs: ParagraphStyles,
+    /// The pictures, in the order they appear.
+    pub images: Vec<PreviewImage>,
 }
 
 impl Preview {
@@ -64,6 +94,7 @@ impl Preview {
             text: Rope::new(),
             chars: StyleSpans::new(0, base.clone()),
             paragraphs: ParagraphStyles::new(1),
+            images: Vec::new(),
         }
     }
 }
@@ -79,11 +110,21 @@ struct Builder {
     colors: PreviewColors,
     /// The family to set code in, if this system has a monospaced one.
     mono: Option<String>,
+    /// The pictures found so far, each naming the paragraph it takes the place of.
+    images: Vec<PreviewImage>,
 }
 
 impl Builder {
     fn new(base: CharStyle, colors: PreviewColors, mono: Option<String>) -> Self {
-        Self { out: String::new(), runs: Vec::new(), paragraphs: Vec::new(), base, colors, mono }
+        Self {
+            out: String::new(),
+            runs: Vec::new(),
+            paragraphs: Vec::new(),
+            base,
+            colors,
+            mono,
+            images: Vec::new(),
+        }
     }
 
     /// Add text in `style`. Neighbouring runs with the same style are folded together, so a line of plain
@@ -109,6 +150,16 @@ impl Builder {
             Some((length, last)) if *last == style => *length += 1,
             _ => self.runs.push((1, style)),
         }
+    }
+
+    /// Record a picture, taking the paragraph that is about to be ended. The line itself is left
+    /// empty, because the picture is drawn over it rather than beside anything.
+    fn image(&mut self, source: &str, alt: &str) {
+        self.images.push(PreviewImage {
+            paragraph: self.paragraphs.len(),
+            source: source.to_owned(),
+            alt: alt.to_owned(),
+        });
     }
 
     fn finish(mut self) -> Preview {
@@ -139,6 +190,7 @@ impl Builder {
             text: Rope::from_str(&self.out),
             chars,
             paragraphs: ParagraphStyles::from_styles(self.paragraphs),
+            images: self.images,
         }
     }
 
@@ -168,6 +220,8 @@ fn full_change(style: &CharStyle) -> StyleChange {
 /// What kind of line this is.
 enum Line<'a> {
     Heading { level: usize, text: &'a str },
+    /// A line holding nothing but a picture.
+    Image { source: &'a str, alt: &'a str },
     Bullet { indent: usize, text: &'a str },
     Numbered { indent: usize, number: &'a str, text: &'a str },
     Quote { text: &'a str },
@@ -188,6 +242,11 @@ fn classify(line: &str) -> Line<'_> {
     }
     if body.starts_with("```") || body.starts_with("~~~") {
         return Line::Fence;
+    }
+    // A picture on a line of its own. Only on its own: a picture with words beside it would need the
+    // words laid out round it, and the alt text is what stands in for one inside a paragraph.
+    if let Some((source, alt)) = whole_line_image(body) {
+        return Line::Image { source, alt };
     }
     // A rule is three or more of the same mark and nothing else.
     if body.len() >= 3 {
@@ -230,6 +289,27 @@ fn classify(line: &str) -> Line<'_> {
     Line::Paragraph(body)
 }
 
+/// Read an image mark when it is the whole of a line, and nothing else.
+///
+/// Returns the source and the alt text. An empty source is not a picture: it names no file, and a
+/// paragraph reserved for nothing would be a gap in the page.
+fn whole_line_image(body: &str) -> Option<(&str, &str)> {
+    let rest = body.strip_prefix("![")?;
+    let close = rest.find("](")?;
+    let alt = &rest[..close];
+    let after = &rest[close + 2..];
+    let end = after.rfind(')')?;
+    // Everything after the closing bracket has to be nothing, or this is a line with words on it.
+    if !after[end + 1..].trim().is_empty() {
+        return None;
+    }
+    let source = after[..end].trim();
+    if source.is_empty() {
+        return None;
+    }
+    Some((source, alt))
+}
+
 /// Read `source` as Markdown and produce text Quill can lay out.
 ///
 /// `base` gives the family, the size and the colour of ordinary text; everything else is worked out from
@@ -256,13 +336,19 @@ pub fn render(
             // Inside a fence, nothing is interpreted: the text is shown as it was written.
             let style = builder.code_style(body_size * 0.95);
             builder.push(raw, style);
-            builder.end_line(ParagraphStyle { align: Align::Left, line_spacing: 1.0 });
+            builder.end_line(ParagraphStyle { align: Align::Left, line_spacing: 1.0, ..ParagraphStyle::default() });
             continue;
         }
 
         match line {
             Line::Fence => {
                 in_code_block = true;
+            }
+            Line::Image { source, alt } => {
+                // The paragraph is left empty and the application paints the picture into it. How
+                // tall it has to be depends on how wide the pane is, which is not known here.
+                builder.image(source, alt);
+                builder.end_line(ParagraphStyle::default());
             }
             Line::Blank => {
                 builder.push(" ", builder.base.clone());
@@ -288,7 +374,7 @@ pub fn render(
                     ..builder.base.clone()
                 };
                 inline(&mut builder, text, &style);
-                builder.end_line(ParagraphStyle { align: Align::Left, line_spacing: 1.15 });
+                builder.end_line(ParagraphStyle { align: Align::Left, line_spacing: 1.15, ..ParagraphStyle::default() });
             }
             Line::Bullet { indent, text } => {
                 let level = indent / 2;
@@ -384,6 +470,23 @@ fn inline(builder: &mut Builder, text: &str, style: &CharStyle) {
                 at += 1 + end + 1;
                 plain_from = at;
                 continue;
+            }
+        }
+
+        // A picture inside a line of prose: its alt text, in the quiet colour, because a picture in
+        // the middle of a paragraph needs inline layout the engine does not have. Before the link
+        // below it, so that the mark is not left behind as a stray character in front of the label.
+        if rest.starts_with("![") {
+            if let Some(close) = rest.find("](") {
+                if let Some(end) = rest[close + 2..].find(')') {
+                    flush!(at);
+                    let label = &rest[2..close];
+                    let quiet = CharStyle { color: builder.colors.quiet, ..style.clone() };
+                    builder.push(label, quiet);
+                    at += close + 2 + end + 1;
+                    plain_from = at;
+                    continue;
+                }
             }
         }
 
@@ -550,6 +653,53 @@ mod tests {
     fn an_unclosed_backtick_is_shown_as_itself() {
         let preview = preview("a ` lone backtick");
         assert_eq!(preview.text.to_string(), "a ` lone backtick");
+    }
+
+    #[test]
+    fn a_line_holding_only_a_picture_becomes_an_empty_paragraph_and_a_picture() {
+        let preview = preview("before\n![a diagram](diagram.png)\nafter");
+        assert_eq!(preview.images.len(), 1);
+        let image = &preview.images[0];
+        assert_eq!(image.source, "diagram.png");
+        assert_eq!(image.alt, "a diagram");
+        assert_eq!(image.paragraph, 1, "the line between the two words");
+        let lines: Vec<String> = preview.text.to_string().lines().map(str::to_owned).collect();
+        assert_eq!(lines[1], "", "the line is empty: the application paints the picture into it");
+    }
+
+    #[test]
+    fn a_picture_inside_a_line_of_prose_is_shown_as_its_alt_text() {
+        let preview = preview("see ![the chart](chart.png) here");
+        assert!(preview.images.is_empty(), "a picture in a paragraph is not laid out as a picture");
+        assert_eq!(preview.text.to_string(), "see the chart here", "and the mark itself is gone");
+        assert_eq!(style_of(&preview, "the chart").color, PreviewColors::default().quiet);
+    }
+
+    #[test]
+    fn a_picture_with_no_source_is_not_a_picture() {
+        let preview = preview("![alt]()");
+        assert!(preview.images.is_empty(), "there is no file to draw");
+    }
+
+    #[test]
+    fn a_picture_with_words_after_it_stays_a_paragraph() {
+        let preview = preview("![alt](picture.png) and some words");
+        assert!(preview.images.is_empty());
+        assert_eq!(preview.text.to_string(), "alt and some words");
+    }
+
+    #[test]
+    fn a_link_that_is_not_a_picture_is_still_a_link() {
+        let preview = preview("[the readme](readme.md)");
+        assert!(preview.images.is_empty());
+        assert_eq!(style_of(&preview, "the readme").color, PreviewColors::default().link);
+    }
+
+    #[test]
+    fn several_pictures_each_name_their_own_paragraph() {
+        let preview = preview("![one](a.png)\n\n![two](b.png)");
+        let paragraphs: Vec<usize> = preview.images.iter().map(|image| image.paragraph).collect();
+        assert_eq!(paragraphs, vec![0, 2]);
     }
 
     #[test]

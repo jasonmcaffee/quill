@@ -12,6 +12,7 @@
 use egui::{CornerRadius, Pos2, Rect, Sense, Stroke, Vec2};
 
 use crate::components::controls;
+use crate::components::modal;
 use crate::components::plugins_page::{self, PluginsOutcome, PluginsState};
 use crate::services::plugins::Plugins;
 use crate::settings::{Page, Settings, FONT_SIZES, MIN_OPACITY, TERMINAL_FONT_SIZES};
@@ -69,28 +70,17 @@ pub fn show(
         return outcome;
     }
 
-    let response = egui::Modal::new(egui::Id::new("quill-settings"))
-        .backdrop_color(egui::Color32::from_black_alpha(120))
-        .frame(
-            egui::Frame::NONE
-                .fill(color::EXPLORER)
-                .stroke(Stroke::new(1.0, color::CONTROL_BORDER))
-                .corner_radius(CornerRadius::same(10)),
-        )
-        .show(ctx, |ui| {
-            // The window is drawn into one rectangle, the way every other part of Quill is, rather than
-            // through egui's own layout, so the columns line up with the design.
-            let available = ctx.content_rect().size();
-            let width = WIDTH.min(available.x - 40.0);
-            let height = HEIGHT.min(available.y - 40.0);
-            let (area, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
-            contents(ui, area, state, settings, families, project, plugins, installed_on_disk, icon_for)
-        });
+    // The window is drawn into one rectangle, the way every other part of Quill is, rather than
+    // through egui's own layout, so the columns line up with the design. `components::modal` is what
+    // decides how large that rectangle is and where it sits, which is also what makes the Settings
+    // window draggable and resizable along with every other modal.
+    let (inner, should_close) = modal::show(ctx, "quill-settings", WIDTH, HEIGHT, |ui, area| {
+        contents(ui, area, state, settings, families, project, plugins, installed_on_disk, icon_for)
+    });
 
-    let should_close = response.should_close();
-    outcome.changed = response.inner.changed;
-    let inner_closed = response.inner.closed;
-    outcome.plugins = response.inner.plugins;
+    outcome.changed = inner.changed;
+    let inner_closed = inner.closed;
+    outcome.plugins = inner.plugins;
     if inner_closed || should_close {
         state.open = false;
         outcome.closed = true;

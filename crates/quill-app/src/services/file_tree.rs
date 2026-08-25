@@ -287,6 +287,9 @@ fn walk_files(root: &Path, depth: usize) -> Vec<PathBuf> {
         };
         for entry in entries {
             if entry.is_directory {
+                if is_build_output(&entry.name) {
+                    continue;
+                }
                 walk(&entry.path, remaining - 1, out);
             } else {
                 out.push(entry.path);
@@ -295,6 +298,21 @@ fn walk_files(root: &Path, depth: usize) -> Vec<PathBuf> {
     }
     walk(root, depth, &mut out);
     out
+}
+
+/// Folders holding what a build wrote rather than what a person did.
+///
+/// They are still **shown** in the explorer — it is a picture of the folder and hiding most of it is
+/// exactly what this file's own comment at the top refuses to do. They are left out of the list that
+/// [`FileTree::all_files`] holds, which is what the filter box, `Go to File` and `Find in Files`
+/// search, because a search that answers with a thousand `.rlib` files from `target/deps` has not
+/// answered.
+///
+/// Three names only, and each is a folder nobody writes a source file into. `build`, `dist` and
+/// `out` are **not** here on purpose: those are real folders in real projects, and a search that
+/// silently missed a file in one would be worse than one that offered a few too many.
+fn is_build_output(name: &str) -> bool {
+    matches!(name, "target" | "node_modules" | "__pycache__")
 }
 
 /// Read one directory: folders first, then files, both sorted by name.
@@ -376,6 +394,28 @@ mod tests {
             ]
         );
         assert!(!names.contains(&".hidden"), "hidden entries are not listed");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn what_a_build_wrote_is_shown_in_the_tree_and_left_out_of_what_is_searched() {
+        let root = sample_folder("quill-tree-build-output");
+        std::fs::create_dir_all(root.join("target/debug")).expect("make a build folder");
+        std::fs::write(root.join("target/debug/library.rlib"), "not source").expect("write it");
+        let tree = FileTree::new(&root);
+        let names: Vec<&str> = tree.rows().iter().map(|row| row.entry.name.as_str()).collect();
+        assert!(names.contains(&"target"), "the explorer is a picture of the folder: {names:?}");
+        let searched: Vec<&str> = tree
+            .all_files()
+            .iter()
+            .filter_map(|path| path.file_name().and_then(|name| name.to_str()))
+            .collect();
+        assert!(
+            !searched.contains(&"library.rlib"),
+            "but a search that answers with build output has not answered: {searched:?}"
+        );
+        assert!(searched.contains(&"readme.md"), "and the project's own files are still there");
+        assert!(tree.matching("library").is_empty(), "the filter box searches the same list");
         std::fs::remove_dir_all(&root).ok();
     }
 

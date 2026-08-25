@@ -13,9 +13,11 @@ use std::path::PathBuf;
 
 use egui::{CornerRadius, Pos2, Rect, Sense, Stroke, Vec2};
 
+use crate::components::modal;
 use crate::theme::{color, size};
 
 const WIDTH: f32 = 460.0;
+const HEIGHT: f32 = 190.0;
 const HEADER: f32 = 46.0;
 const FOOTER: f32 = 52.0;
 
@@ -77,7 +79,7 @@ pub struct PromptOutcome {
 /// Draw the prompt. The caller owns whether there is one at all.
 pub fn show(ctx: &egui::Context, prompt: &mut Prompt) -> PromptOutcome {
     let mut outcome = PromptOutcome::default();
-    let response = modal("quill-prompt", ctx, |ui, area| {
+    let closed = modal("quill-prompt", ctx, |ui, area| {
         header(ui, area, &prompt.title, &mut outcome.cancelled);
         let body = body_rect(area);
         note(ui, body, &prompt.note);
@@ -115,10 +117,7 @@ pub fn show(ctx: &egui::Context, prompt: &mut Prompt) -> PromptOutcome {
 
         buttons(ui, area, &prompt.confirm, !prompt.value.trim().is_empty(), &mut outcome);
     });
-    if response.map(|inner| inner.should_close()).unwrap_or(false) {
-        outcome.cancelled = true;
-    }
-    if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+    if closed {
         outcome.cancelled = true;
     }
     outcome
@@ -137,41 +136,26 @@ pub struct Confirmation {
 /// Draw a confirmation.
 pub fn confirm(ctx: &egui::Context, question: &Confirmation) -> PromptOutcome {
     let mut outcome = PromptOutcome::default();
-    let response = modal("quill-confirm", ctx, |ui, area| {
+    let closed = modal("quill-confirm", ctx, |ui, area| {
         header(ui, area, &question.title, &mut outcome.cancelled);
         note(ui, body_rect(area), &question.note);
         buttons(ui, area, &question.confirm, true, &mut outcome);
     });
-    if response.map(|inner| inner.should_close()).unwrap_or(false) {
-        outcome.cancelled = true;
-    }
-    if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+    if closed {
         outcome.cancelled = true;
     }
     outcome
 }
 
 /// The frame both of them are drawn in, which is the frame `design/style-guide.md` describes.
-fn modal(
-    id: &str,
-    ctx: &egui::Context,
-    contents: impl FnOnce(&mut egui::Ui, Rect),
-) -> Option<egui::Response> {
-    let response = egui::Modal::new(egui::Id::new(id))
-        .backdrop_color(egui::Color32::from_black_alpha(120))
-        .frame(
-            egui::Frame::NONE
-                .fill(color::EXPLORER)
-                .stroke(Stroke::new(1.0, color::CONTROL_BORDER))
-                .corner_radius(CornerRadius::same(10)),
-        )
-        .show(ctx, |ui| {
-            let available = ctx.content_rect().size();
-            let width = WIDTH.min(available.x - 40.0);
-            let (area, _) = ui.allocate_exact_size(Vec2::new(width, 190.0), Sense::hover());
-            contents(ui, area);
-        });
-    Some(response.response)
+///
+/// `components::modal` owns that frame, and owns the dragging and the resizing with it, so the
+/// prompt and the confirmation are moved and resized exactly as the Settings window and the git
+/// dialogs are. This function is what remains of the copy that used to live here: the two sizes, and
+/// the name the placement is remembered under.
+fn modal(id: &str, ctx: &egui::Context, contents: impl FnOnce(&mut egui::Ui, Rect)) -> bool {
+    let (_, close) = modal::show(ctx, id, WIDTH, HEIGHT, |ui, area| contents(ui, area));
+    close
 }
 
 fn body_rect(area: Rect) -> Rect {
