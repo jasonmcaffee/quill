@@ -47,6 +47,19 @@ pub use ops::{PullStrategy, PushTarget, Remote, ResetMode, Stash};
 pub use status::{Entry, State, Status};
 pub use worker::{Reply, Request, Worker};
 
+/// A path with every symlink in it resolved, which still answers for a file that is no longer there.
+///
+/// `std::fs::canonicalize` needs the whole path to exist, and git talks about paths that have been
+/// deleted, so the folder is resolved and the name put back on the end.
+fn resolve(path: &Path) -> Option<PathBuf> {
+    if let Ok(resolved) = std::fs::canonicalize(path) {
+        return Some(resolved);
+    }
+    let parent = path.parent()?;
+    let name = path.file_name()?;
+    Some(std::fs::canonicalize(parent).ok()?.join(name))
+}
+
 /// A git repository, found from a folder inside it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Repository {
@@ -88,8 +101,25 @@ impl Repository {
 
     /// A path relative to the root, spelled the way git spells one, or `None` when the path is not
     /// inside this repository.
+    ///
+    /// Taking the prefix off is the whole job when both paths name the folder the same way, and that
+    /// is not always true. `git rev-parse --show-toplevel` resolves every symlink in the path it
+    /// answers with; the path the window holds is the one it was given. On macOS the temporary folder
+    /// is `/var/folders/...` and `/var` is a symlink to `/private/var`, so the two spellings of one
+    /// folder differ from the first character, and so does any project reached through a symlink on
+    /// either platform.
+    ///
+    /// So when the plain prefix does not match, both are resolved and it is tried again. Found by
+    /// running the git tests on a Mac: staging a file did nothing at all, because every path in the
+    /// repository was outside it as far as this function could tell.
     pub fn relative(&self, path: &Path) -> Option<String> {
-        let rest = path.strip_prefix(&self.root).ok()?;
+        let rest = match path.strip_prefix(&self.root) {
+            Ok(rest) => rest.to_path_buf(),
+            Err(_) => {
+                let root = std::fs::canonicalize(&self.root).ok()?;
+                resolve(path)?.strip_prefix(&root).ok()?.to_path_buf()
+            }
+        };
         let text = rest.to_string_lossy().replace('\\', "/");
         (!text.is_empty()).then_some(text)
     }
@@ -145,6 +175,63 @@ mod tests {
         );
         assert_eq!(repository.relative(Path::new("/home/jason/other/thing.md")), None);
         assert_eq!(repository.relative(Path::new("/home/jason/quill")), None, "the root itself is not a path in it");
+    }
+
+    /// The fault this found on a Mac: a repository reached through a symlink had no paths in it.
+    ///
+    /// Every temporary folder on macOS is behind one, so this is the ordinary case there rather than an
+    /// unusual one, and it is what made every git operation in the screenshot tests do nothing.
+    #[test]
+    fn a_path_reached_through_a_symlink_is_still_inside_the_repository() {
+        let base = std::env::temp_dir().join("quill-git-symlink");
+        std::fs::remove_dir_all(&base).ok();
+        std::fs::create_dir_all(base.join("real")).expect("make the real folder");
+        let file = base.join("real/version.ts");
+        std::fs::write(&file, "export const version = '0.1.0';\n").expect("write the file");
+        let link = base.join("through-a-link");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(base.join("real"), &link).expect("make the symlink");
+        #[cfg(windows)]
+        if std::os::windows::fs::symlink_dir(base.join("real"), &link).is_err() {
+            // Windows needs either developer mode or an administrator to make one, and a machine
+            // without it is not a machine this fault can happen on.
+            return;
+        }
+
+        // The root as git spells it, and the same file named through the link. That is the shape the
+        // window is in whenever the folder it was given is not the folder git resolves to.
+        let repository = Repository { root: std::fs::canonicalize(base.join("real")).expect("resolve") };
+        assert_eq!(
+            repository.relative(&link.join("version.ts")),
+            Some("version.ts".to_owned()),
+            "a path through the symlink names the same file and belongs to the repository"
+        );
+        // And the other way round: an unresolved root with a resolved path.
+        let unresolved = Repository { root: link.clone() };
+        assert_eq!(
+            unresolved.relative(&std::fs::canonicalize(&file).expect("resolve")),
+            Some("version.ts".to_owned())
+        );
+        // A file that has been deleted is still made relative, because git talks about those.
+        std::fs::remove_file(&file).expect("delete it");
+        assert_eq!(
+            repository.relative(&link.join("version.ts")),
+            Some("version.ts".to_owned()),
+            "a deleted file has to work: git status names it"
+        );
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn a_path_outside_the_repository_is_still_none_when_symlinks_are_resolved() {
+        let base = std::env::temp_dir().join("quill-git-outside");
+        std::fs::remove_dir_all(&base).ok();
+        std::fs::create_dir_all(base.join("inside")).expect("make the folder");
+        std::fs::create_dir_all(base.join("outside")).expect("make the other folder");
+        std::fs::write(base.join("outside/thing.md"), "elsewhere\n").expect("write it");
+        let repository = Repository { root: std::fs::canonicalize(base.join("inside")).expect("resolve") };
+        assert_eq!(repository.relative(&base.join("outside/thing.md")), None);
+        std::fs::remove_dir_all(&base).ok();
     }
 
     #[test]
