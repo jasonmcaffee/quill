@@ -54,6 +54,9 @@ the editing area, the terminal along the bottom when it is showing, and a status
 out of `design/intial-design-screenshot.png` rather than chosen by eye; run `cargo run --example sample_design`
 to print the colour of each region of that image.
 
+`documentation/overview.md` is the whole of this file in pictures: eighteen captures of the running window,
+each cropped with a margin of desktop round it so that what shows through the background is visible.
+
 `design/verification/live-window-over-desktop.png` is a capture of the running window over a real desktop.
 The wallpaper is visible through the explorer, the editing area and the status bar, and every piece of text
 is solid on top of it, which is what the opacity setting is for. It was taken before the font controls moved

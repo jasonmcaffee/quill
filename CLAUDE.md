@@ -216,6 +216,7 @@ trade that away to be a shade nearer a screenshot.
 ## The documents
 
 - `README.md` — what Quill is and how to run it.
+- `documentation/overview.md` — what Quill looks like: a capture of each part of the window, over a real desktop.
 - `design/style-guide.md` — how a control in Quill is built, and what the baselines are.
 - `tasks/quill-ide-tdd.md` — the line numbers, the tabs, the explorer's menu, git and the plugins:
   what was chosen, what was rejected and why.
