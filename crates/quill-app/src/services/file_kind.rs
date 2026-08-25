@@ -43,7 +43,7 @@ const TEXT_EXTENSIONS: &[&str] = &[
     "exs", "erl", "hrl", "hs", "ml", "nim", "zig", "v", "sh", "bash", "zsh", "fish", "ps1", "bat",
     "cmd", "make", "mk", "cmake", "gradle", "properties", "ini", "cfg", "conf", "env", "editorconfig",
     "gitignore", "gitattributes", "dockerfile", "sql", "graphql", "gql", "proto", "diff", "patch",
-    "plist", "srt", "vtt", "ipynb",
+    "plist", "srt", "vtt", "ipynb", "mmd", "mermaid",
 ];
 
 /// Extensions that hold something other than text, so there is no point reading them.
@@ -181,6 +181,7 @@ pub fn kind_name(path: Option<&Path>) -> &'static str {
     }
     match extension(path).as_deref() {
         Some("md" | "markdown" | "mdx") => "Markdown",
+        Some("mmd" | "mermaid") => "Mermaid",
         Some("txt" | "text") => "Plain text",
         Some("rs") => "Rust",
         Some("toml") => "TOML",
@@ -231,12 +232,13 @@ pub fn formatting_applies(path: Option<&Path>) -> bool {
 
 /// True when the three view mode buttons and their menu entries are worth offering.
 ///
-/// A file whose source is not Markdown has no preview to show, so switching to one shows the
-/// Markdown parser's reading of a file that was never Markdown. That leaves the files the preview is
-/// meant for, and a document that has not been saved anywhere yet: it has no extension to go on, it
-/// is very often the beginning of a Markdown file, and it is the one Quill starts with.
+/// A file whose source is neither Markdown nor Mermaid has no preview to show, so switching to one
+/// would show the Markdown parser's reading of a file that was never Markdown. That leaves the two
+/// kinds the preview is meant for, and a document that has not been saved anywhere yet: it has no
+/// extension to go on, it is very often the beginning of a Markdown file, and it is the one Quill
+/// starts with.
 pub fn preview_applies(path: Option<&Path>) -> bool {
-    path.is_none() || is_markdown(path)
+    path.is_none() || is_markdown(path) || is_mermaid(path)
 }
 
 /// True for the files the Markdown preview is meant for.
@@ -245,6 +247,39 @@ pub fn is_markdown(path: Option<&Path>) -> bool {
         path.and_then(extension).as_deref(),
         Some("md" | "markdown" | "mdx")
     )
+}
+
+/// True for the files that are a Mermaid diagram all the way through.
+///
+/// A `.mmd` file is text, so it opens and is edited like any other; what this decides is that its
+/// preview is a **drawn diagram** rather than the Markdown parser's reading of it. `task-1660`
+/// asks for the same three view modes a `.md` file has, and this is the one function that gives
+/// them, because the buttons, the `View` menu, the keyboard and `quill-cli editor view` all ask
+/// [`preview_applies`] rather than looking at the extension themselves.
+pub fn is_mermaid(path: Option<&Path>) -> bool {
+    matches!(path.and_then(extension).as_deref(), Some("mmd" | "mermaid"))
+}
+
+/// Which of the two kinds of preview a file has.
+///
+/// The three view mode buttons take this, so that a `.md` file's read `Raw Markdown` and a
+/// `.mmd` file's read `Raw Mermaid`. A button that said `Markdown preview` over a Mermaid
+/// diagram would be a small wrongness a reader notices immediately.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PreviewKind {
+    #[default]
+    Markdown,
+    Mermaid,
+}
+
+/// What kind of preview this file has. Markdown for anything that is not plainly a diagram, which
+/// includes a document that has not been saved anywhere yet.
+pub fn preview_kind(path: Option<&Path>) -> PreviewKind {
+    if is_mermaid(path) {
+        PreviewKind::Mermaid
+    } else {
+        PreviewKind::Markdown
+    }
 }
 
 fn extension(path: &Path) -> Option<String> {
@@ -383,9 +418,37 @@ mod tests {
     }
 
     #[test]
-    fn only_markdown_gets_the_preview() {
+    fn only_markdown_gets_the_markdown_preview() {
         assert!(is_markdown(Some(Path::new("a.md"))));
         assert!(!is_markdown(Some(Path::new("a.txt"))));
+        assert!(!is_markdown(Some(Path::new("a.mmd"))));
         assert!(!is_markdown(None));
+    }
+
+    #[test]
+    fn a_mermaid_file_is_text_and_has_a_preview_of_its_own() {
+        for name in ["diagram.mmd", "flow.mermaid", "FLOW.MMD"] {
+            let path = Path::new(name);
+            assert!(is_text(path), "{name} is text and opens in the editor");
+            assert!(is_mermaid(Some(path)), "{name} is a diagram");
+            assert!(preview_applies(Some(path)), "{name} gets the three view modes");
+            assert_eq!(preview_kind(Some(path)), PreviewKind::Mermaid);
+            assert_eq!(kind_name(Some(path)), "Mermaid");
+        }
+    }
+
+    #[test]
+    fn a_mermaid_file_gets_no_formatting_because_it_is_not_prose() {
+        // The `F` button is about how prose is shown, and none of it means anything in a diagram.
+        let path = Path::new("diagram.mmd");
+        assert!(!formatting_applies(Some(path)));
+        assert!(preview_applies(Some(path)));
+    }
+
+    #[test]
+    fn a_markdown_file_keeps_the_preview_kind_it_always_had() {
+        assert_eq!(preview_kind(Some(Path::new("a.md"))), PreviewKind::Markdown);
+        assert_eq!(preview_kind(None), PreviewKind::Markdown, "an unsaved document is prose");
+        assert_eq!(preview_kind(Some(Path::new("a.rs"))), PreviewKind::Markdown);
     }
 }

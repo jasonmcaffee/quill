@@ -71,6 +71,19 @@ path = "examples/scale.rs"
 name = "crop"
 path = "examples/crop.rs"
 
+[[example]]
+name = "plugin_icon"
+path = "examples/plugin_icon.rs"
+
+[[example]]
+name = "mermaid_check"
+path = "examples/mermaid_check.rs"
+
+[[example]]
+name = "mermaid_texts"
+path = "examples/mermaid_texts.rs"
+
+
 [dev-dependencies]
 egui_kittest.workspace = true
 quill-git.workspace = true

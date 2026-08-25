@@ -1,0 +1,14 @@
+gantt
+  title Bringing Mermaid to Quill
+  dateFormat YYYY-MM-DD
+  axisFormat %m-%d
+  section Design
+  Read the syntax    : done, read, 2026-08-25, 1d
+  Write the TDD      : done, tdd, after read, 1d
+  section Build
+  The scene          : done, scene, after tdd, 1d
+  The layered layout : active, crit, layered, after scene, 2d
+  Twenty renderers   : renderers, after layered, 3d
+  section Ship
+  The window         : window, after renderers, 2d
+  Look at it         : milestone, look, after window, 0d

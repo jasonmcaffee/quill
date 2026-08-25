@@ -437,7 +437,7 @@ pub const COMMANDS: &[Command] = &[
     Command {
         area: "editor",
         verb: "view",
-        summary: "Choose how a Markdown file is shown: the source, the source and the preview side by side, or the preview. Only a file with a preview can be shown any way but raw.",
+        summary: "Choose how a file with a preview is shown: the source, the source and the preview side by side, or the preview. Markdown and Mermaid files have one; nothing else does, and only a file with a preview can be shown any way but raw.",
         arguments: &[argument("mode", true, "raw, side or preview.")],
         flags: NO_FLAGS,
         examples: &["quill-cli editor view preview", "quill-cli editor view side"],
@@ -446,7 +446,7 @@ pub const COMMANDS: &[Command] = &[
     Command {
         area: "editor",
         verb: "preview",
-        summary: "Read the Markdown preview of the tab that is showing as plain text, and where its pictures are.",
+        summary: "Read the preview of the tab that is showing: a Markdown page as plain text with where its pictures and diagrams are, or, for a Mermaid file, what the diagram came out as.",
         arguments: NO_ARGUMENTS,
         flags: NO_FLAGS,
         examples: &["quill-cli editor preview --json"],

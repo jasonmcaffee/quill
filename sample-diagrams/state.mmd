@@ -1,0 +1,11 @@
+stateDiagram-v2
+  direction LR
+  [*] --> Reading
+  Reading --> Parsing : the source changed
+  Parsing --> Laying : it parsed
+  Parsing --> Broken : it did not
+  Broken --> Parsing : it was corrected
+  Laying --> Drawn
+  Drawn --> Parsing : the source changed
+  Drawn --> [*]
+  note right of Broken : the line is named

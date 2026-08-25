@@ -373,6 +373,9 @@ pub struct MenuState {
     /// mode entries for a source file. The toolbar asks the same question of the same function, so
     /// the menu and the buttons cannot disagree about whether there is a preview.
     pub can_preview: bool,
+    /// Which of the two kinds of preview it is, so the three entries say `Mermaid` over a diagram
+    /// and `Markdown` over prose. The buttons take the same answer from the same function.
+    pub preview_kind: crate::services::file_kind::PreviewKind,
     pub explorer_visible: bool,
     pub line_numbers: bool,
     pub terminal_visible: bool,
@@ -614,11 +617,20 @@ fn edit_menu(state: &MenuState) -> Menu {
 
 fn view_menu(state: &MenuState) -> Menu {
     let explorer = if state.explorer_visible { "Hide Explorer" } else { "Show Explorer" };
+    // The three entries are named after what the open file's preview actually is, so a `.mmd` file
+    // reads `Raw Mermaid` and `Mermaid Diagram` rather than being offered a Markdown preview it has
+    // not got. The buttons in the title bar take the same answer from the same function.
+    let diagram = state.preview_kind == crate::services::file_kind::PreviewKind::Mermaid;
+    let (raw, rendered) = if diagram {
+        ("Raw Mermaid", "Mermaid Diagram")
+    } else {
+        ("Raw Markdown", "Markdown Preview")
+    };
     Menu {
         name: "View".to_owned(),
         entries: vec![
             Entry::with_shortcut(
-                "Raw Markdown",
+                raw,
                 Action::SetViewMode(ViewMode::Raw),
                 Shortcut::command(egui::Key::Num1),
             )
@@ -632,7 +644,7 @@ fn view_menu(state: &MenuState) -> Menu {
             .checked(state.view_mode == ViewMode::SideBySide)
             .enabled(state.can_preview),
             Entry::with_shortcut(
-                "Markdown Preview",
+                rendered,
                 Action::SetViewMode(ViewMode::Preview),
                 Shortcut::command(egui::Key::Num3),
             )

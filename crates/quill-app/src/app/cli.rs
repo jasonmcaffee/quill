@@ -1092,7 +1092,7 @@ impl QuillApp {
                 request,
                 code::NOT_APPLICABLE,
                 format!(
-                    "{} has no Markdown preview, so only the raw view applies to it.",
+                    "{} has no preview, so only the raw view applies to it.",
                     self.files.active().name()
                 ),
             );
@@ -1105,13 +1105,62 @@ impl QuillApp {
         )
     }
 
+    /// What `editor preview` answers for a file that is a diagram all the way through.
+    ///
+    /// The scene's own numbers rather than a picture: how many things were drawn, how large it came
+    /// out, and every piece of text in it — which is enough for a script, or an agent, to tell that
+    /// the right diagram was drawn without being able to look at it.
+    fn cli_editor_diagram(&mut self, request: &Request, ctx: &egui::Context) -> Outcome {
+        let source = self.document().text().to_string();
+        let base = self.diagram_style();
+        let theme = crate::services::mermaid_scene::theme();
+        if !self.mermaid_is_enabled() {
+            return no(
+                request,
+                code::NOT_APPLICABLE,
+                "The Mermaid plugin is switched off, so this file is not drawn as a diagram."
+                    .to_owned(),
+            );
+        }
+        let kind = quill_core::mermaid::kind(&source).map(|kind| kind.name().to_owned());
+        let metrics = crate::services::mermaid_scene::EguiMetrics::new(ctx, self.bold_family.clone());
+        match self.mermaid_scenes.scene(&source, &base, &metrics, &theme) {
+            Ok(scene) => {
+                let texts: Vec<String> =
+                    scene.texts().into_iter().map(str::to_owned).collect();
+                ok(
+                    request,
+                    String::new(),
+                    json!({
+                        "diagram": kind,
+                        "width": scene.size.width,
+                        "height": scene.size.height,
+                        "items": scene.items.len(),
+                        "text": texts,
+                    }),
+                )
+            }
+            Err(problem) => no(
+                request,
+                code::NOT_APPLICABLE,
+                format!("{} could not be drawn. {}", self.files.active().name(), problem.message()),
+            ),
+        }
+    }
+
     fn cli_editor_preview(&mut self, request: &Request, ctx: &egui::Context) -> Outcome {
         if !file_kind::preview_applies(self.document().path()) {
             return no(
                 request,
                 code::NOT_APPLICABLE,
-                format!("{} is not Markdown.", self.files.active().name()),
+                format!("{} has no preview.", self.files.active().name()),
             );
+        }
+        // A Mermaid file's preview is a picture, not text, so what is read back is the diagram: what
+        // kind it is and how large it came out, or the reason it could not be drawn. Reading a
+        // picture out as words is what a caller is really asking for here.
+        if file_kind::is_mermaid(self.document().path()) {
+            return self.cli_editor_diagram(request, ctx);
         }
         // The preview is normally built when it is about to be drawn. Asked for from the command
         // line it may never have been drawn, so it is built here at the width the editing area has,
@@ -1143,10 +1192,26 @@ impl QuillApp {
                 })
             })
             .collect();
+        // The diagrams are reported the same way the pictures are: what the parser found beside what
+        // the window made of it, matched up by the paragraph both of them name.
+        let diagrams: Vec<Value> = self
+            .preview_diagrams()
+            .iter()
+            .map(|placed| {
+                json!({
+                    "paragraph": placed.paragraph,
+                    "diagram": quill_core::mermaid::kind(&placed.source).map(|kind| kind.name()),
+                    "width": placed.size.x,
+                    "height": placed.size.y,
+                    "drawn": placed.laid.is_ok(),
+                    "problem": placed.laid.as_ref().err().map(|problem| problem.message()),
+                })
+            })
+            .collect();
         ok(
             request,
             String::new(),
-            json!({ "text": self.preview_text(), "pictures": pictures }),
+            json!({ "text": self.preview_text(), "pictures": pictures, "diagrams": diagrams }),
         )
     }
 

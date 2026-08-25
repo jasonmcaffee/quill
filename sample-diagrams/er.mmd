@@ -1,0 +1,17 @@
+erDiagram
+  PROJECT ||--o{ FILE : holds
+  FILE ||--o{ DIAGRAM : contains
+  FILE }o--|| KIND : is
+  PROJECT {
+    string name PK
+    string folder
+  }
+  FILE {
+    string path PK
+    int bytes
+    date changed "when it was last written"
+  }
+  DIAGRAM {
+    int paragraph PK
+    string source
+  }

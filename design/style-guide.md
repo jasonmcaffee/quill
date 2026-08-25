@@ -52,6 +52,14 @@ different greys, and it must not happen.
 | `UNSAVED` | The amber dot meaning there are changes that have not been written. |
 | `TEXT_STRONG` → `TEXT` → `TEXT_CONTROL` → `TEXT_DIM` → `TEXT_FAINT` | Five weights, brightest to faintest. A heading, body text, a control's label, a heading in the explorer, and placeholder text. |
 
+A **diagram** is drawn in this palette too, and it has to be said out loud because a diagram is the
+one thing in the window whose source could plausibly have opinions about colour. Mermaid's own
+`style`, `classDef` and `:::` directives are read and ignored, and `services::mermaid_scene::theme`
+maps `theme::color` onto the colours a diagram needs — a node fill, a line, a wash behind a subgraph,
+and eight series colours for the charts, taken from the accents this table already has. A document
+does not choose the window's colours, for the same reason a colour scheme does not: an author who
+picked black on white would be unreadable here.
+
 There is one exception, and it is deliberate: **a syntax theme's token colours**. Those come from a
 plugin, not from `theme::color`, because they are a property of the colour scheme rather than of
 Quill. A syntax theme colours the tokens and nothing else — never the editing area's background,

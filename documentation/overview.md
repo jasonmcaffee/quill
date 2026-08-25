@@ -114,6 +114,29 @@ The preview is read only, because what it shows is worked out from the source be
 
 ![The preview on its own](images/03-markdown-preview.jpg)
 
+## Mermaid diagrams are drawn, not shown as code
+
+A `.mmd` file gets the same three view modes a Markdown file has, named after what it actually is:
+`Raw Mermaid`, `Side by side` and `Mermaid diagram`. There is no `F` beside them, because a diagram
+is not prose and nothing behind that button means anything in one.
+
+The picture is Quill's own drawing. Nothing runs `mermaid.js` — `tasks/quill-mermaid-plugin-tdd.md`
+weighs the three ways of doing that and says why none of them belongs in a text editor — so a
+diagram is rectangles, circles, polygons, lines and text worked out by `quill_core::mermaid` and
+painted by the same painter that draws everything else. Which is why the leaves are still visible
+through it: a diagram is drawn into the window rather than pasted over it.
+
+Twenty diagram types are drawn. Ten more are **named** rather than drawn, in a panel saying which
+type it is above the source, and a diagram that will not parse says which line went wrong and shows
+that line — both of which are more use than an empty pane.
+
+![A flowchart drawn from a .mmd file, with the desktop showing through](images/25-mermaid-diagram.jpg)
+
+A fence whose language is `mermaid`, inside a Markdown document, is drawn in that document's
+preview, in the room its paragraph reserved. A fence in any other language is still shown as code.
+
+![A Markdown document whose preview draws the diagrams in it](images/26-mermaid-in-markdown.jpg)
+
 ## Writing code in it
 
 Line numbers down the left, a tab for each open file, syntax colouring from a plugin — and no text
@@ -294,6 +317,11 @@ rectangle grown by 48 pixels on every side, which is the margin of desktop you c
 that do it are in `_agent_output/task-1658-screenshots/`, which is not tracked:
 `build-fixture.ps1` builds the project, `quill-capture.ps1` starts the window and drives it, and
 `capture-all.ps1` runs the seven stages that take the twenty-two pictures.
+
+The two diagram pictures were taken the same way, by
+`_agent_output/task-1660-mermaid/capture-diagram.ps1`, which is the same recipe cut down to one
+stage. It does one thing the earlier scripts did not have to: it puts every other window out of the
+way first, so what shows through is the desktop picture rather than whatever happened to be open.
 
 Two things those scripts do that matter. The project in the pictures is a fixture built under the
 temporary folder rather than a real one, because `sample/` lives inside Quill's own repository, so

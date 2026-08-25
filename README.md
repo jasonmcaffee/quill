@@ -217,13 +217,24 @@ Modals: every dialog in Quill is dragged by its header and resized from any of i
 corners, and a double click on its header puts it back in the middle at the size it started.
 
 Files: any file holding text opens. A `.md` file is Markdown, which means the preview shows it rendered;
-everything else opens as plain text, whether Quill knows the file type or not, so a `.rs` or a `.js` file
-opens as what it is. A picture opens too, in a tab that shows it: `.png`, `.jpg`, `.gif`, `.bmp`, `.ico`,
+a `.mmd` or `.mermaid` file is a Mermaid diagram, which means the preview **draws** it; everything else
+opens as plain text, whether Quill knows the file type or not, so a `.rs` or a `.js` file opens as what it
+is. A picture opens too, in a tab that shows it: `.png`, `.jpg`, `.gif`, `.bmp`, `.ico`,
 `.webp` and `.tiff`, scaled to fit the editing area to begin with, zoomed with command or control and plus
 and minus, with the wheel and that modifier held, or with a pinch, dragged about with the mouse, and put
 back to filling the area with a double click. A file that is neither text nor a picture, such as an archive,
 is listed in the explorer, dimmed, and says why it cannot be opened when the pointer rests on it. So is a
 file larger than 16 MB.
+
+Diagrams: a `.mmd` file gets the same three view modes a Markdown file has — the source, the source and the
+diagram side by side, or the diagram filling the pane — and a ```mermaid block inside a Markdown document is
+drawn in its preview rather than shown as code. Twenty of Mermaid's diagram types are drawn: flowchart,
+sequence, class, state, entity relationship, requirement, pie, gantt, user journey, git graph, mindmap,
+timeline, quadrant, xy chart, sankey, block, packet, kanban, radar and treemap. The pictures are Quill's own
+drawing rather than `mermaid.js` output, so they are not pixel identical to it; ten further types are
+**named** rather than drawn. Nothing is fetched and nothing in a diagram is run.
+`tasks/quill-mermaid-plugin-tdd.md` sets out why it is written in Rust rather than by running Mermaid's own
+JavaScript, and what each type becomes on the screen.
 
 Panes: the explorer's width, the split between the Markdown source and its preview, and the terminal's
 height are all set by dragging the divider, and a double click puts one back to its usual size. Where they
@@ -359,6 +370,11 @@ parsing; nested block comments in Rust; interpolation inside a template literal;
 plugin says so on its own page in `Settings -> Plugins`.
 
 In the Markdown preview: tables, footnotes, reference style links, nested block quotes and HTML.
+
+In diagrams: ten of Mermaid's thirty types — C4, ZenUML, architecture, swimlanes, event modelling, Venn,
+Ishikawa, Wardley, Cynefin and tree view — which are named rather than drawn. A diagram's own `style`,
+`classDef` and `click` directives are read and ignored: a document does not choose the window's colours, and
+nothing in a diagram is going to run.
 Tables need layout Quill does not have; the rest are rare in prose. A picture **is** drawn, when it is
 the whole of a line and it is a file on this machine — one inside a line of prose stays its alt text,
 because it would need inline layout the engine does not have, and one with a scheme in front of it is

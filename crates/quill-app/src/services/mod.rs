@@ -7,6 +7,7 @@ pub mod file_search;
 pub mod file_tree;
 pub mod icons;
 pub mod launcher;
+pub mod mermaid_scene;
 pub mod native_menu;
 pub mod picture;
 pub mod plugins;

@@ -1,0 +1,14 @@
+%% A flowchart: the most written of Mermaid's diagrams.
+flowchart TD
+  Start([Someone opens a file]) --> Kind{What kind is it?}
+  Kind -->|Markdown| Preview[Show the preview]
+  Kind -->|Mermaid| Diagram[Draw the diagram]
+  Kind -->|Anything else| Raw[Show the source]
+  subgraph drawing[Drawing it]
+    Preview --> Layout[Lay the text out]
+    Diagram --> Scene[Work out the scene]
+    Layout --> Paint[Paint it]
+    Scene --> Paint
+  end
+  Raw --> Paint
+  Paint --> Done(((On the screen)))

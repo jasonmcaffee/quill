@@ -6,6 +6,7 @@
 
 pub mod activity_bar;
 pub mod context_menu;
+pub mod diagram_view;
 pub mod controls;
 pub mod editor_view;
 pub mod explorer;

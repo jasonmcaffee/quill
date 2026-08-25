@@ -25,6 +25,22 @@
 //! anything but `language` is refused with a message rather than half-loaded. That is the line a
 //! later version widens.
 //!
+//! ## A language that has a picture
+//!
+//! `task-1660` asks for a Mermaid plugin, and Mermaid **is** a language: it has keywords, comments,
+//! strings and a file extension, and colouring `.mmd` source is worth having on its own. So it is an
+//! ordinary `language` plugin, and the seam above stays exactly where it was.
+//!
+//! It carries one new key, `language.renders`, which names a renderer that is **built into Quill**.
+//! Nothing is loaded from the plugin and nothing is executed: the manifest is data saying "files of
+//! this language have a picture, and this is which picture", and the code that draws it shipped with
+//! the binary. The value is checked against [`RENDERERS`], and a manifest naming one this version
+//! does not have is refused with a message — the same rule `plugin.kind` already keeps.
+//!
+//! What it buys is that switching the plugin off actually withdraws the feature: the window asks
+//! [`Plugins::renders`] before it draws a diagram anywhere, so `.mmd` files stop being drawn and
+//! mermaid blocks in Markdown go back to being code, in the same frame.
+//!
 //! ## The manifest
 //!
 //! `plugin.conf`, in the same `name = value` format the settings file already uses, read by the same
@@ -44,6 +60,12 @@ const FOLDER: &str = "plugins";
 const MANIFEST: &str = "plugin.conf";
 /// The picture a plugin puts in front of its files.
 const ICON: &str = "icon.png";
+
+/// The renderers built into this version of Quill that a plugin may name.
+///
+/// Checked rather than taken on trust, so a manifest asking for a picture Quill cannot draw says so
+/// plainly instead of loading as a language whose files quietly never draw.
+pub const RENDERERS: &[&str] = &["mermaid"];
 
 /// The kind of plugin. One today, and the field exists so that a second one can be refused rather
 /// than half-loaded.
@@ -90,6 +112,8 @@ pub struct Plugin {
     pub kind: Kind,
     /// The extensions it claims, without the dot, in lower case.
     pub extensions: Vec<String>,
+    /// The built-in renderer this language's files are drawn with, if it has one.
+    pub renders: Option<String>,
     pub grammar: Grammar,
     pub theme: SyntaxTheme,
     /// The bytes of `icon.png`, when it has one.
@@ -186,6 +210,17 @@ impl Plugins {
         self.installed.iter().find(|plugin| plugin.enabled && plugin.claims(path))
     }
 
+    /// True when some plugin that is switched on asks for the built-in renderer called `name`.
+    ///
+    /// The window asks this before it draws a diagram anywhere — a `.mmd` file's preview, and every
+    /// mermaid block in a Markdown document — so switching the plugin off withdraws the feature in
+    /// the same frame rather than at the next restart.
+    pub fn renders(&self, name: &str) -> bool {
+        self.installed
+            .iter()
+            .any(|plugin| plugin.enabled && plugin.renders.as_deref() == Some(name))
+    }
+
     /// Switch a plugin on or off, and remember it.
     pub fn set_enabled(&mut self, store: Option<&Store>, id: &str, on: bool) {
         if let Some(plugin) = self.installed.iter_mut().find(|plugin| plugin.id == id) {
@@ -262,6 +297,20 @@ pub fn parse(values: &Values, bundled: bool) -> Result<Plugin, String> {
     if extensions.is_empty() {
         return Err("language.extensions is empty, so nothing would ever use this plugin".to_owned());
     }
+    // Checked against what this version can actually draw, for the same reason `plugin.kind` is: a
+    // manifest naming a picture Quill does not have should say so rather than load as a language
+    // whose files silently never draw.
+    let renders = match values.text("language.renders").map(str::trim).filter(|name| !name.is_empty())
+    {
+        Some(name) if RENDERERS.contains(&name) => Some(name.to_owned()),
+        Some(other) => {
+            return Err(format!(
+                "language.renders is `{other}`, and this version of Quill draws {}",
+                RENDERERS.join(", ")
+            ))
+        }
+        None => None,
+    };
     let name = values.text("plugin.name").unwrap_or(&id).to_owned();
     let grammar = Grammar {
         language: name.clone(),
@@ -295,6 +344,7 @@ pub fn parse(values: &Values, bundled: bool) -> Result<Plugin, String> {
         limitations: values.text("plugin.limitations").unwrap_or_default().to_owned(),
         kind,
         extensions,
+        renders,
         grammar,
         theme: SyntaxTheme {
             name: values.text("theme.name").unwrap_or("Dracula").to_owned(),
@@ -358,6 +408,11 @@ pub mod bundled {
             "rust",
             include_str!("../../plugins/rust/plugin.conf"),
             Some(include_bytes!("../../plugins/rust/icon.png")),
+        ),
+        (
+            "mermaid",
+            include_str!("../../plugins/mermaid/plugin.conf"),
+            Some(include_bytes!("../../plugins/mermaid/icon.png")),
         ),
     ];
 }
@@ -440,11 +495,12 @@ mod tests {
     }
 
     #[test]
-    fn the_three_bundled_plugins_all_parse_and_claim_what_they_should() {
+    fn the_bundled_plugins_all_parse_and_claim_what_they_should() {
         let (plugins, problems) = Plugins::load(None);
         assert!(problems.is_empty(), "a bundled plugin should always parse: {problems:?}");
         let ids: Vec<&str> = plugins.all().iter().map(|plugin| plugin.id.as_str()).collect();
         assert!(ids.contains(&"javascript") && ids.contains(&"typescript") && ids.contains(&"rust"));
+        assert!(ids.contains(&"mermaid"));
         assert_eq!(plugins.for_path(Path::new("a.rs")).map(|p| p.id.as_str()), Some("rust"));
         assert_eq!(plugins.for_path(Path::new("a.ts")).map(|p| p.id.as_str()), Some("typescript"));
         assert_eq!(plugins.for_path(Path::new("a.js")).map(|p| p.id.as_str()), Some("javascript"));
@@ -463,7 +519,51 @@ mod tests {
         assert!(plugins.for_path(Path::new("a.rs")).is_some());
         plugins.set_enabled(None, "rust", false);
         assert!(plugins.for_path(Path::new("a.rs")).is_none());
-        assert_eq!(plugins.enabled_count(), 2);
+        assert_eq!(plugins.enabled_count(), bundled::ALL.len() - 1);
+    }
+
+    #[test]
+    fn the_mermaid_plugin_claims_diagram_files_and_names_a_renderer() {
+        let (plugins, problems) = Plugins::load(None);
+        assert!(problems.is_empty(), "{problems:?}");
+        let mermaid = plugins.get("mermaid").expect("the mermaid plugin");
+        assert_eq!(mermaid.kind, Kind::Language, "the seam is not widened: it is a language");
+        assert!(mermaid.claims(Path::new("flow.mmd")));
+        assert!(mermaid.claims(Path::new("flow.MERMAID")));
+        assert!(!mermaid.claims(Path::new("notes.md")), "Markdown is not this plugin's business");
+        assert_eq!(mermaid.renders.as_deref(), Some("mermaid"));
+        assert!(plugins.renders("mermaid"), "the window asks this before it draws anything");
+    }
+
+    #[test]
+    fn switching_the_mermaid_plugin_off_withdraws_the_renderer() {
+        // This is what makes it a plugin rather than a feature with a plugin painted on it: the
+        // window asks `renders` before it draws a diagram anywhere, so this is the whole of it.
+        let (mut plugins, _) = Plugins::load(None);
+        assert!(plugins.renders("mermaid"));
+        plugins.set_enabled(None, "mermaid", false);
+        assert!(!plugins.renders("mermaid"));
+        assert!(plugins.for_path(Path::new("a.mmd")).is_none());
+    }
+
+    #[test]
+    fn no_other_plugin_claims_to_render_anything() {
+        let (plugins, _) = Plugins::load(None);
+        for plugin in plugins.all().iter().filter(|plugin| plugin.id != "mermaid") {
+            assert_eq!(plugin.renders, None, "{} should name no renderer", plugin.id);
+        }
+        assert!(!plugins.renders("something-else"), "a name nothing declares is not rendered");
+    }
+
+    #[test]
+    fn a_manifest_naming_a_renderer_quill_does_not_have_is_refused_with_a_reason() {
+        // The same rule `plugin.kind` keeps, and for the same reason: a manifest asking for a
+        // picture this version cannot draw must say so rather than load as a language whose files
+        // quietly never draw.
+        let text = "plugin.id = a\nlanguage.extensions = .a\nlanguage.renders = holograms";
+        let problem = parse(&Values::parse(text), false).expect_err("holograms are not a renderer");
+        assert!(problem.contains("holograms"), "{problem}");
+        assert!(problem.contains("mermaid"), "and it says what there is: {problem}");
     }
 
     #[test]
@@ -481,7 +581,11 @@ mod tests {
         assert!(problems.is_empty(), "{problems:?}");
         let rust = loaded.get("rust").expect("rust");
         assert!(!rust.bundled, "the one on disk shadows the bundled one");
-        assert_eq!(loaded.all().len(), 3, "shadowing replaces rather than adding a second one");
+        assert_eq!(
+            loaded.all().len(),
+            bundled::ALL.len(),
+            "shadowing replaces rather than adding a second one"
+        );
     }
 
     #[test]
@@ -506,6 +610,10 @@ mod tests {
         std::fs::write(broken.join(MANIFEST), "this is not a manifest").expect("write it");
         let (plugins, problems) = Plugins::load(Some(&store));
         assert_eq!(problems.len(), 1, "the reason is reported rather than thrown away");
-        assert_eq!(plugins.all().len(), 3, "Quill still has its three bundled plugins");
+        assert_eq!(
+            plugins.all().len(),
+            bundled::ALL.len(),
+            "Quill still has every one of its bundled plugins"
+        );
     }
 }

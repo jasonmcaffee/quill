@@ -10,8 +10,8 @@
 //! bottom of this comment.
 //!
 //! Handled: headings one to six, bold, italic, bold italic, strikethrough, inline code, fenced code blocks,
-//! indented bullet lists, numbered lists, block quotes, horizontal rules, links, hard line breaks, and
-//! images on a line of their own.
+//! indented bullet lists, numbered lists, block quotes, horizontal rules, links, hard line breaks,
+//! images on a line of their own, and Mermaid diagrams.
 //!
 //! Not handled: tables, footnotes, reference style links, nested block quotes, and HTML. Each of those
 //! either needs layout Quill does not have yet, such as a table, or is rare in prose.
@@ -28,6 +28,18 @@
 //! An image mark **inside** a line of prose is shown as its alt text in the quiet colour. A picture
 //! in the middle of a paragraph needs inline layout the engine does not have, and the alt text is
 //! what a reader wants in its place.
+//!
+//! ## Diagrams
+//!
+//! A fence whose language is `mermaid` is the same idea again: it becomes an empty paragraph and an
+//! entry in [`Preview::diagrams`], and the application lays the diagram out through [`crate::mermaid`]
+//! — which can do the arithmetic, but still cannot know how wide the pane is — and paints it into the
+//! room it reserved. Nothing about the layout engine changes: it still knows only about glyphs and
+//! about a paragraph that has asked to be tall.
+//!
+//! **A fence nobody has closed yet is still a diagram.** A preview is worked out again on every
+//! keystroke, so the half-typed state is the common case rather than the odd one, and showing the
+//! diagram so far is far more use than showing nothing until the closing backticks arrive.
 
 use crate::rope::Rope;
 use crate::style::{Align, CharStyle, Color, ParagraphStyle, ParagraphStyles, StyleChange, StyleSpans};
@@ -77,6 +89,21 @@ pub struct PreviewImage {
     pub alt: String,
 }
 
+/// A diagram the preview should draw, and where in the preview it goes.
+///
+/// The same shape as [`PreviewImage`], and for the same reason: how tall a diagram is drawn depends
+/// on how wide the pane is and on what the fonts measure, and this module knows neither. So it says
+/// which paragraph stands in for the diagram and what was written between the fences, and whoever
+/// draws the preview works the rest out — through `crate::mermaid`, which can do the arithmetic but
+/// still cannot know the width.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreviewDiagram {
+    /// Which paragraph of [`Preview::text`] stands in for the diagram.
+    pub paragraph: usize,
+    /// Everything between the fences, which is a whole Mermaid diagram.
+    pub source: String,
+}
+
 /// Markdown turned into text that Quill can lay out.
 #[derive(Debug, Clone)]
 pub struct Preview {
@@ -85,6 +112,8 @@ pub struct Preview {
     pub paragraphs: ParagraphStyles,
     /// The pictures, in the order they appear.
     pub images: Vec<PreviewImage>,
+    /// The diagrams, in the order they appear.
+    pub diagrams: Vec<PreviewDiagram>,
 }
 
 impl Preview {
@@ -95,6 +124,7 @@ impl Preview {
             chars: StyleSpans::new(0, base.clone()),
             paragraphs: ParagraphStyles::new(1),
             images: Vec::new(),
+            diagrams: Vec::new(),
         }
     }
 }
@@ -112,6 +142,8 @@ struct Builder {
     mono: Option<String>,
     /// The pictures found so far, each naming the paragraph it takes the place of.
     images: Vec<PreviewImage>,
+    /// The diagrams found so far, the same way.
+    diagrams: Vec<PreviewDiagram>,
 }
 
 impl Builder {
@@ -124,6 +156,7 @@ impl Builder {
             colors,
             mono,
             images: Vec::new(),
+            diagrams: Vec::new(),
         }
     }
 
@@ -162,6 +195,18 @@ impl Builder {
         });
     }
 
+    /// Record a diagram, taking the paragraph that is about to be ended. Like a picture, the line
+    /// itself is left empty and the application paints into the room it reserved.
+    fn diagram(&mut self, source: &str) {
+        self.diagrams.push(PreviewDiagram {
+            paragraph: self.paragraphs.len(),
+            // Trailing blank lines are dropped, because a fence nobody closed collects the empty
+            // line at the end of the file and a diagram should not differ depending on whether its
+            // author had finished typing the closing backticks.
+            source: source.trim_end().to_owned(),
+        });
+    }
+
     fn finish(mut self) -> Preview {
         // The trailing line break is dropped, because a document's last line does not end with one.
         //
@@ -191,6 +236,7 @@ impl Builder {
             chars,
             paragraphs: ParagraphStyles::from_styles(self.paragraphs),
             images: self.images,
+            diagrams: self.diagrams,
         }
     }
 
@@ -226,7 +272,8 @@ enum Line<'a> {
     Numbered { indent: usize, number: &'a str, text: &'a str },
     Quote { text: &'a str },
     Rule,
-    Fence,
+    /// A fence, and whatever was written after the backticks: the language, usually.
+    Fence(&'a str),
     Blank,
     Paragraph(&'a str),
 }
@@ -240,8 +287,8 @@ fn classify(line: &str) -> Line<'_> {
     if body.is_empty() {
         return Line::Blank;
     }
-    if body.starts_with("```") || body.starts_with("~~~") {
-        return Line::Fence;
+    if let Some(rest) = body.strip_prefix("```").or_else(|| body.strip_prefix("~~~")) {
+        return Line::Fence(rest.trim());
     }
     // A picture on a line of its own. Only on its own: a picture with words beside it would need the
     // words laid out round it, and the alt text is what stands in for one inside a paragraph.
@@ -324,12 +371,27 @@ pub fn render(
     let mut builder = Builder::new(base.clone(), colors, mono);
     let body_size = base.size;
     let mut in_code_block = false;
+    // The lines of a mermaid fence, collected while one is open, and `None` while one is not.
+    let mut diagram: Option<Vec<&str>> = None;
 
     for raw in source.split('\n') {
         let line = classify(raw);
 
+        // A mermaid fence is gathered whole rather than shown a line at a time, and becomes one
+        // empty paragraph for the application to draw the diagram into.
+        if let Some(collected) = &mut diagram {
+            if matches!(line, Line::Fence(_)) {
+                builder.diagram(&collected.join("\n"));
+                builder.end_line(ParagraphStyle::default());
+                diagram = None;
+                continue;
+            }
+            collected.push(raw);
+            continue;
+        }
+
         if in_code_block {
-            if matches!(line, Line::Fence) {
+            if matches!(line, Line::Fence(_)) {
                 in_code_block = false;
                 continue;
             }
@@ -341,7 +403,10 @@ pub fn render(
         }
 
         match line {
-            Line::Fence => {
+            Line::Fence(language) if is_mermaid(language) => {
+                diagram = Some(Vec::new());
+            }
+            Line::Fence(_) => {
                 in_code_block = true;
             }
             Line::Image { source, alt } => {
@@ -428,7 +493,22 @@ pub fn render(
         }
     }
 
+    // A fence nobody closed still becomes a diagram: a preview sees exactly this on every keystroke
+    // while one is being typed, and showing the diagram so far is far more use than showing nothing
+    // until the closing backticks arrive.
+    if let Some(collected) = diagram {
+        builder.diagram(&collected.join("\n"));
+        builder.end_line(ParagraphStyle::default());
+    }
     builder.finish()
+}
+
+/// True for the language name on a fence that holds a Mermaid diagram.
+///
+/// Only the word itself, so ```mermaid-live` or another language whose name merely begins the same
+/// way is still shown as code.
+fn is_mermaid(language: &str) -> bool {
+    language.split_whitespace().next().is_some_and(|word| word.eq_ignore_ascii_case("mermaid"))
 }
 
 /// Read the marks that appear inside a line: bold, italic, strikethrough, code and links.
@@ -865,5 +945,99 @@ mod tests {
         let preview = preview("one\r\ntwo");
         let text = preview.text.to_string();
         assert!(!text.contains('\r') || text.lines().count() == 2, "got {text:?}");
+    }
+}
+
+#[cfg(test)]
+mod diagrams {
+    use super::*;
+
+    fn preview(source: &str) -> Preview {
+        render(source, &CharStyle::default(), PreviewColors::default(), None)
+    }
+
+    #[test]
+    fn a_mermaid_fence_becomes_a_diagram_rather_than_code() {
+        let source = "# Title\n\n```mermaid\nflowchart TD\n  A --> B\n```\n\nAfter.\n";
+        let preview = preview(source);
+        assert_eq!(preview.diagrams.len(), 1);
+        assert_eq!(preview.diagrams[0].source, "flowchart TD\n  A --> B");
+        // None of the diagram's own text is in the preview: the application draws it.
+        assert!(!preview.text.to_string().contains("flowchart"));
+        assert!(preview.text.to_string().contains("Title"));
+        assert!(preview.text.to_string().contains("After."));
+    }
+
+    #[test]
+    fn the_paragraph_a_diagram_stands_in_for_is_empty_and_is_where_it_says_it_is() {
+        let source = "One\n\n```mermaid\npie\n\"a\" : 1\n```\n\nTwo\n";
+        let preview = preview(source);
+        let lines: Vec<String> =
+            preview.text.to_string().split('\n').map(str::to_owned).collect();
+        let at = preview.diagrams[0].paragraph;
+        assert!(lines[at].trim().is_empty(), "the line it stands in for holds no text");
+        assert!(lines[..at].iter().any(|line| line.contains("One")));
+        assert!(lines[at + 1..].iter().any(|line| line.contains("Two")));
+    }
+
+    #[test]
+    fn an_ordinary_code_fence_is_still_shown_as_code() {
+        let source = "```rust\nfn main() {}\n```\n";
+        let preview = preview(source);
+        assert!(preview.diagrams.is_empty());
+        assert!(preview.text.to_string().contains("fn main() {}"));
+    }
+
+    #[test]
+    fn a_fence_whose_language_merely_begins_the_same_way_is_code() {
+        let source = "```mermaidish\nnot a diagram\n```\n";
+        let preview = preview(source);
+        assert!(preview.diagrams.is_empty(), "only the word itself makes a diagram");
+        assert!(preview.text.to_string().contains("not a diagram"));
+    }
+
+    #[test]
+    fn the_language_may_be_written_in_any_case_and_carry_more_after_it() {
+        for fence in ["```Mermaid", "```MERMAID", "```mermaid  ", "```mermaid theme=dark"] {
+            let source = format!("{fence}\npie\n\"a\" : 1\n```\n");
+            assert_eq!(preview(&source).diagrams.len(), 1, "{fence} should open a diagram");
+        }
+    }
+
+    #[test]
+    fn several_diagrams_in_one_document_are_all_found_in_order() {
+        let source = "```mermaid\npie\n\"a\" : 1\n```\n\nwords\n\n```mermaid\nflowchart LR\nA-->B\n```\n";
+        let preview = preview(source);
+        assert_eq!(preview.diagrams.len(), 2);
+        assert!(preview.diagrams[0].source.starts_with("pie"));
+        assert!(preview.diagrams[1].source.starts_with("flowchart"));
+        assert!(preview.diagrams[0].paragraph < preview.diagrams[1].paragraph);
+    }
+
+    #[test]
+    fn a_fence_nobody_closed_still_draws_what_it_had() {
+        // Which is exactly what a preview sees on every keystroke while one is being typed. Showing
+        // the diagram so far is far more use than showing nothing until the closing backticks land.
+        let source = "```mermaid\nflowchart TD\n  A --> B\n";
+        let preview = preview(source);
+        assert_eq!(preview.diagrams.len(), 1);
+        assert_eq!(preview.diagrams[0].source, "flowchart TD\n  A --> B");
+    }
+
+    #[test]
+    fn a_tilde_fence_opens_a_diagram_too() {
+        let preview = preview("~~~mermaid\npie\n\"a\" : 1\n~~~\n");
+        assert_eq!(preview.diagrams.len(), 1);
+    }
+
+    #[test]
+    fn the_paragraphs_still_line_up_with_the_lines_after_a_diagram() {
+        // The fault this guards against is the one the picture code already had: a diagram that
+        // added a line break without adding a paragraph leaves every style after it on the wrong
+        // line, which shows up as headings in the wrong place further down the document.
+        let source = "# One\n\n```mermaid\npie\n\"a\" : 1\n```\n\n## Two\n\nbody\n";
+        let preview = preview(source);
+        let lines = preview.text.to_string().split('\n').count();
+        assert_eq!(preview.paragraphs.len(), lines, "one paragraph setting a line");
     }
 }

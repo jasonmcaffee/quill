@@ -7,7 +7,7 @@ change looks like the rest of the code rather than like a second style laid over
 
 | Crate | What is in it | What must never be in it |
 |---|---|---|
-| `quill-core` | The editor: the text buffer, the character and paragraph formatting, the caret, layout, undo, the Markdown parser and the syntax tokeniser. | Any user interface dependency. Its tests run with no window, no graphics card and no fonts. |
+| `quill-core` | The editor: the text buffer, the character and paragraph formatting, the caret, layout, undo, the Markdown parser, the syntax tokeniser, and the Mermaid reader and diagram layout. | Any user interface dependency. Its tests run with no window, no graphics card and no fonts. |
 | `quill-terminal` | The terminal: the session over a pseudoterminal, the screen the painter reads, the colour palette, the key encoding and the mouse reports. | Any user interface dependency, for the same reason. |
 | `quill-git` | Reading and changing a git repository: the status, blame, the log, diffs, branches, and every operation on the Git menu, plus the thread they run on. | Any user interface dependency, and any decision about what a dialog looks like. Its tests build real repositories in a temporary folder and ask git what happened. |
 | `quill-app` | The window: drawing, input, real fonts, the settings on disk, the menus, and the plugin registry. | Editor behaviour, terminal emulation or git plumbing. Those belong in the crates above. |
@@ -100,6 +100,47 @@ because a search that silently missed a real file would be worse than one offeri
 Measured on Quill's own repository, this took the list from 2022 files to 618 and the whole search
 from 60 ms to 20 — and it fixed a real fault, because the walk gives up after a fixed number of files
 and `target` had been eating that budget before the source was reached.
+
+## Mermaid is drawn in Rust, and the painter knows nothing about diagrams
+
+A `.mmd` file opens as a **drawn diagram** with the same three view modes a `.md` file has, and a
+```mermaid fence inside a Markdown document is drawn in its preview. Twenty of Mermaid's thirty
+diagram types are drawn; the other ten are **named** rather than mis-drawn, and that distinction has a
+test of its own.
+
+**None of it runs `mermaid.js`.** `tasks/quill-mermaid-plugin-tdd.md` §2 weighs the three ways of
+doing that — `mermaid-cli` needs Node and a headless Chromium, embedding a JavaScript engine means
+implementing enough DOM and SVG to answer `getBBox()` truthfully, and a web view puts a second
+compositor inside a window whose transparency took three separate fixes to get right. What a diagram
+needs on top of what Quill already has is arithmetic, so `quill_core::mermaid` does the arithmetic.
+The cost is stated rather than hidden: the pictures are **not** pixel identical to `mermaid.js`, and
+the bar they are held to is correct and readable.
+
+`quill-core` reads and lays out; `quill-app` draws. The seam is a **`Scene`: five kinds of item**,
+rectangles, circles, polygons, lines and text at absolute positions, and nothing else. An arrowhead is
+a filled polygon of three points, a pie slice is a flattened arc, a crow's foot is three lines — all
+built in `quill-core` where they can be tested with no window. So `components::diagram_view` has no
+diagram knowledge at all, and a twenty-first diagram type needs no change there.
+
+`layered.rs` is Sugiyama's layered layout, shared by the five graph-shaped types — flowchart, class,
+state, ER and requirement. Two rules in it matter more than they usually would. **Every sweep count is
+a constant and nothing is random**, so the same source always gives the same picture, which is what
+makes a screenshot test of a diagram possible at all. And **a subgraph is laid out on its own and
+placed as one box**, recursively, so its contents cannot overlap anything outside it; edges that cross
+the frame are re-attached to the real nodes once everything has an absolute position, so an arrow into
+a subgraph points at the box it names rather than at the frame.
+
+**A diagram's own `style`, `classDef` and `click` are read and ignored**, which is the same decision
+`services::plugins` already made about a colour scheme: a document does not get to choose the
+window's colours, and nothing in a diagram is going to run. **Nothing is fetched**, ever.
+
+The four properties every diagram type is held to are one function, `mermaid::check::properties`, so
+a type added later inherits them: nothing outside the scene, no two node boxes overlapping, every
+number finite — one NaN poisons the size and blanks the whole diagram — and every source label
+present. The fifth, that laying the same source out twice gives an identical scene, is what the
+images rest on. `sample-diagrams/` holds one file per type, and it is what both the screenshot tests
+and a person read; `cargo run --example mermaid_check` lays every one of them out and says what came
+of it, which is the quickest way to see that a layout change has broken nothing.
 
 ## The Markdown preview draws pictures, and the layout engine knows nothing about pictures
 
@@ -391,6 +432,20 @@ WebAssembly answers both and costs a runtime and a host interface that has to be
 `plugin.kind` is the seam a later version widens, and it is checked: a manifest asking for anything
 but `language` is refused with a message rather than half-loaded. Do not quietly widen it.
 
+The Mermaid plugin did **not** widen it. Mermaid is a language — keywords, comments, strings, an
+extension — so it is an ordinary `language` plugin, and it carries one new data key,
+`language.renders = mermaid`, naming a renderer that is **built into Quill**. Nothing is loaded from
+the plugin; the manifest says "files of this language have a picture, and this is which picture", and
+the code that draws it shipped with the binary. The value is checked against `plugins::RENDERERS` and
+a manifest naming one this version does not have is refused with a message, exactly as `plugin.kind`
+is. What it buys is that switching the plugin off actually withdraws the feature: the window asks
+`Plugins::renders` before it draws a diagram anywhere, so `.mmd` files stop being drawn and mermaid
+fences go back to being code in the same frame.
+
+A bundled plugin's icon is generated rather than drawn, and each one records how:
+`plugins/mermaid/icon.md` has the prompt, the endpoint and the two commands, so it can be made again
+without guessing.
+
 A colour scheme **colours the tokens and not the editing area**. The window letting the desktop show
 through is the whole character of the product, and a scheme that repaints the background opaque would
 trade that away to be a shade nearer a screenshot.
@@ -413,6 +468,9 @@ trade that away to be a shade nearer a screenshot.
   and pictures opening in a tab.
 - `tasks/task-1659-search-and-images-tdd.md` — `Go to File`, `Find in Files` and the thread it reads
   the project on, modals that can be dragged and resized, and pictures in the Markdown preview.
+- `tasks/quill-mermaid-plugin-tdd.md` — Mermaid: the four ways of drawing it that were weighed and why
+  Quill writes its own, what each of the twenty types becomes on the screen, which ten are named
+  rather than drawn, and what `language.renders` buys.
 - `tasks/quill-cli-tdd.md` — the command line: the transports that were weighed, the command surface,
   the wire format, what the token is and is not worth, and how the 97% was to be measured.
 - `quill-cli/docs/commands.md` — **the reference, written to be handed to an AI agent whole.**

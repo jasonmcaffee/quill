@@ -625,7 +625,7 @@ quill-cli editor redo
 quill-cli editor view <mode>
 ```
 
-Choose how a Markdown file is shown: the source, the source and the preview side by side, or the preview. Only a file with a preview can be shown any way but raw.
+Choose how a file with a preview is shown: the source, the source and the preview side by side, or the preview. Markdown and Mermaid files have one; nothing else does, and only a file with a preview can be shown any way but raw.
 
 - `mode` — raw, side or preview.
 
@@ -640,7 +640,7 @@ quill-cli editor view side
 quill-cli editor preview
 ```
 
-Read the Markdown preview of the tab that is showing as plain text, and where its pictures are.
+Read the preview of the tab that is showing: a Markdown page as plain text with where its pictures and diagrams are, or, for a Mermaid file, what the diagram came out as.
 
 ```sh
 quill-cli editor preview --json

@@ -1,0 +1,19 @@
+requirementDiagram
+  requirement drawn {
+    id: 1
+    text: a .mmd file opens as a drawn diagram
+    risk: medium
+    verifymethod: test
+  }
+  functionalRequirement stable {
+    id: 1.1
+    text: the same source gives the same picture
+    risk: high
+    verifymethod: test
+  }
+  element screenshots {
+    type: test suite
+    docref: crates/quill-app/tests/screenshots.rs
+  }
+  drawn - contains -> stable
+  screenshots - verifies -> stable

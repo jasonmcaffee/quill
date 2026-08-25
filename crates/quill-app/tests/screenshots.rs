@@ -3952,3 +3952,237 @@ fn every_command_in_the_catalogue_is_one_the_window_knows() {
         harness.run();
     }
 }
+
+// Mermaid diagrams (`task-1660`).
+//
+// One image a diagram type, rendered through the real window and the graphics card. The parsers and
+// the layout are tested in `quill-core` with no window at all, where the numbers can be checked by
+// hand; these exist for the one thing that cannot be asserted — **what the picture looks like** —
+// and every one of them was opened and looked at before it was accepted.
+//
+// The sources are the files in `sample-diagrams`, which are also what a person opens with
+// `cargo run --release`. One set of samples rather than two, so the picture a test renders and the
+// picture a person sees come from the same place.
+
+/// The folder of sample diagrams, copied where a test can open them.
+///
+/// Written once per run behind a `OnceLock`, for the reason `sample_folder` already is: several of
+/// these tests want it, they run at the same time, and one of them reading a file another was part
+/// way through writing is a failure that has nothing to do with Quill.
+fn diagram_folder() -> std::path::PathBuf {
+    static FOLDER: OnceLock<std::path::PathBuf> = OnceLock::new();
+    FOLDER
+        .get_or_init(|| {
+            let root = std::env::temp_dir().join("quill-mermaid-samples");
+            std::fs::create_dir_all(&root).expect("make the folder");
+            let from = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../sample-diagrams");
+            for entry in std::fs::read_dir(&from).expect("read sample-diagrams").flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    let name = path.file_name().expect("a name");
+                    std::fs::copy(&path, root.join(name)).expect("copy the sample");
+                }
+            }
+            root
+        })
+        .clone()
+}
+
+/// Open one of the sample diagrams, in whichever view mode is wanted.
+fn diagram_harness(name: &str, mode: ViewMode) -> Harness<'static, QuillApp> {
+    let folder = diagram_folder();
+    let mut harness = harness_in(&folder);
+    harness.state_mut().open_path_permanently(&folder.join(name));
+    harness.run();
+    harness.state_mut().set_view_mode(mode);
+    harness.run();
+    harness
+}
+
+#[test]
+fn every_diagram_type_is_drawn_in_the_real_window() {
+    // Twenty images, one a diagram type. **Look at them**: this is the test that says an arrowhead
+    // points the right way and that nothing overlaps anything, which no assertion about a scene
+    // graph can tell you.
+    let mut results = SnapshotResults::new();
+    for name in [
+        "flowchart", "sequence", "class", "state", "er", "requirement", "pie", "gantt", "journey",
+        "gitgraph", "mindmap", "timeline", "quadrant", "xychart", "sankey", "block", "packet",
+        "kanban", "radar", "treemap",
+    ] {
+        let mut harness = diagram_harness(&format!("{name}.mmd"), ViewMode::Preview);
+        assert!(
+            harness.query_by_label(&format!("Diagram: {name}.mmd")).is_some(),
+            "{name} should have drawn a diagram"
+        );
+        results.add(harness.try_snapshot(shot(&format!("mermaid_{name}"))));
+    }
+    report(results);
+}
+
+#[test]
+fn a_mermaid_file_gets_the_three_view_modes_named_after_what_it_is() {
+    let mut harness = diagram_harness("flowchart.mmd", ViewMode::Raw);
+    // The words say Mermaid, not Markdown. A button over a diagram that said `Markdown preview`
+    // would be a small wrongness a reader notices at once.
+    for name in ["Raw Mermaid", "Side by side", "Mermaid diagram"] {
+        assert!(harness.query_by_label(name).is_some(), "{name} should be there");
+    }
+    assert!(
+        harness.query_by_label("Raw Markdown").is_none(),
+        "and the Markdown wording should not be"
+    );
+    // The `F` is absent: a diagram is not prose, so bold and a line spacing mean nothing in it.
+    assert!(
+        harness.query_by_label("Text options").is_none(),
+        "a diagram has no formatting to offer"
+    );
+    harness.snapshot(shot("mermaid_view_raw"));
+}
+
+#[test]
+fn the_three_view_mode_buttons_switch_a_mermaid_file_between_the_modes() {
+    let mut harness = diagram_harness("pie.mmd", ViewMode::Raw);
+    for (name, expected) in [
+        ("Side by side", ViewMode::SideBySide),
+        ("Mermaid diagram", ViewMode::Preview),
+        ("Raw Mermaid", ViewMode::Raw),
+    ] {
+        harness.get_by_label(name).click();
+        harness.run();
+        assert_eq!(harness.state().view_mode(), expected, "clicking {name} should switch to it");
+    }
+}
+
+#[test]
+fn side_by_side_shows_a_mermaid_source_and_its_diagram_at_once() {
+    let mut harness = diagram_harness("state.mmd", ViewMode::Raw);
+    let whole = harness.state().editor_area().width();
+    harness.get_by_label("Side by side").click();
+    harness.run();
+    let half = harness.state().editor_area().width();
+    assert!(half < whole, "the source gives up half its width: {whole} then {half}");
+    assert!(harness.query_by_label("Diagram: state.mmd").is_some(), "the diagram is drawn beside it");
+    harness.snapshot(shot("mermaid_side_by_side"));
+}
+
+#[test]
+fn a_diagram_that_will_not_parse_says_which_line_rather_than_drawing_nothing() {
+    let folder = diagram_folder();
+    let broken = folder.join("broken.mmd");
+    std::fs::write(&broken, "flowchart LR\n  A --> B\n  C[never closed --> D\n")
+        .expect("write the broken sample");
+    let mut harness = harness_in(&folder);
+    harness.state_mut().open_path_permanently(&broken);
+    harness.state_mut().set_view_mode(ViewMode::Preview);
+    harness.run();
+    harness.snapshot(shot("mermaid_problem"));
+}
+
+#[test]
+fn a_diagram_type_quill_does_not_draw_is_named_rather_than_left_blank() {
+    let folder = diagram_folder();
+    let path = folder.join("wardley.mmd");
+    std::fs::write(&path, "wardley\n  title A value chain\n  anchor Customer [0.9, 0.8]\n")
+        .expect("write the sample");
+    let mut harness = harness_in(&folder);
+    harness.state_mut().open_path_permanently(&path);
+    harness.state_mut().set_view_mode(ViewMode::Preview);
+    harness.run();
+    harness.snapshot(shot("mermaid_not_drawn"));
+}
+
+#[test]
+fn mermaid_blocks_in_a_markdown_file_are_drawn_in_its_preview() {
+    let folder = diagram_folder();
+    let mut harness = harness_in(&folder);
+    harness.state_mut().open_path_permanently(&folder.join("in-markdown.md"));
+    harness.state_mut().set_view_mode(ViewMode::Preview);
+    harness.run();
+
+    let diagrams = harness.state().preview_diagrams();
+    assert_eq!(diagrams.len(), 3, "two that draw and one that cannot");
+    assert!(diagrams[0].laid.is_ok(), "the flowchart draws");
+    assert!(diagrams[1].laid.is_ok(), "the pie draws");
+    assert!(diagrams[2].laid.is_err(), "the one with the unclosed bracket does not");
+    // Each one's paragraph was made tall enough to hold it, which is the whole of the two-pass
+    // arrangement working.
+    for diagram in diagrams {
+        assert!(diagram.size.y > 0.0, "a diagram with no height would be invisible");
+    }
+    // The `rust` fence is still code: only `mermaid` is drawn.
+    assert!(
+        harness.state().preview_text().contains("still code"),
+        "an ordinary code fence keeps its text"
+    );
+    harness.snapshot(shot("mermaid_in_markdown"));
+}
+
+#[test]
+fn switching_the_mermaid_plugin_off_withdraws_the_diagrams() {
+    // The whole reason this is a plugin rather than a feature: turning it off has to actually take
+    // the feature away, in the same frame, in both of the places it appears.
+    let folder = diagram_folder();
+    let mut harness = harness_in(&folder);
+    harness.state_mut().open_path_permanently(&folder.join("in-markdown.md"));
+    harness.state_mut().set_view_mode(ViewMode::Preview);
+    harness.run();
+    assert_eq!(harness.state().preview_diagrams().len(), 3);
+    assert!(harness.state().mermaid_is_enabled());
+
+    harness.state_mut().set_plugin_enabled("mermaid", false);
+    harness.run();
+    assert!(!harness.state().mermaid_is_enabled());
+    assert!(
+        harness.state().preview_diagrams().is_empty(),
+        "with the plugin off, a mermaid fence is code again"
+    );
+
+    // And a `.mmd` file says so rather than drawing.
+    harness.state_mut().open_path_permanently(&folder.join("pie.mmd"));
+    harness.state_mut().set_view_mode(ViewMode::Preview);
+    harness.run();
+    assert!(
+        harness.query_by_label("Diagram: pie.mmd").is_none(),
+        "no diagram is drawn while the plugin is off"
+    );
+    harness.snapshot(shot("mermaid_plugin_off"));
+}
+
+#[test]
+fn a_diagram_is_laid_out_once_however_many_frames_it_is_drawn_for() {
+    // A preview is redrawn sixty times a second, so laying a diagram out on every frame would be
+    // sixty layouts a second for a picture that has not changed.
+    let folder = diagram_folder();
+    let mut harness = harness_in(&folder);
+    harness.state_mut().open_path_permanently(&folder.join("flowchart.mmd"));
+    harness.state_mut().set_view_mode(ViewMode::Preview);
+    harness.run();
+    let after_first = harness.state().mermaid_scene_count();
+    for _ in 0..5 {
+        harness.run();
+    }
+    assert_eq!(
+        harness.state().mermaid_scene_count(),
+        after_first,
+        "drawing it again should not lay it out again"
+    );
+    assert_eq!(after_first, 1, "one diagram, one scene");
+}
+
+#[test]
+fn the_command_line_can_read_what_a_diagram_came_out_as() {
+    // `task-1661` asks that every feature be reachable from the command line. A picture cannot be
+    // sent down a socket, so what comes back is what it is, how large it came out and every word in
+    // it — which is enough for a script to tell that the right diagram was drawn.
+    let folder = diagram_folder();
+    let mut harness = harness_in(&folder);
+    harness.state_mut().open_path_permanently(&folder.join("pie.mmd"));
+    harness.run();
+    let answer = did(&mut harness, "editor preview");
+    assert_eq!(answer["diagram"], "pie", "{answer}");
+    assert!(answer["width"].as_f64().unwrap_or(0.0) > 0.0);
+    let text = answer["text"].to_string();
+    assert!(text.contains("Where the work went"), "it reads the words back: {text}");
+}

@@ -51,6 +51,12 @@ pub struct OpenFile {
     pub git_asked: bool,
     /// The picture, when this tab holds one rather than text.
     pub picture: Option<Picture>,
+    /// Where the diagram has been moved and scaled to, for a tab holding a Mermaid file.
+    ///
+    /// Beside `preview_scroll` rather than instead of it, because they are two different ways of
+    /// moving about: the Markdown preview scrolls like text, and a diagram is panned and zoomed like
+    /// a picture.
+    pub diagram: crate::components::diagram_view::View,
 }
 
 impl OpenFile {
@@ -65,6 +71,7 @@ impl OpenFile {
             transient: false,
             git_asked: false,
             picture: None,
+            diagram: crate::components::diagram_view::View::default(),
         }
     }
 

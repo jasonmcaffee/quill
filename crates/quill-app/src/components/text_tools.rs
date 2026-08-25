@@ -88,11 +88,15 @@ pub struct ToolsOutcome {
 
 /// Whether any of the tools are drawn at all for this file.
 ///
-/// Everything in them is about how prose is shown, so they are drawn for prose and not for code. The
-/// title bar asks this before it lays itself out, because the answer decides how much of its right hand
-/// end is spoken for.
+/// **Either** question, not just the first. The `F` button and everything behind it is about how
+/// prose is shown, so it is drawn for prose and not for code; but a `.mmd` file is not prose and
+/// still has a preview, so it still wants the three view mode buttons. `task-1660` is what made
+/// the two come apart: before it, a file that had a preview always had formatting too.
+///
+/// The title bar asks this before it lays itself out, because the answer decides how much of its
+/// right hand end is spoken for.
 pub fn applies(path: Option<&Path>) -> bool {
-    file_kind::formatting_applies(path)
+    file_kind::formatting_applies(path) || file_kind::preview_applies(path)
 }
 
 /// How much room the tools need for this file, which is nothing at all for most files.
@@ -104,8 +108,14 @@ pub fn width(path: Option<&Path>) -> f32 {
         return 0.0;
     }
     let modes = crate::app::ViewMode::ALL.len() as f32;
-    let with_modes = GROUP_GAP + modes * STEP - (STEP - BUTTON);
-    BUTTON + if file_kind::preview_applies(path) { with_modes } else { 0.0 }
+    let modes_width = modes * STEP - (STEP - BUTTON);
+    match (file_kind::formatting_applies(path), file_kind::preview_applies(path)) {
+        (true, true) => BUTTON + GROUP_GAP + modes_width,
+        (true, false) => BUTTON,
+        // A diagram: the view modes on their own, with no `F` in front of them.
+        (false, true) => modes_width,
+        (false, false) => 0.0,
+    }
 }
 
 /// Draw the tools into `area`, which is the rectangle the title bar left clear for them.
@@ -122,27 +132,32 @@ pub fn show(
 ) -> ToolsOutcome {
     let mut outcome = ToolsOutcome::default();
     let middle = area.center().y;
+    let path = document.path();
 
-    let button = Rect::from_min_size(
-        Pos2::new(area.left(), middle - BUTTON / 2.0),
-        Vec2::splat(BUTTON),
-    );
-    if let Some(commands) =
-        controls::flyout(ui, button, "Text options", icon::font, PANEL, |panel| {
-            text_options(panel, document, bold_family)
-        })
-    {
-        outcome.commands.extend(commands);
+    // The `F` is drawn only for prose. A control that can never apply to this file is absent, which
+    // is the rule the window already keeps.
+    let mut pen = area.left();
+    if file_kind::formatting_applies(path) {
+        let button =
+            Rect::from_min_size(Pos2::new(pen, middle - BUTTON / 2.0), Vec2::splat(BUTTON));
+        if let Some(commands) =
+            controls::flyout(ui, button, "Text options", icon::font, PANEL, |panel| {
+                text_options(panel, document, bold_family)
+            })
+        {
+            outcome.commands.extend(commands);
+        }
+        pen = button.right() + GROUP_GAP;
     }
 
     // The three view modes sit beside the `F`, which is what `task-1658` asks for: one group of text
     // tools rather than one at each end of a bar.
-    if file_kind::preview_applies(document.path()) {
-        let mut pen = button.right() + GROUP_GAP;
+    if file_kind::preview_applies(path) {
+        let kind = file_kind::preview_kind(path);
         for mode in crate::app::ViewMode::ALL {
             let button =
                 Rect::from_min_size(Pos2::new(pen, middle - BUTTON / 2.0), Vec2::splat(BUTTON));
-            if view_mode_button(ui, button, mode, view_mode == mode) {
+            if view_mode_button(ui, button, mode, view_mode == mode, kind) {
                 outcome.view_mode = Some(mode);
             }
             pen += STEP;
@@ -324,11 +339,12 @@ fn view_mode_button(
     area: Rect,
     mode: crate::app::ViewMode,
     active: bool,
+    kind: file_kind::PreviewKind,
 ) -> bool {
-    let name = mode.label();
+    let name = mode.label_for(kind);
     let response = ui
         .interact(area, ui.id().with(("view-mode", name)), Sense::click())
-        .on_hover_text(mode.description());
+        .on_hover_text(mode.description_for(kind));
     let painter = ui.painter();
     if active {
         painter.rect_filled(area, CornerRadius::same(size::CONTROL_CORNER), color::ACCENT);

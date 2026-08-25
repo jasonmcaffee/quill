@@ -1,0 +1,17 @@
+sequenceDiagram
+  autonumber
+  actor Reader
+  participant Quill
+  participant Disk as The disk
+  Reader ->>+ Quill: Open notes.md
+  Quill ->>+ Disk: Read it
+  Disk -->>- Quill: The bytes
+  Note right of Quill: nothing is fetched
+  loop every keystroke
+    Quill ->> Quill: Lay the preview out
+  end
+  alt it parsed
+    Quill -->>- Reader: The drawn page
+  else it did not
+    Quill --x Reader: The line it went wrong on
+  end

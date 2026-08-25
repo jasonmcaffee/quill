@@ -39,6 +39,7 @@ use quill_core::{layout, Command, Document, Layout};
 
 use crate::components::activity_bar;
 use crate::components::context_menu;
+use crate::components::diagram_view;
 use crate::components::editor_view;
 use crate::components::explorer;
 use crate::components::file_tabs::{self, TabView};
@@ -62,6 +63,7 @@ use crate::services::file_clipboard::FileClipboard;
 use crate::services::launcher;
 use crate::services::icons::Icons;
 use crate::services::plugins::Plugins;
+use crate::services::mermaid_scene::MermaidScenes;
 use crate::services::preview_images::PreviewImages;
 use crate::services::project_state::{self, ProjectState};
 use crate::services::native_menu::NativeMenu;
@@ -86,6 +88,13 @@ pub const DEFAULT_OPACITY: f32 = settings::DEFAULT_OPACITY;
 /// a platform's business — measured on this machine it is about 55, which is a third bigger than the
 /// number egui's own default assumes — and the ratio a gesture is asking for is the same everywhere.
 const ZOOM_STEP: f32 = 1.18;
+
+/// How tall the panel is that stands in for a diagram that could not be drawn.
+///
+/// Enough for the reason, the line it was on, and a few lines of the source under it. A fixed height
+/// rather than one worked out from the source, because a document being typed into would otherwise
+/// jump about as the panel grew and shrank with every keystroke.
+const PROBLEM_HEIGHT: f32 = 160.0;
 
 /// How much air is left under a picture in the Markdown preview.
 ///
@@ -123,19 +132,54 @@ impl ViewMode {
     pub const ALL: [ViewMode; 3] = [ViewMode::Raw, ViewMode::SideBySide, ViewMode::Preview];
 
     /// The name a test asks for the button by, and what assistive technology reads out.
+    ///
+    /// Markdown's wording, which is what it has always been and what every existing test asks for.
+    /// A file whose preview is a diagram uses [`Self::label_for`] instead.
     pub fn label(&self) -> &'static str {
-        match self {
-            ViewMode::Raw => "Raw Markdown",
-            ViewMode::SideBySide => "Side by side",
-            ViewMode::Preview => "Markdown preview",
+        self.label_for(file_kind::PreviewKind::Markdown)
+    }
+
+    /// The name, by what kind of preview the open file has.
+    ///
+    /// `task-1660` gives a `.mmd` file the same three modes a `.md` file has, and a button over a
+    /// Mermaid diagram that said `Markdown preview` would be a small wrongness a reader notices at
+    /// once. `Side by side` is the same word in both, which is not two controls sharing a name:
+    /// only one file is open at a time, so the two are never on the screen together.
+    pub fn label_for(&self, kind: file_kind::PreviewKind) -> &'static str {
+        match (self, kind) {
+            (ViewMode::Raw, file_kind::PreviewKind::Markdown) => "Raw Markdown",
+            (ViewMode::Raw, file_kind::PreviewKind::Mermaid) => "Raw Mermaid",
+            (ViewMode::SideBySide, _) => "Side by side",
+            (ViewMode::Preview, file_kind::PreviewKind::Markdown) => "Markdown preview",
+            (ViewMode::Preview, file_kind::PreviewKind::Mermaid) => "Mermaid diagram",
         }
     }
 
     pub fn description(&self) -> &'static str {
-        match self {
-            ViewMode::Raw => "Raw Markdown: the source as it is on disk",
-            ViewMode::SideBySide => "Side by side: the source on the left, the preview on the right",
-            ViewMode::Preview => "Markdown preview: the rendered document",
+        self.description_for(file_kind::PreviewKind::Markdown)
+    }
+
+    /// What the pointer resting on the button says, by what kind of preview the file has.
+    pub fn description_for(&self, kind: file_kind::PreviewKind) -> &'static str {
+        match (self, kind) {
+            (ViewMode::Raw, file_kind::PreviewKind::Markdown) => {
+                "Raw Markdown: the source as it is on disk"
+            }
+            (ViewMode::Raw, file_kind::PreviewKind::Mermaid) => {
+                "Raw Mermaid: the source as it is on disk"
+            }
+            (ViewMode::SideBySide, file_kind::PreviewKind::Markdown) => {
+                "Side by side: the source on the left, the preview on the right"
+            }
+            (ViewMode::SideBySide, file_kind::PreviewKind::Mermaid) => {
+                "Side by side: the source on the left, the diagram on the right"
+            }
+            (ViewMode::Preview, file_kind::PreviewKind::Markdown) => {
+                "Markdown preview: the rendered document"
+            }
+            (ViewMode::Preview, file_kind::PreviewKind::Mermaid) => {
+                "Mermaid diagram: the drawn diagram"
+            }
         }
     }
 
@@ -163,6 +207,23 @@ pub struct PlacedPicture {
     /// The picture, or `None` when it could not be read — in which case the alt text is drawn.
     pub texture: Option<egui::TextureHandle>,
     pub alt: String,
+}
+
+/// One diagram in the Markdown preview, laid out and ready to draw.
+///
+/// The same shape as [`PlacedPicture`] and for the same reason: `quill_core::markdown` says which
+/// paragraph stands in for the diagram, and this says how large it came out and what it holds. Held
+/// between frames because a preview is redrawn sixty times a second and a diagram is laid out once.
+pub struct PlacedDiagram {
+    /// Which paragraph of the preview it belongs to.
+    pub paragraph: usize,
+    /// How large it is drawn, in points.
+    pub size: Vec2,
+    /// The diagram, or the reason it could not be drawn — which is shown in its place, because a
+    /// mistake in one diagram must not take the rest of the document away.
+    pub laid: crate::services::mermaid_scene::Laid,
+    /// What was between the fences, so a problem can show it under the reason.
+    pub source: String,
 }
 
 /// What the keyboard is talking to.
@@ -264,6 +325,10 @@ pub struct QuillApp {
     preview_images: PreviewImages,
     /// Where each of those pictures is drawn, worked out with the preview and drawn from every frame.
     preview_pictures: Vec<PlacedPicture>,
+    /// Every diagram that has been laid out, kept so a preview lays each one out once.
+    mermaid_scenes: MermaidScenes,
+    /// The diagrams in the preview, in the order they appear.
+    preview_diagrams: Vec<PlacedDiagram>,
     /// Set when the theme has been applied, which has to happen once the context exists.
     themed: bool,
     /// The family the toolbar uses for its bold B. It is the real bold face once [`Self::prepare`] has
@@ -357,6 +422,8 @@ impl QuillApp {
             preview_width: 0.0,
             preview_images: PreviewImages::new(),
             preview_pictures: Vec::new(),
+            mermaid_scenes: MermaidScenes::new(),
+            preview_diagrams: Vec::new(),
             themed: false,
             bold_family: egui::FontFamily::Proportional,
             context: None,
@@ -605,6 +672,7 @@ impl QuillApp {
             recent: self.recent.clone(),
             view_mode: self.view_mode(),
             can_preview: file_kind::preview_applies(self.document().path()),
+            preview_kind: file_kind::preview_kind(self.document().path()),
             explorer_visible: self.explorer_visible,
             line_numbers: self.settings.line_numbers,
             terminal_visible: self.terminal.visible,
@@ -1767,6 +1835,7 @@ impl QuillApp {
             self.renderer.monospaced_family(),
         );
         self.preview_pictures = self.read_the_pictures(ctx, &mut preview, width);
+        self.preview_diagrams = self.lay_the_diagrams_out(ctx, &mut preview, width);
         self.preview_layout = layout(
             &preview.text,
             &preview.chars,
@@ -1823,6 +1892,112 @@ impl QuillApp {
             });
         }
         placed
+    }
+
+    /// Lay every diagram the preview names out, and give each one's paragraph the room it needs.
+    ///
+    /// Exactly the two passes the pictures take, and for the same reason: `quill_core::markdown`
+    /// cannot know how wide the pane is, so it says where a diagram goes and this works out how tall
+    /// it turns out to be. A diagram wider than the pane is scaled down to fit — never blown up —
+    /// which is what `fit` means everywhere else in Quill.
+    ///
+    /// **A diagram that will not draw keeps its room and says why.** Losing the whole document
+    /// because one fence has a typo in it would be far worse than a panel where a picture should be,
+    /// and the panel names the line so the typo can be found.
+    fn lay_the_diagrams_out(
+        &mut self,
+        ctx: &egui::Context,
+        preview: &mut quill_core::Preview,
+        width: f32,
+    ) -> Vec<PlacedDiagram> {
+        // The plugin decides whether a diagram is drawn at all. With it switched off, a mermaid
+        // fence stays the code it was before `task-1660`, in the same frame.
+        if preview.diagrams.is_empty() || !self.mermaid_is_enabled() {
+            return Vec::new();
+        }
+        let base = self.diagram_style();
+        let theme = crate::services::mermaid_scene::theme();
+        let metrics = crate::services::mermaid_scene::EguiMetrics::new(ctx, self.bold_family.clone());
+        let mut placed = Vec::with_capacity(preview.diagrams.len());
+        for diagram in preview.diagrams.clone() {
+            let laid = self.mermaid_scenes.scene(&diagram.source, &base, &metrics, &theme);
+            let size = match &laid {
+                Ok(scene) if scene.size.width > 0.0 => {
+                    let scale = (width / scene.size.width).min(1.0);
+                    Vec2::new(scene.size.width * scale, scene.size.height * scale)
+                }
+                // A problem panel takes a fixed height: enough for the reason and a few lines of the
+                // source under it.
+                _ => Vec2::new(width, PROBLEM_HEIGHT),
+            };
+            if size.y > 0.0 {
+                let room = size.y + PICTURE_GAP;
+                preview
+                    .paragraphs
+                    .set(diagram.paragraph..diagram.paragraph + 1, |style| style.min_height = room);
+            }
+            placed.push(PlacedDiagram {
+                paragraph: diagram.paragraph,
+                size,
+                laid,
+                source: diagram.source.clone(),
+            });
+        }
+        placed
+    }
+
+    /// The family and the size a diagram's text is set in.
+    ///
+    /// The **size** follows the editor's, so a diagram grows and shrinks with command and plus
+    /// exactly as the Markdown preview does.
+    ///
+    /// The **family** is the one `theme::install_fonts` put into egui, which is not necessarily the
+    /// editor's. A diagram is the one thing in the window that is measured by `quill-core` and drawn
+    /// by `egui`, and those two have to be looking at the same face or a box comes out the wrong size
+    /// for the words in it. Measuring in the settings font while drawing in egui's left a requirement
+    /// diagram's fields hanging over the right edge of their boxes, which is what the screenshot
+    /// showed and what no assertion about the scene could have caught.
+    fn diagram_style(&self) -> quill_core::CharStyle {
+        quill_core::CharStyle {
+            family: self.renderer.default_family(),
+            size: self.document().active_style().size * 0.9,
+            ..quill_core::CharStyle::default()
+        }
+    }
+
+    /// Switch a plugin on or off, and undo whatever it was doing to the window.
+    ///
+    /// The one place it happens, so the two things that have to follow always do: the open file may
+    /// have just gained or lost its colours, and it may have just gained or lost its diagram. Doing
+    /// them here rather than in the settings dialog is what makes `quill-cli plugins disable` and
+    /// the tick box in `Plugins` mean exactly the same thing.
+    pub fn set_plugin_enabled(&mut self, id: &str, on: bool) {
+        self.plugins.set_enabled(self.store.as_ref(), id, on);
+        self.coloured_revision = None;
+        // The preview is thrown away rather than kept, because whether a mermaid fence is a picture
+        // or a piece of code has just changed and the preview is built from that answer.
+        self.preview = None;
+        self.preview_diagrams.clear();
+        self.mermaid_scenes.forget();
+    }
+
+    /// How many diagrams have been laid out and kept, for a test.
+    pub fn mermaid_scene_count(&self) -> usize {
+        self.mermaid_scenes.len()
+    }
+
+    /// Whether the Mermaid plugin is switched on.
+    ///
+    /// Asked before a diagram is laid out and before a `.mmd` file is drawn as one, so switching the
+    /// plugin off in `Plugins` withdraws every diagram in the window in the same frame. That is what
+    /// makes it a plugin rather than a feature with a plugin painted on it.
+    pub fn mermaid_is_enabled(&self) -> bool {
+        self.plugins.renders("mermaid")
+    }
+
+    /// The diagrams the preview is drawing, for a test.
+    pub fn preview_diagrams(&self) -> &[PlacedDiagram] {
+        &self.preview_diagrams
     }
 
     /// Lay the document out if the text, the formatting or the width changed since the last time.
@@ -2406,9 +2581,7 @@ impl QuillApp {
             self.install_plugin(&id);
         }
         if let Some((id, on)) = settings_outcome.plugins.set_enabled {
-            self.plugins.set_enabled(self.store.as_ref(), &id, on);
-            // The open file may have just gained or lost its colours.
-            self.coloured_revision = None;
+            self.set_plugin_enabled(&id, on);
         }
         if settings_outcome.changed || self.settings != before {
             self.apply_settings(&before);
@@ -2587,9 +2760,53 @@ impl QuillApp {
         }
     }
 
+    /// Draw whatever the open file's preview is: a Markdown page, or a drawn diagram.
+    ///
+    /// One function rather than branches spread through `show_editing_area`, so that the three view
+    /// modes are the same three modes whichever kind of file is open and `SideBySide` needs no
+    /// special case of its own at all.
+    fn show_preview(&mut self, ui: &mut egui::Ui, area: Rect) {
+        if file_kind::is_mermaid(self.document().path()) {
+            self.show_diagram(ui, area);
+            return;
+        }
+        self.show_markdown_preview(ui, area);
+    }
+
+    /// Draw the whole file as one diagram, which is what a `.mmd` file's preview is.
+    fn show_diagram(&mut self, ui: &mut egui::Ui, area: Rect) {
+        if !self.mermaid_is_enabled() {
+            let problem = quill_core::mermaid::Problem::whole(
+                "The Mermaid plugin is switched off, so this file is not drawn as a diagram. Switch it on in Plugins.",
+            );
+            diagram_view::show_problem(ui, area, &problem, "");
+            return;
+        }
+        let source = self.document().text().to_string();
+        let base = self.diagram_style();
+        let theme = crate::services::mermaid_scene::theme();
+        let metrics =
+            crate::services::mermaid_scene::EguiMetrics::new(ui.ctx(), self.bold_family.clone());
+        let laid = self.mermaid_scenes.scene(&source, &base, &metrics, &theme);
+        let name = self.files.active().name();
+        match laid {
+            Ok(scene) => {
+                // Taken apart by field, because the view has to be borrowed mutably while the window
+                // is still needed for the focus that follows.
+                let Self { files, .. } = self;
+                let view = &mut files.active_mut().diagram;
+                let outcome = diagram_view::show(ui, area, &scene, view, &name);
+                if outcome.take_focus {
+                    self.focus = Focus::Editor;
+                }
+            }
+            Err(problem) => diagram_view::show_problem(ui, area, &problem, &source),
+        }
+    }
+
     /// Draw the Markdown preview into `area`. It is read only, so it has no caret and no selection: there
     /// is nothing to type into, because what is shown is worked out from the source.
-    fn show_preview(&mut self, ui: &mut egui::Ui, area: Rect) {
+    fn show_markdown_preview(&mut self, ui: &mut egui::Ui, area: Rect) {
         let response = ui.interact(area, ui.id().with("preview"), egui::Sense::hover());
         let text_width = (area.width() - size::EDITOR_PADDING_X * 2.0).max(50.0);
         let ctx = ui.ctx().clone();
@@ -2613,6 +2830,7 @@ impl QuillApp {
         painter_ui.set_clip_rect(ui.painter().clip_rect().intersect(area));
         editor_view::paint_text(&painter_ui, &self.renderer, &self.preview_layout, origin);
         self.paint_the_pictures(&painter_ui, origin);
+        self.paint_the_diagrams(&painter_ui, origin, text_width);
     }
 
     /// Draw the pictures into the room their paragraphs were given.
@@ -2652,6 +2870,32 @@ impl QuillApp {
                         color::TEXT_DIM,
                     );
                     painter.galley(at, galley, color::TEXT_DIM);
+                }
+            }
+        }
+    }
+
+    /// Draw the diagrams into the room their paragraphs were given.
+    ///
+    /// After the text, like the pictures, so a diagram cannot be hidden behind the letters of the
+    /// empty line it sits on.
+    fn paint_the_diagrams(&self, ui: &egui::Ui, origin: Pos2, width: f32) {
+        for diagram in &self.preview_diagrams {
+            let Some(line) =
+                self.preview_layout.lines.iter().find(|line| line.paragraph == diagram.paragraph)
+            else {
+                continue;
+            };
+            let at = Pos2::new(origin.x, origin.y + line.y);
+            match &diagram.laid {
+                Ok(scene) => {
+                    let scale =
+                        if scene.size.width > 0.0 { (width / scene.size.width).min(1.0) } else { 1.0 };
+                    diagram_view::paint(ui, scene, at, scale);
+                }
+                Err(problem) => {
+                    let panel = Rect::from_min_size(at, Vec2::new(width, diagram.size.y));
+                    diagram_view::show_problem(ui, panel, problem, &diagram.source);
                 }
             }
         }

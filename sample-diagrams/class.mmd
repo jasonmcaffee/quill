@@ -1,0 +1,24 @@
+classDiagram
+  direction TB
+  class Scene {
+    +Size size
+    +Vec~Item~ items
+    +add(item) void
+    +claim(rect) void
+  }
+  class Item {
+    <<enumeration>>
+    Rect
+    Circle
+    Polygon
+    Line
+    Text
+  }
+  class Renderer {
+    <<interface>>
+    +paint(scene) void
+  }
+  Scene "1" --> "*" Item : holds
+  Renderer ..> Scene : draws
+  Item <|-- Rect
+  Item <|-- Text
