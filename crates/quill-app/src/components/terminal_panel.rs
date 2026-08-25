@@ -631,8 +631,9 @@ fn handle_input(
     }
     // A box that takes typing, such as the explorer's filter, has been clicked into. It keeps the keyboard
     // until it is clicked away from, so the terminal stands aside: taking the keys here would leave the
-    // filter box impossible to type in while the terminal was open.
-    if ui.memory(|memory| memory.focused().is_some()) {
+    // filter box impossible to type in while the terminal was open. The editing area asks the same
+    // question in the same words, so there is one answer to it rather than two that could drift.
+    if crate::app::text_box_has_the_keyboard(ui.ctx()) {
         return;
     }
 

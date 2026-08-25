@@ -133,6 +133,25 @@ pub enum Focus {
     Terminal,
 }
 
+/// True when one of the window's text boxes has the keyboard: the explorer's filter, the commit
+/// message, the rename prompt, the plugin search or the settings search.
+///
+/// This is the other half of what [`Focus`] means. `Focus` says whether the editing area or the
+/// terminal is the one being typed into; this says whether either of them is being typed into at
+/// all. Both have to be asked, because egui does **not** take the events a `TextEdit` consumed out
+/// of `input.events` — the list is the frame's input and every reader sees all of it. The editing
+/// area and the terminal read it directly, so without this question they take the same key presses
+/// the box has just taken, and typing a filter also types into the file behind it.
+///
+/// `text_edit_focused` is asked rather than `egui_wants_keyboard_input`, which is
+/// `memory.focused().is_some()` and is true of **any** focusable widget. Every control Quill draws
+/// with `Sense::click` is focusable, so the broader question would stop the document being typed
+/// into after a button was reached with Tab. Only a box that takes text should take the keyboard
+/// away, and in egui only `TextEdit` and `DragValue` ask for focus when they are clicked.
+pub fn text_box_has_the_keyboard(ctx: &egui::Context) -> bool {
+    ctx.text_edit_focused()
+}
+
 pub struct QuillApp {
     /// The files that are open, one to a tab, and which of them is showing.
     pub files: OpenFiles,
@@ -1647,11 +1666,18 @@ impl QuillApp {
         // first and sends an action instead.
         if action.is_none() {
             let state = self.menu_state();
+            // While one of the window's text boxes has the keyboard, undo, redo and select all
+            // belong to that box rather than to the document, and it already does all three itself.
+            // The rest of the menu is untouched, so control and S in the filter box still saves.
+            let in_a_text_box = text_box_has_the_keyboard(ui.ctx());
             action = ui.input(|input| {
                 let mut found = None;
                 for event in &input.events {
                     if let egui::Event::Key { key, pressed: true, modifiers, .. } = event {
                         if let Some(chosen) = actions::action_for_key(&state, *key, modifiers) {
+                            if in_a_text_box && chosen.belongs_to_a_focused_text_box() {
+                                continue;
+                            }
                             found = Some(chosen);
                         }
                     }

@@ -39,6 +39,19 @@ pub fn handle_input(
     if !has_focus {
         return outcome;
     }
+    // A box that takes typing has been clicked into: the explorer's filter, the commit message, the
+    // rename prompt, one of the searches. It keeps the keyboard until it is clicked away from, so
+    // the document stands aside. egui leaves the events that box consumed in the frame's list, so
+    // reading them here as well put every character into the file behind the box and left it marked
+    // as having unsaved changes. The terminal stands aside for the same reason and in the same way.
+    //
+    // The guard is here rather than in the caller so that a later caller cannot forget it, and so a
+    // test that calls this function is testing the rule the window really follows. The mouse is not
+    // guarded: clicking in the document is how the document takes the keyboard back, and egui
+    // surrenders the box's focus on that same click.
+    if crate::app::text_box_has_the_keyboard(ui.ctx()) {
+        return outcome;
+    }
     let events = ui.input(|input| input.events.clone());
     for event in events {
         match event {

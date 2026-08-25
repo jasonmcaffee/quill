@@ -1606,21 +1606,26 @@ fn typing_in_the_terminal_reaches_the_shell_and_not_the_document() {
     let mut harness = harness("the document is untouched");
     let ctx = harness.ctx.clone();
     harness.state_mut().run_action(Action::ToggleTerminal, &ctx);
-    harness.run();
+    pump(&mut harness);
     assert_eq!(harness.state().focus, quill_app::app::Focus::Terminal);
 
+    // `pump` rather than `run` from here on. A real shell is starting behind this and writes its
+    // prompt whenever it is ready, and every write wakes the window, so `run`'s budget of four steps
+    // to go quiet is the wrong budget — it is the rule the file's other waiting loops already follow.
+    // Seen failing on a loaded machine as `Harness::run exceeded max_steps (4)` with the terminal's
+    // own waker as the repaint cause.
     for text in ["echo quill-typing-works"] {
         harness.input_mut().events.push(egui::Event::Text(text.to_owned()));
-        harness.run();
+        pump(&mut harness);
     }
     harness.key_press(egui::Key::Enter);
-    harness.run();
+    pump(&mut harness);
 
     // Thirty seconds, because this waits for a real shell on whatever machine the tests are run on, and a
     // machine busy with a build can take much longer than an idle one.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
-        harness.run();
+        pump(&mut harness);
         let found = harness
             .state()
             .terminal
@@ -1724,6 +1729,243 @@ fn a_box_that_takes_typing_keeps_the_keyboard_while_the_terminal_is_open() {
     harness.run();
 
     assert_eq!(harness.state().filter, "two", "what was typed should have reached the filter box");
+}
+
+/// Click at a point in the window, which is how the editing area is given the keyboard back.
+fn click_at(harness: &mut Harness<'static, QuillApp>, at: egui::Pos2) {
+    harness.input_mut().events.push(egui::Event::PointerMoved(at));
+    for pressed in [true, false] {
+        harness.input_mut().events.push(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::default(),
+        });
+    }
+    harness.run();
+}
+
+// The next group is `task-1656`. The editing area used to read the frame's key and text events
+// without asking whether another widget had the keyboard, and egui leaves the events a `TextEdit`
+// consumed in that list, so typing `note` into the explorer's filter box put `note` at the caret in
+// the open file as well and marked it as having unsaved changes. Each test drives a different box,
+// because the fault was in the editing area rather than in any one of them.
+
+#[test]
+fn typing_in_the_explorers_filter_box_leaves_the_document_alone() {
+    let mut harness = harness("");
+    harness.get_by_label_contains("readme.md").click();
+    harness.run();
+    let before = harness.state().document().text().to_string();
+    assert!(!harness.state().document().is_modified(), "just opened, so nothing to save");
+
+    harness.get_by_label("Filter files").click();
+    harness.run();
+    harness.get_by_label("Filter files").type_text("note");
+    harness.run();
+    // A key press as well as text, because the two arrive as different events and the editing area
+    // used to act on both: backspace deleted a character of the file rather than of the filter.
+    harness.key_press(egui::Key::Backspace);
+    harness.run();
+    harness.run();
+
+    assert_eq!(harness.state().filter, "not", "what was typed should have reached the filter box");
+    assert_eq!(
+        harness.state().document().text().to_string(),
+        before,
+        "and nothing should have reached the file behind it"
+    );
+    assert!(
+        !harness.state().document().is_modified(),
+        "so the file should not be marked as having unsaved changes"
+    );
+}
+
+#[test]
+fn clicking_back_into_the_document_takes_the_keyboard_back() {
+    // The other half of the guard: it has to let go. Without this a filter that had been typed into
+    // once would leave the document unable to be typed into at all.
+    let mut harness = harness("");
+    harness.get_by_label("Filter files").click();
+    harness.run();
+    harness.get_by_label("Filter files").type_text("two");
+    harness.run();
+
+    let middle = harness.state().editor_area().center();
+    click_at(&mut harness, middle);
+    harness.input_mut().events.push(egui::Event::Text("typed".to_owned()));
+    harness.run();
+
+    assert_eq!(harness.state().filter, "two", "the filter keeps what was typed into it");
+    assert_eq!(
+        harness.state().document().text().to_string(),
+        "typed",
+        "and the document takes typing again once it has been clicked into"
+    );
+}
+
+#[test]
+fn undo_in_a_text_box_does_not_undo_the_document() {
+    // Control and Z used to clear the filter box and undo an edit in the file behind it with the one
+    // press, because the menu's keyboard watcher reads the same events the box had just taken.
+    let mut harness = harness("original");
+    harness.state_mut().menu_placement = MenuPlacement::InWindow;
+    harness.run();
+    harness.input_mut().events.push(egui::Event::Text(" plus more".to_owned()));
+    harness.run();
+    let typed = harness.state().document().text().to_string();
+    assert_ne!(typed, "original", "the document should have been typed into first");
+
+    // Nothing is typed into the filter box first, deliberately. If it were, the undo would be
+    // undoing the box's own insert and the assertion would hold whether or not the watcher had been
+    // fixed. Focusing the box and pressing the shortcut is what tells the two apart.
+    harness.get_by_label("Filter files").click();
+    harness.run();
+    harness.key_press_modifiers(Modifiers::COMMAND, egui::Key::Z);
+    harness.run();
+
+    assert_eq!(
+        harness.state().document().text().to_string(),
+        typed,
+        "undo belongs to the box that has the keyboard, not to the document"
+    );
+}
+
+#[test]
+fn select_all_in_a_text_box_does_not_select_the_document() {
+    let mut harness = harness("some writing to look at");
+    harness.state_mut().menu_placement = MenuPlacement::InWindow;
+    harness.run();
+    harness.get_by_label("Filter files").click();
+    harness.run();
+    harness.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
+    harness.run();
+
+    assert!(
+        harness.state().document().selection().is_empty(),
+        "select all should have selected the filter box, leaving the document alone"
+    );
+}
+
+#[test]
+fn the_rest_of_the_menu_still_works_while_a_text_box_has_the_keyboard() {
+    // Only undo, redo and select all belong to the box. Everything else on every menu keeps working,
+    // which is what stops the guard from being too broad: control and S in a search box saves the
+    // file in every other editor and has to save it here.
+    let folder = std::env::temp_dir().join("quill-save-while-filtering");
+    std::fs::remove_dir_all(&folder).ok();
+    std::fs::create_dir_all(&folder).expect("make the folder");
+    let text = "saved while the filter box had the keyboard";
+    let owned = folder.clone();
+    let mut harness = builder()
+        .with_size(vec2(WINDOW[0], WINDOW[1]))
+        .build_eframe(move |cc| {
+            let mut app = QuillApp::with_text(owned, text);
+            app.prepare(&cc.egui_ctx);
+            app
+        });
+    harness.run();
+    harness.state_mut().menu_placement = MenuPlacement::InWindow;
+    harness.run();
+
+    harness.get_by_label("Filter files").click();
+    harness.run();
+    harness.key_press_modifiers(Modifiers::COMMAND, egui::Key::S);
+    harness.run();
+
+    let written = folder.join("untitled.md");
+    assert!(written.is_file(), "Save should still have written {}", written.display());
+    assert_eq!(std::fs::read_to_string(&written).expect("read it back"), text);
+    std::fs::remove_dir_all(&folder).ok();
+}
+
+#[test]
+fn typing_a_new_name_in_the_rename_prompt_leaves_the_document_alone() {
+    let folder = std::env::temp_dir().join("quill-rename-prompt-keyboard");
+    std::fs::remove_dir_all(&folder).ok();
+    std::fs::create_dir_all(&folder).expect("make the folder");
+    std::fs::write(folder.join("before.md"), "# before\n").expect("write it");
+    let mut harness = harness_in(&folder);
+    harness.state_mut().open_path_permanently(&folder.join("before.md"));
+    harness.run();
+    let before = harness.state().document().text().to_string();
+
+    let ctx = harness.ctx.clone();
+    harness.state_mut().run_action(Action::RenamePath(folder.join("before.md")), &ctx);
+    harness.run();
+    // The prompt asks for the keyboard as it opens, so this types without clicking, which is what a
+    // person does.
+    harness.get_by_label("Name").type_text("after");
+    harness.run();
+
+    assert!(
+        harness.state().prompt.as_ref().is_some_and(|prompt| prompt.value.ends_with("after")),
+        "what was typed should have reached the prompt: {:?}",
+        harness.state().prompt.as_ref().map(|prompt| prompt.value.clone())
+    );
+    assert_eq!(
+        harness.state().document().text().to_string(),
+        before,
+        "and nothing should have reached the file being renamed"
+    );
+    std::fs::remove_dir_all(&folder).ok();
+}
+
+#[test]
+fn typing_in_the_plugin_search_leaves_the_document_alone() {
+    let mut harness = harness("");
+    harness.get_by_label_contains("readme.md").click();
+    harness.run();
+    let before = harness.state().document().text().to_string();
+
+    harness.state_mut().settings_window.open();
+    harness.state_mut().settings_window.page = quill_app::settings::Page::Plugins;
+    harness.run();
+    harness.run();
+    harness.get_by_label("Search plugins").click();
+    harness.run();
+    harness.get_by_label("Search plugins").type_text("rust");
+    harness.run();
+    harness.run();
+
+    assert_eq!(
+        harness.state().document().text().to_string(),
+        before,
+        "searching the plugins should not type into the file behind the settings window"
+    );
+    assert!(!harness.state().document().is_modified());
+}
+
+#[test]
+fn typing_a_commit_message_leaves_the_document_alone() {
+    // The worst of the boxes, because a commit message is a paragraph rather than a word: every
+    // character of it used to be inserted into the file that was open behind the panel.
+    let mut harness = git_harness("keyboard");
+    let ctx = harness.ctx.clone();
+    let before = harness.state().document().text().to_string();
+    harness.state_mut().run_action(Action::Git(quill_app::app::actions::GitAction::Commit), &ctx);
+    harness.run();
+    settle(&mut harness, "the history the panel asks for", |app| {
+        app.git.as_ref().is_some_and(|git| git.message.is_none() && !git.history.is_empty())
+    });
+
+    harness.get_by_label("Commit message").click();
+    harness.run();
+    harness.get_by_label("Commit message").type_text("a message, not an edit");
+    harness.run();
+    harness.run();
+
+    assert_eq!(
+        harness.state().git.as_ref().map(|git| git.panel.message.clone()),
+        Some("a message, not an edit".to_owned()),
+        "what was typed should have reached the commit message"
+    );
+    assert_eq!(
+        harness.state().document().text().to_string(),
+        before,
+        "and nothing should have reached the file behind the panel"
+    );
+    assert!(!harness.state().document().is_modified());
 }
 
 #[test]

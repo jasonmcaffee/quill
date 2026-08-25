@@ -79,6 +79,23 @@ pub enum Action {
     Quit,
 }
 
+impl Action {
+    /// True when a text box that has the keyboard does this for itself.
+    ///
+    /// Undo, redo and select all mean the box being typed in and not the document while one of the
+    /// window's text boxes has the keyboard, which is what every editor does and what egui's own
+    /// text box already implements. Without this, control and Z in the explorer's filter box cleared
+    /// the box and undid an edit in the file behind it with the one press.
+    ///
+    /// Three, and no more. Cut, copy and paste are already marked as not coming from the keyboard,
+    /// because the platform delivers them as clipboard events, so they never reach the keyboard
+    /// watcher at all. Everything else on every menu keeps working while a box has the keyboard:
+    /// control and S in a search box saves the file, as it does in every other editor.
+    pub fn belongs_to_a_focused_text_box(&self) -> bool {
+        matches!(self, Action::Undo | Action::Redo | Action::SelectAll)
+    }
+}
+
 /// Everything the Git menu can ask for.
 ///
 /// A group of its own rather than twenty more variants of [`Action`], because they all go to one
@@ -948,6 +965,29 @@ mod tests {
             Some(Action::ToggleTerminal),
             "control and backtick opens the terminal on both platforms"
         );
+    }
+
+    #[test]
+    fn only_undo_redo_and_select_all_belong_to_a_focused_text_box() {
+        // `task-1656`. While one of the window's text boxes has the keyboard these three mean that
+        // box, so the keyboard watcher lets them go. The rest of the menu is untouched, which is the
+        // half that stops the guard from being too broad.
+        for action in [Action::Undo, Action::Redo, Action::SelectAll] {
+            assert!(action.belongs_to_a_focused_text_box(), "{action:?} belongs to the box");
+        }
+        for action in [
+            Action::Save,
+            Action::SaveAs,
+            Action::ToggleExplorer,
+            Action::ToggleTerminal,
+            Action::Settings,
+            Action::SetViewMode(ViewMode::Preview),
+        ] {
+            assert!(
+                !action.belongs_to_a_focused_text_box(),
+                "{action:?} keeps working while a box has the keyboard"
+            );
+        }
     }
 
     #[test]
