@@ -36,6 +36,12 @@ image.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-foundation.workspace = true
 
+# The icon and the version block inside `quill.exe`, put there by `build.rs`. Windows takes a
+# program's icon, its taskbar name and its Add or Remove Programs version from a resource compiled
+# into the executable, and nothing outside the executable can supply one.
+[target.'cfg(windows)'.build-dependencies]
+winresource.workspace = true
+
 [[example]]
 name = "sample_design"
 path = "examples/sample_design.rs"

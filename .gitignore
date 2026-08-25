@@ -11,3 +11,12 @@ reference/
 
 # IntelliJ workspace state, which is per machine rather than part of the project.
 .idea/
+
+# What the two installer build scripts write.
+/installer/dist/
+
+# The icon generator is a workspace of its own, so it has a target folder of its own.
+/installer/icon/target/
+
+# Anything an agent writes while working: captures, logs, comparisons.
+/_agent_output/

@@ -24,6 +24,7 @@ rfd = "0.17"
 muda = "0.19"
 alacritty_terminal = "0.26"
 unicode-width = "0.2"
+winresource = "0.1"
 objc2-foundation = { version = "0.3", default-features = false, features = [
     "std",
     "NSProcessInfo",

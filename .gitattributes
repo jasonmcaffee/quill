@@ -1,0 +1,15 @@
+# Line endings, decided here rather than left to whatever each machine has `core.autocrlf` set to.
+#
+# The one that matters is the shell script. A `.sh` checked out with carriage returns does not run on
+# a Mac at all — the kernel reads the `#!` line including the carriage return and reports that
+# `/usr/bin/env bash\r` does not exist — so it is pinned to line feeds on every platform.
+
+* text=auto
+
+*.sh    text eol=lf
+*.ps1   text eol=crlf
+*.rs    text eol=lf
+
+*.png   binary
+*.ico   binary
+*.icns  binary

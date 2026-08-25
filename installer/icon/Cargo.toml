@@ -1,0 +1,22 @@
+# The Quill mark. A workspace of its own — the empty `[workspace]` table below detaches it from the
+# one at the root — so that `cargo build` on Quill does not build a drawing program, and so that the
+# repository still holds four crates and no more.
+[package]
+name = "quill-icon"
+description = "Draws the Quill application icon and writes quill.ico, quill.icns and an iconset."
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace]
+
+[dependencies]
+# A path rasteriser with anti-aliasing and gradients, and no system dependency of any kind. It is
+# what `resvg` draws with.
+tiny-skia = "0.11"
+png = "0.17"
+
+[profile.release]
+opt-level = 2

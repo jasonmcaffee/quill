@@ -8,6 +8,20 @@ It is also, now, an editor you can write code in: line numbers down the left, a 
 file, a right click menu on the explorer, git in full, and plugins that colour JavaScript, TypeScript
 and Rust.
 
+## Installing it
+
+```powershell
+powershell -File installer\windowsuild.ps1 -Install     # Windows
+```
+```bash
+installer/macos/build.sh --install                        # macOS
+```
+
+`installer/` builds a real installer for each platform out of the same drawn icon: on Windows a single
+`QuillSetup-<version>-x64.exe` that puts Quill in the Start Menu, on the PATH and in *Open with*, and
+on macOS a `Quill.app` and a disk image to drag into `/Applications`. `installer/README.md` says what
+each switch does; `tasks/quill-installer-tdd.md` says why it is built the way it is.
+
 ## Running it
 
 ```

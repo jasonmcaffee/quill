@@ -105,6 +105,25 @@ that moves does not break a test, and a control with no name cannot be tested at
 share a name: the Settings window's button says `Done` rather than `Close` because the window already has a
 `Close` button.
 
+## Shipping it is a folder of its own
+
+`installer/` turns the built binary into something a person can install, and it does not reach into the
+application: it packages what `cargo build --release` already produces. `installer/icon` draws the mark
+once and writes `quill.ico`, `quill.icns` and an iconset; `installer/windows` compiles an Inno Setup
+script into a single setup exe; `installer/macos` builds `Quill.app` and a disk image. Each has a build
+script that goes from a checkout to a file that can be handed to somebody, so nothing about releasing
+lives only in a person's memory.
+
+The one place it does reach in is `crates/quill-app/build.rs`, which puts the icon and a version block
+inside `quill.exe`. That has to be inside the executable — Windows reads the taskbar icon, the Alt-Tab
+entry and the Add or Remove Programs version from there, and no installer can supply them from the
+outside. A missing Windows SDK makes it a warning rather than an error, so a build with no `rc.exe`
+still produces a working, if unlabelled, `quill.exe`.
+
+**The version lives in `Cargo.toml` and nowhere else.** It reaches the resource block, the installer's
+file name, the Add or Remove Programs entry and `Info.plist` from there. Do not write it down a second
+time.
+
 ## Tests
 
 Four layers, and a change should leave all four green:
@@ -169,6 +188,9 @@ trade that away to be a shade nearer a screenshot.
 - `tasks/quill-technical-design-document.md` — the editor: the options that were considered, what was
   chosen and why, and what is deliberately not included.
 - `tasks/quill-terminal-tdd.md` — the same for the terminal.
+- `tasks/quill-installer-tdd.md` — how Quill is delivered: the icon, the Windows installer and the
+  macOS bundle, and the options that were weighed for each.
+- `installer/README.md` — how to build an installer, on either platform.
 - `tasks/improvements.md` — the ask that the settings window, the panes, the terminal and the menus came
   from.
 

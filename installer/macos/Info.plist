@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The manifest inside Quill.app.
+
+  build.sh copies this in and replaces __VERSION__ with the version from Cargo.toml, so the version is
+  written down once, in Cargo.toml, and reaches the exe's resource block, the Windows installer's file
+  name and this from there.
+
+  Quill asks the operating system for a transparent, undecorated window and installs a menu bar along
+  the top of the screen. Both of those want a real bundle identity rather than a bare executable,
+  which is the first reason there is a bundle at all.
+-->
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Quill</string>
+    <key>CFBundleDisplayName</key>
+    <string>Quill</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.jasonmcaffee.quill</string>
+    <key>CFBundleExecutable</key>
+    <string>quill</string>
+    <key>CFBundleIconFile</key>
+    <string>Quill</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleSignature</key>
+    <string>????</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>__VERSION__</string>
+    <key>CFBundleVersion</key>
+    <string>__VERSION__</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>Licensed under MIT or Apache-2.0</string>
+
+    <!-- Without this the window is drawn at 1x and scaled up, which on a Retina screen is exactly the
+         blur the glyph atlas exists to avoid. -->
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <!-- A text editor has no business waking the discrete graphics chip on a laptop that has two. -->
+    <key>NSSupportsAutomaticGraphicsSwitching</key>
+    <true/>
+    <key>LSMinimumSystemVersion</key>
+    <string>11.0</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.developer-tools</string>
+
+    <!-- The same file kinds the Windows installer registers, and on the same terms: Quill is offered
+         as one of the applications that can open them and does not claim to own any of them. That is
+         what `LSHandlerRank: Alternate` says, and `Viewer` rather than `Editor` keeps Quill out of
+         the running for the default. -->
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Markdown Document</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>net.daringfireball.markdown</string>
+            </array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Plain Text Document</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.plain-text</string>
+                <string>public.text</string>
+            </array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Source File</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.source-code</string>
+                <string>public.script</string>
+                <string>public.json</string>
+                <string>public.yaml</string>
+            </array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Folder</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.folder</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>
