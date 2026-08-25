@@ -239,6 +239,33 @@ pub fn view_mode(painter: &egui::Painter, area: Rect, mode: crate::app::ViewMode
     }
 }
 
+/// An `F`, for the button that opens the text options.
+///
+/// Drawn from three strokes rather than set as a letter, which is what every other icon here does
+/// and for a reason worth writing down, because `task-1657` offered to have an image generated for
+/// it instead. Every icon in Quill is tinted where it is used — `TEXT_DIM` sitting there,
+/// `TEXT_STRONG` while the flyout is open — and is drawn at whatever size the window is running at.
+/// A picture can be neither tinted nor drawn at another scale without resampling it, so one image
+/// among fifteen drawings would be the one that looked wrong. A letter is no better: the toolbar's
+/// `B` is real text and needs the bold face bound before the first frame to look like anything.
+///
+/// The arms are the length the design's stroke weight wants: the upper one full width, the middle
+/// one shorter, which is what tells an `F` from an `E` at ten points.
+pub fn font(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    let stroke = Stroke::new(1.5, color);
+    let left = centre.x - 3.2;
+    let top = centre.y - 5.0;
+    let bottom = centre.y + 5.0;
+    // The stem.
+    painter.line_segment([Pos2::new(left, top), Pos2::new(left, bottom)], stroke);
+    // The two arms.
+    painter.line_segment([Pos2::new(left, top), Pos2::new(left + 6.4, top)], stroke);
+    painter.line_segment(
+        [Pos2::new(left, centre.y - 0.4), Pos2::new(left + 4.4, centre.y - 0.4)],
+        stroke,
+    );
+}
+
 /// An arrow with a head at each end, in front of the line spacing control.
 pub fn line_spacing(painter: &egui::Painter, centre: Pos2, color: Color32) {
     let stroke = Stroke::new(1.3, color);

@@ -96,9 +96,28 @@ fill until it is hovered, when it fills `CONTROL` at corner radius 4.
 
 **A dropdown.** `controls::dropdown`. Never `egui::ComboBox`, which brings its own styling.
 
+**A flyout.** `controls::flyout`. An icon button that opens a panel of controls under itself and
+stays open until the pointer goes elsewhere, which is what the toolbar's `F` button is. It is a
+sibling of the dropdown rather than a setting on it, because they are different things: a dropdown
+shows a value and choosing one shuts it, a flyout is a panel used several times in a row. The panel
+is `MENU` filled with a one point `CONTROL_BORDER` stroke, and inside it every row is named down the
+left in `TEXT_DIM` at 11.5 points with its controls in a column at 78 points in. **A flyout must not
+hold a dropdown or another flyout**: egui keeps at most one popup open at a time, so opening the
+second shuts the first.
+
+**A button carrying a word.** `controls::choice_button`. `ACCENT` filled when what it stands for is
+on, `CONTROL` while the pointer is over it, and a one point `CONTROL_BORDER` outline otherwise, with
+the word in `TEXT_STRONG` or `TEXT_CONTROL` at 12.5 points. The three line spacings are the only ones,
+and they are buttons rather than a dropdown because they live in a flyout — and because which spacing
+is on can then be seen without opening anything, as it can for the alignments beside them.
+
 **A text field.** `FIELD` with a one point `DIVIDER` stroke, corner radius `CONTROL_CORNER`, an
 `egui::TextEdit` with `Frame::NONE` inside it, text `TEXT_CONTROL` and placeholder `TEXT_FAINT`. A
-search field has a magnifier at its left, 13 points in from the edge.
+search field has a magnifier at its left, 13 points in from the edge. **The box inside it is given
+one text row, centred, through `controls::field_text_rect`** — never the whole height of the field.
+egui lays a `TextEdit` out at the top of the rectangle it is given and `Frame::NONE` leaves no margin
+to push it down with, so a field that hands over its whole height puts its words against its top edge,
+on a different line from the magnifier. That was true of all five fields in Quill until `task-1657`.
 
 **A menu.** `MENU` filled, one point `CONTROL_BORDER` stroke, 6 point inner margin, 340 points wide —
 wide enough that `Open Folder in New Window` and `Cmd+Option+O` do not meet in the middle, which they
@@ -153,6 +172,14 @@ which is why menu shortcuts are spelled in words.
 
 An icon is drawn inside about a 10 point square around its centre, at a 1.3 to 1.6 point stroke.
 
+**A letter shaped icon is drawn too**, and `theme::icon::font` — the `F` on the toolbar's text
+options button — is the one there is. It is three strokes, not the letter `F` set in a font and not
+a picture. A picture cannot be tinted, and every icon in Quill is tinted where it is used: `TEXT_DIM`
+sitting there, `TEXT_STRONG` when what it opens is open. Nor can a picture be drawn at another scale
+without resampling it. `task-1657` offered to have an image generated for this one, and this is why
+it was refused. Setting it as text is no better: the toolbar's `B` is real text, and it needs
+`theme::BOLD_FAMILY` bound before the first frame to look like anything.
+
 ## Every control has a name
 
 `response.widget_info` with plain wording: `Save`, `Bold`, `Resize explorer`, `Terminal tab: claude`,
@@ -178,6 +205,14 @@ pub fn show(ui: &mut Ui, area: Rect, /* what it needs to draw */) -> Outcome
 It does not change the document, start a git command, install a plugin or write a setting. The state
 changes in `app`, in one place, so two components cannot disagree about what happened and a component
 can be drawn by a test with nothing behind it.
+
+**A control is drawn only when it means something for the file that is open.** The formatting strip
+is not drawn at all above a `.rs` file, and the three view mode buttons are not drawn above a `.txt`
+one; the window gives the room to the editing area instead. The questions are asked of
+`services::file_kind` — `formatting_applies` and `preview_applies` — so the toolbar and the View menu
+cannot come to different answers, and a file kind is decided in one place. Dimming is for a control
+that could be used in a moment, such as undo with nothing yet to undo; a control that can never apply
+to this file is absent.
 
 Everything a menu or a shortcut can ask for is an `app::actions::Action` with exactly one arm in
 `QuillApp::run_action`. There are three menus now — the macOS bar, the bar Quill draws in its own

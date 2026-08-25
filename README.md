@@ -49,8 +49,10 @@ share nothing but the settings file.
 
 ## What the window looks like
 
-A title bar Quill draws itself, the formatting toolbar, the file explorer down the left with a filter box,
-the editing area, the terminal along the bottom when it is showing, and a status bar. The palette was read
+A title bar Quill draws itself, a strip holding the text options and the three Markdown view modes, the
+file explorer down the left with a filter box, the editing area, the terminal along the bottom when it is
+showing, and a status bar. The strip is drawn only above a file its controls mean something for: a `.rs` or
+a `.json` file has none, and the editing area takes the room. The palette was read
 out of `design/intial-design-screenshot.png` rather than chosen by eye; run `cargo run --example sample_design`
 to print the colour of each region of that image.
 
@@ -167,11 +169,17 @@ Editing, in the modes that show the source: select with the mouse or with shift 
 paste, move the caret by character, by word, to the start or end of a line, and to the start or end of the
 document, undo and redo.
 
-Character formatting: bold, italic, underline, strikethrough and colour in the toolbar, with the family and
-the size in the settings.
+Character formatting: bold, italic, underline, strikethrough and colour, behind the `F` button at the left
+of the strip, with the family and the size in the settings.
 
 Paragraph formatting: left, centre, right and justified alignment, and single, one and a half or double line
-spacing.
+spacing, behind the same button.
+
+The font: one family and one size for the whole window, the way IntelliJ has one editor font, set in
+`Edit -> Settings -> Appearance -> Font`. Changing it changes every file that is open, not only the one
+showing. The size is also on the keyboard at command or control with plus and minus, on `View -> Reset Font
+Size` to put it back, and on a trackpad pinch or the wheel with the modifier held over the editing area.
+Whichever of them is used, it is the one setting, so it is still there next time Quill starts.
 
 Files: any file holding text opens. A `.md` file is Markdown, which means the preview shows it rendered;
 everything else opens as plain text, whether Quill knows the file type or not, so a `.rs` or a `.js` file
@@ -191,8 +199,10 @@ title the program set, so a tab running `claude` says so. `tasks/quill-terminal-
 works and what it does not do.
 
 Keyboard: command plus B, I or U for bold, italic and underline. Command plus shift plus X for
-strikethrough. Command plus L, E, R or J for the four alignments. Everything else is on a menu, and the menu
-shows its shortcut. On Windows the control key takes the place of the command key.
+strikethrough. Command plus L, E, R or J for the four alignments. Command plus plus and command plus minus
+for the editor's font size — `+` and `=` are one key, so either does it, with or without shift, and so does
+the keypad's `+`. Everything else is on a menu, and the menu shows its shortcut. On Windows the control key
+takes the place of the command key.
 
 ## How it is put together
 

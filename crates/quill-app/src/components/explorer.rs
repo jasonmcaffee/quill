@@ -130,10 +130,7 @@ pub fn show(
         egui::StrokeKind::Inside,
     );
     icon::magnifier(&painter, Pos2::new(filter_rect.left() + 13.0, filter_rect.center().y), color::TEXT_FAINT);
-    let text_rect = Rect::from_min_max(
-        Pos2::new(filter_rect.left() + 26.0, filter_rect.top()),
-        filter_rect.right_bottom(),
-    );
+    let text_rect = crate::components::controls::field_text_rect(ui, filter_rect, 26.0);
     let mut field = ui.new_child(egui::UiBuilder::new().max_rect(text_rect));
     let response = field.add(
         egui::TextEdit::singleline(filter)

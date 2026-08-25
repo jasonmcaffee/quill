@@ -80,6 +80,15 @@ pub struct PlacedLine {
     pub height: f32,
     /// Where the baseline sits, measured from the top of the line.
     pub baseline: f32,
+    /// The tallest ascent of any style on the line, and the deepest descent.
+    ///
+    /// Together they are the box the glyphs actually occupy, which is not the same as `height`:
+    /// that carries the font's line gap, the reading leading the application adds on top of it for
+    /// prose, and the paragraph's line spacing, none of which any glyph reaches into. The caret is
+    /// drawn to this box rather than to the line, so it stands exactly as tall as the letters
+    /// beside it instead of towering over them by the air that was added between the lines.
+    pub ascent: f32,
+    pub descent: f32,
     /// The bytes of the document this line covers, not including a trailing line break.
     pub bytes: Range<usize>,
     /// Which paragraph this line belongs to.
@@ -180,6 +189,8 @@ pub fn layout(
                 y,
                 height,
                 baseline: line_metrics.ascent + (height - line_metrics.height()) / 2.0,
+                ascent: line_metrics.ascent,
+                descent: line_metrics.descent,
                 bytes: bytes.clone(),
                 paragraph,
                 last_in_paragraph: true,
@@ -278,17 +289,22 @@ pub fn layout(
             offset = 0.0;
             let _ = offset;
 
-            // The line is as tall as the tallest style in it.
+            // The line is as tall as the tallest style in it. The descent is collected alongside the
+            // ascent rather than being taken from `natural`, because `natural` also carries the line
+            // gap and the leading, and the caret is drawn to the glyphs rather than to the line.
             let mut ascent = 0.0_f32;
+            let mut descent = 0.0_f32;
             let mut natural = 0.0_f32;
             for run in &placed_runs {
                 let line_metrics = metrics.line_metrics(&run.style);
                 ascent = ascent.max(line_metrics.ascent);
+                descent = descent.max(line_metrics.descent);
                 natural = natural.max(line_metrics.height());
             }
             if placed_runs.is_empty() {
                 let line_metrics = metrics.line_metrics(&empty_style);
                 ascent = line_metrics.ascent;
+                descent = line_metrics.descent;
                 natural = line_metrics.height();
             }
             let height = natural * paragraph_style.line_spacing;
@@ -302,6 +318,8 @@ pub fn layout(
                 // Extra line spacing is added below the text rather than above it, so single and
                 // double spaced paragraphs start at the same place.
                 baseline: ascent,
+                ascent,
+                descent,
                 bytes: start..end,
                 paragraph,
                 last_in_paragraph,
@@ -386,7 +404,16 @@ impl Layout {
         if offset <= line.bytes.start {
             x = line.left();
         }
-        Caret { x, y: line.y, height: line.height, line: index }
+        // The glyph box rather than the line box. A line carries the font's line gap, the reading
+        // leading and the paragraph's line spacing on top of the letters, and a caret drawn to the
+        // whole of that stands taller than the text it is sitting in — which at double spacing is
+        // twice as tall as the writing.
+        Caret {
+            x,
+            y: line.y + line.baseline - line.ascent,
+            height: line.ascent + line.descent,
+            line: index,
+        }
     }
 
     /// The rectangles to paint behind a selected range, one per line it covers.
@@ -702,6 +729,45 @@ mod tests {
         assert_eq!(second.x, 0.0);
         assert_eq!(second.y, 20.0, "start of the second line");
         assert_eq!(second.line, 1);
+    }
+
+    #[test]
+    fn a_caret_is_the_height_of_the_text_and_not_of_the_line_box() {
+        // `ScaledMetrics` gives a line a quarter more height than the letters occupy, and double
+        // spacing doubles that again. The caret must stay on the letters: at double spacing it used
+        // to be two and a half times the height of the text it was sitting in.
+        let (rope, spans, mut paragraphs) = fixture("one\ntwo");
+        paragraphs.set(0..2, |p| p.line_spacing = 2.0);
+        let result = layout(&rope, &spans, &paragraphs, &ScaledMetrics, 500.0);
+        let line = &result.lines[0];
+        assert_eq!(line.height, 40.0, "16 point at 1.25 leading, doubled");
+        let caret = result.caret_at(0);
+        assert_eq!(caret.height, 20.0, "the ascent and the descent, and nothing else");
+        assert_eq!(caret.y, 0.0, "which starts at the top of the letters");
+        assert!(caret.height < line.height, "a caret must not be taller than its line");
+    }
+
+    #[test]
+    fn a_caret_on_a_line_of_two_sizes_takes_the_taller() {
+        let (rope, mut spans, paragraphs) = fixture("small BIG");
+        spans.set(6..9, &StyleChange::size(32.0));
+        let result = layout(&rope, &spans, &paragraphs, &ScaledMetrics, 1000.0);
+        let caret = result.caret_at(0);
+        assert_eq!(caret.height, 40.0, "32 point: an ascent of 32 and a descent of 8");
+        assert_eq!(caret.y, 0.0, "measured up from the line's own baseline");
+    }
+
+    #[test]
+    fn a_caret_on_an_empty_line_sits_where_the_text_would() {
+        // An empty paragraph centres its baseline in the line, so extra spacing shows above the
+        // caret as well as below it. The caret is still only as tall as a letter would be.
+        let (rope, spans, mut paragraphs) = fixture("one\n\ntwo");
+        paragraphs.set(0..3, |p| p.line_spacing = 2.0);
+        let result = layout(&rope, &spans, &paragraphs, &ScaledMetrics, 500.0);
+        let empty = result.caret_at(4);
+        assert_eq!(empty.line, 1, "the blank line between the two words");
+        assert_eq!(empty.height, 20.0);
+        assert_eq!(empty.y, 50.0, "the second line starts at 40 and the extra 20 is shared");
     }
 
     #[test]

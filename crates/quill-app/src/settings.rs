@@ -28,8 +28,31 @@ pub const MIN_OPACITY: f32 = 0.05;
 
 /// The sizes the font size control offers.
 pub const FONT_SIZES: &[f32] = &[9.0, 11.0, 13.0, 16.0, 20.0, 24.0, 32.0, 48.0, 64.0];
+/// The size the editor sets text in until somebody chooses another, and what `Reset Font Size` goes
+/// back to.
+pub const DEFAULT_FONT_SIZE: f32 = 16.0;
+/// The smallest and largest the editor's font can be, whether it got there from the dialog, the
+/// keyboard, a pinch or a hand edited settings file.
+pub const MIN_FONT_SIZE: f32 = 6.0;
+pub const MAX_FONT_SIZE: f32 = 144.0;
+
 /// The sizes the terminal font size control offers.
 pub const TERMINAL_FONT_SIZES: &[f32] = &[10.0, 11.0, 12.0, 13.0, 14.0, 16.0, 18.0, 20.0];
+
+/// The next size up or down the list the Settings window offers.
+///
+/// The keyboard walks the same list the dialog does, so the two cannot come to disagree about what
+/// sizes exist. A size that is not in the list — which a pinch produces, and which a hand edited
+/// settings file may hold — steps to the nearest one past it in the direction asked for, so
+/// pressing the key always moves and always lands somewhere the dialog can show.
+pub fn step_font_size(from: f32, up: bool) -> f32 {
+    let next = if up {
+        FONT_SIZES.iter().copied().find(|size| *size > from + 0.01)
+    } else {
+        FONT_SIZES.iter().rev().copied().find(|size| *size < from - 0.01)
+    };
+    next.unwrap_or(if up { FONT_SIZES[FONT_SIZES.len() - 1] } else { FONT_SIZES[0] })
+}
 
 /// One page of the Settings window, and the group it is listed under.
 ///
@@ -116,7 +139,7 @@ impl Settings {
     pub fn new() -> Self {
         Self {
             font_family: String::new(),
-            font_size: 16.0,
+            font_size: DEFAULT_FONT_SIZE,
             opacity: DEFAULT_OPACITY,
             terminal_font_size: 13.0,
             // On, because a line number is useful in prose as well as in code and a person who does
@@ -131,7 +154,7 @@ impl Settings {
             settings.font_family = family.to_owned();
         }
         if let Some(size) = values.number("appearance.font.size") {
-            settings.font_size = size.clamp(6.0, 144.0);
+            settings.font_size = size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
         }
         if let Some(opacity) = values.number("appearance.background.opacity") {
             settings.opacity = opacity.clamp(MIN_OPACITY, 1.0);
@@ -259,6 +282,24 @@ mod tests {
         assert_eq!(settings.opacity, 1.0, "the background cannot be more than fully opaque");
         assert_eq!(settings.font_size, 144.0);
         assert_eq!(settings.terminal_font_size, 6.0);
+    }
+
+    #[test]
+    fn stepping_the_font_size_walks_the_sizes_the_dialog_offers() {
+        assert_eq!(step_font_size(16.0, true), 20.0);
+        assert_eq!(step_font_size(16.0, false), 13.0);
+        assert_eq!(step_font_size(64.0, true), 64.0, "the top of the list stays there");
+        assert_eq!(step_font_size(9.0, false), 9.0, "and so does the bottom");
+    }
+
+    #[test]
+    fn stepping_from_a_size_that_is_not_in_the_list_still_moves() {
+        // A pinch, or a hand edited settings file, can leave the size between two of the offered
+        // ones. Pressing the key has to move, and has to land on a size the dialog can show.
+        assert_eq!(step_font_size(17.0, true), 20.0);
+        assert_eq!(step_font_size(17.0, false), 16.0);
+        assert_eq!(step_font_size(200.0, false), 64.0, "above everything offered");
+        assert_eq!(step_font_size(2.0, true), 9.0, "below everything offered");
     }
 
     #[test]

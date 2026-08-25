@@ -189,6 +189,31 @@ pub fn kind_name(path: Option<&Path>) -> &'static str {
     }
 }
 
+/// True for the files the character and paragraph formatting is worth offering for.
+///
+/// Quill saves plain text and carries no formatting to disk, so bold, a colour, an alignment and a
+/// line spacing are all about how a document is **shown** rather than about what is in it. That is
+/// worth having for prose — Markdown, a text file, a document that has not been saved anywhere yet —
+/// and is noise above a source file, where what the reader wants is the code and what decides how it
+/// looks is the plugin colouring it.
+///
+/// So the formatting controls, and the strip that used to hold them, are drawn only for the files
+/// this is true of. Decided from the same table [`kind_name`] uses, so a file becomes prose or stops
+/// being prose in one place.
+pub fn formatting_applies(path: Option<&Path>) -> bool {
+    matches!(kind_name(path), "Markdown" | "Plain text")
+}
+
+/// True when the three view mode buttons and their menu entries are worth offering.
+///
+/// A file whose source is not Markdown has no preview to show, so switching to one shows the
+/// Markdown parser's reading of a file that was never Markdown. That leaves the files the preview is
+/// meant for, and a document that has not been saved anywhere yet: it has no extension to go on, it
+/// is very often the beginning of a Markdown file, and it is the one Quill starts with.
+pub fn preview_applies(path: Option<&Path>) -> bool {
+    path.is_none() || is_markdown(path)
+}
+
 /// True for the files the Markdown preview is meant for.
 pub fn is_markdown(path: Option<&Path>) -> bool {
     matches!(
@@ -296,6 +321,17 @@ mod tests {
         assert_eq!(kind_name(Some(Path::new("Makefile"))), "Makefile");
         assert_eq!(kind_name(Some(Path::new("a.quillnotes"))), "Plain text");
         assert_eq!(kind_name(None), "Plain text");
+    }
+
+    #[test]
+    fn formatting_is_offered_for_prose_and_not_for_code() {
+        for prose in ["a.md", "a.markdown", "a.txt", "a.text", "a.quillnotes"] {
+            assert!(formatting_applies(Some(Path::new(prose))), "{prose} is prose");
+        }
+        assert!(formatting_applies(None), "a document with no path yet is prose");
+        for code in ["main.rs", "Cargo.toml", "Cargo.lock", "a.json", "a.ts", "a.css", "Makefile"] {
+            assert!(!formatting_applies(Some(Path::new(code))), "{code} is not prose");
+        }
     }
 
     #[test]

@@ -234,7 +234,9 @@ fn code(key: egui::Key) -> Option<muda::accelerator::Code> {
         Key::A => Code::KeyA,
         Key::B => Code::KeyB,
         Key::C => Code::KeyC,
+        Key::D => Code::KeyD,
         Key::I => Code::KeyI,
+        Key::K => Code::KeyK,
         Key::N => Code::KeyN,
         Key::O => Code::KeyO,
         Key::Q => Code::KeyQ,
@@ -247,6 +249,13 @@ fn code(key: egui::Key) -> Option<muda::accelerator::Code> {
         Key::Z => Code::KeyZ,
         Key::Comma => Code::Comma,
         Key::Backtick => Code::Backquote,
+        // `+` is the shifted `=` on the keys AppKit names, so a shortcut asking for plus is the
+        // equals key with no shift on the accelerator: `Cmd+=` is what the bar shows, and the same
+        // press is what `Shortcut::matches` accepts inside the window.
+        Key::Plus | Key::Equals => Code::Equal,
+        Key::Minus => Code::Minus,
+        Key::Tab => Code::Tab,
+        Key::F4 => Code::F4,
         Key::Num0 => Code::Digit0,
         Key::Num1 => Code::Digit1,
         Key::Num2 => Code::Digit2,

@@ -44,6 +44,12 @@ pub enum Action {
     ToggleExplorer,
     /// Show or hide the column of line numbers down the left of the editing area.
     ToggleLineNumbers,
+    /// Set the editor's text one size larger, or one smaller, walking the sizes the Settings window
+    /// offers. It is the same setting the dialog holds, so it reaches every open file and is still
+    /// there next time Quill starts.
+    ChangeFontSize { larger: bool },
+    /// Put the editor's text back to the size a new Quill has.
+    ResetFontSize,
     /// Show or hide the terminal along the bottom.
     ToggleTerminal,
     /// Close the file tab that is showing.
@@ -193,7 +199,17 @@ impl Shortcut {
     /// catch it because they built a modifier set with `command` set and `ctrl` clear, which is a
     /// combination Windows never produces. They now build the set the platform really sends.
     pub fn matches(&self, key: egui::Key, modifiers: &egui::Modifiers) -> bool {
-        if self.key != key || modifiers.shift != self.shift || modifiers.alt != self.alt {
+        // `+` and `=` are one key on nearly every layout, and `+` is the shifted one, so a shortcut
+        // asking for plus accepts either and does not care whether shift is held: what a person
+        // means by "control and plus" is that key, however their keyboard happens to label it. The
+        // numeric keypad sends plus with no shift at all, which is the same key press again. Every
+        // other shortcut still compares shift exactly, which is what keeps `Cmd+S` and `Cmd+Shift+S`
+        // apart.
+        if self.key == egui::Key::Plus {
+            if !matches!(key, egui::Key::Plus | egui::Key::Equals) || modifiers.alt != self.alt {
+                return false;
+            }
+        } else if self.key != key || modifiers.shift != self.shift || modifiers.alt != self.alt {
             return false;
         }
         if cfg!(target_os = "macos") {
@@ -236,6 +252,7 @@ pub fn key_name(key: egui::Key) -> &'static str {
     match key {
         egui::Key::Comma => ",",
         egui::Key::Backtick => "`",
+        egui::Key::Num0 => "0",
         egui::Key::Num1 => "1",
         egui::Key::Num2 => "2",
         egui::Key::Num3 => "3",
@@ -340,6 +357,10 @@ pub struct MenuState {
     pub has_selection: bool,
     pub recent: Vec<PathBuf>,
     pub view_mode: ViewMode,
+    /// True when the open file has a preview worth switching to, which is what dims the three view
+    /// mode entries for a source file. The toolbar asks the same question of the same function, so
+    /// the menu and the buttons cannot disagree about whether there is a preview.
+    pub can_preview: bool,
     pub explorer_visible: bool,
     pub line_numbers: bool,
     pub terminal_visible: bool,
@@ -577,19 +598,22 @@ fn view_menu(state: &MenuState) -> Menu {
                 Action::SetViewMode(ViewMode::Raw),
                 Shortcut::command(egui::Key::Num1),
             )
-            .checked(state.view_mode == ViewMode::Raw),
+            .checked(state.view_mode == ViewMode::Raw)
+            .enabled(state.can_preview),
             Entry::with_shortcut(
                 "Side by Side",
                 Action::SetViewMode(ViewMode::SideBySide),
                 Shortcut::command(egui::Key::Num2),
             )
-            .checked(state.view_mode == ViewMode::SideBySide),
+            .checked(state.view_mode == ViewMode::SideBySide)
+            .enabled(state.can_preview),
             Entry::with_shortcut(
                 "Markdown Preview",
                 Action::SetViewMode(ViewMode::Preview),
                 Shortcut::command(egui::Key::Num3),
             )
-            .checked(state.view_mode == ViewMode::Preview),
+            .checked(state.view_mode == ViewMode::Preview)
+            .enabled(state.can_preview),
             Entry::Separator,
             Entry::with_shortcut(
                 explorer,
@@ -600,6 +624,24 @@ fn view_menu(state: &MenuState) -> Menu {
                 if state.line_numbers { "Hide Line Numbers" } else { "Show Line Numbers" },
                 Action::ToggleLineNumbers,
             ),
+            Entry::Separator,
+            // The editor's font size, on the keyboard as it is in every other editor. They are menu
+            // entries rather than keys watched for in the editing area for the reason the whole menu
+            // exists: on macOS a shortcut on a menu item is a key equivalent and AppKit hands the
+            // press to the menu before the window sees it, so a key read in `editor_view` would work
+            // on Windows and be dead on macOS. There is no shortcut on `Reset Font Size`, because
+            // the obvious one is command and zero and `Show Explorer` already has it.
+            Entry::with_shortcut(
+                "Increase Font Size",
+                Action::ChangeFontSize { larger: true },
+                Shortcut::command(egui::Key::Plus),
+            ),
+            Entry::with_shortcut(
+                "Decrease Font Size",
+                Action::ChangeFontSize { larger: false },
+                Shortcut::command(egui::Key::Minus),
+            ),
+            Entry::item("Reset Font Size", Action::ResetFontSize),
             Entry::Separator,
             // Ctrl+F4 rather than the Apple key and W, which `Close Window` already claims. Two menu
             // items claiming one key equivalent is a fault on macOS, and there is a test for it.
@@ -965,6 +1007,45 @@ mod tests {
             Some(Action::ToggleTerminal),
             "control and backtick opens the terminal on both platforms"
         );
+    }
+
+    #[test]
+    fn the_font_size_can_be_changed_from_the_keyboard_however_plus_is_typed() {
+        // `+` and `=` are one key, and `+` is the shifted one, so all three of these are a person
+        // pressing "control and plus": the unshifted key, the shifted key, and the numeric keypad.
+        let state = MenuState::default();
+        let larger = Some(Action::ChangeFontSize { larger: true });
+        assert_eq!(action_for_key(&state, egui::Key::Equals, &pressing_command()), larger);
+        assert_eq!(action_for_key(&state, egui::Key::Plus, &pressing_command()), larger);
+        let shifted = egui::Modifiers { shift: true, ..pressing_command() };
+        assert_eq!(action_for_key(&state, egui::Key::Plus, &shifted), larger);
+        assert_eq!(
+            action_for_key(&state, egui::Key::Minus, &pressing_command()),
+            Some(Action::ChangeFontSize { larger: false })
+        );
+    }
+
+    #[test]
+    fn the_plus_rule_does_not_loosen_any_other_shortcut() {
+        // Only plus accepts an unasked-for shift. `Cmd+S` and `Cmd+Shift+S` are two different
+        // entries and have to stay that way.
+        let state = MenuState::default();
+        let shifted = egui::Modifiers { shift: true, ..pressing_command() };
+        assert_eq!(action_for_key(&state, egui::Key::S, &shifted), Some(Action::SaveAs));
+        assert_eq!(action_for_key(&state, egui::Key::S, &pressing_command()), Some(Action::Save));
+    }
+
+    #[test]
+    fn resetting_the_font_size_is_on_the_view_menu_without_a_shortcut() {
+        // Command and zero is the obvious one and `Show Explorer` already claims it. Two entries on
+        // one key equivalent is a fault on macOS, and there is a test above that would catch it.
+        let view = find(&menus(&MenuState::default()), "View");
+        let reset = view
+            .entries
+            .iter()
+            .find(|entry| matches!(entry, Entry::Item { name, .. } if name == "Reset Font Size"))
+            .expect("Reset Font Size is on the View menu");
+        assert!(matches!(reset, Entry::Item { shortcut: None, action: Action::ResetFontSize, .. }));
     }
 
     #[test]

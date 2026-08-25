@@ -128,8 +128,7 @@ fn header(ui: &mut egui::Ui, area: Rect, state: &mut PluginsState, plugins: &Plu
         egui::StrokeKind::Inside,
     );
     icon::magnifier(ui.painter(), Pos2::new(search.left() + 13.0, search.center().y), color::TEXT_FAINT);
-    let text_rect =
-        Rect::from_min_max(Pos2::new(search.left() + 26.0, search.top()), search.right_bottom());
+    let text_rect = crate::components::controls::field_text_rect(ui, search, 26.0);
     let mut field = ui.new_child(egui::UiBuilder::new().max_rect(text_rect));
     let response = field.add(
         egui::TextEdit::singleline(&mut state.search)

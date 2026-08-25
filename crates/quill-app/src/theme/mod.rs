@@ -112,6 +112,11 @@ pub mod size {
 /// Set up egui so that the ordinary controls come out looking like the design, rather than restyling each
 /// one where it is used.
 pub fn apply(ctx: &egui::Context) {
+    // egui scales its whole interface — every menu, the explorer, the status bar — when command and
+    // plus is pressed. That is a browser's zoom, and it is not what an editor's zoom means: Quill's
+    // command and plus changes the size the *document* is set in and leaves the window alone. With
+    // egui's own left on, one press would do both.
+    ctx.options_mut(|options| options.zoom_with_keyboard = false);
     ctx.all_styles_mut(|style| {
     let visuals = &mut style.visuals;
     visuals.dark_mode = true;

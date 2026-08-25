@@ -117,7 +117,15 @@ pub fn handle_input(
                     egui::Key::Backspace => document.apply(Command::DeleteBackward),
                     egui::Key::Delete => document.apply(Command::DeleteForward),
                     egui::Key::Enter => document.apply(Command::Insert("\n".to_owned())),
-                    egui::Key::Tab => document.apply(Command::Insert("\t".to_owned())),
+                    // A bare Tab. With control held it belongs to `Next Tab` and `Previous Tab` on
+                    // the View menu, and finding the action there does not consume the key press, so
+                    // without this guard control and Tab moved to the next file **and** typed a tab
+                    // into the one it left — which is how the file tabs capture for the
+                    // documentation came out with two files marked as having unsaved changes that
+                    // nobody had touched.
+                    egui::Key::Tab if !shortcut && !modifiers.ctrl => {
+                        document.apply(Command::Insert("\t".to_owned()))
+                    }
                     // Undo, redo, select all, save and the clipboard are menu entries, and the menu owns
                     // their shortcuts. On macOS the menu bar takes those key presses before the window sees
                     // them, so handling them here as well would do the work twice on one platform and once

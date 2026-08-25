@@ -38,6 +38,17 @@ rectangle, the footer, the buttons, the rows, a field and a tick box. The Settin
 panel, the git dialogs, the text prompt and the confirmation are all built from it. A tenth modal
 that draws its own header would be a tenth modal that almost agrees with the other nine.
 
+`components::controls` is the same idea for the small things: the dropdown, the flyout, a menu row, a
+button with a word on it, an icon button, and `field_text_rect` — the rectangle a field hands to the
+`egui::TextEdit` inside it. That last one exists because all five fields in Quill had the same fault:
+egui lays a text box out at the top of the rectangle it is given, `Frame::NONE` leaves no margin to
+push it down, and a field that handed over its whole height put its words against its top edge. One
+function is what stops a sixth field being the sixth chance to get it wrong.
+
+**A flyout must not hold a dropdown or another flyout.** egui keeps at most one popup open at a time,
+so opening the second shuts the first — which is why the three line spacings in the text options
+panel are three buttons rather than the dropdown they used to be.
+
 ## Git runs the `git` program, on a thread
 
 `quill-git` shells out to `git` rather than using a library, and the reason is what the machine's own
@@ -57,6 +68,38 @@ detached HEAD and a missing upstream all explain themselves better than Quill co
 the window would be slow — because it would stop drawing until git finished, which on a fetch looks
 exactly like a crash. One at a time, because two commands at once in one repository fight over
 `index.lock`.
+
+## A control is absent when it cannot apply, not dimmed
+
+The formatting strip is not drawn above a `.rs` file, and the three view mode buttons are not drawn
+above a `.txt` one. Quill saves plain text and carries no formatting to disk, so everything in that
+strip is about how prose is *shown*, and above a source file it is fourteen controls that mean
+nothing — the three view modes offering the Markdown parser's reading of a file that was never
+Markdown. The window gives the forty four points to the editing area instead.
+
+Two functions in `services::file_kind` answer it, and nothing else does: `formatting_applies` and
+`preview_applies`. The toolbar and the `View` menu both ask them, so they cannot come to different
+answers about the same file, and a file kind stays decided in one place.
+
+Dimming means something different and is still right where it was: a control that could be used in a
+moment, such as undo with nothing yet to undo, or the whole Git menu outside a repository. A control
+that can never apply to this file is absent.
+
+## The editor's font is one setting, and it reaches every tab
+
+The family and the size in `Edit -> Settings -> Appearance -> Font` are one setting for the whole
+window, the way IntelliJ has one editor font. `QuillApp::set_the_font_everywhere` is what puts it
+into effect, and every path that changes it goes through that one function — the dialog, the
+keyboard's command and plus, a trackpad pinch, and reading the settings file at startup. It used to
+reach `document_mut()` alone, so opening three files and then changing the font left two of them in
+the old one until Quill was restarted.
+
+Setting it is **not an edit**: nothing goes onto any document's undo history and no file is marked as
+having unsaved changes, because what Quill saves is plain text and carries no formatting.
+
+**egui's own keyboard zoom is switched off**, in `theme::apply`. It scales the whole interface, menus
+and all, which is a browser's zoom rather than an editor's; with it left on, one press of command and
+plus would do both.
 
 ## Every pane is resized by dragging its edge
 
@@ -223,6 +266,9 @@ trade that away to be a shade nearer a screenshot.
 - `tasks/quill-technical-design-document.md` — the editor: the options that were considered, what was
   chosen and why, and what is deliberately not included.
 - `tasks/quill-terminal-tdd.md` — the same for the terminal.
+- `tasks/task-1657-text-options-tdd.md` — the `F` button and its flyout, the font becoming one
+  setting for the window, zooming with a pinch and with the keyboard, and the two drawing faults
+  that were fixed alongside them.
 - `tasks/quill-installer-tdd.md` — how Quill is delivered: the icon, the Windows installer and the
   macOS bundle, and the options that were weighed for each.
 - `installer/README.md` — how to build an installer, on either platform.

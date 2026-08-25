@@ -195,7 +195,7 @@ pub fn field(ui: &mut egui::Ui, area: Rect, name: &str, value: &mut String) -> e
         Stroke::new(1.0, color::CONTROL_BORDER),
         egui::StrokeKind::Inside,
     );
-    let text_rect = area.shrink2(Vec2::new(8.0, 4.0));
+    let text_rect = crate::components::controls::field_text_rect(ui, area, 8.0);
     let mut edit = ui.new_child(egui::UiBuilder::new().max_rect(text_rect));
     let response = edit.add(
         egui::TextEdit::singleline(value)

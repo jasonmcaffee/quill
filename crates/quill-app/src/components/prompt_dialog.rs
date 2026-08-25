@@ -93,7 +93,7 @@ pub fn show(ctx: &egui::Context, prompt: &mut Prompt) -> PromptOutcome {
             Stroke::new(1.0, color::CONTROL_BORDER),
             egui::StrokeKind::Inside,
         );
-        let text_rect = field.shrink2(Vec2::new(8.0, 4.0));
+        let text_rect = crate::components::controls::field_text_rect(ui, field, 8.0);
         let mut edit = ui.new_child(egui::UiBuilder::new().max_rect(text_rect));
         let entry = edit.add(
             egui::TextEdit::singleline(&mut prompt.value)

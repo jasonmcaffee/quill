@@ -214,8 +214,7 @@ fn show_list(ui: &mut egui::Ui, area: Rect, state: &mut SettingsWindow) {
         egui::StrokeKind::Inside,
     );
     icon::magnifier(&painter, Pos2::new(search.left() + 13.0, search.center().y), color::TEXT_FAINT);
-    let text_rect =
-        Rect::from_min_max(Pos2::new(search.left() + 26.0, search.top()), search.right_bottom());
+    let text_rect = crate::components::controls::field_text_rect(ui, search, 26.0);
     let mut field = ui.new_child(egui::UiBuilder::new().max_rect(text_rect));
     field.add(
         egui::TextEdit::singleline(&mut state.search)
@@ -369,7 +368,13 @@ fn appearance_page(
         ui,
         area,
         pen,
-        "The font the editor sets the document in. Bold, italic and colour stay as they were.",
+        "The font the editor sets every open file in. Bold, italic and colour stay as they were,",
+    );
+    pen = note(
+        ui,
+        area,
+        pen,
+        "and the size is also on the keyboard at command or control with plus and minus.",
     );
 
     pen = section(ui, area, pen + 10.0, "Background");

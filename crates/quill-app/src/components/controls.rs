@@ -10,6 +10,30 @@ use egui::{Color32, CornerRadius, Pos2, Rect, Sense, Stroke, Vec2};
 use crate::app::actions::{Action, Entry};
 use crate::theme::{color, icon, size};
 
+/// The rectangle the `TextEdit` inside one of Quill's fields is given.
+///
+/// Every field in Quill draws its own frame — `FIELD` with a one point stroke, the corner radius the
+/// style guide gives — and puts an `egui::TextEdit` inside it with `Frame::NONE`, because egui's own
+/// frame is not the one the design shows. egui then lays that box out at the **top** of the
+/// rectangle it is given, and with no frame there is no margin to push it down, so a rectangle the
+/// height of the whole field left the words sitting against its top edge: `Filter files` was about
+/// three points high in a 24 point box, on a different line from the magnifier beside it.
+///
+/// So a field hands its box one text row, centred in the field. One function rather than a number
+/// repeated in five components, because a fifth field added later would otherwise be the fifth
+/// chance to get it wrong.
+///
+/// `left` is how far in from the field's left edge the text starts — 26 points where there is a
+/// magnifier in front of it, 8 where there is not.
+pub fn field_text_rect(ui: &egui::Ui, field: Rect, left: f32) -> Rect {
+    let row = ui.text_style_height(&egui::TextStyle::Body);
+    let width = (field.width() - left - 8.0).max(1.0);
+    Rect::from_min_size(
+        Pos2::new(field.left() + left, (field.center().y - row / 2.0).round()),
+        Vec2::new(width, row),
+    )
+}
+
 /// A button showing the current value, which opens a list when clicked.
 ///
 /// `contents` draws the list and returns what was chosen, so the caller decides what a choice is: the
@@ -68,6 +92,97 @@ pub fn dropdown<T>(
         egui::Popup::close_id(ui.ctx(), id);
     }
     chosen
+}
+
+/// A small icon button that opens a panel under itself and stays open until it is clicked away from.
+///
+/// A sibling of [`dropdown`] rather than a setting on it, because the two are different things. A
+/// dropdown is a value picker: it shows the value it holds, and choosing one closes it. A flyout is
+/// a panel of controls that is used several times in a row — bold, then a colour, then an alignment
+/// — so it closes only when the pointer goes elsewhere, and `contents` draws whatever it likes into
+/// the rectangle it is given rather than returning one choice.
+///
+/// `contents` is handed the `Ui` inside the panel and returns whatever the caller wants out of it.
+/// The return is `None` while the panel is shut.
+///
+/// One thing a flyout must not hold is another popup. egui keeps at most one popup open at a time,
+/// so a dropdown inside this panel would shut the panel the moment it opened.
+pub fn flyout<T>(
+    ui: &mut egui::Ui,
+    area: Rect,
+    name: &str,
+    draw: fn(&egui::Painter, Pos2, Color32),
+    width: f32,
+    contents: impl FnOnce(&mut egui::Ui) -> T,
+) -> Option<T> {
+    let response = ui
+        .interact(area, ui.id().with(("flyout", name)), Sense::click())
+        .on_hover_text(name);
+    // What the panel will be by the time it is drawn: the click this frame is what toggles it, and
+    // the button has to be tinted for the state it is going into rather than the one it is leaving.
+    let open =
+        egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&response)) != response.clicked();
+    let painter = ui.painter();
+    if open {
+        painter.rect_filled(area, CornerRadius::same(size::CONTROL_CORNER), color::ACCENT);
+    } else if response.hovered() {
+        painter.rect_filled(area, CornerRadius::same(size::CONTROL_CORNER), color::CONTROL);
+    }
+    let tint = if open { color::TEXT_STRONG } else { color::TEXT_CONTROL };
+    draw(painter, area.center(), tint);
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), open, name)
+    });
+    egui::Popup::from_toggle_button_response(&response)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .frame(
+            egui::Frame::popup(ui.style())
+                .fill(color::MENU)
+                .stroke(Stroke::new(1.0, color::CONTROL_BORDER)),
+        )
+        .width(width)
+        .show(contents)
+        .map(|inner| inner.inner)
+}
+
+/// A button carrying a word rather than a picture, filled when what it stands for is switched on.
+///
+/// The three line spacings are the only ones. They were a dropdown when they sat in the toolbar and
+/// cannot stay one inside a flyout, because egui keeps one popup open at a time and opening the list
+/// would shut the panel it was in. Three buttons in a row are better in a panel anyway: which
+/// spacing is on can be seen without opening anything, which is how the alignments beside them
+/// already work.
+pub fn choice_button(ui: &mut egui::Ui, area: Rect, label: &str, active: bool) -> bool {
+    let response = ui.interact(area, ui.id().with(("choice", label)), Sense::click());
+    let painter = ui.painter();
+    if active {
+        painter.rect_filled(area, CornerRadius::same(size::CONTROL_CORNER), color::ACCENT);
+    } else if response.hovered() {
+        painter.rect_filled(area, CornerRadius::same(size::CONTROL_CORNER), color::CONTROL);
+    } else {
+        painter.rect(
+            area,
+            CornerRadius::same(size::CONTROL_CORNER),
+            Color32::TRANSPARENT,
+            Stroke::new(1.0, color::CONTROL_BORDER),
+            egui::StrokeKind::Inside,
+        );
+    }
+    let tint = if active { color::TEXT_STRONG } else { color::TEXT_CONTROL };
+    let galley =
+        painter.layout_no_wrap(label.to_owned(), egui::FontId::proportional(12.5), tint);
+    painter.galley(area.center() - galley.size() / 2.0, galley, tint);
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), active, label)
+    });
+    response.clicked()
+}
+
+/// A heading beside a row of controls in a flyout, naming what the row is for.
+pub fn row_label(painter: &egui::Painter, at: Pos2, name: &str) {
+    let galley =
+        painter.layout_no_wrap(name.to_owned(), egui::FontId::proportional(11.5), color::TEXT_DIM);
+    painter.galley(Pos2::new(at.x, at.y - galley.size().y / 2.0), galley, color::TEXT_DIM);
 }
 
 /// The rows of one menu, whether it hangs from the bar or from a right click.
@@ -158,16 +273,12 @@ pub fn menu_row(
     let tint = if enabled { color::TEXT_CONTROL } else { color::TEXT_FAINT.gamma_multiply(0.6) };
     let left = rect.left() + 8.0 + indent;
     if checked {
-        let tick = painter.layout_no_wrap(
-            "\u{2713}".to_owned(),
-            egui::FontId::proportional(12.5),
-            color::ACCENT,
-        );
-        painter.galley(
-            Pos2::new(left, rect.center().y - tick.size().y / 2.0),
-            tick,
-            color::ACCENT,
-        );
+        // Drawn, not the character at U+2713. No font in the stack Quill hands egui has a shape for
+        // it, so it came out as the empty box a missing glyph renders as — visible against
+        // `Raw Markdown` on the View menu in any capture of it, and the exact fault the style guide
+        // already records for the shift symbol. `icon::tick` is the same tick every tick box in
+        // Quill draws.
+        icon::tick(painter, Pos2::new(left + 6.0, rect.center().y), color::ACCENT);
     }
     let label = painter.layout_no_wrap(name.to_owned(), egui::FontId::proportional(12.5), tint);
     painter.galley(
@@ -244,12 +355,4 @@ pub fn bar_button(ui: &mut egui::Ui, area: Rect, name: &str, strong: bool) -> eg
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), name)
     });
     response
-}
-
-/// A short upright line between two groups of controls.
-pub fn separator(ui: &egui::Ui, x: f32, middle: f32) {
-    ui.painter().line_segment(
-        [Pos2::new(x, middle - 10.0), Pos2::new(x, middle + 10.0)],
-        Stroke::new(1.0, color::DIVIDER),
-    );
 }

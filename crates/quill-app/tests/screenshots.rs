@@ -25,6 +25,7 @@ use quill_app::QuillApp;
 use quill_app::app::ViewMode;
 use quill_app::app::actions::Action;
 use quill_app::components::title_bar::MenuPlacement;
+use quill_app::settings;
 use quill_core::{Align, Color, Command, StyleChange};
 
 const WINDOW: [f32; 2] = [1180.0, 740.0];
@@ -185,6 +186,16 @@ fn select_phrase(harness: &mut Harness<'static, QuillApp>, phrase: &str, command
         .find(phrase)
         .unwrap_or_else(|| panic!("{phrase:?} is not in the document, which holds {text:?}"));
     select_and(harness, start..start + phrase.len(), commands);
+}
+
+/// Open the panel behind the toolbar's `F` button, which is where the formatting controls live.
+///
+/// `task-1657` moved them there: bold, the colours, the alignments and the line spacings are all one
+/// click further away than they were, and a test that wants to press one presses this first. The
+/// names did not change, so what a test asks for afterwards is what it always asked for.
+fn open_text_options(harness: &mut Harness<'static, QuillApp>) {
+    harness.get_by_label("Text options").click();
+    harness.run();
 }
 
 /// Put the caret at the start with nothing selected, so that a screenshot shows the formatting rather
@@ -433,7 +444,9 @@ fn select_all_then_pressing_bold_makes_the_whole_document_bold() {
     let mut harness = harness("Every word here should end up bold.");
     harness.state_mut().command(Command::SelectAll);
     harness.run();
-    // Click the real toolbar button rather than sending the command.
+    // Click the real button rather than sending the command, which now means opening the panel it
+    // moved into first.
+    open_text_options(&mut harness);
     harness.get_by_label("Bold").click();
     harness.run();
     assert!(harness.state().document().chars().style_at(4).bold, "the toolbar button should have applied bold");
@@ -893,17 +906,94 @@ fn the_explorer_can_be_hidden_and_brought_back() {
 
 
 #[test]
-fn the_toolbar_buttons_are_all_reachable_by_name() {
-    let harness = harness("some text");
+fn the_formatting_controls_are_behind_the_font_button_and_all_reachable_by_name() {
+    let mut harness = harness("some text");
+    // Shut, the strip holds one control. This is the half of `task-1657` that took the formatting
+    // off the top of the window: nine controls that are set rarely no longer take its whole width.
+    harness.get_by_label("Text options");
+    assert!(
+        harness.query_by_label("Bold").is_none(),
+        "the formatting is behind the button until the button is pressed"
+    );
+    open_text_options(&mut harness);
     for name in [
         "Bold", "Italic", "Underline", "Strikethrough",
         "Left", "Center", "Right", "Justify",
-        "Line spacing",
+        "Single", "One and a half", "Double",
     ] {
         harness.get_by_label(name);
     }
     for colour in ["White", "Red", "Green", "Blue", "Amber"] {
         harness.get_by_label(colour);
+    }
+    harness.snapshot(shot("text_options"));
+}
+
+#[test]
+fn a_code_file_has_no_formatting_strip_and_gives_the_room_to_the_text() {
+    // Everything in the strip is about how prose is shown, and Quill saves plain text and carries no
+    // formatting to disk, so bold on a `.rs` file is a decoration that lasts until the file is
+    // reopened. The strip is not drawn at all, and the forty four points go to the editing area.
+    let mut prose = harness("");
+    prose.get_by_label("readme.md").click();
+    prose.run();
+    let with_strip = prose.state().editor_area().top();
+    prose.get_by_label("Text options");
+
+    let mut code = harness("");
+    code.get_by_label("program.rs").click();
+    code.run();
+    assert!(
+        code.query_by_label("Text options").is_none(),
+        "a Rust file has no formatting to offer"
+    );
+    assert!(
+        code.query_by_label("Raw Markdown").is_none(),
+        "and nothing to preview either"
+    );
+    let without_strip = code.state().editor_area().top();
+    assert!(
+        (with_strip - without_strip - 44.0).abs() < 0.5,
+        "the editing area should start 44 points higher with no strip: {with_strip} against {without_strip}"
+    );
+    code.snapshot(shot("code_no_toolbar"));
+}
+
+#[test]
+fn moving_between_file_tabs_does_not_type_a_tab_into_the_file_it_leaves() {
+    // Control and Tab is `Next Tab` on the View menu, and finding an action for a key press does not
+    // consume it, so the editing area saw the same press and inserted a tab character. Both files
+    // came out marked as having unsaved changes that nobody had made — found while retaking the
+    // documentation captures for `task-1657`, and the same shape of fault as `task-1656`.
+    let folder = sample_folder();
+    let mut harness = harness_in(&folder);
+    harness.state_mut().open_path_permanently(&folder.join("readme.md"));
+    harness.state_mut().open_path_permanently(&folder.join("notes.txt"));
+    harness.run();
+    let before: Vec<String> =
+        harness.state().files.iter().map(|file| file.document.text().to_string()).collect();
+
+    harness.key_press_modifiers(Modifiers::CTRL, egui::Key::Tab);
+    harness.run();
+    harness.key_press_modifiers(Modifiers::CTRL | Modifiers::SHIFT, egui::Key::Tab);
+    harness.run();
+
+    for (index, file) in harness.state().files.iter().enumerate() {
+        assert_eq!(file.document.text().to_string(), before[index], "tab {index} was typed into");
+        assert!(!file.document.is_modified(), "tab {index} should have no unsaved changes");
+    }
+}
+
+#[test]
+fn a_text_file_keeps_the_formatting_and_loses_the_view_modes() {
+    // The two questions are asked separately. A `.txt` file is prose, so the formatting is worth
+    // offering; it is not Markdown, so there is nothing to preview.
+    let mut harness = harness("");
+    harness.get_by_label("notes.txt").click();
+    harness.run();
+    harness.get_by_label("Text options");
+    for mode in ["Raw Markdown", "Side by side", "Markdown preview"] {
+        assert!(harness.query_by_label(mode).is_none(), "{mode} has nothing to show for a .txt file");
     }
 }
 
@@ -1347,6 +1437,158 @@ fn choosing_a_family_in_the_settings_leaves_bold_and_colour_alone() {
     assert_eq!(style.family, other, "the word is in the new family");
     assert!(style.bold, "and still bold");
     harness.snapshot(shot("settings_font_applied"));
+}
+
+#[test]
+fn changing_the_font_reaches_every_open_tab_and_not_only_the_one_showing() {
+    // `task-1657`. The editor's font is one setting for the whole window, the way IntelliJ has one
+    // editor font. It used to reach the active document alone, so opening three files and then
+    // changing the font left two of them in the old one until Quill was restarted.
+    let folder = sample_folder();
+    let mut harness = harness_in(&folder);
+    for name in ["readme.md", "notes.txt", "program.rs"] {
+        harness.state_mut().open_path_permanently(&folder.join(name));
+    }
+    harness.run();
+    assert_eq!(harness.state().files.len(), 3, "one tab each, and none of them transient");
+
+    let mut settings = harness.state().settings.clone();
+    settings.font_size = 24.0;
+    harness.state_mut().set_settings(settings);
+    harness.run();
+
+    for (index, file) in harness.state().files.iter().enumerate() {
+        assert_eq!(
+            file.document.chars().style_at(0).size,
+            24.0,
+            "tab {index} should be in the new size, whether or not it is the one showing"
+        );
+    }
+}
+
+#[test]
+fn the_keyboard_makes_the_text_bigger_and_smaller_and_puts_it_back() {
+    // The size the keys reach is the setting the dialog holds, so it survives a restart and reaches
+    // every tab. They walk the sizes the dialog offers rather than a step of their own.
+    let mut harness = harness("Zoom this line");
+    let ctx = harness.ctx.clone();
+    assert_eq!(harness.state().settings.font_size, 16.0);
+
+    harness.state_mut().run_action(Action::ChangeFontSize { larger: true }, &ctx);
+    harness.run();
+    assert_eq!(harness.state().settings.font_size, 20.0, "the next size the dialog offers");
+    assert_eq!(harness.state().document().chars().style_at(0).size, 20.0);
+    let taller = harness.state().layout().lines[0].height;
+
+    harness.state_mut().run_action(Action::ChangeFontSize { larger: false }, &ctx);
+    harness.state_mut().run_action(Action::ChangeFontSize { larger: false }, &ctx);
+    harness.run();
+    assert_eq!(harness.state().settings.font_size, 13.0);
+    assert!(
+        harness.state().layout().lines[0].height < taller,
+        "smaller text should make a shorter line"
+    );
+
+    harness.state_mut().run_action(Action::ResetFontSize, &ctx);
+    harness.run();
+    assert_eq!(harness.state().settings.font_size, 16.0, "back to what a new Quill has");
+    harness.snapshot(shot("font_size_reset"));
+}
+
+#[test]
+fn a_pinch_over_the_editing_area_steps_the_font_size() {
+    // A pinch on a trackpad and the wheel with the zoom modifier held both reach egui as
+    // `Event::Zoom`, so this is the same path both take. The pointer has to be over the editing
+    // area, because zooming is the document's and not the explorer's.
+    let mut harness = harness("Pinch this line");
+    let middle = harness.state().editor_area().center();
+    assert_eq!(harness.state().settings.font_size, 16.0);
+
+    let pinch = |harness: &mut Harness<'static, QuillApp>, factor: f32| {
+        harness.input_mut().events.push(egui::Event::PointerMoved(middle));
+        harness.input_mut().events.push(egui::Event::Zoom(factor));
+        harness.run();
+    };
+
+    // Enough to ask for one size, which is the smallest gap between two of the sizes offered.
+    pinch(&mut harness, 1.2);
+    assert_eq!(harness.state().settings.font_size, 20.0, "one step up");
+    // A bigger pinch asks for more than one, and lands on a size the dialog offers rather than on
+    // whatever the multiplier works out to.
+    pinch(&mut harness, 1.2 * 1.2 * 1.2);
+    let bigger = harness.state().settings.font_size;
+    assert!(bigger > 20.0, "a pinch three times the size should go further: {bigger}");
+    assert!(settings::FONT_SIZES.contains(&bigger), "{bigger} is not a size the dialog offers");
+    // And pinching the other way comes back down.
+    pinch(&mut harness, 1.0 / (1.2 * 1.2 * 1.2));
+    let smaller = harness.state().settings.font_size;
+    assert!(smaller < bigger, "pinching in should shrink it: {bigger} then {smaller}");
+    // The document is shown in it, not just the setting.
+    assert_eq!(harness.state().document().chars().style_at(0).size, smaller);
+}
+
+#[test]
+fn a_pinch_too_small_to_ask_for_a_size_is_kept_rather_than_thrown_away() {
+    // A pinch arrives as a stream of multipliers a fraction over one, so a step is taken when what
+    // has been asked for adds up to one rather than on any single frame. Without the remainder
+    // being carried, a slow pinch would never move anything at all.
+    let mut harness = harness("Pinch this line");
+    let middle = harness.state().editor_area().center();
+    for _ in 0..4 {
+        harness.input_mut().events.push(egui::Event::PointerMoved(middle));
+        harness.input_mut().events.push(egui::Event::Zoom(1.05));
+        harness.run();
+        harness.run();
+    }
+    assert_eq!(
+        harness.state().settings.font_size,
+        20.0,
+        "four small pinches add up to one size"
+    );
+}
+
+#[test]
+fn the_filter_box_puts_its_words_on_the_same_line_as_the_magnifier() {
+    // It used to lay them out against the top edge of the box: a `TextEdit` with `Frame::NONE` has
+    // no margin to be pushed down by, and it was given the whole height of the field to sit in.
+    let harness = harness("");
+    let filter = harness.get_by_label("Filter files").rect();
+    // The field is 24 points tall, 36 points down the explorer, which itself starts under the title
+    // bar and the toolbar: 50 + 44 + 36 is 130, so the middle of the field is at 142.
+    let field = egui::Rect::from_min_size(egui::pos2(12.0, 130.0), vec2(224.0, 24.0));
+    assert!(
+        filter.height() < field.height(),
+        "the box is one row of text, not the whole field: {filter:?}"
+    );
+    assert!(
+        (filter.center().y - field.center().y).abs() < 1.5,
+        "the row should sit in the middle of the field: {} against {}",
+        filter.center().y,
+        field.center().y
+    );
+}
+
+#[test]
+fn the_caret_is_no_taller_than_the_text_it_sits_in() {
+    // The caret used to be drawn the full height of the line, which carries the font's line gap, the
+    // reading leading Quill adds for prose and the paragraph's line spacing on top of the letters.
+    let mut harness = harness("A line to put the caret in\nand a second one");
+    harness.state_mut().command(Command::SelectAll);
+    harness.state_mut().command(Command::SetLineSpacing(2.0));
+    harness.state_mut().command(Command::MoveDocumentStart { extend: false });
+    harness.run();
+    let layout = harness.state().layout();
+    let line = &layout.lines[0];
+    let caret = layout.caret_at(0);
+    assert!(
+        caret.height < line.height * 0.75,
+        "at double spacing the caret must be well short of the line: {} against {}",
+        caret.height,
+        line.height
+    );
+    assert!(caret.y >= line.y, "and it must start inside its own line");
+    assert!(caret.y + caret.height <= line.bottom() + 0.01, "and end inside it");
+    harness.snapshot(shot("caret_height"));
 }
 
 #[test]
@@ -2270,6 +2512,27 @@ fn cutting_a_file_and_pasting_it_into_a_folder_moves_it() {
     harness.run();
     assert!(!folder.join("note.md").exists(), "a cut moves it");
     assert!(folder.join("inner/note.md").is_file());
+}
+
+#[test]
+fn the_view_menu_holds_the_font_size_and_ticks_the_mode_that_is_showing() {
+    // The one menu in Quill with a checked row in it, so it is the one that shows the tick. It used
+    // to be drawn as the character at U+2713, which no font in the stack Quill hands egui has a
+    // shape for, so it came out as the empty box a missing glyph renders as — the fault the style
+    // guide already records for the shift symbol, found again while retaking the documentation
+    // captures for `task-1657`. **Look at the image**: there should be a tick beside `Raw Markdown`.
+    let mut harness = harness("");
+    harness.state_mut().menu_placement = MenuPlacement::InWindow;
+    harness.run();
+    harness.get_by_label("View").click();
+    harness.run();
+    for entry in ["Increase Font Size", "Decrease Font Size", "Reset Font Size"] {
+        harness.get_by_label(entry);
+    }
+    // `Raw Markdown` is both a button on the strip and a row on this menu, so it is asked for by
+    // count rather than by name.
+    assert_eq!(harness.get_all_by_label("Raw Markdown").count(), 2);
+    harness.snapshot(shot("view_menu"));
 }
 
 #[test]

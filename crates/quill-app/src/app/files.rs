@@ -114,6 +114,12 @@ impl OpenFiles {
         self.files.iter()
     }
 
+    /// Every open file, to be changed. The editor's font is one setting for the whole window, so
+    /// there has to be a way to reach the tabs that are not showing.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut OpenFile> {
+        self.files.iter_mut()
+    }
+
     pub fn get(&self, index: usize) -> Option<&OpenFile> {
         self.files.get(index)
     }

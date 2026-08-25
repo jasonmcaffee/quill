@@ -27,5 +27,7 @@ at 1180 x 740.
 | `plugins_page.png` | `Settings -> Plugins`: the tabs, the list, and a plugin's own page. |
 | `settings_appearance.png` | The Settings window, which is the shape every modal in Quill is built from. |
 | `terminal.png` | The terminal tile and its tabs. |
+| `text_options.png` | The flyout behind the toolbar's `F` button: the four named rows, the rule between the character half and the paragraph half, and the three line spacings as buttons. |
+| `code_no_toolbar.png` | A source file, which has no formatting strip above it at all. What the window looks like when the forty four points go to the text. |
 
 `design/style-guide.md` says what these are made of.

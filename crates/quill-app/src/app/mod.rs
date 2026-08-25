@@ -67,6 +67,15 @@ use files::OpenFiles;
 /// How opaque the background is when Quill starts.
 pub const DEFAULT_OPACITY: f32 = settings::DEFAULT_OPACITY;
 
+/// How much bigger a pinch has to ask for before the editor's font moves a size.
+///
+/// The smallest gap between two of the sizes `Edit -> Settings -> Appearance -> Font` offers, which
+/// is 11 to 13. A gesture asking for that much gets one size; one asking for twice as much gets two.
+/// A ratio rather than a number of points, because what one notch of a wheel is worth in points is
+/// a platform's business — measured on this machine it is about 55, which is a third bigger than the
+/// number egui's own default assumes — and the ratio a gesture is asking for is the same everywhere.
+const ZOOM_STEP: f32 = 1.18;
+
 /// A question with two answers, and what to do when it is answered.
 ///
 /// Everything Quill asks about first is something git cannot undo, so what is held is the request
@@ -201,6 +210,13 @@ pub struct QuillApp {
     /// The rectangle the editing area last occupied, so a test can measure the document's own text without
     /// also measuring the bars round it.
     editor_area: Rect,
+    /// What a pinch has asked for that has not been given to it yet.
+    ///
+    /// A pinch arrives as a great many small multipliers, one a frame. Multiplying the size by each
+    /// one and rounding to a whole point would round every one of them away and nothing would ever
+    /// move, so what the gesture has asked for is kept here between frames and the setting changes
+    /// only when it has asked for a whole point.
+    zoom_pending: f32,
     /// The Markdown preview, worked out from the source and kept until the source changes.
     preview: Option<quill_core::Preview>,
     preview_layout: Layout,
@@ -277,6 +293,7 @@ impl QuillApp {
             laid_out_width: 0.0,
             layout_stale: true,
             editor_area: Rect::ZERO,
+            zoom_pending: 1.0,
             preview: None,
             preview_layout: Layout::default(),
             preview_revision: 0,
@@ -362,8 +379,7 @@ impl QuillApp {
         if first_run {
             self.write_settings();
         }
-        let change = self.settings.as_style_change();
-        self.document_mut().set_base_style(change);
+        self.set_the_font_everywhere();
     }
 
     /// Build the macOS menu bar. Called by the released binary only: a test has no application to attach a
@@ -436,6 +452,7 @@ impl QuillApp {
             has_selection: !self.document().selection().is_empty(),
             recent: self.recent.clone(),
             view_mode: self.view_mode(),
+            can_preview: file_kind::preview_applies(self.document().path()),
             explorer_visible: self.explorer_visible,
             line_numbers: self.settings.line_numbers,
             terminal_visible: self.terminal.visible,
@@ -581,6 +598,10 @@ impl QuillApp {
                 self.settings.line_numbers = !self.settings.line_numbers;
                 self.unsaved_settings = true;
             }
+            Action::ChangeFontSize { larger } => {
+                self.set_font_size(settings::step_font_size(self.settings.font_size, larger));
+            }
+            Action::ResetFontSize => self.set_font_size(settings::DEFAULT_FONT_SIZE),
             Action::ToggleTerminal => {
                 self.terminal.visible = !self.terminal.visible;
                 if self.terminal.visible {
@@ -1548,9 +1569,13 @@ impl QuillApp {
         );
 
         let title_rect = Rect::from_min_size(full.min, Vec2::new(full.width(), size::TITLE_BAR));
+        // The formatting strip is drawn only for a file its controls mean something for, and a file
+        // it does not apply to gets those forty four points for its text instead. Everything below
+        // measures from the strip's bottom edge, so a height of nothing needs no other change.
+        let toolbar_shown = toolbar::applies(self.document().path());
         let toolbar_rect = Rect::from_min_size(
             Pos2::new(full.left(), title_rect.bottom()),
-            Vec2::new(full.width(), size::TOOLBAR),
+            Vec2::new(full.width(), if toolbar_shown { size::TOOLBAR } else { 0.0 }),
         );
         let status_rect = Rect::from_min_size(
             Pos2::new(full.left(), full.bottom() - size::STATUS_BAR),
@@ -1637,28 +1662,30 @@ impl QuillApp {
         }
 
         // The toolbar.
-        let toolbar_outcome = {
-            let mut toolbar_ui = ui.new_child(egui::UiBuilder::new().max_rect(toolbar_rect));
-            toolbar::show(
-                &mut toolbar_ui,
-                toolbar_rect,
-                self.document(),
-                self.settings.opacity,
-                &self.bold_family,
-                self.view_mode(),
-            )
-        };
-        for command in toolbar_outcome.commands {
-            self.document_mut().apply(command);
+        if toolbar_shown {
+            let toolbar_outcome = {
+                let mut toolbar_ui = ui.new_child(egui::UiBuilder::new().max_rect(toolbar_rect));
+                toolbar::show(
+                    &mut toolbar_ui,
+                    toolbar_rect,
+                    self.document(),
+                    self.settings.opacity,
+                    &self.bold_family,
+                    self.view_mode(),
+                )
+            };
+            for command in toolbar_outcome.commands {
+                self.document_mut().apply(command);
+            }
+            if let Some(mode) = toolbar_outcome.view_mode {
+                self.set_view_mode(mode);
+            }
+            title_bar::divider(
+                ui.painter(),
+                Pos2::new(toolbar_rect.left(), toolbar_rect.bottom()),
+                Pos2::new(toolbar_rect.right(), toolbar_rect.bottom()),
+            );
         }
-        if let Some(mode) = toolbar_outcome.view_mode {
-            self.set_view_mode(mode);
-        }
-        title_bar::divider(
-            ui.painter(),
-            Pos2::new(toolbar_rect.left(), toolbar_rect.bottom()),
-            Pos2::new(toolbar_rect.right(), toolbar_rect.bottom()),
-        );
 
         // The shortcuts belonging to the menus. Read here rather than in the editing area, because they work
         // whether or not the editing area has the keyboard, and because in preview mode there is no editing
@@ -2088,14 +2115,83 @@ impl QuillApp {
     fn apply_settings(&mut self, before: &Settings) {
         if self.settings.font_family != before.font_family || self.settings.font_size != before.font_size
         {
-            // The whole document is shown in the new font. This is not an edit: it pushes nothing onto the
-            // undo history and does not mark the file as having unsaved changes, because what Quill saves is
-            // plain text and carries no formatting.
-            let change = self.settings.as_style_change();
-            self.document_mut().set_base_style(change);
-            self.preview = None;
+            self.set_the_font_everywhere();
         }
         self.unsaved_settings = true;
+    }
+
+    /// A pinch on the trackpad, or the wheel with the zoom modifier held, over the editing area.
+    ///
+    /// `zoom_delta` reports both as one multiplier, which is IntelliJ's control and mouse wheel for
+    /// nothing, and egui holds the scroll back while the modifier is down so the document does not
+    /// slide about while it is being zoomed.
+    ///
+    /// It walks the same sizes the Settings window offers and the keyboard steps through, rather
+    /// than setting whatever size the multiplier works out to. Two reasons. A size the dialog cannot
+    /// show is a size a person cannot get back to, and one step per notch of a wheel is what every
+    /// other editor does.
+    ///
+    /// The gesture is accumulated rather than applied a frame at a time, because it arrives as a
+    /// stream of multipliers a fraction over one: a step is taken each time what has been asked for
+    /// reaches [`ZOOM_STEP`], and the remainder is carried into the next frame, so a slow pinch and
+    /// a fast one both end up where the fingers say. Nothing here needs to know what one notch of a
+    /// wheel is worth in points, which is a platform's business and differs between mice.
+    ///
+    /// What comes out is written to the settings file once the pointer is up rather than on every
+    /// frame, by the rule `ui` already keeps for a dragged divider.
+    fn zoom_the_text(&mut self, ui: &egui::Ui) {
+        let gesture = ui.input(|input| input.zoom_delta());
+        if (gesture - 1.0).abs() < f32::EPSILON {
+            return;
+        }
+        self.zoom_pending *= gesture;
+        while self.zoom_pending >= ZOOM_STEP {
+            self.zoom_pending /= ZOOM_STEP;
+            self.set_font_size(settings::step_font_size(self.settings.font_size, true));
+        }
+        while self.zoom_pending <= 1.0 / ZOOM_STEP {
+            self.zoom_pending *= ZOOM_STEP;
+            self.set_font_size(settings::step_font_size(self.settings.font_size, false));
+        }
+    }
+
+    /// Set the editor's font size, from the keyboard or from a pinch.
+    ///
+    /// The one setting the Settings window holds, so a size reached with the keyboard is the size
+    /// the dialog shows, reaches every open tab, and is written to the settings file and still there
+    /// next time Quill starts — which is what a person means by zooming an editor rather than
+    /// zooming a view of it.
+    ///
+    /// Public so a test can drive it without pressing keys.
+    pub fn set_font_size(&mut self, size: f32) {
+        let size = size.clamp(settings::MIN_FONT_SIZE, settings::MAX_FONT_SIZE);
+        if (self.settings.font_size - size).abs() < 0.01 {
+            return;
+        }
+        self.settings.font_size = size;
+        self.set_the_font_everywhere();
+        self.unsaved_settings = true;
+    }
+
+    /// Show every open file in the font the settings name.
+    ///
+    /// The editor's font is one setting for the whole window, the way IntelliJ has one editor font,
+    /// so a change reaches every tab rather than only the one that happens to be showing. It used to
+    /// reach `document_mut()` alone, which meant that opening three files and then changing the font
+    /// left two of them in the old one until Quill was restarted, and left the Markdown preview in
+    /// it as well, because the preview is laid out from the source's own base style.
+    ///
+    /// This is not an edit: it pushes nothing onto any document's undo history and marks no file as
+    /// having unsaved changes, because what Quill saves is plain text and carries no formatting.
+    fn set_the_font_everywhere(&mut self) {
+        let change = self.settings.as_style_change();
+        for file in self.files.iter_mut() {
+            file.document.set_base_style(change.clone());
+        }
+        // The file that is showing has to be laid out again, and the preview thrown away so it is
+        // built from the new base style rather than the one it was made with.
+        self.layout_stale = true;
+        self.preview = None;
     }
 
     /// Draw the Markdown preview into `area`. It is read only, so it has no caret and no selection: there
@@ -2179,6 +2275,22 @@ impl QuillApp {
         }
         if outcome.changed || pointer_changed {
             self.refresh_layout(text_width);
+        }
+
+        // A pinch, or the wheel with the zoom modifier held, changes the size of the text that is
+        // being worked on: either the editing area has the keyboard, or the pointer is demonstrably
+        // over it.
+        //
+        // Neither of those is `response.hovered()`, and it took measuring the real window to find
+        // out why it must not be. A two notch gesture produced thirty eight frames, eleven of them
+        // carrying a zoom — and on every one of those eleven `hovered()` was false and
+        // `pointer.hover_pos()` was `None`, because egui reports no pointer at all on a frame whose
+        // only input is a wheel event. Gating on either alone threw the whole gesture away and the
+        // text never moved, which is exactly what the first version of this did.
+        let pointer_in_the_editor =
+            ui.input(|input| input.pointer.hover_pos()).is_some_and(|at| area.contains(at));
+        if has_keyboard || pointer_in_the_editor {
+            self.zoom_the_text(ui);
         }
 
         let wheel = ui.input(|input| input.smooth_scroll_delta.y);

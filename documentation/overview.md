@@ -1,11 +1,11 @@
 # What Quill looks like
 
-Eighteen captures of Quill running on Windows, taken from the real window rather than rendered
+Twenty captures of Quill running on Windows, taken from the real window rather than rendered
 offscreen, and cropped with a margin of desktop left round the edge. The margin is there on purpose:
 Quill's background is translucent, and a picture cropped tight to the window cannot show that the
 green in it is the desktop rather than a shade someone chose.
 
-They were taken from `quill 0.1.0` at commit `23f02f5`, on a 3840 by 2160 screen, with the window at
+They were taken from `quill 0.1.0` after `task-1657`, on a 3840 by 2160 screen, with the window at
 1800 by 1160. Nothing in them is a mock up; every one is a photograph of the program working.
 
 `README.md` says what Quill is and how to run it. This file is the same ground covered in pictures.
@@ -14,10 +14,10 @@ They were taken from `quill 0.1.0` at commit `23f02f5`, on a 3840 by 2160 screen
 
 ## The window
 
-A title bar Quill draws itself with the menus at the left and the window buttons at the right, the
-formatting toolbar, the file explorer down the left with a filter box, a tab for each open file, the
-line numbers, the editing area, and a status bar naming the file, its kind, the caret's position,
-the branch and the font.
+A title bar Quill draws itself with the menus at the left and the window buttons at the right, a
+strip holding the text options and the Markdown view modes, the file explorer down the left with a
+filter box, a tab for each open file, the line numbers, the editing area, and a status bar naming the
+file, its kind, the caret's position, the branch and the font.
 
 The desktop is visible through the explorer, the editing area and the status bar, and every piece of
 text on top of it is solid. That is the whole character of the product, and it is the first thing to
@@ -40,13 +40,42 @@ need. All three are in `services/windows_transparency.rs`, and section 9.2 of
 
 ![The same window at 100 per cent, where only the margin shows the desktop](images/11-opacity-full.jpg)
 
+## The text options are behind one button
+
+Bold, italic, underline and strikethrough, five colours, four alignments and three line spacings, all
+behind the `F` at the left of the strip. They used to be spread along the whole width of the window,
+which gave the top of the screen permanently to nine settings that are set rarely.
+
+The panel is four named rows with a rule between what applies to the selected text and what applies
+to the paragraph it is in. It stays open until the pointer goes elsewhere, so a colour and an
+alignment are two clicks rather than two visits.
+
+![The text options panel open under its F button](images/19-text-options.jpg)
+
+Below, the third line has been made bold and red from that panel, the heading under it centred and
+the line after it italic. The dot on the tab and against the file in the explorer is how Quill says
+there are changes that have not been saved.
+
+![A document with bold, colour, italic and a centred heading applied from the panel](images/16-formatting.jpg)
+
+## Nothing is shown that does not apply to the file
+
+The strip is drawn for prose — a `.md` file, a `.txt` file, a document that has not been saved
+anywhere yet. Quill saves plain text and carries no formatting to disk, so above a `.rs` or a `.json`
+file every one of those controls is a decoration that lasts until the file is reopened, and the three
+view modes offer the Markdown parser's reading of a file that was never Markdown. So a source file
+gets no strip at all, and the forty four points go to the text instead — which is the next picture.
+
+The two questions are asked separately. A `.txt` file is prose, so it keeps the `F` button; it is not
+Markdown, so it loses the view modes.
+
 ## Markdown, three ways
 
-The three buttons at the right of the toolbar switch between the raw source, the source and the
-preview side by side, and the preview on its own. The parser is ours and it draws nothing: it reads
-the source and produces the same rope, character spans and paragraph settings any other document
-holds, so the preview is laid out and painted by the ordinary engine. Nothing in the window knows
-how to render Markdown.
+The three buttons at the right of the strip switch between the raw source, the source and the preview
+side by side, and the preview on its own. The parser is ours and it draws nothing: it reads the
+source and produces the same rope, character spans and paragraph settings any other document holds,
+so the preview is laid out and painted by the ordinary engine. Nothing in the window knows how to
+render Markdown.
 
 The preview is read only, because what it shows is worked out from the source beside it.
 
@@ -54,24 +83,12 @@ The preview is read only, because what it shows is worked out from the source be
 
 ![The preview on its own](images/03-markdown-preview.jpg)
 
-## Formatting
-
-Bold, italic, underline, strikethrough and five colours in the toolbar, four alignments and three
-line spacings beside them, and the font family and size in the settings. The controls are drawn
-rather than lettered: the B is bold, the I is italic, the U is underlined and the alignment buttons
-are small pictures of a paragraph.
-
-Below, the third line has been made bold and red, the paragraph under it italic, and the heading
-centred. The dot on the tab and against the file in the explorer is how Quill says there are changes
-that have not been saved.
-
-![A document with bold, colour, italic and a centred heading applied from the toolbar](images/16-formatting.jpg)
-
 ## Writing code in it
 
-Line numbers down the left, a tab for each open file, and syntax colouring from a plugin. Quill
-wraps, so a paragraph that runs over several rows on screen carries one number against its first row
-and nothing against its continuations, which is what a line number means everywhere else.
+Line numbers down the left, a tab for each open file, syntax colouring from a plugin — and no strip
+above any of it, because there is nothing in one that means anything for a Rust file. Quill wraps, so
+a paragraph that runs over several rows on screen carries one number against its first row and
+nothing against its continuations, which is what a line number means everywhere else.
 
 A single click in the explorer opens a file in the tab a single click reuses, drawn faintly to say
 so; a double click opens it in a tab of its own. The tab that is showing carries an accent line
@@ -81,7 +98,22 @@ The colouring comes from the Rust plugin. A colour scheme colours the tokens and
 area, so a coloured file still lets the desktop through — which is why the leaves are still visible
 behind the code.
 
-![Four Rust files open in tabs, with line numbers and syntax colouring](images/04-code.jpg)
+![Four Rust files open in tabs, with line numbers, syntax colouring and no formatting strip](images/04-code.jpg)
+
+## The font is one setting for the whole window
+
+`Settings -> Appearance -> Font` sets the family and the size the editor shows text in, the way
+IntelliJ has one editor font. A change reaches every file that is open, not only the one showing,
+and the preview with them. Setting it is not an edit: it pushes nothing onto the undo history and
+does not mark any file as changed, because what Quill saves is plain text and carries no formatting.
+
+The size is on the keyboard as well — command or control with plus and minus, and `Reset Font Size`
+to put it back — and on a trackpad pinch, or the wheel with the same modifier held, over the editing
+area. All of them change that one setting, so whichever is used the size is still there next time
+Quill starts. `+` and `=` are one key on nearly every layout, so either does it, with or without
+shift, and so does the keypad's `+`.
+
+![The settings window on the Appearance page](images/08-settings-appearance.jpg)
 
 ## The file explorer
 
@@ -95,7 +127,7 @@ the divider puts it back to its usual width. The split between the Markdown sour
 and the height of the terminal work the same way, through the same code, and where each was left is
 written to the settings file so it is the same next time Quill starts.
 
-![The explorer widened by dragging its edge, with three levels of folders expanded](images/17-explorer.jpg)
+![The explorer widened by dragging its edge, with its folders expanded](images/17-explorer.jpg)
 
 Right clicking a row opens a menu aimed at that row: a `New` submenu, cut, copy, copy path and
 paste, rename, show the file in Explorer, reload it from disk, and a `Git` section that acts on that
@@ -116,6 +148,12 @@ open before. Each window is its own process, so several Quills can run at once o
 and share nothing but the settings file.
 
 ![The File menu, with the recent projects listed in it](images/18-file-menu.jpg)
+
+The `View` menu holds the three Markdown modes, the explorer, the line numbers, the editor's font
+size, the file tabs and the terminal. The three modes are dimmed for a file there is nothing to
+preview of, which is the same question the buttons on the strip are drawn from.
+
+![The View menu open](images/20-view-menu.jpg)
 
 The `Git` menu is the whole of git: commit, add, diff, compare with a revision, history, blame,
 rollback, push, pull, fetch, merge, rebase, branches, tags, reset, stash, remotes and clone. It is
@@ -157,8 +195,8 @@ and its date, and marks the commit `HEAD` is sitting on when it is one of them.
 ![The history of a file](images/13-git-history.jpg)
 
 `Show Diff` shows git's own diff for the file against the version git has. The stripe in the gutter
-beside line 2 in the editor behind it is the same information in the margin: a change bar against
-each line that differs from the committed version.
+beside the changed line in the editor behind it is the same information in the margin: a change bar
+against each line that differs from the committed version.
 
 ![The diff for a file that has an uncommitted line](images/14-git-diff.jpg)
 
@@ -175,12 +213,6 @@ authors' work and which part is new.
 IntelliJ's: the pages down the left under their headings, and the chosen page on the right. Changes
 take effect as they are made, and are written to two plain text files that can be read and edited by
 hand — `%APPDATA%\Quill` on Windows and `~/Library/Application Support/Quill` on macOS.
-
-`Appearance` sets the font the editor shows the document in and the background opacity. Setting the
-font is not an edit: it pushes nothing onto the undo history and does not mark the file as changed,
-because what Quill saves is plain text and carries no formatting.
-
-![The settings window on the Appearance page](images/08-settings-appearance.jpg)
 
 `Plugins` is the marketplace and what is installed. A plugin is a folder holding a `plugin.conf` and
 an icon, in the same `name = value` format the settings file uses, and it describes a language: its
@@ -202,10 +234,16 @@ honoured the window's transparency, because there is no desktop behind them.
 So each of these was taken by starting the real `quill.exe`, putting the window at a fixed rectangle,
 driving it with real mouse clicks and key presses, and copying the screen. The crop is the window's
 rectangle grown by 48 pixels on every side, which is the margin of desktop you can see. The scripts
-that do it are in `_agent_output/task-1655-screenshots/`, which is not tracked; the switches that
+that do it are in `_agent_output/task-1657-screenshots/`, which is not tracked; the switches that
 put Quill into a particular state without clicking — `--opacity`, `--view`, `--terminal` — are the
 ones documented in `README.md`.
 
+Three of the folders in the pictures are fixtures built under the temporary folder rather than the
+real ones, and `_agent_output/task-1657-screenshots/SAMPLE.md` says how each is made. The reason is
+the status bar: `sample/` lives inside Quill's own repository, so opening it where it lies makes the
+picture say how many files happened to be uncommitted that day. A copy with one commit in it says
+`main`, which is what a reader with a fresh checkout sees.
+
 They are JPEGs rather than PNGs. Most of what is in each picture is a photograph showing through a
-translucent window, which PNG stores badly: the same eighteen captures are 43 MB as PNG and 5.5 MB
-at JPEG quality 93, with no difference visible in the text at full size.
+translucent window, which PNG stores badly: the same captures are several times the size as PNG at
+no visible difference in the text at full size.
