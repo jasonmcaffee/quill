@@ -4,6 +4,9 @@ Author: Claude (agent), for Jason McAffee
 Date: 2026-08-24
 Status: proposed, with Option 1 implemented and the window built to `design/intial-design-screenshot.png`
 Board ticket: task-14 "Dev Quill Project" on the local Tasks and Remote Control board
+Later work: the improvements asked for in `tasks/improvements.md` are implemented as well, and are described
+in sections 10.4 to 10.9. The terminal has a design document of its own, `tasks/quill-terminal-tdd.md`,
+because the decision behind it needed its own set of options and numbers.
 
 ## 1. What Quill is
 
@@ -40,6 +43,20 @@ it without counting.
 | Own implementation | Write the editor ourselves instead of using an existing editor component, but read existing code and credit it |
 | Transparency | A slider sets background transparency so the desktop shows through, and text stays opaque |
 | Visual tests | End to end tests that save screenshots so an agent can confirm behaviour by looking at them |
+
+These came later, from `tasks/improvements.md`:
+
+| Name | Requirement |
+|---|---|
+| Settings window | The font controls and the background opacity move out of the toolbar into a modal opened from `Edit -> Settings`, laid out like IntelliJ's with the pages down the left |
+| No undo buttons | Undo and redo are on the keyboard rather than in the toolbar |
+| Any text file | A file Quill has no special handling for, such as a `.js` or a `.rs` file, opens as plain text |
+| Draggable panes | Every pane's size is set by dragging its edge, and a later pane must work the same way |
+| Several windows | Several Quills at once, each with its own project, and a list of recent projects to open one from |
+| Terminal | A terminal along the bottom with tabs, behaving as a native terminal does, with `claude` and `codex` formatted correctly and resizing repainting correctly |
+| Menus where the platform puts them | On macOS the menus belong in the bar along the top of the screen, not inside the window |
+| `Quill` first | The application's own menu is the first thing in the top bar, so it reads `Quill  File  Edit  View` |
+| Code layout | The code is broken up with folders for components, services and the rest |
 
 ## 3. Where the line is drawn between our code and other people's code
 
@@ -211,34 +228,85 @@ The reasoning, in order of weight:
 
 ```mermaid
 flowchart TD
-    subgraph app["quill-app crate: the shell, depends on egui"]
-        MAIN["main.rs\nwindow setup, transparency"]
-        TREE["file_tree.rs\nfolder rows, expansion"]
-        TOOL["toolbar.rs\nformatting controls, opacity slider"]
-        VIEW["editor_view.rs\nkey and mouse events, painting"]
-        ATLAS["glyph_atlas.rs\nrasterised glyphs in an egui texture"]
-        FONTS["font_source.rs\nfinds installed families"]
+    subgraph app["quill-app: the shell, depends on egui"]
+        MAIN["main.rs\nwindow setup, transparency, the command line"]
+        STATE["app/mod.rs\nthe window's state and its layout"]
+        ACT["app/actions.rs\nthe menus, and every action"]
+        subgraph components["components/"]
+            TITLE["title_bar.rs"]
+            MENUBAR["menu_bar.rs"]
+            TOOL["toolbar.rs"]
+            EXPL["explorer.rs"]
+            VIEW["editor_view.rs"]
+            SETW["settings_dialog.rs"]
+            TERMP["terminal_panel.rs"]
+            SPLIT["splitter.rs"]
+            STAT["status_bar.rs"]
+            CTRL["controls.rs"]
+        end
+        subgraph services["services/"]
+            TREE["file_tree.rs"]
+            KIND["file_kind.rs"]
+            REND["text_renderer.rs\nfonts, glyph atlas, cell size"]
+            STORE["store.rs\nsettings and recent projects"]
+            LAUNCH["launcher.rs\nanother window"]
+            NATIVE["native_menu.rs\nthe macOS menu bar"]
+        end
+        THEME["theme/\npalette, sizes, drawn icons"]
+        SET["settings.rs\nwhat is remembered"]
     end
-    subgraph core["quill-core crate: the editor, no interface dependencies"]
+    subgraph core["quill-core: the editor, no interface dependencies"]
         ROPE["rope.rs\nB-tree text buffer"]
         SPANS["style.rs\ncharacter and paragraph formatting over byte ranges"]
         DOC["document.rs\nbuffer plus formatting plus undo"]
         SEL["cursor.rs\ncaret and selection movement"]
         LAY["layout.rs\nline breaking, glyph positions, hit testing"]
         METRICS["metrics.rs\nFontMetrics trait"]
+        MD["markdown.rs\nsource to styled text"]
     end
+    subgraph term["quill-terminal: the terminal, no interface dependencies"]
+        SESS["session.rs\npseudoterminal, emulator, snapshot"]
+        SCREEN["screen.rs\nthe cells the painter reads"]
+        PAL["palette.rs\ncolours to RGB"]
+        KEYS["keys.rs\nkey press to bytes"]
+        MOUSE["mouse.rs\nclicks to bytes"]
+        TABS["tabs.rs\nseveral sessions"]
+    end
+    MAIN --> STATE
+    STATE --> ACT
+    STATE --> components
+    STATE --> services
+    STATE --> SET
+    ACT --> NATIVE
+    ACT --> MENUBAR
+    ACT --> LAUNCH
+    SET --> STORE
     VIEW --> DOC
     VIEW --> LAY
     TOOL --> DOC
-    TREE --> DOC
+    EXPL --> TREE
+    TREE --> KIND
+    SETW --> SET
+    TERMP --> TABS
+    TERMP --> KEYS
+    TERMP --> MOUSE
+    TERMP --> REND
+    TABS --> SESS
+    SESS --> SCREEN
+    SCREEN --> PAL
     DOC --> ROPE
     DOC --> SPANS
     DOC --> SEL
     LAY --> METRICS
     LAY --> SPANS
-    ATLAS -.implements.-> METRICS
-    FONTS --> ATLAS
+    MD --> SPANS
+    REND -.implements.-> METRICS
 ```
+
+The folders in `quill-app` are the ones `tasks/improvements.md` asks for, and what belongs in each is
+recorded in `CLAUDE.md` so that a later change puts a new file in the right one: `app` for the window's state
+and the actions the menus ask for, `components` for drawing, `services` for everything that is not drawing,
+and `theme` for the palette and the icons.
 
 The important edge is the dashed one. `quill-core` never asks how a glyph is drawn. It asks a
 `FontMetrics` implementation for the advance width and vertical metrics of a glyph, and it returns
@@ -375,14 +443,19 @@ run. Redo is a second stack, cleared by any new edit.
 | `rfd` | 0.17 | The operating system's folder and file pickers | Three different platform APIs, and a modal dialog is platform work |
 | `egui_kittest` | 0.36 | Tests that render the interface and write PNG files | Test only |
 | `image` | 0.25 | Reading PNG files in tests to assert on pixels | Test only |
+| `muda` | 0.19 | The macOS menu bar along the top of the screen | egui cannot make one; this is AppKit work |
+| `arboard` | 3.6 | Reading the clipboard behind the Edit menu's Paste entry | Three platform clipboard APIs |
+| `alacritty_terminal` | 0.26 | The terminal's escape sequence emulation and its pseudoterminal | Several hundred escape sequences and two platform pseudoterminal APIs. `tasks/quill-terminal-tdd.md` records the decision |
+| `unicode-width` | 0.2 | How many columns a character takes in the terminal grid | An implementation of a Unicode standard annex |
 
-The clipboard needs no crate. egui delivers `Event::Copy`, `Event::Cut` and `Event::Paste` from the
-platform integration and takes text back through `Context::copy_text`, so cut, copy and paste work
-through the same events in the real window and in the tests. `arboard` was in the first plan and was
-removed once that was found.
+The clipboard needs no crate for the keyboard. egui delivers `Event::Copy`, `Event::Cut` and `Event::Paste`
+from the platform integration and takes text back through `Context::copy_text`, so cut, copy and paste work
+through the same events in the real window and in the tests. `arboard` is needed for one thing only: the Edit
+menu's `Paste` entry has no key press behind it, so the clipboard has to be read rather than waited for.
 
 `quill-core` depends on `unicode-segmentation` and nothing else. That is deliberate: the editor
-compiles and its tests run with no window, no graphics card and no fonts.
+compiles and its tests run with no window, no graphics card and no fonts. `quill-terminal` follows the same
+rule for the same reason: it depends on `alacritty_terminal` and `unicode-width`, and on nothing that draws.
 
 ## 9. Transparency
 
@@ -536,11 +609,142 @@ reusing the text layout rather than writing a second one, and both look right.
 The preview is read only in every mode. There is nothing to type into it, because what it shows is worked
 out from the source.
 
+
+## 10.4 The Settings window
+
+`Edit -> Settings`, or command and comma, opens a modal laid out the way `tasks/img.png` shows IntelliJ's:
+a search box and the pages down the left grouped under headings, a breadcrumb across the top of the right
+hand side saying where you are, and the chosen page's sections under it.
+
+It is a modal drawn inside the window rather than a second operating system window. `tasks/improvements.md`
+asks for a modal, and it means the screenshot tests can open it and look at it, which they could not do with
+a second window: `egui_kittest` renders one viewport.
+
+Three decisions inside it.
+
+Every change takes effect as it is made, so there is one button and it says `Done`. A dialog with `Apply`
+has to hold a second copy of every setting and decide what to do when the two disagree; showing the change
+straight away needs neither.
+
+`Appearance -> Font` sets the family and the size for the whole document rather than for the selection,
+which is what a font setting means as against the toolbar's formatting. `Document::set_base_style` applies
+it: it changes only the fields the change names, so a word set in bold or in red keeps both, it pushes
+nothing onto the undo history, and it does not mark the file as having unsaved changes. That last part is the
+one worth stating: what Quill saves is plain text and carries no formatting, so changing the font does not
+change the file.
+
+The toolbar lost three things to make room for none: the font family, the font size and the background
+opacity are in the settings, and undo and redo are on the keyboard alone. A toolbar button for undo says
+nothing a reader does not already know.
+
+## 10.5 The panes
+
+The explorer's width, the split between the Markdown source and its preview, and the terminal's height are
+all set by dragging the divider, and all three go through one file, `components/splitter.rs`. The grab width,
+the highlight while the pointer is over it, the pointer shape and the double click that puts a pane back to
+its usual size are decided there once, so every divider behaves the same way. A later pane has to use it
+rather than growing a divider of its own; `CLAUDE.md` says so where a later change will read it.
+
+One fault worth recording, because it was found by a test rather than by reading the code. A divider has to
+be added to the interface after the panes either side of it. The editing area takes drags over the whole of
+its rectangle, and the divider's grab area overlaps its edge, so a divider added earlier sits underneath and
+never gets the drag. The test dragged the explorer's edge and the width did not change.
+
+Where the dividers were left is written to the settings file, with a smallest and a largest size clamped both
+when the file is read and while dragging, so a file edited by hand cannot leave a pane with no width.
+
+## 10.6 What files Quill opens
+
+Version one opened `.md` and `.txt`. Everything else was listed dimmed and did not respond to a click.
+`tasks/improvements.md` asks for the rest, and it is right: an editor that will not open `main.rs` is not a
+text editor.
+
+So the question changed from "is this one of two extensions" to "is this text", and `services/file_kind.rs`
+answers it with three rules in order. An extension known to hold text is text, which covers nearly
+everything a person opens and needs no reading. An extension known to hold something else, such as `.png` or
+`.zip`, is not. Anything else, meaning an unknown extension or no extension at all, is decided by reading
+the first four thousand bytes: a file holding a zero byte, or bytes that are not valid UTF-8, is not text. The
+reading rule is last because the explorer asks this question about every file in a folder, and the first two
+rules answer it without touching the disk.
+
+Two things are still refused, and each says which it is when the pointer rests on the row: a file that is not
+text, and a file larger than sixteen megabytes, which is more than Quill can read into the editor without
+the window stopping while it does.
+
+A `.md` file is Markdown, which is what makes the preview button do something. Everything else opens as
+plain text, and the status bar names the kind of text it is, so a reader who opened `main.rs` is told it is
+Rust rather than being told it is text.
+
+## 10.7 Several windows, and recent projects
+
+`File -> New Window` starts another Quill on the same folder, and `File -> Recent Projects` starts one on a
+folder that has been open before. Each is its own process rather than a second window in this one.
+
+That is a decision. A second window in the same process would share the document, the file tree, the
+settings in memory and the terminal sessions, so every one of those would have to learn which window it
+belonged to. A second process shares nothing: it reads the same settings file, opens its own project, and if
+it stops it takes nothing with it. Quill already takes the folder to open as its first argument, which is all
+a second process needs, and IntelliJ works the same way.
+
+The recent projects list is written to `recent.txt` next to the settings, newest first, at most fifteen, and a
+folder that has since been removed is left out when the list is read, because an entry in a menu that cannot
+be opened is worse than a shorter menu. Because the list is a file rather than something held in memory, a
+project opened in one window is in the other window's menu.
+
+## 10.8 The menus
+
+`Quill`, `File`, `Edit` and `View`, in that order. On macOS they are in the bar along the top of the screen,
+built with `muda`, because that is where macOS puts menus and `tasks/improvements.md` asks for it. On Windows
+they are drawn at the left of Quill's own title bar, starting with `Quill`, and the three window buttons move
+to the right hand end, where Windows puts them. Either way `Quill` is the first thing in the top bar.
+
+Both bars are built from one list, `app/actions.rs`, and everything either of them can ask for is an
+`Action`. `QuillApp::run_action` is the only place an action turns into a change, so the two bars and the
+keyboard cannot disagree about what `Save` means. Adding an entry is a variant, a line in that list and an
+arm in `run_action`.
+
+Two things about shortcuts follow from AppKit, and both are recorded in the code where they matter. A
+shortcut on a macOS menu item is a key equivalent, and AppKit hands it to the menu before the window sees it,
+so the key press never reaches egui: that is why every menu shortcut is handled as an action rather than by
+reading the keyboard, and why undo, redo, save and select all were taken out of the editing surface's own key
+handling. Cut, copy and paste are the exception. They reach the window as egui clipboard events, because that
+is how the platform hands over the clipboard, so those three are marked in the list as not coming from the
+keyboard and the keyboard watcher leaves them alone.
+
+The macOS bar cannot be looked at by a test: `egui_kittest` renders a window, not a screen. Two things stand
+in for that. The bar drawn inside the window is a real supported configuration, the one Windows uses, and the
+tests ask for it and click through it, which exercises the same list of menus. And `quill --print-menus`
+prints the list, so what went into the macOS bar can be read without looking at the screen.
+
+## 10.9 The terminal
+
+A tile along the bottom of the window with tabs, opened with control and backtick or from the `View` menu.
+It has a design document of its own, `tasks/quill-terminal-tdd.md`, because the decision behind it needed its
+own options and numbers. The short version, so this document is not misleading on its own:
+
+The escape sequence emulation and the pseudoterminal come from `alacritty_terminal`. That is a different line
+from the one section 3 draws for the editor, and it is drawn deliberately. A terminal emulator is not the
+editor: it is several hundred exactly specified escape sequences whose correctness a person cannot judge by
+looking at the code, and the requirement is that `claude` and `codex` are formatted correctly, which is a
+requirement to match what those programs are already tested against.
+
+What is ours is the tile and its tabs, the drawing, the colour palette, the key encoding, the mouse reports,
+the screen snapshot the painter reads, and the resizing. They live in `quill-terminal`, which has no user
+interface dependency, so the key encoding and the palette are tested by value with no window, and in
+`quill-app/src/components/terminal_panel.rs`, which draws the grid out of the same glyph atlas the editor
+draws from.
+
+Two things in there are worth naming here. The terminal's lock is held while the visible cells are copied and
+not while they are drawn, because drawing touches the font atlas and the graphics device and holding the lock
+across that would stall the thread reading the shell. And the size of the grid is worked out in one place and
+told to both the emulator and the program on the far side together, because telling only one is the fault
+that leaves a full screen program drawing into the wrong half of the tile.
+
 ## 11. Testing plan
 
-Three layers. The middle one is the one the ticket asks for by name.
+Four layers. The middle two are the ones the ticket asks for by name.
 
-### Layer 1: unit tests on quill-core
+### Layer 1: unit tests on quill-core and quill-terminal
 
 Plain `cargo test` in a crate with no interface dependencies. These cover the rope across split and
 merge boundaries, the formatting spans across insertion and deletion including the merging of
@@ -551,6 +755,14 @@ consecutive typing.
 Layout tests use a stub `FontMetrics` where every glyph is exactly 10 units wide and the line height
 is 20, so the expected positions are arithmetic a reader can check by hand, and the test gives the
 same answer on macOS and on Windows.
+
+`quill-terminal` is tested the same way and for the same reason. The key encoding and the colour palette are
+plain functions over data, so every key in the table and every colour is checked by value. The screen is
+tested through a session with no pseudoterminal behind it: a test writes `ESC [ 31 m hello` straight into the
+emulator and asserts that the first five cells are red, with no shell, no thread and no waiting. Two tests do
+start a real shell, because that is the only way to know that the pseudoterminal, the reader thread, the
+writing and the waking work together; they assert on text and wait with a timeout, because when a shell
+answers is not something a test can know.
 
 ### Layer 2: end to end tests that render the interface and save screenshots
 
@@ -574,6 +786,10 @@ The tests find the text they format by searching for it rather than by writing d
 counted offset drifts as soon as the text changes: the first version counted one line's start wrongly
 and left the first letter out of the selection, which the screenshot showed as one small letter in front
 of a large word.
+
+The terminal's screenshot tests use the same session with no shell behind it, so the image is the same on
+every run and can be a baseline like every other one. A test that ran a real shell could not be, because a
+prompt arrives when it arrives.
 
 One screenshot test per feature that has a visible result:
 
@@ -600,20 +816,50 @@ One screenshot test per feature that has a visible result:
 | `view_raw` | The Markdown source, marks and all |
 | `view_side_by_side` | The source on the left and the preview on the right |
 | `view_preview` | The preview filling the editing area |
-| `file_menu` | The File menu open, with its four entries and their shortcuts |
+| `file_menu` | The File menu open, with New Window, the recent projects and the rest, and their shortcuts |
 | `opened_folder` | A different folder showing in the explorer |
-| `unopenable_file` | A file Quill cannot open, listed and dimmed |
+| `unopenable_file` | A file that is not text, listed and dimmed |
+| `plain_text_file` | A Rust file opened as plain text |
+| `settings_appearance` | The Settings window on the Appearance page, with the Font and Background sections |
+| `settings_terminal` | The Settings window on the Terminal page |
+| `settings_font_applied` | The document in a different family, with a bold word still bold |
+| `settings_background_faint` | The window at a fifth of full opacity |
+| `explorer_wide` | The explorer after its edge was dragged, with the editing area narrower |
+| `preview_split_dragged` | The source and preview split moved to the right |
+| `terminal` | The terminal open with a command's output in it |
+| `terminal_colours` | The sixteen colours, 24 bit colour, and bold, italic, underline, strikethrough, inverse and dim |
+| `terminal_full_screen` | A program drawing its own screen with box drawing characters |
+| `terminal_tabs` | Two terminal tabs with the second one showing |
+| `terminal_tall`, `terminal_short` | The same terminal before and after its top edge was dragged |
+| `terminal_large_font` | The terminal grid at a bigger font size |
 
 The last pair also gets an assertion rather than only an image, because a screenshot on its own cannot
 prove text stayed opaque: the test reads the rendered pixels and asserts that pixels belonging to
 glyphs have full alpha at both slider positions while the background alpha differs. That is the
 transparency requirement checked by measurement.
 
-### Layer 3: launching the real application
+### Layer 3: `claude` and `codex` in the terminal, captured and looked at
 
-`cargo run` on macOS, with a screen capture of the real window over a visible desktop. Layer 2 renders
-through the same `wgpu` path but into an offscreen target, so it cannot prove that the operating system
-compositor honoured the window alpha. Only a capture of the real window on a real desktop shows that.
+`cargo run --example terminal_capture -- --wait 10 --send "\r" --wait 10 claude` builds the real window
+offscreen, opens the terminal, starts `claude` in it, answers the question it asks, waits for it to draw, and
+writes a PNG. The same for `codex`, and each writes a second image after the tile has been made shorter and
+the explorer wider, which is where a program that was not told its new size draws in the wrong place.
+
+These images are not compared against a baseline, because both programs draw something different every time
+they run. They exist to be looked at, which is what `tasks/improvements.md` asks for. They are kept at
+`design/verification/terminal-claude.png`, `terminal-codex.png` and the two resized ones.
+
+Looking at the first of them found a real fault: an arrow that `claude` draws came out as the empty box a font
+uses for a character it has no shape for. Terminals fall back to another family for a missing character, and
+Quill did not. It does now, in `services::text_renderer`, and the family it draws the terminal in is Menlo
+rather than Courier New because Menlo covers far more of what a program draws its own screen with.
+
+### Layer 4: launching the real application
+
+`cargo run` on macOS, with a screen capture of the real window over a visible desktop. The layers above
+render through the same `wgpu` path but into an offscreen target, so they cannot prove that the operating
+system compositor honoured the window alpha, and they cannot show the menu bar along the top of the screen at
+all. Only a real run shows those.
 
 That capture is kept at `design/verification/live-window-over-desktop.png`. The desktop wallpaper is
 visible through the explorer, the editing area and the status bar, and every piece of text is solid on top
@@ -662,7 +908,12 @@ Not included, and deliberately so:
 
 - Right to left and complex writing systems, as described in section 13.
 - Search and replace, multiple carets, and tabbed documents. None are in the requirements.
-- A saved settings file. The transparency setting resets when Quill restarts.
+
+A saved settings file was in this list and is not any more. The settings, the recent projects and where the
+dividers between the panes were left are kept in `~/Library/Application Support/Quill` on macOS and
+`%APPDATA%\Quill` on Windows, in two plain text files that can be read and corrected by hand. A file that
+cannot be read is treated as a file that is not there, because Quill starting with its defaults is better
+than Quill refusing to start over a stray line.
 
 ## 15. Milestones
 

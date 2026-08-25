@@ -38,11 +38,15 @@ pub struct Status<'a> {
     pub position: Position,
     pub family: &'a str,
     pub font_size: f32,
+    /// Something to say in place of the font: why a file could not be opened, or what version this is.
+    /// It stays until something replaces it, because a message that goes away on its own is a message that
+    /// is missed.
+    pub message: Option<&'a str>,
 }
 
 /// Draw the status bar into `area`.
 pub fn show(ui: &egui::Ui, area: Rect, status: &Status<'_>, opacity: f32) {
-    let Status { name, unsaved, kind, position, family, font_size } = *status;
+    let Status { name, unsaved, kind, position, family, font_size, message } = *status;
     let painter = ui.painter_at(area);
     // The bottom two corners are rounded to match the window.
     painter.rect_filled(
@@ -81,6 +85,14 @@ pub fn show(ui: &egui::Ui, area: Rect, status: &Status<'_>, opacity: f32) {
         format!("Ln {}, Col {}", position.line, position.column),
         color::TEXT_DIM,
     );
+
+    // A message, when there is one, sits after the caret position and before the right hand end.
+    if let Some(message) = message {
+        pen += 12.0;
+        label(&painter, &mut pen, "\u{2502}".to_owned(), color::DIVIDER);
+        pen += 10.0;
+        label(&painter, &mut pen, message.to_owned(), color::TEXT_CONTROL);
+    }
 
     // The family and size sit against the right edge.
     let right_text = format!("{family} \u{00B7} {font_size:.0} pt");

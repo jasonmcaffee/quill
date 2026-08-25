@@ -8,17 +8,17 @@
 //! overruled: an explorer that hides most of a folder does not tell you what is in the folder. So all files
 //! are shown, and the ones Quill cannot open are drawn dimmed and do not respond to a click, which says
 //! what is there without pretending it can all be opened.
+//!
+//! Which files those are is decided by [`crate::services::file_kind`], and it is now most of them: any
+//! file holding text opens, whether or not Quill has any special handling for that kind of text.
 
 use std::path::{Path, PathBuf};
 
-/// The file types Quill opens.
-pub const OPENABLE: &[&str] = &["md", "txt"];
+use crate::services::file_kind::{self, Refusal};
 
+/// Whether Quill can open this file.
 pub fn is_openable(path: &Path) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .map(|extension| OPENABLE.contains(&extension.to_ascii_lowercase().as_str()))
-        .unwrap_or(false)
+    file_kind::is_openable(path)
 }
 
 /// One directory or file in the tree.
@@ -29,6 +29,8 @@ pub struct Entry {
     pub is_directory: bool,
     /// True when Quill can open this file. A file it cannot open is still listed, but dimmed.
     pub openable: bool,
+    /// Why it cannot be opened, when it cannot, so the row can say which reason it is.
+    pub refusal: Option<Refusal>,
     pub expanded: bool,
     /// The children of a directory, or `None` when they have not been read yet.
     pub children: Option<Vec<Entry>>,
@@ -41,8 +43,9 @@ impl Entry {
             .and_then(|name| name.to_str())
             .map(str::to_owned)
             .unwrap_or_else(|| path.display().to_string());
-        let openable = !is_directory && is_openable(&path);
-        Self { path, name, is_directory, openable, expanded: false, children: None }
+        let refusal = if is_directory { None } else { file_kind::openable(&path).err() };
+        let openable = !is_directory && refusal.is_none();
+        Self { path, name, is_directory, openable, refusal, expanded: false, children: None }
     }
 }
 
@@ -318,16 +321,21 @@ mod tests {
         std::fs::write(root.join("program.rs"), "fn main() {}").expect("write program.rs");
         std::fs::write(root.join("notes/one.md"), "one").expect("write notes/one.md");
         std::fs::write(root.join("notes/deeper/two.txt"), "two").expect("write the deep file");
+        // A file that is not text, so a test can check that one of those is listed and dimmed. The bytes
+        // are the start of a PNG, including the zero byte that says it is not text.
+        std::fs::write(root.join("picture.png"), [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0])
+            .expect("write picture.png");
         root
     }
 
     #[test]
-    fn only_openable_extensions_count() {
+    fn every_kind_of_text_file_can_be_opened_and_other_files_cannot() {
         assert!(is_openable(Path::new("a.md")));
         assert!(is_openable(Path::new("a.txt")));
         assert!(is_openable(Path::new("a.MD")), "the extension check ignores case");
-        assert!(!is_openable(Path::new("a.rs")));
-        assert!(!is_openable(Path::new("a")));
+        assert!(is_openable(Path::new("a.rs")), "a source file opens as plain text");
+        assert!(is_openable(Path::new("a.js")));
+        assert!(!is_openable(Path::new("a.png")), "an image is not text");
     }
 
     #[test]
@@ -335,7 +343,7 @@ mod tests {
         let root = sample_folder("quill-tree-order");
         let tree = FileTree::new(&root);
         let names: Vec<&str> = tree.rows().iter().map(|row| row.entry.name.as_str()).collect();
-        assert_eq!(names, vec!["archive", "notes", "notes.txt", "program.rs", "readme.md"]);
+        assert_eq!(names, vec!["archive", "notes", "notes.txt", "picture.png", "program.rs", "readme.md"]);
         assert!(!names.contains(&".hidden"), "hidden entries are not listed");
         std::fs::remove_dir_all(&root).ok();
     }
@@ -344,16 +352,19 @@ mod tests {
     fn a_file_quill_cannot_open_is_listed_but_marked_as_not_openable() {
         let root = sample_folder("quill-tree-openable");
         let tree = FileTree::new(&root);
-        let openable = |name: &str| {
+        let entry = |name: &str| {
             tree.rows()
                 .iter()
                 .find(|row| row.entry.name == name)
-                .map(|row| row.entry.openable)
+                .map(|row| row.entry.clone())
                 .unwrap_or_else(|| panic!("{name} is not listed"))
         };
-        assert!(openable("readme.md"));
-        assert!(openable("notes.txt"));
-        assert!(!openable("program.rs"), "a Rust file is shown but cannot be opened");
+        assert!(entry("readme.md").openable);
+        assert!(entry("notes.txt").openable);
+        assert!(entry("program.rs").openable, "a Rust file opens as plain text");
+        let picture = entry("picture.png");
+        assert!(!picture.openable, "an image is shown but cannot be opened");
+        assert_eq!(picture.refusal, Some(Refusal::NotText), "and it says why");
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -361,13 +372,16 @@ mod tests {
     fn a_folder_is_closed_until_it_is_opened() {
         let root = sample_folder("quill-tree-closed");
         let mut tree = FileTree::new(&root);
-        assert_eq!(tree.rows().len(), 5);
+        assert_eq!(tree.rows().len(), 6);
         tree.toggle(&root.join("notes"));
         let rows = tree.rows();
         let names: Vec<&str> = rows.iter().map(|row| row.entry.name.as_str()).collect();
         assert_eq!(
             names,
-            vec!["archive", "notes", "deeper", "one.md", "notes.txt", "program.rs", "readme.md"]
+            vec![
+                "archive", "notes", "deeper", "one.md", "notes.txt", "picture.png", "program.rs",
+                "readme.md"
+            ]
         );
         std::fs::remove_dir_all(&root).ok();
     }
@@ -390,6 +404,7 @@ mod tests {
                 (2, "two.txt"),
                 (1, "one.md"),
                 (0, "notes.txt"),
+                (0, "picture.png"),
                 (0, "program.rs"),
                 (0, "readme.md"),
             ],
@@ -403,9 +418,9 @@ mod tests {
         let root = sample_folder("quill-tree-close");
         let mut tree = FileTree::new(&root);
         tree.toggle(&root.join("notes"));
-        assert_eq!(tree.rows().len(), 7);
+        assert_eq!(tree.rows().len(), 8);
         tree.toggle(&root.join("notes"));
-        assert_eq!(tree.rows().len(), 5);
+        assert_eq!(tree.rows().len(), 6);
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -448,9 +463,9 @@ mod tests {
     fn the_file_count_includes_files_in_folders_that_have_not_been_opened() {
         let root = sample_folder("quill-tree-count");
         let tree = FileTree::new(&root);
-        // readme.md, notes.txt, program.rs, notes/one.md, notes/deeper/two.txt.
-        assert_eq!(tree.file_count(), 5, "found {:?}", tree.all_files());
-        assert_eq!(tree.openable_count(), 4, "program.rs is listed but cannot be opened");
+        // readme.md, notes.txt, picture.png, program.rs, notes/one.md, notes/deeper/two.txt.
+        assert_eq!(tree.file_count(), 6, "found {:?}", tree.all_files());
+        assert_eq!(tree.openable_count(), 5, "every file but the image can be opened");
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -482,7 +497,7 @@ mod tests {
         };
         assert_eq!(names("README"), vec!["readme.md"]);
         assert_eq!(names(".md").len(), 2, "readme.md and notes/one.md");
-        assert_eq!(names(".rs"), vec!["program.rs"], "the filter finds files Quill cannot open too");
+        assert_eq!(names(".png"), vec!["picture.png"], "the filter finds files Quill cannot open too");
         assert!(names("").is_empty(), "an empty filter matches nothing, so the tree is shown instead");
         assert!(names("nothing at all").is_empty());
         std::fs::remove_dir_all(&root).ok();

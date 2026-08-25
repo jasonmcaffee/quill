@@ -17,7 +17,8 @@ use egui_kittest::kittest::Queryable;
 use egui_kittest::{Harness, SnapshotResults};
 use quill_app::QuillApp;
 use quill_app::app::ViewMode;
-use quill_app::title_bar::FileAction;
+use quill_app::app::actions::Action;
+use quill_app::components::title_bar::MenuPlacement;
 use quill_core::{Align, Color, Command, StyleChange};
 
 const WINDOW: [f32; 2] = [1180.0, 740.0];
@@ -34,8 +35,13 @@ fn sample_folder() -> std::path::PathBuf {
     std::fs::write(root.join("chapters/two.md"), "# Two\n").expect("write chapters/two.md");
     std::fs::write(root.join("chapters/appendix/tables.txt"), "tables\n").expect("write the deep file");
     std::fs::write(root.join("drafts/idea.md"), "an idea\n").expect("write drafts/idea.md");
-    // A file Quill cannot open. It is listed, dimmed, and does not respond to a click.
+    // A file Quill has no special handling for. It opens as plain text, which is what
+    // `tasks/improvements.md` asks for.
     std::fs::write(root.join("program.rs"), "fn main() {}\n").expect("write program.rs");
+    // A file that is not text at all. It is listed, dimmed, and does not respond to a click. The bytes are
+    // the start of a PNG, including the zero byte that says it is not text.
+    std::fs::write(root.join("picture.png"), [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0])
+        .expect("write picture.png");
     root
 }
 
@@ -50,6 +56,21 @@ fn harness(text: &str) -> Harness<'static, QuillApp> {
             let mut app = QuillApp::with_text(folder, &text);
             // The same setup the released binary does, and for the same reason: the fonts have to be
             // installed before the first frame.
+            app.prepare(&cc.egui_ctx);
+            app
+        });
+    harness.run();
+    harness
+}
+
+/// Build the application on a folder of its own, for a test that needs a second window.
+fn harness_in(folder: &std::path::Path) -> Harness<'static, QuillApp> {
+    let folder = folder.to_path_buf();
+    let mut harness = Harness::builder()
+        .with_size(vec2(WINDOW[0], WINDOW[1]))
+        .wgpu()
+        .build_eframe(move |cc| {
+            let mut app = QuillApp::new(folder);
             app.prepare(&cc.egui_ctx);
             app
         });
@@ -127,6 +148,15 @@ fn clicking_a_file_in_the_explorer_opens_it_in_the_editor() {
         harness.state().document.text().to_string(),
         "# Quill\n",
         "clicking the file should have loaded it"
+    );
+    // The text has to be laid out as well as loaded. Two documents can be at the same revision, so a layout
+    // cache that only compares revisions keeps the last file's lines and the editing area comes out empty.
+    let lines = &harness.state().layout().lines;
+    // Two lines: the heading, and the empty one after the line break at the end of the file.
+    assert_eq!(lines.len(), 2, "the file should have been laid out, got {}", lines.len());
+    assert!(
+        lines[0].runs.iter().any(|run| !run.clusters.is_empty()),
+        "and the first line should hold the characters of the file"
     );
     harness.snapshot("file_opened");
 }
@@ -409,7 +439,7 @@ fn the_background_fades_with_the_slider_and_the_text_stays_opaque() {
         harness.state_mut().command(Command::ToggleBold);
         harness.state_mut().command(Command::ApplyStyle(StyleChange::color(Color::RED)));
         harness.state_mut().command(Command::MoveDocumentStart { extend: false });
-        harness.state_mut().opacity = opacity;
+        harness.state_mut().settings.opacity = opacity;
         harness.run();
 
         assert_eq!(
@@ -476,18 +506,39 @@ fn the_background_fades_with_the_slider_and_the_text_stays_opaque() {
     report(results);
 }
 
+/// Undo and redo are on the keyboard and in the Edit menu. The toolbar buttons they used to have are gone,
+/// because `tasks/improvements.md` asks for the keyboard alone.
 #[test]
 fn undo_and_redo_go_back_and_forward_through_the_history() {
     let mut harness = harness("original");
     harness.input_mut().events.push(egui::Event::Text(" plus more".to_owned()));
     harness.run();
     assert_eq!(harness.state().document.text().to_string(), " plus moreoriginal");
-    harness.get_by_label("Undo").click();
+
+    harness.key_press_modifiers(Modifiers::COMMAND, egui::Key::Z);
     harness.run();
-    assert_eq!(harness.state().document.text().to_string(), "original");
-    harness.get_by_label("Redo").click();
+    assert_eq!(harness.state().document.text().to_string(), "original", "command and Z undoes");
+
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, egui::Key::Z);
     harness.run();
-    assert_eq!(harness.state().document.text().to_string(), " plus moreoriginal");
+    assert_eq!(
+        harness.state().document.text().to_string(),
+        " plus moreoriginal",
+        "command, shift and Z redoes"
+    );
+}
+
+#[test]
+fn the_toolbar_no_longer_holds_the_font_the_opacity_or_undo_and_redo() {
+    // They moved: the font and the background are in `Edit -> Settings`, and undo and redo are on the
+    // keyboard. A button that is still there would mean the move was not finished.
+    let harness = harness("some text");
+    for gone in ["Undo", "Redo", "Font family", "Font size", "Background opacity"] {
+        assert!(
+            harness.query_by_label(gone).is_none(),
+            "{gone} should not be in the toolbar any more"
+        );
+    }
 }
 
 #[test]
@@ -550,12 +601,12 @@ fn the_status_bar_counts_the_line_and_column_from_one() {
     let mut harness = harness("first line\nsecond line");
     harness.state_mut().command(Command::MoveDocumentStart { extend: false });
     harness.run();
-    assert_eq!(harness.state().caret_position(), quill_app::status_bar::Position { line: 1, column: 1 });
+    assert_eq!(harness.state().caret_position(), quill_app::components::status_bar::Position { line: 1, column: 1 });
     harness.state_mut().command(Command::MoveDocumentEnd { extend: false });
     harness.run();
     assert_eq!(
         harness.state().caret_position(),
-        quill_app::status_bar::Position { line: 2, column: 12 },
+        quill_app::components::status_bar::Position { line: 2, column: 12 },
         "the caret is after the eleventh character of the second line"
     );
 }
@@ -569,7 +620,7 @@ fn the_column_counts_characters_rather_than_bytes() {
     assert_eq!(harness.state().document.text().len_bytes(), 15);
     assert_eq!(
         harness.state().caret_position(),
-        quill_app::status_bar::Position { line: 1, column: 6 },
+        quill_app::components::status_bar::Position { line: 1, column: 6 },
         "five characters along, so column six, not column sixteen"
     );
 }
@@ -578,8 +629,12 @@ fn the_column_counts_characters_rather_than_bytes() {
 fn the_filter_box_narrows_the_list_to_matching_files() {
     let mut harness = harness("");
     let all = harness.state().tree.file_count();
-    assert_eq!(all, 7, "the sample folder holds seven files");
-    assert_eq!(harness.state().tree.openable_count(), 6, "program.rs is not one Quill can open");
+    assert_eq!(all, 8, "the sample folder holds eight files");
+    assert_eq!(
+        harness.state().tree.openable_count(),
+        7,
+        "every one but the image can be opened, including the Rust file"
+    );
     harness.state_mut().filter = "two".to_owned();
     harness.run();
     let matches = harness.state().tree.matching("two");
@@ -606,16 +661,7 @@ fn the_explorer_can_be_hidden_and_brought_back() {
     assert!(harness.state().explorer_visible);
 }
 
-#[test]
-fn the_opacity_menu_opens_and_holds_the_slider() {
-    let mut harness = harness("Text behind the opacity menu.");
-    harness.get_by_label("Background opacity").click();
-    harness.run();
-    // The sentence under the slider only appears inside the menu, so finding it proves the menu is open.
-    // The words "Background opacity" would match the button as well as the menu's own heading.
-    harness.get_by_label_contains("The desktop shows through");
-    harness.snapshot("opacity_menu");
-}
+
 
 #[test]
 fn the_toolbar_buttons_are_all_reachable_by_name() {
@@ -623,7 +669,7 @@ fn the_toolbar_buttons_are_all_reachable_by_name() {
     for name in [
         "Bold", "Italic", "Underline", "Strikethrough",
         "Left", "Center", "Right", "Justify",
-        "Undo", "Redo", "Font family", "Font size", "Line spacing", "Background opacity",
+        "Line spacing",
     ] {
         harness.get_by_label(name);
     }
@@ -670,10 +716,14 @@ fn the_window_matches_the_design() {
         "welcome.md should be open in the editor"
     );
     assert_eq!(harness.state().tree.file_count(), 5, "four Markdown or text files plus one Rust file");
-    assert_eq!(harness.state().tree.openable_count(), 4, "the design shows four openable files");
+    assert_eq!(
+        harness.state().tree.openable_count(),
+        5,
+        "all five hold text, so all five open"
+    );
     assert_eq!(
         harness.state().caret_position(),
-        quill_app::status_bar::Position { line: 1, column: 1 }
+        quill_app::components::status_bar::Position { line: 1, column: 1 }
     );
     harness.snapshot("design_comparison");
 }
@@ -827,14 +877,29 @@ fn the_preview_cannot_be_typed_into() {
 
 // The File menu.
 
+/// The menus, drawn inside the window.
+///
+/// On macOS Quill puts them in the bar along the top of the screen instead, which egui cannot draw and this
+/// harness cannot see, so the test asks for the bar inside the window. That is not a special case for the
+/// test: it is what Windows uses, and both bars are built from the same list of menus.
 #[test]
-fn the_file_menu_holds_open_folder_open_file_and_save() {
+fn the_file_menu_holds_new_window_open_save_and_recent_projects() {
     let mut harness = harness("");
+    harness.state_mut().menu_placement = MenuPlacement::InWindow;
+    harness.state_mut().recent = vec![
+        std::path::PathBuf::from("/tmp/quill-recent-one"),
+        std::path::PathBuf::from("/tmp/quill-recent-two"),
+    ];
+    harness.run();
     harness.get_by_label("File").click();
     harness.run();
-    for entry in ["Open Folder", "Open File", "Save", "Save As"] {
+    for entry in ["New Window", "Open File", "Open Folder", "Save", "Save As", "Close Window"] {
         harness.get_by_label(entry);
     }
+    // The recent projects are listed under a heading of their own inside the File menu.
+    harness.get_by_label("quill-recent-one");
+    harness.get_by_label("quill-recent-two");
+    harness.get_by_label("Forget Recent Projects");
     harness.snapshot("file_menu");
 }
 
@@ -875,18 +940,36 @@ fn opening_a_folder_clears_the_filter_and_brings_the_explorer_back() {
 }
 
 #[test]
-fn a_file_quill_cannot_open_is_listed_and_does_nothing_when_clicked() {
+fn a_file_that_is_not_text_is_listed_and_does_nothing_when_clicked() {
     let mut harness = harness("");
     let before = harness.state().document.text().to_string();
-    let row = harness.get_by_label_contains("program.rs");
-    row.click();
+    harness.get_by_label_contains("picture.png").click();
     harness.run();
     assert_eq!(
         harness.state().document.text().to_string(),
         before,
-        "clicking a file Quill cannot open should do nothing"
+        "clicking a file that is not text should do nothing"
     );
     harness.snapshot("unopenable_file");
+}
+
+/// The file types improvement: a file Quill has no special handling for opens as plain text.
+#[test]
+fn a_rust_file_opens_as_plain_text() {
+    let mut harness = harness("");
+    harness.get_by_label_contains("program.rs").click();
+    harness.run();
+    assert_eq!(
+        harness.state().document.text().to_string(),
+        "fn main() {}\n",
+        "the Rust file should have been loaded"
+    );
+    assert_eq!(harness.state().view_mode, ViewMode::Raw, "there is nothing to preview in it");
+    assert!(
+        !harness.state().layout().lines.is_empty(),
+        "the Rust file's text should have been laid out"
+    );
+    harness.snapshot("plain_text_file");
 }
 
 #[test]
@@ -906,10 +989,620 @@ fn save_as_and_save_are_reachable_without_the_menu() {
             app
         });
     harness.run();
-    harness.state_mut().file_action(FileAction::Save);
+    let ctx = harness.ctx.clone();
+    harness.state_mut().run_action(Action::Save, &ctx);
     harness.run();
     let written = folder.join("untitled.md");
     assert!(written.is_file(), "Save should have written {}", written.display());
     assert_eq!(std::fs::read_to_string(&written).expect("read it back"), text);
     std::fs::remove_dir_all(&folder).ok();
+}
+
+// The Settings window, which is where the font and the background moved to.
+
+/// Drag from one point to another, which is how a divider between two panes is moved.
+///
+/// egui has a threshold a pointer has to pass before a press becomes a drag, so this presses, moves and
+/// releases over several frames rather than in one.
+fn drag(harness: &mut Harness<'static, QuillApp>, from: egui::Pos2, to: egui::Pos2) {
+    let modifiers = Modifiers::default();
+    harness.input_mut().events.push(egui::Event::PointerMoved(from));
+    harness.run();
+    harness.input_mut().events.push(egui::Event::PointerButton {
+        pos: from,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers,
+    });
+    harness.run();
+    harness.input_mut().events.push(egui::Event::PointerMoved(to));
+    harness.run();
+    harness.input_mut().events.push(egui::Event::PointerButton {
+        pos: to,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers,
+    });
+    harness.run();
+}
+
+/// Open the Settings window the way a person does on Windows: `Edit` in the bar, then `Settings`.
+fn open_settings(harness: &mut Harness<'static, QuillApp>) {
+    harness.state_mut().menu_placement = MenuPlacement::InWindow;
+    harness.run();
+    harness.get_by_label("Edit").click();
+    harness.run();
+    harness.get_by_label("Settings").click();
+    harness.run();
+}
+
+#[test]
+fn the_settings_window_opens_from_the_edit_menu_and_holds_the_font_and_the_background() {
+    let mut harness = harness("Text behind the settings window.");
+    assert!(!harness.state().settings_window.open);
+    open_settings(&mut harness);
+    assert!(harness.state().settings_window.open, "Edit then Settings should open it");
+
+    // The two sections `tasks/improvements.md` asks for, and the page list on the left.
+    harness.get_by_label("Editor font family");
+    harness.get_by_label("Editor font size");
+    harness.get_by_label("Background opacity");
+    harness.get_by_label("Appearance");
+    harness.get_by_label("Terminal");
+    harness.snapshot("settings_appearance");
+}
+
+#[test]
+fn the_settings_window_closes_on_the_close_button() {
+    let mut harness = harness("");
+    open_settings(&mut harness);
+    harness.get_by_label("Done").click();
+    harness.run();
+    assert!(!harness.state().settings_window.open);
+}
+
+#[test]
+fn the_terminal_page_holds_the_terminal_font_size() {
+    let mut harness = harness("");
+    open_settings(&mut harness);
+    harness.get_by_label("Terminal").click();
+    harness.run();
+    harness.get_by_label("Terminal font size");
+    assert!(harness.query_by_label("Background opacity").is_none(), "that is on the Appearance page");
+    harness.snapshot("settings_terminal");
+}
+
+#[test]
+fn choosing_a_font_size_in_the_settings_sets_it_for_the_whole_document() {
+    let mut harness = harness("Two lines of writing\nso that both change together");
+    let undo_before = harness.state().document.can_undo();
+    open_settings(&mut harness);
+    harness.get_by_label("Editor font size").click();
+    harness.run();
+    harness.get_by_label("24").click();
+    harness.run();
+
+    assert_eq!(harness.state().settings.font_size, 24.0);
+    let document = &harness.state().document;
+    assert_eq!(document.chars().style_at(0).size, 24.0, "the first line is at the new size");
+    let end = document.text().len_bytes() - 1;
+    assert_eq!(document.chars().style_at(end).size, 24.0, "and so is the last");
+    assert_eq!(
+        harness.state().document.text().to_string(),
+        "Two lines of writing\nso that both change together",
+        "and the text itself is untouched"
+    );
+    assert_eq!(
+        harness.state().document.can_undo(),
+        undo_before,
+        "a font setting pushes nothing onto the undo history"
+    );
+}
+
+#[test]
+fn choosing_a_family_in_the_settings_leaves_bold_and_colour_alone() {
+    let mut harness = harness("plain BOLD plain");
+    select_phrase(&mut harness, "BOLD", &[Command::ToggleBold]);
+    collapse(&mut harness);
+    let families = harness.state().renderer.families().to_vec();
+    let other = families.last().expect("this system has a family").clone();
+
+    let mut settings = harness.state().settings.clone();
+    settings.font_family = other.clone();
+    harness.state_mut().set_settings(settings);
+    harness.run();
+
+    let style = harness.state().document.chars().style_at(7);
+    assert_eq!(style.family, other, "the word is in the new family");
+    assert!(style.bold, "and still bold");
+    harness.snapshot("settings_font_applied");
+}
+
+#[test]
+fn the_background_setting_fades_the_window() {
+    let mut harness = harness("The desktop shows through behind this.");
+    let mut settings = harness.state().settings.clone();
+    settings.opacity = 0.2;
+    harness.state_mut().set_settings(settings);
+    harness.run();
+    assert_eq!(harness.state().background().a(), 51, "a fifth of the way up from nothing");
+    harness.snapshot("settings_background_faint");
+}
+
+// The panes, all of which are resized by dragging their edge.
+
+#[test]
+fn the_explorer_can_be_dragged_wider_and_the_editor_gives_up_the_room() {
+    let mut harness = harness("");
+    let before = harness.state().panes.explorer_width;
+    let editor_before = harness.state().editor_area().width();
+    let handle = harness.get_by_label("Resize explorer").rect();
+    let from = handle.center();
+    drag(&mut harness, from, egui::pos2(from.x + 120.0, from.y));
+
+    let after = harness.state().panes.explorer_width;
+    assert!(after > before + 100.0, "the explorer should be wider: {before} then {after}");
+    assert!(
+        harness.state().editor_area().width() < editor_before,
+        "and the editing area should have given up the room"
+    );
+    harness.snapshot("explorer_wide");
+}
+
+#[test]
+fn the_explorer_cannot_be_dragged_past_its_limits() {
+    let mut harness = harness("");
+    let handle = harness.get_by_label("Resize explorer").rect();
+    let from = handle.center();
+    // Far further than the window is wide, in both directions.
+    drag(&mut harness, from, egui::pos2(from.x + 2000.0, from.y));
+    assert_eq!(harness.state().panes.explorer_width, quill_app::settings::EXPLORER_MAX);
+    let handle = harness.get_by_label("Resize explorer").rect();
+    drag(&mut harness, handle.center(), egui::pos2(handle.center().x - 2000.0, handle.center().y));
+    assert_eq!(harness.state().panes.explorer_width, quill_app::settings::EXPLORER_MIN);
+}
+
+#[test]
+fn the_split_between_the_source_and_the_preview_can_be_dragged() {
+    let mut harness = harness(MARKDOWN);
+    harness.get_by_label("Side by side").click();
+    harness.run();
+    let source_before = harness.state().editor_area().width();
+    let handle = harness.get_by_label("Resize preview").rect();
+    let from = handle.center();
+    drag(&mut harness, from, egui::pos2(from.x + 150.0, from.y));
+    let source_after = harness.state().editor_area().width();
+    assert!(
+        source_after > source_before + 100.0,
+        "the source should have taken the room: {source_before} then {source_after}"
+    );
+    harness.snapshot("preview_split_dragged");
+}
+
+// The terminal.
+
+/// A window with a terminal open that has no shell behind it, so that what it draws is the same on every
+/// run. The bytes a test feeds it go through the same emulator a real shell's output does.
+fn with_terminal(text: &str, rows: usize, columns: usize) -> Harness<'static, QuillApp> {
+    let mut harness = harness(text);
+    harness.state_mut().new_detached_terminal_tab(rows, columns);
+    harness.run();
+    harness
+}
+
+fn feed(harness: &mut Harness<'static, QuillApp>, bytes: &[u8]) {
+    harness
+        .state_mut()
+        .terminal
+        .tabs
+        .active_mut()
+        .expect("a terminal tab")
+        .feed(bytes);
+    harness.run();
+}
+
+#[test]
+fn the_terminal_opens_along_the_bottom_and_shows_what_a_program_wrote() {
+    let mut harness = with_terminal("A document above the terminal.", 12, 80);
+    assert!(harness.state().terminal.visible);
+    feed(
+        &mut harness,
+        b"jason.mcaffee@quill ~ % cargo test\r\n   Compiling quill-terminal v0.1.0\r\n    Finished in 1.26s\r\n",
+    );
+    let screen = harness.state().terminal.tabs.active().expect("a tab").snapshot();
+    assert!(screen.contains("Compiling quill-terminal"), "the output should be on the screen");
+    harness.snapshot("terminal");
+}
+
+#[test]
+fn the_terminal_draws_colour_bold_and_the_other_attributes() {
+    let mut harness = with_terminal("", 12, 80);
+    let mut bytes = Vec::new();
+    // The eight ordinary colours, then the eight bright ones, then the attributes.
+    for code in 30..38 {
+        bytes.extend_from_slice(format!("\x1b[{code}m colour{code} ").as_bytes());
+    }
+    bytes.extend_from_slice(b"\x1b[0m\r\n");
+    for code in 90..98 {
+        bytes.extend_from_slice(format!("\x1b[{code}m bright{code} ").as_bytes());
+    }
+    bytes.extend_from_slice(b"\x1b[0m\r\n");
+    bytes.extend_from_slice(
+        b"\x1b[1mbold\x1b[0m \x1b[3mitalic\x1b[0m \x1b[4munderline\x1b[0m \x1b[9mstruck\x1b[0m \x1b[7minverse\x1b[0m \x1b[2mdim\x1b[0m\r\n",
+    );
+    bytes.extend_from_slice(b"\x1b[48;5;24m background \x1b[0m \x1b[38;2;255;120;0mtrue colour\x1b[0m\r\n");
+    feed(&mut harness, &bytes);
+    harness.snapshot("terminal_colours");
+}
+
+#[test]
+fn the_terminal_draws_a_program_that_takes_over_the_screen() {
+    let mut harness = with_terminal("", 14, 80);
+    // What a full screen program draws: the alternate screen, box drawing characters, and text placed by
+    // moving the cursor rather than by printing lines in order.
+    let mut bytes = b"\x1b[?1049h\x1b[H".to_vec();
+    bytes.extend_from_slice("\u{250c}".as_bytes());
+    for _ in 0..40 {
+        bytes.extend_from_slice("\u{2500}".as_bytes());
+    }
+    bytes.extend_from_slice("\u{2510}".as_bytes());
+    for row in 2..8 {
+        bytes.extend_from_slice(format!("\x1b[{row};1H").as_bytes());
+        bytes.extend_from_slice("\u{2502}".as_bytes());
+        bytes.extend_from_slice(format!("\x1b[{row};42H").as_bytes());
+        bytes.extend_from_slice("\u{2502}".as_bytes());
+    }
+    bytes.extend_from_slice(b"\x1b[8;1H");
+    bytes.extend_from_slice("\u{2514}".as_bytes());
+    for _ in 0..40 {
+        bytes.extend_from_slice("\u{2500}".as_bytes());
+    }
+    bytes.extend_from_slice("\u{2518}".as_bytes());
+    bytes.extend_from_slice(b"\x1b[3;4H\x1b[1;36mA program drawing its own screen\x1b[0m");
+    bytes.extend_from_slice("\x1b[5;4H\u{25b6} one\x1b[6;4H  two".as_bytes());
+    feed(&mut harness, &bytes);
+    assert!(
+        harness.state().terminal.tabs.active().expect("a tab").on_alternate_screen(),
+        "the program should be on its own screen"
+    );
+    harness.snapshot("terminal_full_screen");
+}
+
+#[test]
+fn a_second_terminal_tab_is_added_and_shown_in_front() {
+    let mut harness = with_terminal("", 10, 60);
+    feed(&mut harness, b"the first tab");
+    harness.state_mut().new_detached_terminal_tab(10, 60);
+    harness.run();
+    feed(&mut harness, b"the second tab");
+    assert_eq!(harness.state().terminal.tabs.count(), 2);
+    assert_eq!(harness.state().terminal.tabs.active_index(), 1);
+    let screen = harness.state().terminal.tabs.active().expect("a tab").snapshot();
+    assert!(screen.contains("the second tab"));
+    harness.snapshot("terminal_tabs");
+
+    // Going back to the first tab shows what was in it, so a tab keeps its own screen.
+    harness.get_by_label("Terminal tab: detached").click();
+    harness.run();
+    assert_eq!(harness.state().terminal.tabs.active_index(), 0);
+    let screen = harness.state().terminal.tabs.active().expect("a tab").snapshot();
+    assert!(screen.contains("the first tab"), "the first tab kept its screen");
+}
+
+#[test]
+fn closing_the_last_terminal_tab_puts_the_tile_away() {
+    let mut harness = with_terminal("", 8, 60);
+    assert!(harness.state().terminal.visible);
+    harness.get_by_label_contains("Close detached").click();
+    harness.run();
+    assert_eq!(harness.state().terminal.tabs.count(), 0);
+    assert!(!harness.state().terminal.visible, "with no terminals there is nothing to show");
+}
+
+#[test]
+fn the_terminal_is_told_the_new_size_when_the_tile_is_dragged() {
+    let mut harness = with_terminal("", 12, 80);
+    feed(&mut harness, b"before the resize");
+    let tall = harness.state().terminal.tabs.active().expect("a tab").size();
+    let results = &mut SnapshotResults::new();
+    results.add(harness.try_snapshot("terminal_tall"));
+
+    // Drag the tile's top edge downwards, which makes it shorter.
+    let handle = harness.get_by_label("Resize terminal").rect();
+    let from = handle.center();
+    drag(&mut harness, from, egui::pos2(from.x, from.y + 90.0));
+
+    let short = harness.state().terminal.tabs.active().expect("a tab").size();
+    assert!(
+        short.rows < tall.rows,
+        "a shorter tile holds fewer rows: {} then {}",
+        tall.rows,
+        short.rows
+    );
+    assert_eq!(short.columns, tall.columns, "its width did not change");
+    assert!(
+        harness.state().terminal.tabs.active().expect("a tab").snapshot().contains("before the resize"),
+        "and what was written is still there"
+    );
+    results.add(harness.try_snapshot("terminal_short"));
+    report(std::mem::replace(results, SnapshotResults::new()));
+}
+
+#[test]
+fn the_terminal_font_size_changes_the_size_of_the_grid() {
+    let mut harness = with_terminal("", 12, 80);
+    feed(&mut harness, b"a line at the bigger size\r\n\x1b[32mand a green one\x1b[0m");
+    let before = harness.state().terminal.tabs.active().expect("a tab").size();
+    let mut settings = harness.state().settings.clone();
+    settings.terminal_font_size = 20.0;
+    harness.state_mut().set_settings(settings);
+    harness.run();
+    let after = harness.state().terminal.tabs.active().expect("a tab").size();
+    assert!(
+        after.columns < before.columns && after.rows <= before.rows,
+        "a bigger font means fewer cells fit: {before:?} then {after:?}"
+    );
+    harness.snapshot("terminal_large_font");
+}
+
+#[test]
+fn the_view_menu_shows_and_hides_the_terminal() {
+    let mut harness = harness("");
+    harness.state_mut().menu_placement = MenuPlacement::InWindow;
+    harness.run();
+    assert!(!harness.state().terminal.visible);
+
+    let ctx = harness.ctx.clone();
+    harness.state_mut().run_action(Action::ToggleTerminal, &ctx);
+    harness.run();
+    assert!(harness.state().terminal.visible, "the terminal should have opened");
+    assert_eq!(harness.state().terminal.tabs.count(), 1, "with a shell in it");
+    assert_eq!(harness.state().focus, quill_app::app::Focus::Terminal, "and the keyboard in it");
+
+    harness.state_mut().run_action(Action::ToggleTerminal, &ctx);
+    harness.run();
+    assert!(!harness.state().terminal.visible);
+    assert_eq!(harness.state().focus, quill_app::app::Focus::Editor, "the keyboard comes back");
+}
+
+/// Typing goes to the program in the terminal rather than to the document.
+///
+/// This is the one screenshot test that starts a real shell, because a detached terminal has nothing to
+/// answer. It waits for the output rather than assuming it has arrived, and asserts on the text rather than
+/// on pixels, because when a shell answers is not something a test can know.
+#[test]
+fn typing_in_the_terminal_reaches_the_shell_and_not_the_document() {
+    let mut harness = harness("the document is untouched");
+    let ctx = harness.ctx.clone();
+    harness.state_mut().run_action(Action::ToggleTerminal, &ctx);
+    harness.run();
+    assert_eq!(harness.state().focus, quill_app::app::Focus::Terminal);
+
+    for text in ["echo quill-typing-works"] {
+        harness.input_mut().events.push(egui::Event::Text(text.to_owned()));
+        harness.run();
+    }
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+
+    // Thirty seconds, because this waits for a real shell on whatever machine the tests are run on, and a
+    // machine busy with a build can take much longer than an idle one.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        harness.run();
+        let found = harness
+            .state()
+            .terminal
+            .tabs
+            .active()
+            .map(|session| session.snapshot().contains("quill-typing-works"))
+            .unwrap_or(false);
+        if found {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the shell did not answer in thirty seconds, the terminal holds {:?}",
+            harness.state().terminal.tabs.active().map(|session| session.snapshot().text())
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert_eq!(
+        harness.state().document.text().to_string(),
+        "the document is untouched",
+        "nothing typed into the terminal reached the document"
+    );
+}
+
+// Several windows, each on its own project.
+
+#[test]
+fn the_recent_projects_are_remembered_across_windows() {
+    // The store is pointed at a folder of its own, so this neither reads nor writes the settings of the
+    // person running the tests.
+    let store_folder = std::env::temp_dir().join("quill-recent-projects-test");
+    std::fs::remove_dir_all(&store_folder).ok();
+    let first = std::env::temp_dir().join("quill-project-one");
+    let second = std::env::temp_dir().join("quill-project-two");
+    std::fs::create_dir_all(&first).expect("make the first project");
+    std::fs::create_dir_all(&second).expect("make the second project");
+
+    let mut harness = harness("");
+    harness.state_mut().use_store(quill_app::services::store::Store::at(&store_folder));
+    harness.state_mut().open_folder(&first);
+    harness.state_mut().open_folder(&second);
+    harness.run();
+
+    let recent = harness.state().recent.clone();
+    assert!(recent[0].ends_with("quill-project-two"), "the newest is first, got {recent:?}");
+    assert!(recent.iter().any(|path| path.ends_with("quill-project-one")));
+
+    // A second window reads the same list, which is what makes it a list of recent projects rather than of
+    // this window's projects.
+    let mut second_window = harness_in(&first);
+    second_window
+        .state_mut()
+        .use_store(quill_app::services::store::Store::at(&store_folder));
+    second_window.run();
+    assert!(
+        second_window.state().recent.iter().any(|path| path.ends_with("quill-project-two")),
+        "the other window's project should be in this window's list"
+    );
+
+    std::fs::remove_dir_all(&store_folder).ok();
+    std::fs::remove_dir_all(&first).ok();
+    std::fs::remove_dir_all(&second).ok();
+}
+
+#[test]
+fn a_setting_is_written_and_read_back_by_the_next_window() {
+    let store_folder = std::env::temp_dir().join("quill-settings-across-windows");
+    std::fs::remove_dir_all(&store_folder).ok();
+
+    let mut first_window = harness("");
+    first_window.state_mut().use_store(quill_app::services::store::Store::at(&store_folder));
+    let mut settings = first_window.state().settings.clone();
+    settings.font_size = 32.0;
+    settings.opacity = 0.5;
+    first_window.state_mut().set_settings(settings);
+    first_window.run();
+    // Written once the pointer is up, which it is, so the next frame writes the file.
+    first_window.run();
+
+    let mut next = harness("");
+    next.state_mut().use_store(quill_app::services::store::Store::at(&store_folder));
+    next.run();
+    assert_eq!(next.state().settings.font_size, 32.0, "the size should have come back");
+    assert_eq!(next.state().settings.opacity, 0.5);
+    std::fs::remove_dir_all(&store_folder).ok();
+}
+
+#[test]
+fn a_box_that_takes_typing_keeps_the_keyboard_while_the_terminal_is_open() {
+    // The explorer's filter box is clicked into while the terminal has the keyboard. Without this the
+    // terminal would take every key press and the filter box could never be typed into.
+    let mut harness = with_terminal("", 10, 60);
+    assert_eq!(harness.state().focus, quill_app::app::Focus::Editor);
+    harness.state_mut().focus = quill_app::app::Focus::Terminal;
+    harness.run();
+
+    harness.get_by_label("Filter files").click();
+    harness.run();
+    harness.get_by_label("Filter files").type_text("two");
+    harness.run();
+    harness.run();
+
+    assert_eq!(harness.state().filter, "two", "what was typed should have reached the filter box");
+}
+
+#[test]
+fn the_recent_projects_menu_opens_a_project_without_closing_this_one() {
+    // Opening a recent project starts another window on it, which is what IntelliJ does, so the project that
+    // is open stays open. The other window is a second process; this checks that this window is left alone
+    // and that the entry is there to be chosen.
+    let mut harness = harness("");
+    harness.state_mut().menu_placement = MenuPlacement::InWindow;
+    let other = std::env::temp_dir().join("quill-recent-open-test");
+    std::fs::create_dir_all(&other).expect("make the other project");
+    harness.state_mut().recent = vec![other.clone()];
+    harness.run();
+    let before = harness.state().tree.root().to_path_buf();
+
+    harness.get_by_label("File").click();
+    harness.run();
+    harness.get_by_label("quill-recent-open-test");
+    harness.snapshot("recent_projects_menu");
+
+    assert_eq!(
+        harness.state().tree.root(),
+        before,
+        "the project that is open should not have been replaced by looking at the menu"
+    );
+    std::fs::remove_dir_all(&other).ok();
+}
+
+/// The keyboard shortcuts belonging to the menus.
+///
+/// On macOS these never reach the window, because the bar along the top of the screen takes them first and
+/// sends an action instead. Inside the window, which is what Windows uses and what this harness draws, they
+/// are watched for and turned into the same actions. This tests that path.
+#[test]
+fn the_menu_shortcuts_work_from_the_keyboard() {
+    let mut harness = harness("some writing to look at");
+    harness.state_mut().menu_placement = MenuPlacement::InWindow;
+    harness.run();
+
+    // Command and comma opens the settings.
+    assert!(!harness.state().settings_window.open);
+    harness.key_press_modifiers(Modifiers::COMMAND, egui::Key::Comma);
+    harness.run();
+    assert!(harness.state().settings_window.open, "command and comma should open the settings");
+    harness.get_by_label("Done").click();
+    harness.run();
+
+    // Command and one, two and three switch between the three ways of looking at the file.
+    for (key, expected) in [
+        (egui::Key::Num2, ViewMode::SideBySide),
+        (egui::Key::Num3, ViewMode::Preview),
+        (egui::Key::Num1, ViewMode::Raw),
+    ] {
+        harness.key_press_modifiers(Modifiers::COMMAND, key);
+        harness.run();
+        assert_eq!(harness.state().view_mode, expected, "command and {key:?} should switch the view");
+    }
+
+    // Command and zero puts the explorer away and brings it back.
+    assert!(harness.state().explorer_visible);
+    harness.key_press_modifiers(Modifiers::COMMAND, egui::Key::Num0);
+    harness.run();
+    assert!(!harness.state().explorer_visible);
+    harness.key_press_modifiers(Modifiers::COMMAND, egui::Key::Num0);
+    harness.run();
+    assert!(harness.state().explorer_visible);
+
+    // Command and A selects the whole document, which used to be handled by the editing surface and is now
+    // the Edit menu's entry.
+    harness.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
+    harness.run();
+    assert_eq!(harness.state().document.selected_text(), "some writing to look at");
+}
+
+#[test]
+fn control_and_backtick_opens_the_terminal_and_puts_it_away() {
+    let mut harness = harness("");
+    harness.state_mut().menu_placement = MenuPlacement::InWindow;
+    harness.run();
+    assert!(!harness.state().terminal.visible);
+
+    // The control key, not the Apple key, which is the shortcut every editor with a terminal uses.
+    harness.key_press_modifiers(Modifiers::CTRL, egui::Key::Backtick);
+    harness.run();
+    assert!(harness.state().terminal.visible, "control and backtick should open the terminal");
+    assert_eq!(harness.state().terminal.tabs.count(), 1);
+
+    harness.key_press_modifiers(Modifiers::CTRL, egui::Key::Backtick);
+    harness.run();
+    assert!(!harness.state().terminal.visible);
+}
+
+#[test]
+fn a_shell_that_will_not_start_says_so_rather_than_leaving_an_empty_tile() {
+    let mut harness = harness("");
+    harness.state_mut().terminal.tabs.settings.shell =
+        Some("/no/such/program/at/all".to_owned());
+    harness.state_mut().terminal.visible = true;
+    harness.state_mut().new_terminal_tab();
+    harness.run();
+
+    assert_eq!(harness.state().terminal.tabs.count(), 0, "there is nothing to run");
+    assert!(
+        harness.state().terminal.visible,
+        "the tile stays open, because it is the only place the reason can be read"
+    );
+    let reason = harness.state().terminal.tabs.last_error.clone().expect("a reason");
+    assert!(
+        reason.contains("/no/such/program/at/all"),
+        "the reason should name the program, it said {reason:?}"
+    );
+    harness.snapshot("terminal_will_not_start");
 }

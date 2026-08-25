@@ -32,6 +32,38 @@ const CANDIDATE_FAMILIES: &[&str] = &[
     "Segoe UI",
 ];
 
+/// Families to look in for a character the chosen family has no shape for.
+///
+/// A terminal needs this more than a document does. `claude` and `codex` draw with box drawing characters,
+/// arrows, ticks and spinners, and a text face such as Helvetica or a monospaced one such as Menlo does not
+/// have all of them. Without somewhere else to look, a missing character comes out as the empty box a font
+/// puts at glyph zero, which is what every terminal that has no fallback shows and what no terminal should.
+///
+/// The list is tried in order and the ones this system does not have are skipped, so it can hold the usual
+/// families of both platforms.
+const FALLBACK_FAMILIES: &[&str] = &[
+    // macOS.
+    "Menlo",
+    "Apple Symbols",
+    "Arial Unicode MS",
+    // The media symbols a program uses for pause and play, which the text faces do not carry. macOS itself
+    // draws these from Apple Color Emoji, which is a colour bitmap font and has no outline to rasterise, so
+    // the maths face is used instead and they come out in the text colour.
+    "STIX Two Math",
+    "STIXGeneral",
+    "Hiragino Sans",
+    "PingFang SC",
+    "Zapf Dingbats",
+    // Windows.
+    "Segoe UI Symbol",
+    "Segoe UI Emoji",
+    "Cambria Math",
+    "MS Gothic",
+    // Anywhere.
+    "DejaVu Sans",
+    "Noto Sans Symbols 2",
+];
+
 /// Extra space between one line and the next, as a fraction of the point size.
 ///
 /// A font's own line height sets the lines as close together as the shapes allow, which is tiring to read
@@ -56,6 +88,17 @@ impl FaceKey {
     fn of(style: &CharStyle) -> Self {
         Self { family: style.family.clone(), bold: style.bold, italic: style.italic }
     }
+}
+
+/// The size of one cell of the terminal grid.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CellMetrics {
+    /// How wide one cell is, which is one character's advance in a monospaced family.
+    pub width: f32,
+    /// How tall one cell is, from the top of one line to the top of the next.
+    pub height: f32,
+    /// How far below the top of the cell the baseline sits.
+    pub ascent: f32,
 }
 
 /// One rasterised glyph in the atlas.
@@ -148,6 +191,9 @@ pub struct TextRenderer {
     /// Faces already read from disk. An entry holding `None` is a face this system does not have, kept
     /// so that we do not search the database for it again on every frame.
     faces: RefCell<HashMap<FaceKey, Option<Arc<FontVec>>>>,
+    /// Which family a character was found in when the chosen one had no shape for it, so the search runs
+    /// once for each character rather than on every measurement.
+    fallbacks: RefCell<HashMap<(char, bool, bool), Option<String>>>,
     atlas: RefCell<Atlas>,
 }
 
@@ -171,6 +217,7 @@ impl TextRenderer {
             database,
             families: installed,
             faces: RefCell::new(HashMap::new()),
+            fallbacks: RefCell::new(HashMap::new()),
             atlas: RefCell::new(Atlas::new()),
         }
     }
@@ -182,9 +229,16 @@ impl TextRenderer {
 
     /// A monospaced family this system has, for setting code in the Markdown preview. `None` when it has
     /// none of them, in which case code is set in the ordinary family.
+    /// The order is this list's own rather than the order the families are offered in, because for a
+    /// terminal and for code the choice matters: Menlo and Consolas are designed for it and have far wider
+    /// coverage of the box drawing characters and arrows a program draws its own screen with than Courier
+    /// does.
     pub fn monospaced_family(&self) -> Option<String> {
         const MONOSPACED: &[&str] = &["Menlo", "Consolas", "Courier New", "Courier"];
-        self.families.iter().find(|family| MONOSPACED.contains(&family.as_str())).cloned()
+        MONOSPACED
+            .iter()
+            .find(|wanted| self.families.iter().any(|family| family == *wanted))
+            .map(|family| (*family).to_owned())
     }
 
     /// The family to start a new document in: the first candidate this system has.
@@ -241,6 +295,41 @@ impl TextRenderer {
         })
     }
 
+    /// The face to draw one character with: the style's own family when it has a shape for the character,
+    /// and the first family in [`FALLBACK_FAMILIES`] that does when it has not.
+    ///
+    /// Glyph zero is the empty box a font uses for a character it has no shape for, so asking for a
+    /// character and being given glyph zero is how a missing character is found.
+    fn face_for_character(&self, character: char, style: &CharStyle) -> Option<Arc<FontVec>> {
+        let chosen = self.face_for(style)?;
+        if chosen.glyph_id(character).0 != 0 || character.is_whitespace() {
+            return Some(chosen);
+        }
+        let key = (character, style.bold, style.italic);
+        if let Some(found) = self.fallbacks.borrow().get(&key) {
+            return match found {
+                Some(family) => self
+                    .face(&FaceKey { family: family.clone(), bold: style.bold, italic: style.italic })
+                    .or(Some(chosen)),
+                None => Some(chosen),
+            };
+        }
+        let mut answer = None;
+        for family in FALLBACK_FAMILIES.iter().map(|family| (*family).to_owned()) {
+            let candidate = FaceKey { family: family.clone(), bold: style.bold, italic: style.italic };
+            if let Some(face) = self.face(&candidate) {
+                if face.glyph_id(character).0 != 0 {
+                    answer = Some((family, face));
+                    break;
+                }
+            }
+        }
+        self.fallbacks
+            .borrow_mut()
+            .insert(key, answer.as_ref().map(|(family, _)| family.clone()));
+        Some(answer.map(|(_, face)| face).unwrap_or(chosen))
+    }
+
     /// Find or rasterise one glyph.
     pub fn glyph(&self, character: char, style: &CharStyle) -> Option<AtlasGlyph> {
         let key = GlyphKey {
@@ -264,7 +353,7 @@ impl TextRenderer {
     }
 
     fn rasterise(&self, character: char, style: &CharStyle) -> Rasterised {
-        let Some(face) = self.face_for(style) else {
+        let Some(face) = self.face_for_character(character, style) else {
             return Rasterised::NoFont;
         };
         let scaled = face.as_scaled(PxScale::from(style.size));
@@ -320,6 +409,45 @@ impl TextRenderer {
         };
         let id = self.database.query(&query)?;
         self.database.with_face_data(id, |data, _index| data.to_vec())
+    }
+
+    /// The size of one cell of the terminal grid, at `size` points.
+    ///
+    /// The terminal is a grid, so every cell is the same size and it is worked out once: the width is what
+    /// one character advances in the monospaced family, and the height is what the font itself asks for
+    /// between one line and the next. The reading leading that `line_metrics` adds for prose is left out
+    /// here, because a terminal's lines belong close together and because a program drawing a box expects
+    /// the lines to meet.
+    ///
+    /// Both are rounded to whole points, so that a column lands on a whole pixel and the grid stays sharp.
+    pub fn cell_metrics(&self, size: f32) -> CellMetrics {
+        let style = self.terminal_style(size, false, false);
+        let Some(face) = self.face_for(&style) else {
+            return CellMetrics { width: size * 0.6, height: size * 1.25, ascent: size };
+        };
+        let scaled = face.as_scaled(PxScale::from(size));
+        // `M` is the widest ordinary letter, and in a monospaced family every letter is that wide.
+        let width = scaled.h_advance(face.glyph_id('M')).round().max(1.0);
+        let ascent = scaled.ascent();
+        let height = (ascent - scaled.descent() + scaled.line_gap()).round().max(1.0);
+        CellMetrics { width, height, ascent }
+    }
+
+    /// The formatting one terminal cell is drawn with, which is the monospaced family at the terminal's
+    /// own size.
+    pub fn terminal_style(&self, size: f32, bold: bool, italic: bool) -> CharStyle {
+        CharStyle {
+            family: self.monospaced_family().unwrap_or_else(|| self.default_family()),
+            size,
+            bold,
+            italic,
+            ..CharStyle::default()
+        }
+    }
+
+    /// The atlas as an image, which a test uses to look at the pixels of one glyph.
+    pub fn atlas_image(&self) -> egui::ColorImage {
+        self.atlas.borrow().image.clone()
     }
 
     /// How many times the atlas has been cleared. A caller that collected glyph positions and then sees
@@ -380,17 +508,19 @@ impl Rasterised {
 
 impl FontMetrics for TextRenderer {
     fn advance(&self, cluster: &str, style: &CharStyle) -> f32 {
-        let Some(face) = self.face_for(style) else {
-            // With no font at all, fall back to a fixed width so that layout still works and the
-            // caret still moves. Text will not appear, which is a visible failure rather than a hang.
-            return style.size * 0.5 * cluster.chars().count().max(1) as f32;
-        };
-        let scaled = face.as_scaled(PxScale::from(style.size));
         // A cluster of several code points, such as a letter and a combining accent, takes the width of
         // its base character: the accent is drawn over the letter rather than after it.
         let Some(base) = cluster.chars().next() else {
             return 0.0;
         };
+        // The face the character is actually drawn with, which may be a fallback, so that a character the
+        // chosen family has no shape for is measured as wide as it is drawn.
+        let Some(face) = self.face_for_character(base, style) else {
+            // With no font at all, fall back to a fixed width so that layout still works and the
+            // caret still moves. Text will not appear, which is a visible failure rather than a hang.
+            return style.size * 0.5 * cluster.chars().count().max(1) as f32;
+        };
+        let scaled = face.as_scaled(PxScale::from(style.size));
         if base == '\t' {
             return scaled.h_advance(face.glyph_id(' ')) * 4.0;
         }
@@ -479,6 +609,67 @@ mod tests {
         let large_glyph = renderer.glyph('B', &large).expect("rasterise at 40");
         assert_eq!(renderer.atlas.borrow().entries.len(), 2);
         assert!(large_glyph.size.y > small_glyph.size.y, "40 point should be taller than 12 point");
+    }
+
+    #[test]
+    fn a_terminal_cell_is_wider_and_taller_at_a_bigger_size() {
+        let renderer = TextRenderer::new();
+        let small = renderer.cell_metrics(11.0);
+        let large = renderer.cell_metrics(20.0);
+        assert!(small.width > 0.0 && small.height > 0.0);
+        assert!(large.width > small.width, "a bigger font makes a wider cell");
+        assert!(large.height > small.height);
+        assert_eq!(large.width, large.width.round(), "a cell is a whole number of points wide");
+        assert_eq!(large.height, large.height.round());
+        assert!(large.ascent < large.height, "the baseline sits inside the cell");
+    }
+
+    #[test]
+    fn every_letter_in_the_terminal_family_is_the_same_width() {
+        // A terminal is a grid, so this has to hold for the grid to line up. It is checked rather than
+        // assumed, because the family is whichever monospaced one the system has.
+        let renderer = TextRenderer::new();
+        let style = renderer.terminal_style(14.0, false, false);
+        let width = renderer.advance("M", &style);
+        for letter in ["i", "W", "0", ".", "@"] {
+            let other = renderer.advance(letter, &style);
+            assert!(
+                (other - width).abs() < 0.01,
+                "{letter} is {other} wide and M is {width}, so the grid would not line up"
+            );
+        }
+    }
+
+    #[test]
+    fn a_character_the_family_has_no_shape_for_is_found_in_another_family() {
+        // The characters `claude` and `codex` draw with. A monospaced text face has some of them and not
+        // others, and the ones it does not have would otherwise come out as an empty box.
+        let renderer = TextRenderer::new();
+        let style = renderer.terminal_style(14.0, false, false);
+        for character in ['\u{25b6}', '\u{2713}', '\u{2502}', '\u{250c}', '\u{2588}'] {
+            let face = renderer
+                .face_for_character(character, &style)
+                .expect("there should be a face to draw with");
+            assert_ne!(
+                face.glyph_id(character).0,
+                0,
+                "{character:?} came out as the empty box a font uses for a character it does not have"
+            );
+            assert!(
+                renderer.glyph(character, &style).is_some(),
+                "{character:?} should have pixels to draw"
+            );
+        }
+    }
+
+    #[test]
+    fn a_character_no_family_has_is_still_measured_and_still_drawn() {
+        // A character in a private use area, which nothing has a shape for. It falls back to the chosen
+        // family's own empty box, which is what a terminal shows, rather than to nothing at all.
+        let renderer = TextRenderer::new();
+        let style = renderer.terminal_style(14.0, false, false);
+        assert!(renderer.advance("\u{f8ff}", &style) > 0.0);
+        assert!(renderer.face_for_character('\u{101234}', &style).is_some());
     }
 
     #[test]

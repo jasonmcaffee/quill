@@ -1,0 +1,15 @@
+[package]
+name = "quill-terminal"
+description = "The terminal behind Quill's bottom tile: sessions over a pseudoterminal, the screen the painter reads, the colour palette and the key encoding."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "quill_terminal"
+path = "src/lib.rs"
+
+[dependencies]
+alacritty_terminal.workspace = true
+unicode-width.workspace = true

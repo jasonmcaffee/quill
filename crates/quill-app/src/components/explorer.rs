@@ -9,7 +9,8 @@ use std::path::PathBuf;
 
 use egui::{CornerRadius, Pos2, Rect, Sense, Stroke, Vec2};
 
-use crate::file_tree::FileTree;
+use crate::services::file_kind::Refusal;
+use crate::services::file_tree::FileTree;
 use crate::theme::{color, icon, size, file_marker};
 
 /// What the user did in the explorer.
@@ -117,13 +118,17 @@ pub fn show(
         filter_rect.right_bottom(),
     );
     let mut field = ui.new_child(egui::UiBuilder::new().max_rect(text_rect));
-    field.add(
+    let response = field.add(
         egui::TextEdit::singleline(filter)
             .hint_text(egui::RichText::new("Filter files").color(color::TEXT_FAINT))
             .frame(egui::Frame::NONE)
             .desired_width(text_rect.width())
             .text_color(color::TEXT_CONTROL),
     );
+    // Named, because a test finds a control by its name and egui names a text box after what is typed in it.
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Filter files")
+    });
 
     // The rows: either the tree, or a flat list of what matches the filter.
     let list_top = filter_rect.bottom() + 12.0;
@@ -144,8 +149,8 @@ pub fn show(
             }
             for path in matches {
                 let depth = tree.depth_of(path);
-                let openable = crate::file_tree::is_openable(path);
-                if let Some(clicked) = file_row(ui, path, depth, current, unsaved, openable) {
+                let refusal = crate::services::file_kind::openable(path).err();
+                if let Some(clicked) = file_row(ui, path, depth, current, unsaved, refusal) {
                     outcome.open = Some(clicked);
                 }
             }
@@ -156,7 +161,7 @@ pub fn show(
                         outcome.toggle = Some(row.entry.path.clone());
                     }
                 } else if let Some(clicked) =
-                    file_row(ui, &row.entry.path, row.depth, current, unsaved, row.entry.openable)
+                    file_row(ui, &row.entry.path, row.depth, current, unsaved, row.entry.refusal)
                 {
                     outcome.open = Some(clicked);
                 }
@@ -229,16 +234,18 @@ fn file_row(
     depth: usize,
     current: Option<&std::path::Path>,
     unsaved: bool,
-    openable: bool,
+    refusal: Option<Refusal>,
 ) -> Option<PathBuf> {
     let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
     let row = allocate_row(ui);
     // A file Quill cannot open is drawn dimmed and does not take clicks, so the tree says what is in the
     // folder without pretending everything in it can be opened.
+    let openable = refusal.is_none();
     let sense = if openable { Sense::click() } else { Sense::hover() };
     let response = ui.interact(row, ui.id().with(("file", path)), sense);
-    if !openable {
-        response.clone().on_hover_text("Quill opens .md and .txt files");
+    if let Some(refusal) = refusal {
+        // The row says which of the two reasons it is: the file is not text, or it is too large.
+        response.clone().on_hover_text(refusal.reason());
     }
     let open = current == Some(path);
     let pill = row.shrink2(Vec2::new(8.0, 1.0));

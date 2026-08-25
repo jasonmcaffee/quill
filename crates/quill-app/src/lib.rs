@@ -2,20 +2,26 @@
 //!
 //! The editor itself is in `quill-core`, which has no user interface dependencies. This crate supplies
 //! a window, input, painting, and real fonts behind the editor's measurements.
+//!
+//! The folders, and what belongs in each one. A later change should keep to this.
+//!
+//! - `app` is the window's own state and the actions the menus and the keyboard ask for.
+//! - `components` draws: one file per piece of the window, each taking a rectangle and returning what
+//!   the user did in it rather than changing the state itself.
+//! - `services` is everything that is not drawing: the file tree, the fonts and the glyph atlas, the
+//!   settings and recent projects on disk, starting a second window, and the macOS menu bar.
+//! - `theme` is the palette, the measurements and the drawn icons.
 
 pub mod app;
-pub mod editor_view;
-pub mod explorer;
-pub mod file_tree;
-pub mod status_bar;
-pub mod text_renderer;
+pub mod components;
+pub mod services;
+pub mod settings;
 pub mod theme;
-pub mod title_bar;
-pub mod toolbar;
 
-pub use app::QuillApp;
-pub use file_tree::FileTree;
-pub use text_renderer::TextRenderer;
+pub use app::{QuillApp, ViewMode};
+pub use services::file_tree::FileTree;
+pub use services::text_renderer::TextRenderer;
+pub use settings::Settings;
 
 use std::path::{Path, PathBuf};
 

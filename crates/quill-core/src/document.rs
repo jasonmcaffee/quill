@@ -214,6 +214,33 @@ impl Document {
         style
     }
 
+    /// Change the formatting of the whole document, and of text typed after it, without treating it as an
+    /// edit.
+    ///
+    /// This is what `Settings -> Appearance -> Font` uses. Setting the family and the size there is a
+    /// choice about how the document is shown rather than a change to it, so three things follow. It
+    /// pushes nothing onto the undo history, because undoing a settings change from the editor would be
+    /// surprising and because the setting is written to the settings file instead. It does not mark the
+    /// document as having unsaved changes, because a file Quill saves is plain text and carries no
+    /// formatting, so nothing about the file has changed. It does bump the revision, because the text has
+    /// to be laid out again at the new size.
+    ///
+    /// Only the fields the change names are touched, so a word set in bold or in red stays bold or red
+    /// when the family changes underneath it.
+    pub fn set_base_style(&mut self, change: StyleChange) {
+        if change.is_empty() {
+            return;
+        }
+        let end = self.text.len_bytes();
+        if end > 0 {
+            self.chars.set(0..end, &change);
+        }
+        // Also the formatting for text typed next, so that an empty document and a document with text in
+        // it behave the same way.
+        change.apply_over_change(&mut self.pending);
+        self.revision += 1;
+    }
+
     /// The paragraph formatting of the paragraph the caret is in.
     pub fn active_paragraph_style(&self) -> ParagraphStyle {
         self.paragraphs.get(self.text.byte_to_line(self.selection.head))
@@ -661,6 +688,74 @@ impl StyleChange {
         if self.color.is_some() {
             other.color = self.color;
         }
+    }
+}
+
+#[cfg(test)]
+mod base_style_tests {
+    use super::*;
+    use crate::style::Color;
+
+    fn document_with_a_bold_red_word() -> Document {
+        let mut document = Document::from_text("plain BOLD plain");
+        document.apply(Command::PlaceCaret { offset: 6, extend: false });
+        document.apply(Command::PlaceCaret { offset: 10, extend: true });
+        document.apply(Command::ToggleBold);
+        document.apply(Command::ApplyStyle(StyleChange::color(Color::RED)));
+        document.apply(Command::PlaceCaret { offset: 0, extend: false });
+        document
+    }
+
+    #[test]
+    fn the_base_style_changes_the_family_and_size_of_the_whole_document() {
+        let mut document = Document::from_text("two lines here\nand the second");
+        document.set_base_style(StyleChange { size: Some(28.0), ..StyleChange::family("Courier".to_owned()) });
+        for offset in [0, 5, 20, document.text().len_bytes() - 1] {
+            let style = document.chars().style_at(offset);
+            assert_eq!(style.family, "Courier", "offset {offset} should have the new family");
+            assert_eq!(style.size, 28.0, "offset {offset} should have the new size");
+        }
+    }
+
+    #[test]
+    fn the_base_style_leaves_formatting_it_does_not_name_alone() {
+        let mut document = document_with_a_bold_red_word();
+        document.set_base_style(StyleChange::family("Courier".to_owned()));
+        let word = document.chars().style_at(7);
+        assert!(word.bold, "the word that was made bold should still be bold");
+        assert_eq!(word.color, Color::RED, "and still red");
+        assert_eq!(word.family, "Courier", "with the new family under it");
+        assert!(!document.chars().style_at(0).bold, "the words either side are still not bold");
+    }
+
+    #[test]
+    fn the_base_style_is_not_an_edit() {
+        let mut document = Document::from_text("nothing here has been edited");
+        assert!(!document.is_modified());
+        let revision = document.revision();
+        document.set_base_style(StyleChange::size(30.0));
+        assert!(
+            !document.is_modified(),
+            "a font setting is not a change to the file, which holds no formatting"
+        );
+        assert!(!document.can_undo(), "and there is nothing to undo");
+        assert!(document.revision() > revision, "but the text has to be laid out again");
+    }
+
+    #[test]
+    fn the_base_style_applies_to_text_typed_afterwards() {
+        let mut document = Document::new();
+        document.set_base_style(StyleChange::size(30.0));
+        document.apply(Command::Insert("typed after the setting".to_owned()));
+        assert_eq!(document.chars().style_at(3).size, 30.0);
+    }
+
+    #[test]
+    fn an_empty_change_does_nothing_at_all() {
+        let mut document = Document::from_text("unchanged");
+        let revision = document.revision();
+        document.set_base_style(StyleChange::default());
+        assert_eq!(document.revision(), revision);
     }
 }
 

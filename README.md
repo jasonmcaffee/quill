@@ -1,8 +1,8 @@
 # Quill
 
-A text editor for macOS and Windows, written in Rust. It opens `.md` and `.txt` files, has a file
-explorer with folders that expand in place, and lets the desktop show through its background while the
-text stays solid.
+A text editor for macOS and Windows, written in Rust. It opens any file holding text, has a file explorer
+with folders that expand in place, a terminal along the bottom with tabs, and it lets the desktop show
+through its background while the text stays solid.
 
 ## Running it
 
@@ -10,61 +10,109 @@ text stays solid.
 cargo run --release -- sample/welcome.md
 ```
 
-The argument is a folder to show in the explorer, or a `.md` or `.txt` file to open, in which case the
-explorer shows the folder that file is in. With no argument the explorer shows the current directory.
+The argument is a folder to show in the explorer, or a file to open, in which case the explorer shows the
+folder that file is in. With no argument the explorer shows the current directory.
 
-`--opacity N` sets the starting background opacity between 0.05 and 1.0, and `--view raw|side|preview`
-chooses which of the three ways of looking at the file it starts on. Both are the same settings the toolbar
-changes, and they exist so a starting state can be chosen without clicking, which is what makes it possible
-to capture the window in a particular state.
+Switches, all of which exist so a starting state can be chosen without clicking, which is what makes it
+possible to capture the window in a particular state:
+
+| Switch | What it does |
+|---|---|
+| `--opacity N` | The starting background opacity, from 0.05 to 1.0. The same setting as `Settings -> Appearance -> Background`. |
+| `--view raw\|side\|preview` | Which of the three ways of looking at a Markdown file it starts on. |
+| `--terminal` | Open the terminal at the bottom straight away. |
+| `--menu-bar native\|in-window` | Where the menus are drawn. macOS uses the bar along the top of the screen and everything else uses Quill's own title bar; naming it is how the bar inside the window can be looked at on a Mac. |
+| `--print-menus` | Print the menus and their shortcuts, and stop. The macOS menu bar cannot be read by a test, so this is how what went into it can be checked. |
+
+Several Quills can run at once, each on its own project. `File -> New Window` opens another window on the
+same project, `File -> Open Folder in New Window` opens one on a folder you choose, and
+`File -> Recent Projects` opens one on a folder that has been open before. Each is its own process, so they
+share nothing but the settings file.
 
 ## What the window looks like
 
-The window follows `design/intial-design-screenshot.png`: a title bar Quill draws itself with the three window buttons and the
-file name centred, the formatting toolbar, the file explorer down the left with a filter box, the editing
-area, and a status bar. The palette was read out of the design image rather than chosen by eye; run
-`cargo run --example sample_design` to print the colour of each region of that image.
-
-`crates/quill-app/tests/snapshots/design_comparison.png` is the same window set up the way the design shows
-it, for putting the two side by side.
+A title bar Quill draws itself, the formatting toolbar, the file explorer down the left with a filter box,
+the editing area, the terminal along the bottom when it is showing, and a status bar. The palette was read
+out of `design/intial-design-screenshot.png` rather than chosen by eye; run `cargo run --example sample_design`
+to print the colour of each region of that image.
 
 `design/verification/live-window-over-desktop.png` is a capture of the running window over a real desktop.
 The wallpaper is visible through the explorer, the editing area and the status bar, and every piece of text
-is solid on top of it, which is what the opacity control is for.
+is solid on top of it, which is what the opacity setting is for. It was taken before the font controls moved
+into the settings, so its toolbar has two boxes at the left that the toolbar no longer has.
+`design/verification/terminal-claude.png` and `terminal-codex.png` are captures of `claude` and `codex`
+running in Quill's terminal, with `terminal-claude-resized.png` and `terminal-codex-resized.png` showing the
+same programs after the tile was made shorter and the explorer wider.
+
+## The menus
+
+`Quill`, `File`, `Edit` and `View`, in that order, with `Quill` first. On macOS they are in the bar along the
+top of the screen, where macOS puts menus. On Windows they are drawn at the left of Quill's own title bar,
+and the three window buttons move to the right hand end, where Windows puts them.
+
+| Menu | What is in it |
+|---|---|
+| `Quill` | About Quill, Settings, Quit. |
+| `File` | New Window, Open File, Open Folder, Open Folder in New Window, Recent Projects, Save, Save As, Close Window. |
+| `Edit` | Undo, Redo, Cut, Copy, Paste, Select All, Settings. |
+| `View` | The three view modes, show or hide the explorer, show or hide the terminal, a new terminal tab. |
+
+Both bars are built from one list, so they hold the same entries with the same shortcuts. Run
+`quill --print-menus` to see it.
+
+## Settings
+
+`Edit -> Settings`, `Quill -> Settings`, or command and comma, opens a modal laid out like IntelliJ's: the
+pages down the left under their headings, and the chosen page on the right.
+
+- `Appearance & Behavior -> Appearance -> Font` sets the family and the size the editor shows the document
+  in. It applies to the whole document and leaves bold, italic and colour as they were. It is not an edit:
+  it pushes nothing onto the undo history and does not mark the file as having unsaved changes, because what
+  Quill saves is plain text and carries no formatting.
+- `Appearance & Behavior -> Appearance -> Background` sets the background opacity, which is what lets the
+  desktop show through the window.
+- `Tools -> Terminal` sets the size the terminal draws its grid at.
+
+Changes take effect as they are made. The settings, the recent projects and where the dividers between the
+panes were left are kept in `~/Library/Application Support/Quill` on macOS and `%APPDATA%\Quill` on Windows,
+in two plain text files that can be read and edited by hand.
 
 ## What it does
 
-The `File` menu in the title bar holds `Open Folder`, `Open File`, `Save` and `Save As`, with
-`Cmd+Shift+O`, `Cmd+O`, `Cmd+S` and `Cmd+Shift+S` as shortcuts. On Windows the control key takes the place
-of the command key. The pickers are the operating system's own.
+Editing, in the modes that show the source: select with the mouse or with shift and an arrow key, cut, copy,
+paste, move the caret by character, by word, to the start or end of a line, and to the start or end of the
+document, undo and redo.
 
-Three buttons in the toolbar, immediately to the left of undo, switch between three ways of looking at a
-Markdown file: the raw source, the source and the preview side by side, and the preview on its own. The
-preview is read only, and it follows the source as it is edited.
+Character formatting: bold, italic, underline, strikethrough and colour in the toolbar, with the family and
+the size in the settings.
 
-Editing, in the modes that show the source: select with the mouse or with shift and an arrow key, cut, copy, paste, move the caret by
-character, by word, to the start or end of a line, and to the start or end of the document, undo and
-redo.
+Paragraph formatting: left, centre, right and justified alignment, and single, one and a half or double line
+spacing.
 
-Character formatting: font family, size, bold, italic, underline, strikethrough and colour.
+Files: any file holding text opens. A `.md` file is Markdown, which means the preview shows it rendered;
+everything else opens as plain text, whether Quill knows the file type or not, so a `.rs` or a `.js` file
+opens as what it is. A file that is not text, such as an image or an archive, is listed in the explorer,
+dimmed, and says why it cannot be opened when the pointer rests on it. So is a file larger than 16 MB.
 
-Paragraph formatting: left, centre, right and justified alignment, and single, one and a half or double
-line spacing.
+Panes: the explorer's width, the split between the Markdown source and its preview, and the terminal's
+height are all set by dragging the divider, and a double click puts one back to its usual size. Where they
+were left is remembered.
 
-The window: a file explorer on the left nested to any depth listing every file, with the ones Quill cannot
-open dimmed, and a box that filters the file list, a
-formatting toolbar along the top, a status bar showing the file, its kind and the line and column of the
-caret, and an opacity control that fades the background so the desktop behind Quill is visible. The
-explorer can be put away with the button in its heading.
+The terminal: a tile along the bottom of the window with tabs, opened with control and backtick or from the
+`View` menu. Each tab runs the shell in `$SHELL` in the folder the explorer is showing. It handles colour
+including 24 bit colour, bold, italic, underline, strikethrough, inverse and dim, wide characters, the
+alternate screen a full screen program draws on, ten thousand lines of scrollback, selecting with the mouse,
+copying with command and C, and mouse reporting for a program that asked for it. A tab is named after the
+title the program set, so a tab running `claude` says so. `tasks/quill-terminal-tdd.md` sets out how it
+works and what it does not do.
 
 Keyboard: command plus B, I or U for bold, italic and underline. Command plus shift plus X for
-strikethrough. Command plus L, E, R or J for the four alignments. Command plus A to select all, command
-plus Z to undo, command plus shift plus Z to redo, command plus S to save. On Windows the control key
-takes the place of the command key.
+strikethrough. Command plus L, E, R or J for the four alignments. Everything else is on a menu, and the menu
+shows its shortcut. On Windows the control key takes the place of the command key.
 
 ## How it is put together
 
-Two crates.
+Three crates.
 
 `crates/quill-core` is the editor. It holds the text buffer, the formatting, the caret, layout, undo and the
 Markdown parser, and it has no user interface dependencies at all, so its tests run with no window, no
@@ -75,9 +123,17 @@ three things a document holds, a rope of text with character spans over it and o
 line, so the preview is drawn by the ordinary layout engine and the ordinary painter. Nothing in the window
 knows how to render Markdown.
 
-`crates/quill-app` is the window. It uses `eframe` and `egui` for the window, the input events, the
-graphics device and the toolbar controls, `fontdb` to find installed fonts and `ab_glyph` to read and
-rasterise them. It implements the `FontMetrics` trait that `quill-core` measures text through.
+`crates/quill-terminal` is the terminal, and it has no user interface dependencies either. The escape
+sequence emulation and the pseudoterminal come from `alacritty_terminal`; the colour palette, the key
+encoding, the mouse reports, the screen the painter reads and the tabs are ours.
+`tasks/quill-terminal-tdd.md` records why that line was drawn there and what else was considered.
+
+`crates/quill-app` is the window. It uses `eframe` and `egui` for the window, the input events, the graphics
+device and the ordinary controls, `fontdb` to find installed fonts, `ab_glyph` to read and rasterise them,
+`rfd` for the operating system's file pickers, `muda` for the macOS menu bar and `arboard` for the clipboard
+behind the Edit menu. It is laid out in four folders: `app` for the window's state and the actions the menus
+ask for, `components` for drawing, `services` for everything that is not drawing, and `theme` for the
+palette and the icons. `CLAUDE.md` records the conventions a change should follow.
 
 The text buffer, the line breaking, the alignment, the hit testing and the glyph atlas are written here
 rather than taken from a library. `tasks/quill-technical-design-document.md` records why, which other
@@ -89,21 +145,26 @@ options were considered, and what was read while writing it.
 cargo test
 ```
 
-Three layers, 188 tests.
+Four layers, 347 tests.
 
-`quill-core` has 119 unit tests, including 24 for the Markdown parser and a randomised comparison of the rope against a plain `String`
-over 1500 edits with the tree invariants checked after every one. Layout tests measure through a fixed
-width stub, so their expected numbers are arithmetic a reader can check and are the same on every
-machine.
+`quill-core` has 124 unit tests, including 24 for the Markdown parser and a randomised comparison of the
+rope against a plain `String` over 1500 edits with the tree invariants checked after every one. Layout tests
+measure through a fixed width stub, so their expected numbers are arithmetic a reader can check and are the
+same on every machine.
 
-`quill-app` has 23 unit tests covering the file explorer, its filter, and real font measurement and glyph
-packing.
+`quill-terminal` has 70 unit tests: every key in the encoding table, the sixteen named colours and the
+colour cube, what the screen holds after a run of escape sequences, the alternate screen, scrollback,
+resizing, the mouse reports and the tabs. Two of them start a real shell and wait for its output, which is
+what proves the pseudoterminal, the reader thread and the writing work together.
 
-`crates/quill-app/tests/screenshots.rs` has 46 tests that build the whole application, feed it real
-events, render it through `wgpu` and write a PNG for each one to `crates/quill-app/tests/snapshots`.
-Those images are meant to be looked at: they are how a person or an agent confirms that bold text is
-bolder and that centred text is centred. Once accepted they are also the comparison baseline, so a later
-change that alters the rendering fails a test.
+`quill-app` has 81 unit tests covering the file explorer, its filter, what counts as a text file, the
+settings file, the menus and their shortcuts, real font measurement and glyph packing.
+
+`crates/quill-app/tests/screenshots.rs` has 72 tests that build the whole application, feed it real events,
+render it through `wgpu` and write a PNG for each one to `crates/quill-app/tests/snapshots`. Those images
+are meant to be looked at: they are how a person or an agent confirms that bold text is bolder, that the
+settings window is laid out like the design, and that the terminal's colours are right. Once accepted they
+are also the comparison baseline, so a later change that alters the rendering fails a test.
 
 To accept new images after a deliberate change:
 
@@ -113,15 +174,31 @@ UPDATE_SNAPSHOTS=1 cargo test
 
 A run that differs writes `{name}.new.png` and `{name}.diff.png` next to the accepted image.
 
+The fourth layer is the real application, because the first three render offscreen and cannot show that the
+operating system honoured the window's transparency or drew the menu bar. `cargo run --release` for the
+window, and for the terminal:
+
+```
+cargo run --example terminal_capture -- --wait 10 --send "\r" --wait 10 claude
+cargo run --example terminal_capture -- --wait 12 --send "\r" --wait 12 codex
+```
+
+That builds the real window offscreen, runs the program in the terminal, answers it, and writes a picture to
+`design/verification`, along with a second one after the tile has been made shorter, which is where a
+program that was not told its new size draws in the wrong place. The images are not compared against a
+baseline, because both programs draw something different every time they run; they exist to be looked at.
+
 ## Not included
 
 Right to left and complex writing systems. Version one places one grapheme cluster after another from
 left to right, which is correct for Latin, Greek and Cyrillic and wrong for Arabic and Hindi. The
 `FontMetrics` boundary is where a shaping step would go.
 
-Search and replace, several carets at once, tabbed documents, and a settings file. The background opacity
-and the view mode reset when Quill restarts.
+Search and replace, several carets at once, and tabbed documents.
 
 In the Markdown preview: tables, footnotes, images shown as pictures rather than as their text, reference
 style links, nested block quotes and HTML. Tables need layout Quill does not have; the rest are rare in
 prose.
+
+In the terminal: images, the Kitty keyboard protocol, a blinking cursor, searching the scrollback, and
+choosing the shell in the settings. `tasks/quill-terminal-tdd.md` lists them with the reasons.

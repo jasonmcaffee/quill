@@ -7,7 +7,7 @@
 use egui::{Color32, Mesh, Pos2, Rect, Sense, Shape, Stroke, Vec2};
 use quill_core::{Align, Command, Document, Layout, StyleChange};
 
-use crate::text_renderer::TextRenderer;
+use crate::services::text_renderer::TextRenderer;
 
 /// Space between the text and the edge of the editing area.
 pub const PADDING: f32 = 16.0;
@@ -21,8 +21,6 @@ pub struct ViewOutcome {
     pub changed: bool,
     /// Text to put on the clipboard, from a copy or a cut.
     pub copy: Option<String>,
-    /// The user asked to save.
-    pub save: bool,
     /// Keep the caret in view, because it moved.
     pub scroll_to_caret: bool,
 }
@@ -107,18 +105,15 @@ pub fn handle_input(
                     egui::Key::Delete => document.apply(Command::DeleteForward),
                     egui::Key::Enter => document.apply(Command::Insert("\n".to_owned())),
                     egui::Key::Tab => document.apply(Command::Insert("\t".to_owned())),
-                    egui::Key::A if shortcut => document.apply(Command::SelectAll),
+                    // Undo, redo, select all, save and the clipboard are menu entries, and the menu owns
+                    // their shortcuts. On macOS the menu bar takes those key presses before the window sees
+                    // them, so handling them here as well would do the work twice on one platform and once
+                    // on the other. The formatting shortcuts below are in no menu, so they are handled here.
                     egui::Key::B if shortcut => document.apply(Command::ToggleBold),
                     egui::Key::I if shortcut => document.apply(Command::ToggleItalic),
                     egui::Key::U if shortcut => document.apply(Command::ToggleUnderline),
                     egui::Key::X if shortcut && modifiers.shift => {
                         document.apply(Command::ToggleStrikethrough)
-                    }
-                    egui::Key::Z if shortcut && shift => document.apply(Command::Redo),
-                    egui::Key::Z if shortcut => document.apply(Command::Undo),
-                    egui::Key::S if shortcut => {
-                        outcome.save = true;
-                        false
                     }
                     egui::Key::L if shortcut => document.apply(Command::SetAlign(Align::Left)),
                     egui::Key::E if shortcut => document.apply(Command::SetAlign(Align::Center)),

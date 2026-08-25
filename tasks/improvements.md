@@ -1,4 +1,4 @@
-# Move font Options to Edit -> Settings -> Appearance -> Font
+# Move font Options to Quill -> Settings -> Appearance -> Font
 The font top bar section should be moved to Edit -> Settings that opens a modal.
 It's layout and style should be like the main window, with settings options on the left, similar to Intellij's :
 ![img.png](img.png)
@@ -28,5 +28,10 @@ Verify that resizing paints correctly.
 
 ![img_1.png](img_1.png)
 
+# Menu Items
+On mac, menu items belong in the top bar, not in the application window.
+
+# Quill label
+That belongs at the very left of the top bar, so its Quill, File
 # Code Layout
 Make sure that our code is appropriately broken up, with separation of concerns, sub folders for components, functionality, services, etc.
