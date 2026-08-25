@@ -248,11 +248,38 @@ stops at, and it is where it says it stops: everything up to the identity is don
 The disk image is `hdiutil create` over a staging folder holding `Quill.app` and a symlink to
 `/Applications`, converted to a compressed read-only `UDZO` image.
 
-**What is not done here, and honestly.** The script has not been run: this ticket was worked on
-Windows and there is no Mac attached. It is written against the documented behaviour of `lipo`,
-`codesign`, `hdiutil` and `iconutil`, it uses no tool that is not part of a stock Xcode command line
-install, and it is defensive about each one. The plist is checked for well-formedness by the build,
-and `installer/README.md` says plainly which parts have been run and which have not.
+**Run on a Mac, and what came of it.** This section was written on Windows with no Mac attached, and
+said so. It has since been run on an Apple silicon Mac, on 2026-08-25, and needed no correction:
+`build.sh` went from a checkout to `Quill.app` and `Quill-0.1.0.dmg` on the first run. Both of the
+places this document expected to want a fix — the `rustup target list` check and the ad-hoc
+`codesign --deep` call — behaved as written, and `iconutil` built the icon rather than the committed
+`quill.icns` being used.
+
+What that run showed, beyond the two files existing. `mdls` reports the bundle's display name as
+`Quill` and its version as `0.1.0`, which is what the Dock and the menu bar read, so the bundle does
+the job it was added for. `codesign --verify --deep --strict` passes on the bundle, on the copy in
+`/Applications` and on the copy inside the mounted image. The image mounts with `Quill.app` beside an
+alias to `/Applications`. The installed copy launches with `open -a`, takes the folder given after
+`--args`, and writes it to the top of the recent projects list, which is how a test on a machine with
+no view of the screen can tell that the installed bundle ran and did something rather than merely
+starting.
+
+Installing over a running copy needs nothing on a Mac. The bundle is replaced and the running process
+carries on from its old inode until it is quit, so the Restart Manager problem section 4 records for
+Windows has no counterpart here.
+
+**What is still not done, and honestly.** A real identity. Ad-hoc signing means `spctl --assess`
+rejects the bundle, so a person who downloads the image is told that Apple cannot check it and has to
+right click and choose Open once; a copy built on the machine it runs on carries no quarantine flag and
+opens with no prompt. That was checked both ways round rather than assumed: the quarantine flag was set
+on a copy of the image by hand and `spctl` asked again. Finishing it needs an Apple Developer identity,
+`CODESIGN_IDENTITY`, and the two `notarytool` commands in `installer/README.md`.
+
+Two smaller things are left as they are on purpose. The binary is arm64 only unless
+`x86_64-apple-darwin` is installed as well, which the script says when it happens. And the image opens
+as a plain Finder window rather than one with the icons positioned over a background picture, because
+laying that out means driving Finder with AppleScript: a permission prompt and a fragile step, for
+decoration.
 
 ---
 
@@ -272,6 +299,19 @@ anything about an installer, so that is where the evidence is.
 4. It is uninstalled, and the install directory, the shortcuts, the `PATH` entry and the registry
    keys are all checked to be gone, while `%APPDATA%\Quill` is checked to still be there.
 5. It is installed again over itself, to prove the upgrade path.
+
+The same five steps on macOS, all of which have now been done:
+
+1. `installer/macos/build.sh` produces `installer/dist/Quill.app` and `installer/dist/Quill-<version>.dmg`.
+2. The bundle is checked: the four files and `_CodeSignature`, `plutil -lint` on the manifest, the
+   substituted version and identifier, `sips` on the icon, `lipo -archs` on the binary, and `mdls` for
+   the name and version the system will show.
+3. The image is mounted and holds `Quill.app` beside an alias to `/Applications`, with the signature
+   still valid inside it.
+4. `--install` copies it to `/Applications`, `open -a` launches it, and the folder passed to it turns up
+   at the top of `recent.txt` — which is how a machine with no view of its own screen can tell the
+   installed copy ran and did something.
+5. `--install` again over the running copy, which succeeds, and the bundle on disk verifies afterwards.
 
 The screenshot tests are untouched by any of this, and must stay green: `build.rs` adds a resource to
 a binary and does not change a pixel the window draws.

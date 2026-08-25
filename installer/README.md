@@ -87,12 +87,36 @@ xcrun notarytool submit installer/dist/Quill-<version>.dmg \
 xcrun stapler staple installer/dist/Quill-<version>.dmg
 ```
 
-**What has and has not been run.** The Windows side was built, installed, run, uninstalled and
-reinstalled on a real machine. The macOS side has **not** been run: this was written on Windows with
-no Mac attached. `Info.plist` is checked for well-formedness, `build.sh` passes `bash -n`, and it is
-written against the documented behaviour of each tool and checks for each one before using it — but
-the first run on a Mac is still a first run, and the likely places for it to want a correction are the
-`rustup target list` check and the ad-hoc `codesign --deep` call.
+**What has been run.** Both sides now. The Windows side was built, installed, run, uninstalled and
+reinstalled on a real machine. The macOS side was run on an Apple silicon Mac on 2026-08-25 and needed
+no correction: `build.sh` went from a clean checkout to `Quill.app` and `Quill-0.1.0.dmg` on the first
+run, the icon was built by `iconutil`, and the two places the design document expected to want a fix,
+the `rustup target list` check and the ad-hoc `codesign --deep` call, both behaved as written.
+
+What was checked afterwards:
+
+| | |
+|---|---|
+| The bundle | `Contents/MacOS/quill`, `Contents/Resources/Quill.icns`, `Contents/Info.plist`, `Contents/PkgInfo` and `_CodeSignature`, 15 MB |
+| The manifest | `plutil -lint` passes, and the version, `CFBundleName` and `com.jasonmcaffee.quill` are all substituted in |
+| What the system calls it | `mdls` reports the display name `Quill` and the version `0.1.0`, which is what the Dock and the menu bar read |
+| The icon | a real 1024 point `icns`, by `sips` |
+| The signature | `codesign --verify --deep --strict` passes on the bundle, on the copy in `/Applications` and on the copy inside the mounted image |
+| The disk image | 6.7 MB, mounts, holds `Quill.app` beside an alias to `/Applications` |
+| Installing | `--install` puts it in `/Applications`, `open -a` launches it, and the folder passed after `--args` reaches the window: it turns up at the top of `recent.txt` |
+| Installing over a running copy | works, because a Mac replaces the bundle and leaves the running process on its old inode. There is nothing here like the Restart Manager problem the Windows side has |
+
+**The one thing still not done** is a real identity. The bundle is signed ad-hoc, so `spctl --assess`
+rejects it, and a person who *downloads* the image sees "Apple cannot check it for malicious software"
+and has to right click and choose Open once. A copy built on the machine it runs on is not quarantined
+and opens with no prompt at all. Finishing this needs an Apple Developer identity and the two
+`notarytool` commands above.
+
+Two smaller things left as they are, deliberately. The binary is **arm64 only** on a machine with only
+that target installed — `rustup target add x86_64-apple-darwin` and another run makes it universal, and
+the script says which it built. And the disk image opens as a plain Finder window rather than one with
+the icons positioned and a background picture: laying that out means driving Finder with AppleScript,
+which is a permission prompt and a fragile step for something that is decoration.
 
 ---
 
