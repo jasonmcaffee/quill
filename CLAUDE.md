@@ -166,6 +166,23 @@ A screenshot test must be the same on every run. The terminal's screenshot tests
 session with no shell behind it, through `QuillApp::new_detached_terminal_tab`, because when a real shell
 answers is not something a test can know. Tests that do run a shell assert on text and wait with a timeout.
 
+Three rules the screenshot tests follow, all of them the answer to a test failing for a reason that was
+not a fault in Quill (`task-1654` — the file's own comments carry the detail):
+
+- **Nothing builds a graphics device of its own.** `egui_kittest`'s `.wgpu()` builds a new instance,
+  adapter and device for each harness, and ninety one of those built and torn down across as many
+  threads as the machine has killed the process with an access violation on about one run in nine.
+  A small pool is built once at first use and shared, and every harness comes from `builder()` in the
+  test file rather than `Harness::builder()`, so a test added later cannot go back to one of its own.
+- **A fixture two tests share is written once.** `sample_folder()` used to write its files on every
+  call, so one test could read a file another test had truncated a moment ago and not yet filled in.
+  It is built behind a `OnceLock` now. A fixture only one test uses, like `git_folder(name)`, may be
+  written each time — the name is what keeps them apart.
+- **A loop that waits calls `pump`, not `Harness::run`.** `run` gives the window four steps to go quiet
+  and panics otherwise, which is right for a settled window and wrong while git or an image is still
+  being worked on. Running out of steps inside one attempt is not a failure; running out of attempts
+  is, and the loop says so.
+
 Tests must not read or write the settings of the person running them. `QuillApp::new` reads nothing; the
 released binary calls `load_settings` and a test that wants a store calls `use_store` with a folder of its
 own.

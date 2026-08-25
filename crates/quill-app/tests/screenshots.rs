@@ -12,8 +12,14 @@
 //!
 //! Run `UPDATE_SNAPSHOTS=1 cargo test -p quill-app` to accept new images.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
+
+use eframe::egui_wgpu::{RenderState, Renderer, RendererOptions};
+use egui::epaint::mutex::RwLock;
 use egui::{vec2, Modifiers};
 use egui_kittest::kittest::Queryable;
+use egui_kittest::wgpu::WgpuTestRenderer;
 use egui_kittest::{Harness, SnapshotResults};
 use quill_app::QuillApp;
 use quill_app::app::ViewMode;
@@ -23,9 +29,90 @@ use quill_core::{Align, Color, Command, StyleChange};
 
 const WINDOW: [f32; 2] = [1180.0, 740.0];
 
+/// How many graphics devices the ninety one screenshots share between them.
+///
+/// One would do, and one is what the first fix for `task-1654` used, but a single device made the
+/// run four times slower — 27 seconds against 7 — because every test's renderer has a shader to
+/// compile and a pipeline to build, and on one device those queue up behind each other. A handful of
+/// devices gives the tests somewhere to spread out while still being a fixed number built once, which
+/// is the part that matters. Measured on this machine: ninety one devices 7.00 s, one device 26.77 s,
+/// eight devices 5.97 s — so this is quicker than what it replaces as well as safer.
+const DEVICES: usize = 8;
+
+/// A graphics device for one harness, taken from the small set the whole test binary shares.
+///
+/// `egui_kittest`'s `.wgpu()` builds a **new** graphics instance, adapter and device for each
+/// harness. There are ninety one tests here and the test runner gives each one a thread, so that was
+/// ninety one devices built and torn down across thirty two threads inside eight seconds, with the
+/// Vulkan loader, both vendors' drivers, the Direct3D runtime and the software rasteriser loading and
+/// unloading underneath. `task-1654` is what that cost: the process died of an access violation on
+/// about one run in nine, part way through the run — eight tests in, once — while every test that had
+/// finished said `ok`.
+///
+/// Every test wants the same thing, a device to draw the window into and read the pixels back, so
+/// [`DEVICES`] of them are built on the first call and handed out in turn from there. Nothing is ever
+/// torn down until the process ends, which is what removes the fault. The adapter is still chosen by
+/// `egui_kittest`'s own selector, so which card draws the screenshots has not changed and neither
+/// have the accepted images.
+///
+/// Each harness still gets a **renderer** of its own, which is what keeps the tests independent: the
+/// font atlas and the textures a test uploads belong to that test and are freed with it.
+fn shared_render_state() -> RenderState {
+    static SHARED: OnceLock<Vec<RenderState>> = OnceLock::new();
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let shared = SHARED.get_or_init(|| {
+        (0..DEVICES)
+            .map(|_| {
+                egui_kittest::wgpu::create_render_state(
+                    egui_kittest::wgpu::default_wgpu_setup(),
+                    RendererOptions::PREDICTABLE,
+                )
+            })
+            .collect()
+    });
+    let mut state = shared[NEXT.fetch_add(1, Ordering::Relaxed) % DEVICES].clone();
+    state.renderer = Arc::new(RwLock::new(Renderer::new(
+        &state.device,
+        state.target_format,
+        RendererOptions::PREDICTABLE,
+    )));
+    state
+}
+
+/// A harness builder that draws on a shared device rather than making a device of its own.
+///
+/// Every harness in this file is built through here rather than through `Harness::builder`, so that a
+/// test added later cannot go back to a device of its own without meaning to. See
+/// [`shared_render_state`].
+fn builder<State>() -> egui_kittest::HarnessBuilder<State> {
+    egui_kittest::HarnessBuilder::default()
+        .renderer(WgpuTestRenderer::from_render_state(shared_render_state()))
+}
+
 /// A folder with a nested structure, for the explorer screenshots. Written once and left in place, so
 /// that the tree looks the same in every run and the images stay comparable.
+///
+/// Written once **per run** as well, which it was not before. Most of the tests in this file want this
+/// folder, they run at the same time, and every one of them used to rewrite it — so a test could be
+/// reading `readme.md` at the moment another test's `File::create` had truncated it and not yet
+/// written the bytes back. That is what
+/// `clicking_a_file_in_the_explorer_opens_it_in_the_editor` failing with
+///
+/// ```text
+/// assertion `left == right` failed: clicking the file should have loaded it
+///   left: ""
+///  right: "# Quill\n"
+/// ```
+///
+/// was: not a fault in the explorer, a fixture being written out from underneath it. The lock builds
+/// the folder once and everyone else waits for it and then reads a file nobody is writing.
 fn sample_folder() -> std::path::PathBuf {
+    static FOLDER: OnceLock<std::path::PathBuf> = OnceLock::new();
+    FOLDER.get_or_init(build_sample_folder).clone()
+}
+
+/// Write the sample folder out. Called once, through [`sample_folder`].
+fn build_sample_folder() -> std::path::PathBuf {
     let root = std::env::temp_dir().join("quill-screenshot-folder");
     std::fs::create_dir_all(root.join("chapters/appendix")).expect("make the nested folders");
     std::fs::create_dir_all(root.join("drafts")).expect("make the drafts folder");
@@ -49,9 +136,8 @@ fn sample_folder() -> std::path::PathBuf {
 fn harness(text: &str) -> Harness<'static, QuillApp> {
     let folder = sample_folder();
     let text = text.to_owned();
-    let mut harness = Harness::builder()
+    let mut harness = builder()
         .with_size(vec2(WINDOW[0], WINDOW[1]))
-        .wgpu()
         .build_eframe(move |cc| {
             let mut app = QuillApp::with_text(folder, &text);
             // The same setup the released binary does, and for the same reason: the fonts have to be
@@ -66,9 +152,8 @@ fn harness(text: &str) -> Harness<'static, QuillApp> {
 /// Build the application on a folder of its own, for a test that needs a second window.
 fn harness_in(folder: &std::path::Path) -> Harness<'static, QuillApp> {
     let folder = folder.to_path_buf();
-    let mut harness = Harness::builder()
+    let mut harness = builder()
         .with_size(vec2(WINDOW[0], WINDOW[1]))
-        .wgpu()
         .build_eframe(move |cc| {
             let mut app = QuillApp::new(folder);
             app.prepare(&cc.egui_ctx);
@@ -226,6 +311,25 @@ fn git_folder(name: &str) -> std::path::PathBuf {
     root
 }
 
+/// Draw the window while a loop above waits for something a thread is still working on.
+///
+/// A polling loop cannot use `Harness::run`. That gives the window four steps to go quiet and panics
+/// if it has not — the right budget for a settled window, and the wrong one here, because while git
+/// is still running or a picture is still being decoded the window is *meant* to keep asking to be
+/// drawn, and on a loaded machine it can ask for longer than four steps. Under a debugger, which
+/// slows the run by about two and a half times, that is exactly how
+/// `every_git_operation_can_be_driven_from_the_window` failed:
+///
+/// ```text
+/// Harness::run exceeded max_steps (4). Repaint causes: []
+/// ```
+///
+/// The waiting is what the loop is for, so running out of steps inside one attempt is not a failure.
+/// Running out of *attempts* is, and the caller says so.
+fn pump(harness: &mut Harness<'static, QuillApp>) {
+    let _ = harness.try_run();
+}
+
 /// A window on a real repository, with the repository already read.
 ///
 /// The window looks for a repository on its first frame, and reading it happens on a thread, so the
@@ -235,7 +339,7 @@ fn git_harness(name: &str) -> Harness<'static, QuillApp> {
     let folder = git_folder(name);
     let mut harness = harness_in(&folder);
     for _ in 0..600 {
-        harness.run();
+        pump(&mut harness);
         if harness.state().git.as_ref().is_some_and(|git| !git.snapshot.status.entries.is_empty()) {
             break;
         }
@@ -823,9 +927,8 @@ fn the_window_matches_the_design() {
     let sample = copy_out_of_the_repository(&sample, "quill-screenshot-sample");
 
     let folder = sample.clone();
-    let mut harness = Harness::builder()
+    let mut harness = builder()
         .with_size(vec2(1264.0, 751.0))
-        .wgpu()
         .build_eframe(move |cc| {
             let mut app = QuillApp::new(folder);
             app.prepare(&cc.egui_ctx);
@@ -1109,9 +1212,8 @@ fn save_as_and_save_are_reachable_without_the_menu() {
     std::fs::create_dir_all(&folder).expect("make the folder");
     let text = "saved through the File menu";
     let owned = folder.clone();
-    let mut harness = Harness::builder()
+    let mut harness = builder()
         .with_size(vec2(WINDOW[0], WINDOW[1]))
-        .wgpu()
         .build_eframe(move |cc| {
             let mut app = QuillApp::with_text(owned, text);
             app.prepare(&cc.egui_ctx);
@@ -2013,7 +2115,7 @@ fn the_gutter_annotates_with_git_blame_and_colours_by_age() {
     let ctx = harness.ctx.clone();
     harness.state_mut().run_action(Action::Git(quill_app::app::actions::GitAction::Annotate), &ctx);
     for _ in 0..600 {
-        harness.run();
+        pump(&mut harness);
         if harness.state().files.active().blame.is_some() {
             break;
         }
@@ -2103,9 +2205,9 @@ fn the_plugins_page_lists_the_three_that_ship_with_quill() {
 #[track_caller]
 fn settle(harness: &mut Harness<'static, QuillApp>, what: &str, ready: impl Fn(&QuillApp) -> bool) {
     for _ in 0..600 {
-        harness.run();
+        pump(harness);
         if ready(harness.state()) {
-            harness.run();
+            pump(harness);
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(25));
