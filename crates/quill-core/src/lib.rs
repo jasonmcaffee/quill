@@ -15,6 +15,7 @@ pub mod markdown;
 pub mod metrics;
 pub mod rope;
 pub mod style;
+pub mod syntax;
 
 pub use cursor::Selection;
 pub use document::{Command, Document};
@@ -23,3 +24,4 @@ pub use metrics::{FixedMetrics, FontMetrics, LineMetrics, ScaledMetrics};
 pub use markdown::{Preview, PreviewColors};
 pub use rope::Rope;
 pub use style::{Align, CharStyle, Color, ParagraphStyle, ParagraphStyles, StyleChange, StyleSpans};
+pub use syntax::{highlight, Grammar, Token};

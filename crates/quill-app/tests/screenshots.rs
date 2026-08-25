@@ -95,7 +95,7 @@ fn select_and(harness: &mut Harness<'static, QuillApp>, range: std::ops::Range<u
 /// letter of a line out of the selection, which the screenshot showed as one small letter in front of a
 /// large word.
 fn select_phrase(harness: &mut Harness<'static, QuillApp>, phrase: &str, commands: &[Command]) {
-    let text = harness.state().document.text().to_string();
+    let text = harness.state().document().text().to_string();
     let start = text
         .find(phrase)
         .unwrap_or_else(|| panic!("{phrase:?} is not in the document, which holds {text:?}"));
@@ -142,6 +142,109 @@ fn report(results: SnapshotResults) {
     assert!(errors.is_empty(), "snapshot differences: {errors:#?}");
 }
 
+
+/// Copy a folder to a place that is not inside any git repository.
+///
+/// A window looks for a repository the moment it opens, and what it finds goes in the status bar and
+/// tints the explorer. A test folder that lives inside Quill's own repository therefore draws
+/// something different depending on what is uncommitted at the time, which is not a difference in
+/// Quill.
+fn copy_out_of_the_repository(source: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let target = std::env::temp_dir().join(name);
+    std::fs::remove_dir_all(&target).ok();
+    fn walk(from: &std::path::Path, to: &std::path::Path) {
+        std::fs::create_dir_all(to).expect("make the folder");
+        for entry in std::fs::read_dir(from).expect("read the folder").flatten() {
+            let path = entry.path();
+            let into = to.join(entry.file_name());
+            if path.is_dir() {
+                walk(&path, &into);
+            } else {
+                std::fs::copy(&path, &into).expect("copy the file");
+            }
+        }
+    }
+    walk(source, &target);
+    target
+}
+
+/// A folder that is a real git repository, for the tests about git.
+///
+/// Built with its identity and its settings named on the command line, so a test does not depend on
+/// the `.gitconfig` of whoever is running it, and with two commits on separated dates so blame has a
+/// spread of ages to colour. Rebuilt each time, so the pictures are the same on every run.
+fn git_folder(name: &str) -> std::path::PathBuf {
+    let root = std::env::temp_dir().join("quill-screenshot-repository").join(name);
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::create_dir_all(&root).expect("make the folder");
+    let git = |arguments: &[&str]| {
+        let outcome = quill_git::command::run(&root, arguments);
+        assert!(outcome.ok, "git {arguments:?}: {}", outcome.message());
+    };
+    git(&["init", "--initial-branch=main"]);
+    for (name, value) in [
+        ("user.name", "Quill Test"),
+        ("user.email", "test@quill.invalid"),
+        ("commit.gpgsign", "false"),
+        ("core.autocrlf", "false"),
+    ] {
+        git(&["config", name, value]);
+    }
+    std::fs::write(root.join("readme.md"), "# a repository\n").expect("write readme.md");
+    std::fs::write(
+        root.join("sqlClient.ts"),
+        "import { createScopedSql } from '../db/sqlClient';\n\n/** Lists messages in a chat. */\nexport class MessageRepository {\n  private sql = createScopedSql();\n}\n",
+    )
+    .expect("write sqlClient.ts");
+    git(&["add", "-A"]);
+    git(&["commit", "--date", "2026-01-14T09:00:00+00:00", "-m", "the first commit"]);
+    std::fs::write(root.join("version.ts"), "export const version = '0.1.0';\n").expect("write version.ts");
+    // The second commit also touches the annotated file, so blame has two authors and two dates in
+    // it and the column really shows its gradient rather than one flat colour.
+    std::fs::write(
+        root.join("sqlClient.ts"),
+        "import { createScopedSql } from '../db/sqlClient';\n\n/** Lists messages in a chat. */\nexport class MessageRepository {\n  private sql = createScopedSql();\n\n  /** Deletes every message in a chat. */\n  async deleteByChat(chatId: number) {}\n}\n",
+    )
+    .expect("change sqlClient.ts");
+    git(&["add", "-A"]);
+    git(&[
+        "-c",
+        "user.name=Sam Okafor",
+        "-c",
+        "user.email=sam@example.com",
+        "commit",
+        "--date",
+        "2026-07-21T16:00:00+00:00",
+        "-m",
+        "add a version",
+    ]);
+    // A change that has not been committed, and a file git has never seen, so the commit panel and
+    // the gutter's change bars both have something to show.
+    std::fs::write(root.join("version.ts"), "export const version = '0.2.0';\nconst extra = 1;\n")
+        .expect("change version.ts");
+    std::fs::write(root.join("notes.txt"), "scratch\n").expect("write notes.txt");
+    root
+}
+
+/// A window on a real repository, with the repository already read.
+///
+/// The window looks for a repository on its first frame, and reading it happens on a thread, so the
+/// harness is run several times to let the answer arrive before the picture is taken. Each run is a
+/// frame; nothing here waits on a clock, so the test is the same on every machine.
+fn git_harness(name: &str) -> Harness<'static, QuillApp> {
+    let folder = git_folder(name);
+    let mut harness = harness_in(&folder);
+    for _ in 0..600 {
+        harness.run();
+        if harness.state().git.as_ref().is_some_and(|git| !git.snapshot.status.entries.is_empty()) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    harness.run();
+    harness
+}
+
 #[test]
 fn startup_shows_the_explorer_the_toolbar_and_an_empty_editor() {
     let mut harness = harness("");
@@ -167,7 +270,7 @@ fn clicking_a_file_in_the_explorer_opens_it_in_the_editor() {
     harness.get_by_label_contains("readme.md").click();
     harness.run();
     assert_eq!(
-        harness.state().document.text().to_string(),
+        harness.state().document().text().to_string(),
         "# Quill\n",
         "clicking the file should have loaded it"
     );
@@ -195,7 +298,7 @@ fn typing_on_the_keyboard_puts_text_in_the_document() {
     harness.run();
     harness.input_mut().events.push(egui::Event::Text("A second line.".to_owned()));
     harness.run();
-    assert_eq!(harness.state().document.text().to_string(), "Quill typed this.\nA second line.");
+    assert_eq!(harness.state().document().text().to_string(), "Quill typed this.\nA second line.");
     harness.snapshot(shot("typed_text"));
 }
 
@@ -208,15 +311,15 @@ fn backspace_removes_what_was_typed() {
         harness.key_press(egui::Key::Backspace);
         harness.run();
     }
-    assert_eq!(harness.state().document.text().to_string(), "abc");
+    assert_eq!(harness.state().document().text().to_string(), "abc");
 }
 
 #[test]
 fn a_selection_is_highlighted_behind_part_of_a_line_only() {
     let mut harness = harness("Select only the middle words of this line, not the rest of it.");
     select_and(&mut harness, 12..28, &[]);
-    assert_eq!(harness.state().document.selected_text(), "the middle words");
-    let rects = harness.state().layout().selection_rects(harness.state().document.selection().range());
+    assert_eq!(harness.state().document().selected_text(), "the middle words");
+    let rects = harness.state().layout().selection_rects(harness.state().document().selection().range());
     assert_eq!(rects.len(), 1, "the selection is inside one line, so it is one rectangle");
     harness.snapshot(shot("selection"));
 }
@@ -229,7 +332,7 @@ fn select_all_then_pressing_bold_makes_the_whole_document_bold() {
     // Click the real toolbar button rather than sending the command.
     harness.get_by_label("Bold").click();
     harness.run();
-    assert!(harness.state().document.chars().style_at(4).bold, "the toolbar button should have applied bold");
+    assert!(harness.state().document().chars().style_at(4).bold, "the toolbar button should have applied bold");
     harness.snapshot(shot("bold_all"));
 }
 
@@ -274,7 +377,7 @@ fn the_keyboard_shortcut_for_bold_does_the_same_as_the_button() {
     harness.run();
     harness.key_press_modifiers(Modifiers::COMMAND, egui::Key::B);
     harness.run();
-    assert!(harness.state().document.chars().style_at(2).bold, "command plus B should turn bold on");
+    assert!(harness.state().document().chars().style_at(2).bold, "command plus B should turn bold on");
 }
 
 #[test]
@@ -299,7 +402,7 @@ fn four_words_are_shown_in_four_colours() {
     select_phrase(&mut harness, "green", &[Command::ApplyStyle(StyleChange::color(Color::GREEN))]);
     select_phrase(&mut harness, "blue", &[Command::ApplyStyle(StyleChange::color(Color::BLUE))]);
     collapse(&mut harness);
-    assert_eq!(harness.state().document.chars().style_at(7).color, Color::RED);
+    assert_eq!(harness.state().document().chars().style_at(7).color, Color::RED);
     harness.snapshot(shot("font_colour"));
 }
 
@@ -340,7 +443,7 @@ fn each_alignment_places_the_same_paragraph_differently() {
         harness.state_mut().command(Command::SelectAll);
         harness.state_mut().command(Command::SetAlign(align));
         harness.run();
-        assert_eq!(harness.state().document.paragraphs().get(0).align, align);
+        assert_eq!(harness.state().document().paragraphs().get(0).align, align);
         results.add(harness.try_snapshot(shot(name)));
     }
     report(results);
@@ -410,12 +513,12 @@ fn cut_and_paste_move_text_through_the_clipboard() {
     // A cut sends the selection to the clipboard and removes it from the document.
     harness.input_mut().events.push(egui::Event::Cut);
     harness.run();
-    assert_eq!(harness.state().document.text().to_string(), " second");
+    assert_eq!(harness.state().document().text().to_string(), " second");
     // Paste it back at the end.
     harness.state_mut().command(Command::MoveDocumentEnd { extend: false });
     harness.input_mut().events.push(egui::Event::Paste("first".to_owned()));
     harness.run();
-    assert_eq!(harness.state().document.text().to_string(), " secondfirst");
+    assert_eq!(harness.state().document().text().to_string(), " secondfirst");
 }
 
 #[test]
@@ -424,7 +527,7 @@ fn copy_leaves_the_document_alone() {
     select_and(&mut harness, 0..9, &[]);
     harness.input_mut().events.push(egui::Event::Copy);
     harness.run();
-    assert_eq!(harness.state().document.text().to_string(), "unchanged text");
+    assert_eq!(harness.state().document().text().to_string(), "unchanged text");
 }
 
 /// The transparency requirement, checked by measurement rather than by eye.
@@ -535,16 +638,16 @@ fn undo_and_redo_go_back_and_forward_through_the_history() {
     let mut harness = harness("original");
     harness.input_mut().events.push(egui::Event::Text(" plus more".to_owned()));
     harness.run();
-    assert_eq!(harness.state().document.text().to_string(), " plus moreoriginal");
+    assert_eq!(harness.state().document().text().to_string(), " plus moreoriginal");
 
     harness.key_press_modifiers(Modifiers::COMMAND, egui::Key::Z);
     harness.run();
-    assert_eq!(harness.state().document.text().to_string(), "original", "command and Z undoes");
+    assert_eq!(harness.state().document().text().to_string(), "original", "command and Z undoes");
 
     harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, egui::Key::Z);
     harness.run();
     assert_eq!(
-        harness.state().document.text().to_string(),
+        harness.state().document().text().to_string(),
         " plus moreoriginal",
         "command, shift and Z redoes"
     );
@@ -609,10 +712,10 @@ fn an_edited_file_is_marked_as_unsaved_in_three_places() {
     let mut harness = harness("");
     harness.get_by_label_contains("readme.md").click();
     harness.run();
-    assert!(!harness.state().document.is_modified(), "just opened, so nothing to save");
+    assert!(!harness.state().document().is_modified(), "just opened, so nothing to save");
     harness.input_mut().events.push(egui::Event::Text(" edited".to_owned()));
     harness.run();
-    assert!(harness.state().document.is_modified());
+    assert!(harness.state().document().is_modified());
     // The dot appears in the title bar, on the file's row in the explorer and in the status bar. The
     // screenshot is how those are checked; this asserts the state that drives all three.
     harness.snapshot(shot("unsaved"));
@@ -639,7 +742,7 @@ fn the_column_counts_characters_rather_than_bytes() {
     let mut harness = harness("e\u{0301}e\u{0301}e\u{0301}e\u{0301}e\u{0301}");
     harness.state_mut().command(Command::MoveDocumentEnd { extend: false });
     harness.run();
-    assert_eq!(harness.state().document.text().len_bytes(), 15);
+    assert_eq!(harness.state().document().text().len_bytes(), 15);
     assert_eq!(
         harness.state().caret_position(),
         quill_app::components::status_bar::Position { line: 1, column: 6 },
@@ -714,6 +817,10 @@ fn the_window_matches_the_design() {
         .expect("the workspace root is two levels above the crate")
         .join("sample");
     assert!(sample.join("welcome.md").is_file(), "{} should hold welcome.md", sample.display());
+    // Copied out of the repository first. `sample/` is inside Quill's own git repository, and the
+    // status bar now says which branch is checked out and how many files have changed, so opening it
+    // where it lies made the picture depend on what happened to be edited that day.
+    let sample = copy_out_of_the_repository(&sample, "quill-screenshot-sample");
 
     let folder = sample.clone();
     let mut harness = Harness::builder()
@@ -734,7 +841,7 @@ fn the_window_matches_the_design() {
     harness.run();
 
     assert!(
-        harness.state().document.text().to_string().starts_with("# Quill"),
+        harness.state().document().text().to_string().starts_with("# Quill"),
         "welcome.md should be open in the editor"
     );
     assert_eq!(harness.state().tree.file_count(), 5, "four Markdown or text files plus one Rust file");
@@ -784,9 +891,9 @@ The last paragraph.";
 #[test]
 fn a_new_window_starts_on_the_raw_markdown() {
     let harness = harness("# heading");
-    assert_eq!(harness.state().view_mode, ViewMode::Raw);
-    assert!(harness.state().view_mode.shows_source());
-    assert!(!harness.state().view_mode.shows_preview());
+    assert_eq!(harness.state().view_mode(), ViewMode::Raw);
+    assert!(harness.state().view_mode().shows_source());
+    assert!(!harness.state().view_mode().shows_preview());
 }
 
 #[test]
@@ -799,7 +906,7 @@ fn the_three_view_mode_buttons_are_reachable_by_name_and_switch_between_the_mode
     ] {
         harness.get_by_label(name).click();
         harness.run();
-        assert_eq!(harness.state().view_mode, expected, "clicking {name} should switch to it");
+        assert_eq!(harness.state().view_mode(), expected, "clicking {name} should switch to it");
     }
 }
 
@@ -809,7 +916,7 @@ fn raw_markdown_shows_the_source_as_it_is_on_disk() {
     harness.get_by_label("Raw Markdown").click();
     harness.run();
     // The editing area holds the source, marks and all.
-    assert!(harness.state().document.text().to_string().contains("**bold**"));
+    assert!(harness.state().document().text().to_string().contains("**bold**"));
     assert_eq!(harness.state().editor_area().width(), harness.state().editor_area().width());
     harness.snapshot(shot("view_raw"));
 }
@@ -829,7 +936,7 @@ fn the_preview_removes_the_marks_and_applies_them() {
     assert!(!preview.contains("https://example.com/design"), "and hides its address");
     assert!(preview.contains("code keeps its spacing"), "a code block keeps its lines");
     // The source itself is untouched: the preview is worked out from it, not instead of it.
-    assert!(harness.state().document.text().to_string().contains("**bold**"));
+    assert!(harness.state().document().text().to_string().contains("**bold**"));
     harness.snapshot(shot("view_preview"));
 }
 
@@ -886,12 +993,12 @@ fn the_preview_cannot_be_typed_into() {
     let mut harness = harness("# heading");
     harness.get_by_label("Markdown preview").click();
     harness.run();
-    let before = harness.state().document.text().to_string();
+    let before = harness.state().document().text().to_string();
     // Typing with only the preview showing must not reach the document.
     harness.input_mut().events.push(egui::Event::Text("XXX".to_owned()));
     harness.run();
     assert_eq!(
-        harness.state().document.text().to_string(),
+        harness.state().document().text().to_string(),
         before,
         "the preview is read only, so nothing should have been inserted"
     );
@@ -964,11 +1071,11 @@ fn opening_a_folder_clears_the_filter_and_brings_the_explorer_back() {
 #[test]
 fn a_file_that_is_not_text_is_listed_and_does_nothing_when_clicked() {
     let mut harness = harness("");
-    let before = harness.state().document.text().to_string();
+    let before = harness.state().document().text().to_string();
     harness.get_by_label_contains("picture.png").click();
     harness.run();
     assert_eq!(
-        harness.state().document.text().to_string(),
+        harness.state().document().text().to_string(),
         before,
         "clicking a file that is not text should do nothing"
     );
@@ -982,11 +1089,11 @@ fn a_rust_file_opens_as_plain_text() {
     harness.get_by_label_contains("program.rs").click();
     harness.run();
     assert_eq!(
-        harness.state().document.text().to_string(),
+        harness.state().document().text().to_string(),
         "fn main() {}\n",
         "the Rust file should have been loaded"
     );
-    assert_eq!(harness.state().view_mode, ViewMode::Raw, "there is nothing to preview in it");
+    assert_eq!(harness.state().view_mode(), ViewMode::Raw, "there is nothing to preview in it");
     assert!(
         !harness.state().layout().lines.is_empty(),
         "the Rust file's text should have been laid out"
@@ -1097,7 +1204,7 @@ fn the_terminal_page_holds_the_terminal_font_size() {
 #[test]
 fn choosing_a_font_size_in_the_settings_sets_it_for_the_whole_document() {
     let mut harness = harness("Two lines of writing\nso that both change together");
-    let undo_before = harness.state().document.can_undo();
+    let undo_before = harness.state().document().can_undo();
     open_settings(&mut harness);
     harness.get_by_label("Editor font size").click();
     harness.run();
@@ -1105,17 +1212,17 @@ fn choosing_a_font_size_in_the_settings_sets_it_for_the_whole_document() {
     harness.run();
 
     assert_eq!(harness.state().settings.font_size, 24.0);
-    let document = &harness.state().document;
+    let document = harness.state().document();
     assert_eq!(document.chars().style_at(0).size, 24.0, "the first line is at the new size");
     let end = document.text().len_bytes() - 1;
     assert_eq!(document.chars().style_at(end).size, 24.0, "and so is the last");
     assert_eq!(
-        harness.state().document.text().to_string(),
+        harness.state().document().text().to_string(),
         "Two lines of writing\nso that both change together",
         "and the text itself is untouched"
     );
     assert_eq!(
-        harness.state().document.can_undo(),
+        harness.state().document().can_undo(),
         undo_before,
         "a font setting pushes nothing onto the undo history"
     );
@@ -1134,7 +1241,7 @@ fn choosing_a_family_in_the_settings_leaves_bold_and_colour_alone() {
     harness.state_mut().set_settings(settings);
     harness.run();
 
-    let style = harness.state().document.chars().style_at(7);
+    let style = harness.state().document().chars().style_at(7);
     assert_eq!(style.family, other, "the word is in the new family");
     assert!(style.bold, "and still bold");
     harness.snapshot(shot("settings_font_applied"));
@@ -1430,7 +1537,7 @@ fn typing_in_the_terminal_reaches_the_shell_and_not_the_document() {
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
     assert_eq!(
-        harness.state().document.text().to_string(),
+        harness.state().document().text().to_string(),
         "the document is untouched",
         "nothing typed into the terminal reached the document"
     );
@@ -1570,7 +1677,7 @@ fn the_menu_shortcuts_work_from_the_keyboard() {
     ] {
         harness.key_press_modifiers(Modifiers::COMMAND, key);
         harness.run();
-        assert_eq!(harness.state().view_mode, expected, "command and {key:?} should switch the view");
+        assert_eq!(harness.state().view_mode(), expected, "command and {key:?} should switch the view");
     }
 
     // Command and zero puts the explorer away and brings it back.
@@ -1586,7 +1693,7 @@ fn the_menu_shortcuts_work_from_the_keyboard() {
     // the Edit menu's entry.
     harness.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
     harness.run();
-    assert_eq!(harness.state().document.selected_text(), "some writing to look at");
+    assert_eq!(harness.state().document().selected_text(), "some writing to look at");
 }
 
 #[test]
@@ -1627,4 +1734,540 @@ fn a_shell_that_will_not_start_says_so_rather_than_leaving_an_empty_tile() {
         "the reason should name the program, it said {reason:?}"
     );
     harness.snapshot(shot("terminal_will_not_start"));
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// task-1649: the gutter, the tabs, the menus, git and the plugins.
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn the_gutter_numbers_the_lines_and_a_wrapped_paragraph_is_numbered_once() {
+    // A paragraph long enough to wrap, then two short ones. The wrapped one must carry one number
+    // against its first row and nothing against its continuations, which is what a line number
+    // means everywhere else.
+    let long = "This paragraph is deliberately long enough that it has to be broken over more than one row on screen, which is the case a line number has to get right.";
+    let mut harness = harness(&format!("{long}\nsecond\nthird\n"));
+    collapse(&mut harness);
+    assert!(harness.state().settings.line_numbers, "numbers are on to begin with");
+    let rows = harness.state().layout().lines.len();
+    assert!(rows > 3, "the first paragraph should have wrapped, there are {rows} rows");
+    harness.snapshot(shot("gutter_line_numbers"));
+}
+
+#[test]
+fn the_line_numbers_can_be_put_away_and_the_text_goes_back_to_where_it_was() {
+    let mut harness = harness("one\ntwo\nthree\n");
+    collapse(&mut harness);
+    let with_numbers = harness.state().editor_area().left();
+    let ctx = harness.ctx.clone();
+    harness.state_mut().run_action(Action::ToggleLineNumbers, &ctx);
+    harness.run();
+    assert!(!harness.state().settings.line_numbers);
+    let without = harness.state().editor_area().left();
+    assert!(without < with_numbers, "the editing area reaches further left with no gutter");
+    harness.snapshot(shot("gutter_hidden"));
+}
+
+#[test]
+fn the_gutters_own_menu_opens_where_it_was_clicked() {
+    let mut harness = harness("one\ntwo\nthree\n");
+    collapse(&mut harness);
+    // Opened through the window's own state rather than by pressing the right mouse button, which
+    // the harness cannot do. That is why the menu is the window's state and not egui's memory.
+    let at = harness.state().editor_area().left_top() + vec2(-30.0, 40.0);
+    harness.state_mut().gutter_menu = Some(at);
+    harness.run();
+    harness.get_by_label("Hide Line Numbers");
+    harness.snapshot(shot("gutter_menu"));
+}
+
+#[test]
+fn three_files_open_in_three_tabs_and_the_one_showing_is_underlined() {
+    let folder = sample_folder();
+    let mut harness = harness_in(&folder);
+    harness.state_mut().open_path_permanently(&folder.join("readme.md"));
+    harness.state_mut().open_path_permanently(&folder.join("notes.txt"));
+    harness.state_mut().open_path_permanently(&folder.join("program.rs"));
+    harness.run();
+    assert_eq!(harness.state().files.len(), 3);
+    // A change in the middle tab, so the amber dot is in the picture too.
+    harness.state_mut().show_tab(1);
+    harness.state_mut().command(Command::Insert("edited".to_owned()));
+    harness.state_mut().show_tab(2);
+    harness.run();
+    harness.get_by_label("Tab: program.rs");
+    harness.snapshot(shot("file_tabs"));
+}
+
+#[test]
+fn a_single_click_reuses_one_tab_and_a_double_click_opens_another() {
+    let folder = sample_folder();
+    let mut harness = harness_in(&folder);
+    harness.state_mut().open_path(&folder.join("readme.md"));
+    harness.run();
+    assert_eq!(harness.state().files.len(), 1);
+    assert!(harness.state().files.active().transient, "one click is a glance");
+
+    harness.state_mut().open_path(&folder.join("notes.txt"));
+    harness.run();
+    assert_eq!(harness.state().files.len(), 1, "a second glance replaces the first");
+    assert_eq!(harness.state().files.active().name(), "notes.txt");
+
+    harness.state_mut().open_path_permanently(&folder.join("program.rs"));
+    harness.run();
+    assert_eq!(harness.state().files.len(), 2, "a double click keeps what was there");
+}
+
+#[test]
+fn typing_into_a_tab_that_was_only_glanced_at_keeps_it() {
+    let folder = sample_folder();
+    let mut harness = harness_in(&folder);
+    harness.state_mut().open_path(&folder.join("readme.md"));
+    harness.run();
+    assert!(harness.state().files.active().transient);
+    harness.input_mut().events.push(egui::Event::Text("a".to_owned()));
+    harness.run();
+    assert!(!harness.state().files.active().transient, "editing it means you meant to open it");
+}
+
+#[test]
+fn a_tab_can_be_closed_and_the_last_one_leaves_an_untitled_document() {
+    let folder = sample_folder();
+    let mut harness = harness_in(&folder);
+    harness.state_mut().open_path_permanently(&folder.join("readme.md"));
+    harness.state_mut().open_path_permanently(&folder.join("notes.txt"));
+    harness.run();
+    harness.get_by_label("Close notes.txt").click();
+    harness.run();
+    assert_eq!(harness.state().files.len(), 1);
+    assert_eq!(harness.state().files.active().name(), "readme.md");
+    harness.state_mut().close_tab(0);
+    harness.run();
+    assert_eq!(harness.state().files.active().name(), "untitled", "never a window with no document");
+}
+
+#[test]
+fn the_explorers_own_menu_holds_what_can_be_done_to_a_file() {
+    let folder = sample_folder();
+    let mut harness = harness_in(&folder);
+    harness.state_mut().explorer_menu =
+        Some((egui::pos2(120.0, 260.0), folder.join("readme.md"), false));
+    harness.run();
+    // Asked for by names this menu alone has: `File` is also a menu in the bar, and `New` is a
+    // heading rather than a control, because a submenu inside the window is drawn as a heading with
+    // its entries indented under it.
+    for entry in ["Copy Path", "Rename...", "Reload from Disk"] {
+        harness.get_by_label(entry);
+    }
+    let entries = quill_app::app::actions::explorer_menu(&folder.join("readme.md"), false, false);
+    assert!(
+        format!("{entries:?}").contains("NewFile"),
+        "New > File is in the menu, which is what task-1649 asks for"
+    );
+    harness.snapshot(shot("explorer_menu"));
+}
+
+#[test]
+fn making_a_file_from_the_explorers_menu_opens_it() {
+    let folder = std::env::temp_dir().join("quill-screenshot-new-file");
+    std::fs::remove_dir_all(&folder).ok();
+    std::fs::create_dir_all(&folder).expect("make the folder");
+    let mut harness = harness_in(&folder);
+    let ctx = harness.ctx.clone();
+    harness.state_mut().run_action(Action::NewFile(folder.clone()), &ctx);
+    harness.run();
+    harness.snapshot(shot("new_file_prompt"));
+
+    // Any extension, which is what task-1649 asks for.
+    if let Some(prompt) = harness.state_mut().prompt.as_mut() {
+        prompt.value = "example.json".to_owned();
+    }
+    let prompt = harness.state_mut().prompt.take().expect("a prompt");
+    harness.state_mut().run_prompt_for_test(prompt);
+    harness.run();
+    assert!(folder.join("example.json").is_file(), "the file is made");
+    assert_eq!(harness.state().files.active().name(), "example.json", "and opened");
+}
+
+#[test]
+fn renaming_a_file_moves_it_and_the_tab_follows() {
+    let folder = std::env::temp_dir().join("quill-screenshot-rename");
+    std::fs::remove_dir_all(&folder).ok();
+    std::fs::create_dir_all(&folder).expect("make the folder");
+    std::fs::write(folder.join("before.md"), "# before\n").expect("write it");
+    let mut harness = harness_in(&folder);
+    harness.state_mut().open_path_permanently(&folder.join("before.md"));
+    harness.run();
+    let ctx = harness.ctx.clone();
+    harness.state_mut().run_action(Action::RenamePath(folder.join("before.md")), &ctx);
+    harness.run();
+    if let Some(prompt) = harness.state_mut().prompt.as_mut() {
+        prompt.value = "after.md".to_owned();
+    }
+    let prompt = harness.state_mut().prompt.take().expect("a prompt");
+    harness.state_mut().run_prompt_for_test(prompt);
+    harness.run();
+    assert!(!folder.join("before.md").exists());
+    assert!(folder.join("after.md").is_file());
+    assert_eq!(harness.state().files.active().name(), "after.md");
+}
+
+#[test]
+fn cutting_a_file_and_pasting_it_into_a_folder_moves_it() {
+    let folder = std::env::temp_dir().join("quill-screenshot-clipboard");
+    std::fs::remove_dir_all(&folder).ok();
+    std::fs::create_dir_all(folder.join("inner")).expect("make the folders");
+    std::fs::write(folder.join("note.md"), "# note\n").expect("write it");
+    let mut harness = harness_in(&folder);
+    let ctx = harness.ctx.clone();
+    harness.state_mut().run_action(Action::CutPath(folder.join("note.md")), &ctx);
+    harness.state_mut().run_action(Action::PasteInto(folder.join("inner")), &ctx);
+    harness.run();
+    assert!(!folder.join("note.md").exists(), "a cut moves it");
+    assert!(folder.join("inner/note.md").is_file());
+}
+
+#[test]
+fn the_git_menu_holds_everything_the_ask_lists() {
+    let mut harness = git_harness("menu");
+    harness.state_mut().menu_placement = MenuPlacement::InWindow;
+    harness.run();
+    harness.get_by_label("Git").click();
+    harness.run();
+    for entry in [
+        "Commit...",
+        "Add",
+        "Show Diff",
+        "Compare with Revision...",
+        "Show History",
+        "Show Current Revision",
+        "Rollback...",
+        "Push...",
+        "Pull...",
+        "Fetch",
+        "Merge...",
+        "Rebase...",
+        "Branches...",
+        "New Branch...",
+        "New Tag...",
+        "Reset HEAD...",
+        "Stash Changes...",
+        "Unstash Changes...",
+        "Manage Remotes...",
+        "Clone...",
+    ] {
+        harness.get_by_label(entry);
+    }
+    harness.snapshot(shot("git_menu"));
+}
+
+#[test]
+fn the_window_reads_the_repository_it_is_opened_in() {
+    let harness = git_harness("read");
+    let git = harness.state().git.as_ref().expect("the folder is a repository");
+    assert_eq!(git.snapshot.status.branch.as_deref(), Some("main"));
+    // The change that was not committed, and the file git has never seen.
+    assert!(git.snapshot.status.entry("version.ts").is_some());
+    assert!(git.snapshot.status.entry("notes.txt").expect("notes.txt").untracked());
+    assert!(git.status_label().expect("it has been read").starts_with("main"));
+}
+
+#[test]
+fn the_commit_panel_shows_the_changes_and_the_unversioned_files() {
+    let mut harness = git_harness("commit");
+    let ctx = harness.ctx.clone();
+    harness.state_mut().run_action(Action::Git(quill_app::app::actions::GitAction::Commit), &ctx);
+    harness.run();
+    // Waited for, because opening the panel asks for the recent commit messages and the status bar
+    // says so while it does. Whether that message is still there when the picture is taken depends
+    // on how quickly a thread answered, which is not a difference in Quill.
+    settle(&mut harness, "the history the panel asks for", |app| {
+        app.git.as_ref().is_some_and(|git| git.message.is_none() && !git.history.is_empty())
+    });
+    if let Some(git) = harness.state_mut().git.as_mut() {
+        git.panel.message = "task-1649: the commit panel".to_owned();
+    }
+    harness.run();
+    harness.get_by_label("COMMIT");
+    harness.get_by_label("COMMIT AND PUSH...");
+    harness.snapshot(shot("git_commit_panel"));
+}
+
+#[test]
+fn the_branches_dialog_lists_the_branches() {
+    let mut harness = git_harness("branches");
+    let ctx = harness.ctx.clone();
+    harness.state_mut().run_action(Action::Git(quill_app::app::actions::GitAction::Branches), &ctx);
+    harness.run();
+    harness.get_by_label("main");
+    harness.snapshot(shot("git_branches"));
+}
+
+#[test]
+fn the_gutter_annotates_with_git_blame_and_colours_by_age() {
+    let mut harness = git_harness("blame");
+    let folder = harness.state().tree.root().to_path_buf();
+    harness.state_mut().open_path_permanently(&folder.join("sqlClient.ts"));
+    harness.run();
+    let ctx = harness.ctx.clone();
+    harness.state_mut().run_action(Action::Git(quill_app::app::actions::GitAction::Annotate), &ctx);
+    for _ in 0..600 {
+        harness.run();
+        if harness.state().files.active().blame.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let blame = harness.state().files.active().blame.clone().expect("the file is annotated");
+    assert!(!blame.is_empty());
+    assert_eq!(blame[0].author, "Quill", "the first name, which is what fits in the column");
+    // Both authors are in it, so the column really has a gradient to show rather than one colour.
+    let authors: Vec<&str> = blame.iter().map(|row| row.author.as_str()).collect();
+    assert!(authors.contains(&"Sam"), "the second commit's lines carry its author: {authors:?}");
+    let ages: Vec<f32> = blame.iter().map(|row| row.age).collect();
+    assert!(ages.contains(&0.0) && ages.contains(&1.0), "oldest and newest are both drawn: {ages:?}");
+    harness.snapshot(shot("gutter_blame"));
+}
+
+#[test]
+fn a_typescript_file_is_coloured_by_its_plugin() {
+    // Deliberately *not* a repository: this test is about the colours, and a window in a repository
+    // has a git message in its status bar for the first few frames, which made the picture depend on
+    // how quickly a thread answered.
+    let folder = copy_out_of_the_repository(&git_folder("syntax"), "quill-screenshot-syntax");
+    std::fs::remove_dir_all(folder.join(".git")).ok();
+    let mut harness = harness_in(&folder);
+    harness.state_mut().open_path_permanently(&folder.join("sqlClient.ts"));
+    harness.run();
+    harness.run();
+    // The colours are in the document's own spans, so the test can check them without looking at
+    // the picture: the `import` keyword is Dracula's pink and the comment is its blue-grey.
+    let text = harness.state().document().text().to_string();
+    let chars = harness.state().document().chars();
+    // Asked one byte *inside* each token. `style_at` reports the earlier span for an offset that
+    // falls on the boundary between two, so that typing at the end of a bold word stays bold, and
+    // asking at a token's first byte would report whatever came before it.
+    let inside = |needle: &str| text.find(needle).unwrap_or_else(|| panic!("no {needle}")) + 1;
+    assert_eq!(
+        chars.style_at(inside("import")).color,
+        Color::rgb(0xFF, 0x79, 0xC6),
+        "import is a keyword, in Dracula's pink"
+    );
+    assert_eq!(
+        chars.style_at(inside("/**")).color,
+        Color::rgb(0x62, 0x72, 0xA4),
+        "the doc comment, in Dracula's blue-grey"
+    );
+    assert_eq!(
+        chars.style_at(inside("'../db")).color,
+        Color::rgb(0xF1, 0xFA, 0x8C),
+        "the import's path is a string, in Dracula's yellow"
+    );
+    assert_eq!(
+        chars.style_at(inside("MessageRepository")).color,
+        Color::rgb(0x8B, 0xE9, 0xFD),
+        "a name starting with a capital is a type, in Dracula's cyan"
+    );
+    // Colouring is not an edit: nothing to undo and nothing to save.
+    assert!(!harness.state().document().is_modified(), "colouring must not mark the file changed");
+    assert!(!harness.state().document().can_undo(), "and must not push onto the undo history");
+    harness.snapshot(shot("syntax_typescript"));
+}
+
+#[test]
+fn the_plugins_page_lists_the_three_that_ship_with_quill() {
+    let mut harness = harness("");
+    harness.state_mut().settings_window.open();
+    harness.state_mut().settings_window.page = quill_app::settings::Page::Plugins;
+    harness.run();
+    harness.run();
+    for name in ["JavaScript", "TypeScript", "Rust"] {
+        harness.get_by_label(name);
+    }
+    harness.get_by_label("Marketplace");
+    harness.snapshot(shot("plugins_page"));
+}
+
+
+/// Run the window until `ready` is true, or give up.
+///
+/// Git runs on a thread, so an answer arrives some frames after it was asked for. Each turn is a
+/// frame and a short wait; nothing here depends on how fast the machine is, because it stops as soon
+/// as the thing it is waiting for has happened.
+///
+/// Patient on purpose. The tests run at the same time, each starting real git processes, so a step
+/// that takes 40 milliseconds on its own can take several seconds when seven of them are running
+/// together — which is what made this fail about one run in five while passing every time on its
+/// own. Waiting longer costs nothing when nothing is slow.
+#[track_caller]
+fn settle(harness: &mut Harness<'static, QuillApp>, what: &str, ready: impl Fn(&QuillApp) -> bool) {
+    for _ in 0..600 {
+        harness.run();
+        if ready(harness.state()) {
+            harness.run();
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    panic!("gave up waiting for {what}");
+}
+
+/// What git says about a repository, asked directly rather than through Quill.
+fn ask_git(root: &std::path::Path, arguments: &[&str]) -> String {
+    let outcome = quill_git::command::run(root, arguments);
+    assert!(outcome.ok, "git {arguments:?}: {}", outcome.message());
+    outcome.stdout.trim().to_owned()
+}
+
+/// The git operations, driven through the window and checked against git itself.
+///
+/// This is the test `task-1649` asks for when it says to make a project for exercising the
+/// operations. It is one test rather than several because each step leaves the repository in the
+/// state the next one needs, and because a repository is the slowest thing here to build.
+///
+/// Every assertion asks **git** what happened rather than asking Quill, so a step that only changed
+/// the window's own idea of the world fails.
+#[test]
+fn every_git_operation_can_be_driven_from_the_window() {
+    let mut harness = git_harness("operations");
+    let root = harness.state().tree.root().to_path_buf();
+    let ctx = harness.ctx.clone();
+    let git = |action| Action::Git(action);
+    use quill_app::app::actions::GitAction;
+
+    // ---- stage a file -----------------------------------------------------------------------
+    harness.state_mut().open_path_permanently(&root.join("version.ts"));
+    harness.run();
+    harness.state_mut().run_action(git(GitAction::Add(None)), &ctx);
+    settle(&mut harness, "the file to be staged", |app| {
+        app.git.as_ref().is_some_and(|git| {
+            git.snapshot.status.entry("version.ts").is_some_and(quill_git::status::Entry::staged)
+        })
+    });
+    assert!(
+        ask_git(&root, &["diff", "--cached", "--name-only"]).contains("version.ts"),
+        "git agrees the file is staged"
+    );
+
+    // ---- commit it, through the panel's own button -------------------------------------------
+    harness.state_mut().run_action(git(GitAction::Commit), &ctx);
+    harness.run();
+    if let Some(state) = harness.state_mut().git.as_mut() {
+        state.panel.message = "task-1649: driven from the window".to_owned();
+    }
+    harness.run();
+    harness.get_by_label("COMMIT").click();
+    settle(&mut harness, "the commit", |app| {
+        app.git.as_ref().is_some_and(|git| git.snapshot.status.entry("version.ts").is_none())
+    });
+    assert_eq!(
+        ask_git(&root, &["log", "--format=%s", "-n1"]),
+        "task-1649: driven from the window",
+        "the commit really was made, with the message that was typed"
+    );
+
+    // ---- start a branch, through the prompt ---------------------------------------------------
+    harness.state_mut().run_action(git(GitAction::NewBranch), &ctx);
+    harness.run();
+    let mut prompt = harness.state_mut().prompt.take().expect("a prompt for the name");
+    prompt.value = "from-quill".to_owned();
+    harness.state_mut().run_prompt_for_test(prompt);
+    settle(&mut harness, "the branch", |app| {
+        app.git.as_ref().is_some_and(|git| git.snapshot.status.branch.as_deref() == Some("from-quill"))
+    });
+    assert_eq!(ask_git(&root, &["branch", "--show-current"]), "from-quill");
+
+    // ---- stash a change and bring it back ------------------------------------------------------
+    std::fs::write(root.join("version.ts"), "export const version = 'stashed';\n").expect("change it");
+    harness.state_mut().run_action(git(GitAction::Stash), &ctx);
+    harness.run();
+    let mut prompt = harness.state_mut().prompt.take().expect("a prompt for the message");
+    prompt.value = "half done".to_owned();
+    harness.state_mut().run_prompt_for_test(prompt);
+    settle(&mut harness, "the stash", |app| {
+        app.git.as_ref().is_some_and(|git| !git.snapshot.stashes.is_empty())
+    });
+    assert!(
+        !std::fs::read_to_string(root.join("version.ts")).expect("read").contains("stashed"),
+        "stashing left the working tree clean"
+    );
+    assert!(ask_git(&root, &["stash", "list"]).contains("half done"));
+
+    // Unstashing is the `Stashes` tab of the commit panel, and its POP button.
+    harness.state_mut().run_action(git(GitAction::Unstash), &ctx);
+    harness.run();
+    harness.get_by_label("POP").click();
+    settle(&mut harness, "the stash to come back", |app| {
+        app.git.as_ref().is_some_and(|git| git.snapshot.stashes.is_empty())
+    });
+    assert!(
+        std::fs::read_to_string(root.join("version.ts")).expect("read").contains("stashed"),
+        "the change came back"
+    );
+
+    // ---- roll the change back, which is confirmed first ---------------------------------------
+    harness.state_mut().run_action(git(GitAction::Rollback(None)), &ctx);
+    harness.run();
+    assert!(
+        harness.state().confirmation.is_some(),
+        "rollback cannot be undone, so it asks first"
+    );
+    harness.get_by_label("ROLL BACK").click();
+    settle(&mut harness, "the rollback", |app| {
+        app.git.as_ref().is_some_and(|git| git.snapshot.status.entry("version.ts").is_none())
+    });
+    assert!(
+        !std::fs::read_to_string(root.join("version.ts")).expect("read").contains("stashed"),
+        "the change is gone"
+    );
+
+    // ---- merge the branch back into main --------------------------------------------------------
+    assert!(quill_git::branch::switch(&root, "main").ok);
+    harness.state_mut().run_action(git(GitAction::Refresh), &ctx);
+    settle(&mut harness, "main to be checked out", |app| {
+        app.git.as_ref().is_some_and(|git| git.snapshot.status.branch.as_deref() == Some("main"))
+    });
+    if let Some(state) = harness.state_mut().git.as_mut() {
+        state.dialogs.target = "from-quill".to_owned();
+    }
+    harness.state_mut().run_action(git(GitAction::Merge), &ctx);
+    harness.run();
+    if let Some(state) = harness.state_mut().git.as_mut() {
+        state.dialogs.target = "from-quill".to_owned();
+    }
+    harness.run();
+    harness.get_by_label("MERGE").click();
+    // Asked of git rather than of the window: the merge is finished when main really holds the
+    // branch's commit, which is the only thing that matters about it.
+    let merged = root.clone();
+    settle(&mut harness, "the merge", move |_| {
+        quill_git::command::run(&merged, &["log", "--format=%s", "-n1"]).stdout.trim()
+            == "task-1649: driven from the window"
+    });
+    assert_eq!(
+        ask_git(&root, &["log", "--format=%s", "-n1"]),
+        "task-1649: driven from the window",
+        "main now holds the branch's commit"
+    );
+
+    // ---- and the history the window read is the history git has ---------------------------------
+    harness.state_mut().run_action(git(GitAction::ShowHistory(None)), &ctx);
+    settle(&mut harness, "the history", |app| {
+        app.git.as_ref().is_some_and(|git| git.history.len() >= 3)
+    });
+    let subjects: Vec<String> = harness
+        .state()
+        .git
+        .as_ref()
+        .expect("a repository")
+        .history
+        .iter()
+        .map(|commit| commit.subject.clone())
+        .collect();
+    assert_eq!(subjects[0], "task-1649: driven from the window");
+    assert!(subjects.contains(&"the first commit".to_owned()));
+    // No picture is taken here. A commit made during the test has a hash and a date that are new
+    // every run, so a baseline of it could never match twice; `design/components/git_history.png`
+    // is the capture to look at, and what this test is for is that the history is right.
 }

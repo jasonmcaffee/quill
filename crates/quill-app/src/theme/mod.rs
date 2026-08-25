@@ -59,6 +59,24 @@ pub mod color {
     /// The square in front of a plain text file.
     pub const FILE_TEXT: Color32 = Color32::from_rgb(0x7E, 0x87, 0x95);
 
+    /// The oldest commit in a file, in the blame column beside the line numbers.
+    ///
+    /// This pair is the one part of the palette not read out of `design/intial-design-screenshot.png`,
+    /// because the design has no gutter in it. They were measured out of the capture the ask came with,
+    /// `tasks/quill-ide-tdd.md` section 2, in the same way: the two colours covering the annotation
+    /// column of that image.
+    pub const BLAME_OLD: Color32 = Color32::from_rgb(0x3C, 0x7D, 0x64);
+    /// The newest commit in a file. Everything between is interpolated by rank.
+    pub const BLAME_NEW: Color32 = Color32::from_rgb(0xB4, 0x58, 0x8C);
+
+    /// A file, or a line, that git does not have yet. Measured from the commit panel in the same
+    /// capture, where it is the colour of the `added` count.
+    pub const GIT_ADDED: Color32 = Color32::from_rgb(0x7F, 0xCA, 0x98);
+    /// A file, or a line, that differs from the version git has. The `modified` count in that capture.
+    pub const GIT_MODIFIED: Color32 = Color32::from_rgb(0x4D, 0x9D, 0xC3);
+    /// A file git is not tracking at all.
+    pub const GIT_UNTRACKED: Color32 = Color32::from_rgb(0x9A, 0x8C, 0x5A);
+
     /// The three window buttons.
     pub const CLOSE: Color32 = Color32::from_rgb(0xFF, 0x5F, 0x57);
     pub const MINIMISE: Color32 = Color32::from_rgb(0xFE, 0xBC, 0x2E);

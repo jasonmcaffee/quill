@@ -42,15 +42,89 @@ pub enum Action {
     SetViewMode(ViewMode),
     /// Show or hide the file explorer.
     ToggleExplorer,
+    /// Show or hide the column of line numbers down the left of the editing area.
+    ToggleLineNumbers,
     /// Show or hide the terminal along the bottom.
     ToggleTerminal,
+    /// Close the file tab that is showing.
+    CloseTab,
+    /// Show the next file tab, wrapping round at the end.
+    NextTab,
+    /// Show the previous file tab.
+    PreviousTab,
     /// Another terminal tab.
     NewTerminalTab,
     /// Close the terminal tab that is showing.
     CloseTerminalTab,
+    /// Make an empty file in this folder. The name is asked for first.
+    NewFile(PathBuf),
+    /// Hold this path to be moved when something is pasted.
+    CutPath(PathBuf),
+    /// Hold this path to be copied when something is pasted.
+    CopyPath(PathBuf),
+    /// Put this path's text on the system clipboard.
+    CopyPathReference(PathBuf),
+    /// Put whatever was cut or copied into this folder.
+    PasteInto(PathBuf),
+    /// Rename this file or folder. The new name is asked for first.
+    RenamePath(PathBuf),
+    /// Show this path in the platform's file manager.
+    RevealPath(PathBuf),
+    /// Read this folder again, and this file again if it is open.
+    ReloadPath(PathBuf),
+    /// Anything on the Git menu.
+    Git(GitAction),
     /// Quill's own about box, which is a line in the status bar rather than a window.
     About,
     Quit,
+}
+
+/// Everything the Git menu can ask for.
+///
+/// A group of its own rather than twenty more variants of [`Action`], because they all go to one
+/// place and because a menu with twenty entries reads better as a list than as twenty lines in an
+/// enum shared with `Save`.
+///
+/// The ones that take a path take `None` to mean the file that is open, so one entry serves both the
+/// Git menu and a right click on a row in the explorer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GitAction {
+    /// Open the commit panel.
+    Commit,
+    /// Stage a path.
+    Add(Option<PathBuf>),
+    /// Show what changed in a file against what git has.
+    ShowDiff(Option<PathBuf>),
+    /// The same, against a revision that is asked for.
+    CompareWithRevision(Option<PathBuf>),
+    /// The commits that touched a file, or the whole repository when there is no path.
+    ShowHistory(Option<PathBuf>),
+    /// The commit that is checked out.
+    ShowCurrentRevision,
+    /// Throw away the changes to a path. Asked about first, because there is no undo for it.
+    Rollback(Option<PathBuf>),
+    /// Annotate the open file with git blame, or stop annotating it.
+    Annotate,
+    Push,
+    Pull,
+    Fetch,
+    Merge,
+    Rebase,
+    /// Finish, or abandon, a merge or a rebase that stopped on a conflict.
+    Continue,
+    Abort,
+    Branches,
+    NewBranch,
+    NewTag,
+    ResetHead,
+    Stash,
+    Unstash,
+    Remotes,
+    Clone,
+    /// Open the file where a path is ignored without changing what is committed.
+    Exclude,
+    /// Read the repository again.
+    Refresh,
 }
 
 /// A keyboard shortcut, held as egui's own key and modifiers so that matching a key press is a
@@ -83,15 +157,36 @@ impl Shortcut {
         Self { key, command: false, shift: false, alt: false, ctrl: true }
     }
 
+    pub const fn control_shift(key: egui::Key) -> Self {
+        Self { key, command: false, shift: true, alt: false, ctrl: true }
+    }
+
     /// True when this key press is this shortcut, and not a longer one that happens to include it.
+    ///
+    /// The two platforms have to be told apart, because they do not agree about what the control key
+    /// is. On macOS the Apple key and the control key are two keys, and egui reports the Apple key as
+    /// both `command` and `mac_cmd` while leaving `ctrl` alone, so the two can be compared
+    /// separately. Everywhere else they are **one key**: egui sets `command` equal to `ctrl`, so a
+    /// press of control satisfies a shortcut asking for either, and a shortcut asking for both would
+    /// be asking for the same key twice.
+    ///
+    /// Comparing all four fields on both platforms, which this used to do, meant that on Windows
+    /// every shortcut in the bar was unreachable: `Ctrl+S` arrives with `command` and `ctrl` both
+    /// set, so `Save`, which asks for `command` and not `ctrl`, never matched. The tests did not
+    /// catch it because they built a modifier set with `command` set and `ctrl` clear, which is a
+    /// combination Windows never produces. They now build the set the platform really sends.
     pub fn matches(&self, key: egui::Key, modifiers: &egui::Modifiers) -> bool {
-        self.key == key
-            && modifiers.command == self.command
-            && modifiers.shift == self.shift
-            && modifiers.alt == self.alt
-            // On macOS egui reports the Apple key as both `command` and `mac_cmd`, and leaves `ctrl`
-            // alone, so the control key can be told apart from it.
-            && (modifiers.ctrl && !modifiers.mac_cmd) == self.ctrl
+        if self.key != key || modifiers.shift != self.shift || modifiers.alt != self.alt {
+            return false;
+        }
+        if cfg!(target_os = "macos") {
+            modifiers.command == self.command && (modifiers.ctrl && !modifiers.mac_cmd) == self.ctrl
+        } else {
+            // Either flag counts as the control key being held. The platform sets both, and
+            // `egui::Modifiers::COMMAND` — which is what a test presses — sets only `command`.
+            let control = modifiers.ctrl || modifiers.command;
+            control == (self.command || self.ctrl)
+        }
     }
 
     /// What a menu shows to the right of the entry, spelled out in words.
@@ -221,7 +316,7 @@ pub struct Menu {
 }
 
 /// What the menus need to know about the window to say what can be done and what is switched on.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct MenuState {
     pub can_undo: bool,
     pub can_redo: bool,
@@ -229,8 +324,20 @@ pub struct MenuState {
     pub recent: Vec<PathBuf>,
     pub view_mode: ViewMode,
     pub explorer_visible: bool,
+    pub line_numbers: bool,
     pub terminal_visible: bool,
     pub terminal_tabs: usize,
+    /// True when the folder that is open is in a git repository. With none, every git entry is
+    /// dimmed rather than absent, so the menu does not change shape depending on where you are.
+    pub in_repository: bool,
+    /// True when a file is open that git could say something about.
+    pub has_file: bool,
+    /// True when the open file has been annotated with blame.
+    pub annotated: bool,
+    /// Set while a merge or a rebase has stopped on a conflict.
+    pub unfinished: Option<&'static str>,
+    /// How many files are open, which is what decides whether the tab entries can be used.
+    pub open_files: usize,
 }
 
 /// The whole menu bar: `Quill`, `File`, `Edit` and `View`, in that order.
@@ -239,7 +346,107 @@ pub struct MenuState {
 /// the application menu first whatever it is called. Inside the window it is drawn first for the same
 /// reason, so the bar reads `Quill  File  Edit  View` on both platforms.
 pub fn menus(state: &MenuState) -> Vec<Menu> {
-    vec![quill_menu(), file_menu(state), edit_menu(state), view_menu(state)]
+    vec![quill_menu(), file_menu(state), edit_menu(state), view_menu(state), git_menu(state)]
+}
+
+/// The Git menu, which holds what the reference capture in `tasks/quill-ide-tdd.md` holds.
+///
+/// The same entries, aimed at one path, are the `Git` submenu on a row in the explorer, built by
+/// [`git_submenu`], so the two cannot drift apart.
+///
+/// `Continue` and `Abort` are there only while a merge or a rebase has stopped on a conflict. An
+/// editor that hides a half-finished merge is an editor you cannot finish one in.
+pub fn git_menu(state: &MenuState) -> Menu {
+    let here = state.in_repository;
+    let file = here && state.has_file;
+    let mut entries = vec![
+        Entry::with_shortcut("Commit...", Action::Git(GitAction::Commit), Shortcut::command(egui::Key::K))
+            .enabled(here),
+        Entry::with_shortcut(
+            "Add",
+            Action::Git(GitAction::Add(None)),
+            Shortcut { alt: true, ..Shortcut::command(egui::Key::A) },
+        )
+        .enabled(file),
+        Entry::item("Exclude from Version Control", Action::Git(GitAction::Exclude)).enabled(here),
+        Entry::Separator,
+        Entry::with_shortcut("Show Diff", Action::Git(GitAction::ShowDiff(None)), Shortcut::command(egui::Key::D))
+            .enabled(file),
+        Entry::item("Compare with Revision...", Action::Git(GitAction::CompareWithRevision(None)))
+            .enabled(file),
+        Entry::item("Show History", Action::Git(GitAction::ShowHistory(None))).enabled(here),
+        Entry::item("Show Current Revision", Action::Git(GitAction::ShowCurrentRevision)).enabled(here),
+        Entry::item(
+            if state.annotated { "Close Annotations" } else { "Annotate with Git Blame" },
+            Action::Git(GitAction::Annotate),
+        )
+        .enabled(file)
+        .checked(state.annotated),
+        Entry::Separator,
+        Entry::with_shortcut(
+            "Rollback...",
+            Action::Git(GitAction::Rollback(None)),
+            Shortcut { alt: true, ..Shortcut::command(egui::Key::Z) },
+        )
+        .enabled(file),
+        Entry::Separator,
+    ];
+    if state.unfinished.is_some() {
+        entries.push(Entry::item("Continue", Action::Git(GitAction::Continue)));
+        entries.push(Entry::item("Abort", Action::Git(GitAction::Abort)));
+        entries.push(Entry::Separator);
+    }
+    entries.extend([
+        Entry::with_shortcut("Push...", Action::Git(GitAction::Push), Shortcut::command_shift(egui::Key::K))
+            .enabled(here),
+        Entry::item("Pull...", Action::Git(GitAction::Pull)).enabled(here),
+        Entry::item("Fetch", Action::Git(GitAction::Fetch)).enabled(here),
+        Entry::Separator,
+        Entry::item("Merge...", Action::Git(GitAction::Merge)).enabled(here),
+        Entry::item("Rebase...", Action::Git(GitAction::Rebase)).enabled(here),
+        Entry::Separator,
+        Entry::with_shortcut(
+            "Branches...",
+            Action::Git(GitAction::Branches),
+            Shortcut::control_shift(egui::Key::Backtick),
+        )
+        .enabled(here),
+        Entry::with_shortcut(
+            "New Branch...",
+            Action::Git(GitAction::NewBranch),
+            Shortcut { alt: true, ..Shortcut::command(egui::Key::N) },
+        )
+        .enabled(here),
+        Entry::item("New Tag...", Action::Git(GitAction::NewTag)).enabled(here),
+        Entry::item("Reset HEAD...", Action::Git(GitAction::ResetHead)).enabled(here),
+        Entry::Separator,
+        Entry::item("Stash Changes...", Action::Git(GitAction::Stash)).enabled(here),
+        Entry::item("Unstash Changes...", Action::Git(GitAction::Unstash)).enabled(here),
+        Entry::Separator,
+        Entry::item("Manage Remotes...", Action::Git(GitAction::Remotes)).enabled(here),
+        Entry::item("Clone...", Action::Git(GitAction::Clone)),
+    ]);
+    Menu { name: "Git".to_owned(), entries }
+}
+
+/// The `Git` submenu on a row in the explorer: the same entries, aimed at that row.
+pub fn git_submenu(state: &MenuState, path: &std::path::Path) -> Vec<Entry> {
+    let here = state.in_repository;
+    vec![
+        Entry::item("Add", Action::Git(GitAction::Add(Some(path.to_path_buf())))).enabled(here),
+        Entry::item("Show Diff", Action::Git(GitAction::ShowDiff(Some(path.to_path_buf())))).enabled(here),
+        Entry::item(
+            "Compare with Revision...",
+            Action::Git(GitAction::CompareWithRevision(Some(path.to_path_buf()))),
+        )
+        .enabled(here),
+        Entry::item("Show History", Action::Git(GitAction::ShowHistory(Some(path.to_path_buf()))))
+            .enabled(here),
+        Entry::item("Rollback...", Action::Git(GitAction::Rollback(Some(path.to_path_buf()))))
+            .enabled(here),
+        Entry::Separator,
+        Entry::item("Commit...", Action::Git(GitAction::Commit)).enabled(here),
+    ]
 }
 
 fn quill_menu() -> Menu {
@@ -372,6 +579,23 @@ fn view_menu(state: &MenuState) -> Menu {
                 Action::ToggleExplorer,
                 Shortcut::command(egui::Key::Num0),
             ),
+            Entry::item(
+                if state.line_numbers { "Hide Line Numbers" } else { "Show Line Numbers" },
+                Action::ToggleLineNumbers,
+            ),
+            Entry::Separator,
+            // Ctrl+F4 rather than the Apple key and W, which `Close Window` already claims. Two menu
+            // items claiming one key equivalent is a fault on macOS, and there is a test for it.
+            Entry::with_shortcut("Close Tab", Action::CloseTab, Shortcut::command(egui::Key::F4))
+                .enabled(state.open_files > 1),
+            Entry::with_shortcut("Next Tab", Action::NextTab, Shortcut::control(egui::Key::Tab))
+                .enabled(state.open_files > 1),
+            Entry::with_shortcut(
+                "Previous Tab",
+                Action::PreviousTab,
+                Shortcut::control_shift(egui::Key::Tab),
+            )
+            .enabled(state.open_files > 1),
             Entry::Separator,
             Entry::with_shortcut(
                 "Terminal",
@@ -384,6 +608,79 @@ fn view_menu(state: &MenuState) -> Menu {
                 .enabled(state.terminal_tabs > 0),
         ],
     }
+}
+
+/// What the explorer's right click menu holds, for the row that was clicked.
+///
+/// `directory` says whether the row is a folder, because a new file goes *in* a folder and *beside*
+/// a file, and there is nothing to reload from disk about a file that is not open.
+///
+/// There is no `Delete`. IntelliJ's menu has one and `task-1649` does not ask for one, and a
+/// destructive entry nobody asked for, one row under `Rename...`, is worth leaving out until it is
+/// wanted. Cut and Paste already move a file out of the way.
+pub fn explorer_menu(path: &std::path::Path, directory: bool, can_paste: bool) -> Vec<Entry> {
+    let folder = if directory {
+        path.to_path_buf()
+    } else {
+        path.parent().map(std::path::Path::to_path_buf).unwrap_or_else(|| path.to_path_buf())
+    };
+    vec![
+        Entry::Submenu {
+            name: "New".to_owned(),
+            entries: vec![Entry::item("File", Action::NewFile(folder.clone()))],
+        },
+        Entry::Separator,
+        Entry::with_shortcut("Cut", Action::CutPath(path.to_path_buf()), Shortcut::command(egui::Key::X))
+            .not_from_the_keyboard(),
+        Entry::with_shortcut("Copy", Action::CopyPath(path.to_path_buf()), Shortcut::command(egui::Key::C))
+            .not_from_the_keyboard(),
+        Entry::item("Copy Path", Action::CopyPathReference(path.to_path_buf())),
+        Entry::with_shortcut("Paste", Action::PasteInto(folder), Shortcut::command(egui::Key::V))
+            .enabled(can_paste)
+            .not_from_the_keyboard(),
+        Entry::Separator,
+        Entry::item("Rename...", Action::RenamePath(path.to_path_buf())),
+        Entry::Separator,
+        Entry::item(crate::services::launcher::file_manager_name(), Action::RevealPath(path.to_path_buf())),
+        Entry::item("Reload from Disk", Action::ReloadPath(path.to_path_buf())),
+    ]
+}
+
+/// The explorer's menu with the `Git` submenu on the end, which is what is actually shown.
+///
+/// Split from [`explorer_menu`] so the entries that have nothing to do with git can be tested
+/// without a repository behind them.
+pub fn explorer_menu_with_git(
+    state: &MenuState,
+    path: &std::path::Path,
+    directory: bool,
+    can_paste: bool,
+) -> Vec<Entry> {
+    let mut entries = explorer_menu(path, directory, can_paste);
+    entries.push(Entry::Separator);
+    entries.push(Entry::Submenu { name: "Git".to_owned(), entries: git_submenu(state, path) });
+    entries
+}
+
+/// What the gutter's own right click menu holds.
+///
+/// Built here rather than in the component for the same reason the bar's menus are: an entry is an
+/// [`Action`] with one arm in `run_action`, so the gutter's `Show Line Numbers` and the View menu's
+/// are the same thing rather than two things that agree today.
+pub fn gutter_menu(state: &MenuState) -> Vec<Entry> {
+    vec![
+        Entry::item(
+            if state.annotated { "Close Annotations" } else { "Annotate with Git Blame" },
+            Action::Git(GitAction::Annotate),
+        )
+        .enabled(state.in_repository && state.has_file)
+        .checked(state.annotated),
+        Entry::Separator,
+        Entry::item(
+            if state.line_numbers { "Hide Line Numbers" } else { "Show Line Numbers" },
+            Action::ToggleLineNumbers,
+        ),
+    ]
 }
 
 /// The action a key press asks for, if any menu entry claims it.
@@ -439,10 +736,78 @@ mod tests {
     }
 
     #[test]
-    fn quill_comes_first_and_then_file_edit_and_view() {
+    fn quill_comes_first_and_then_file_edit_view_and_git() {
         let bar = menus(&MenuState::default());
         let order: Vec<&str> = bar.iter().map(|menu| menu.name.as_str()).collect();
-        assert_eq!(order, vec!["Quill", "File", "Edit", "View"]);
+        assert_eq!(order, vec!["Quill", "File", "Edit", "View", "Git"]);
+    }
+
+    #[test]
+    fn every_git_entry_is_dimmed_outside_a_repository_rather_than_missing() {
+        // A menu that changes shape depending on where you are is harder to use than one that does
+        // not, so the entries stay and are dimmed. `Clone...` is the exception: it is how you come
+        // to have a repository at all.
+        let outside = git_menu(&MenuState::default());
+        let usable: Vec<String> = outside
+            .entries
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Item { name, enabled: true, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(usable, vec!["Clone...".to_owned()]);
+        assert!(
+            names(&outside.entries).len() > 15,
+            "the entries are still there, just dimmed: {:?}",
+            names(&outside.entries)
+        );
+    }
+
+    #[test]
+    fn continue_and_abort_are_there_only_while_something_is_half_finished() {
+        let settled = MenuState { in_repository: true, ..MenuState::default() };
+        assert!(!names(&git_menu(&settled).entries).contains(&"Abort".to_owned()));
+        let stuck = MenuState { unfinished: Some("Merging"), ..settled.clone() };
+        let entries = names(&git_menu(&stuck).entries);
+        assert!(entries.contains(&"Continue".to_owned()));
+        assert!(entries.contains(&"Abort".to_owned()));
+    }
+
+    #[test]
+    fn the_git_entries_on_a_row_in_the_explorer_are_aimed_at_that_row() {
+        let state = MenuState { in_repository: true, ..MenuState::default() };
+        let path = PathBuf::from("/project/notes.md");
+        let entries = explorer_menu_with_git(&state, &path, false, false);
+        let git = entries
+            .iter()
+            .find_map(|entry| match entry {
+                Entry::Submenu { name, entries } if name == "Git" => Some(entries.clone()),
+                _ => None,
+            })
+            .expect("a Git submenu");
+        let aimed = git.iter().any(|entry| {
+            matches!(entry, Entry::Item { action: Action::Git(GitAction::ShowDiff(Some(at))), .. } if *at == path)
+        });
+        assert!(aimed, "Show Diff on a row is about that row's file");
+    }
+
+    #[test]
+    fn the_gutter_menu_offers_blame_and_the_line_numbers() {
+        let state = MenuState {
+            in_repository: true,
+            has_file: true,
+            line_numbers: true,
+            ..MenuState::default()
+        };
+        assert_eq!(
+            names(&gutter_menu(&state)),
+            vec!["Annotate with Git Blame", "Hide Line Numbers"]
+        );
+        // Once it is annotated the same entry closes the annotations, so there is one entry rather
+        // than two that have to be kept in step.
+        let annotated = MenuState { annotated: true, ..state };
+        assert_eq!(names(&gutter_menu(&annotated))[0], "Close Annotations");
     }
 
     #[test]
@@ -540,6 +905,51 @@ mod tests {
         assert_eq!(checked, vec!["Markdown Preview"]);
     }
 
+    /// The modifier set the platform really sends when the command key is held: on macOS the Apple
+    /// key, which egui reports as `command` and `mac_cmd`; everywhere else the control key, which it
+    /// reports as `command` and `ctrl` both.
+    fn pressing_command() -> egui::Modifiers {
+        if cfg!(target_os = "macos") {
+            egui::Modifiers { command: true, mac_cmd: true, ..Default::default() }
+        } else {
+            egui::Modifiers { command: true, ctrl: true, ..Default::default() }
+        }
+    }
+
+    /// The control key itself, which on macOS is not the command key and everywhere else is.
+    fn pressing_control() -> egui::Modifiers {
+        if cfg!(target_os = "macos") {
+            egui::Modifiers { ctrl: true, ..Default::default() }
+        } else {
+            egui::Modifiers { command: true, ctrl: true, ..Default::default() }
+        }
+    }
+
+    #[test]
+    fn eguis_own_command_modifier_is_matched_as_well_as_the_platforms() {
+        // A test presses `egui::Modifiers::COMMAND`, which sets `command` and leaves `ctrl` clear —
+        // a combination no platform sends. Both have to work, or the shortcuts pass their tests and
+        // do nothing in the real window, which is exactly what happened before this was fixed.
+        let state = MenuState::default();
+        assert_eq!(
+            action_for_key(&state, egui::Key::S, &egui::Modifiers::COMMAND),
+            Some(Action::Save)
+        );
+    }
+
+    #[test]
+    fn a_shortcut_the_platform_really_sends_is_matched() {
+        // This is the case that used to fail on Windows: `Ctrl+S` arrives with `command` and `ctrl`
+        // both set, and `Save` asks for the command key and not the control key.
+        let state = MenuState::default();
+        assert_eq!(action_for_key(&state, egui::Key::S, &pressing_command()), Some(Action::Save));
+        assert_eq!(
+            action_for_key(&state, egui::Key::Backtick, &pressing_control()),
+            Some(Action::ToggleTerminal),
+            "control and backtick opens the terminal on both platforms"
+        );
+    }
+
     #[test]
     fn a_shortcut_is_spelled_out_in_words() {
         assert_eq!(Shortcut::command(egui::Key::S).label(), if cfg!(target_os = "macos") { "Cmd+S" } else { "Ctrl+S" });
@@ -554,7 +964,7 @@ mod tests {
     #[test]
     fn a_key_press_finds_the_action_whose_shortcut_it_is() {
         let state = MenuState { can_undo: true, can_redo: true, ..MenuState::default() };
-        let command = egui::Modifiers { command: true, mac_cmd: cfg!(target_os = "macos"), ..Default::default() };
+        let command = pressing_command();
         assert_eq!(action_for_key(&state, egui::Key::S, &command), Some(Action::Save));
         assert_eq!(action_for_key(&state, egui::Key::Z, &command), Some(Action::Undo));
         let with_shift = egui::Modifiers { shift: true, ..command };
@@ -565,7 +975,7 @@ mod tests {
     #[test]
     fn a_shortcut_with_more_modifiers_is_not_mistaken_for_one_with_fewer() {
         let state = MenuState::default();
-        let command = egui::Modifiers { command: true, mac_cmd: cfg!(target_os = "macos"), ..Default::default() };
+        let command = pressing_command();
         assert_eq!(action_for_key(&state, egui::Key::N, &command), None, "Cmd+N is not New Window");
         let with_shift = egui::Modifiers { shift: true, ..command };
         assert_eq!(action_for_key(&state, egui::Key::N, &with_shift), Some(Action::NewWindow));
@@ -574,7 +984,7 @@ mod tests {
     #[test]
     fn undo_that_cannot_be_done_is_not_taken_from_the_keyboard_either() {
         let state = MenuState::default();
-        let command = egui::Modifiers { command: true, mac_cmd: cfg!(target_os = "macos"), ..Default::default() };
+        let command = pressing_command();
         assert_eq!(action_for_key(&state, egui::Key::Z, &command), None);
     }
 
@@ -583,7 +993,7 @@ mod tests {
         // Cut, copy and paste reach the window as egui clipboard events. If they were watched for here as
         // well, one press would do the work twice.
         let state = MenuState { has_selection: true, ..MenuState::default() };
-        let command = egui::Modifiers { command: true, mac_cmd: cfg!(target_os = "macos"), ..Default::default() };
+        let command = pressing_command();
         assert_eq!(action_for_key(&state, egui::Key::C, &command), None);
         assert_eq!(action_for_key(&state, egui::Key::V, &command), None);
         assert_eq!(action_for_key(&state, egui::Key::X, &command), None);

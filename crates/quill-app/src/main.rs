@@ -168,7 +168,7 @@ fn main() -> eframe::Result {
                 app.settings.opacity = opacity.clamp(0.05, 1.0);
             }
             if let Some(view) = arguments.view {
-                app.view_mode = view;
+                app.set_view_mode(view);
             }
             app.menu_placement = arguments.menu_bar.unwrap_or_else(MenuPlacement::for_this_platform);
             if app.menu_placement == MenuPlacement::Native {

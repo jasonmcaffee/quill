@@ -7,9 +7,10 @@ change looks like the rest of the code rather than like a second style laid over
 
 | Crate | What is in it | What must never be in it |
 |---|---|---|
-| `quill-core` | The editor: the text buffer, the character and paragraph formatting, the caret, layout, undo and the Markdown parser. | Any user interface dependency. Its tests run with no window, no graphics card and no fonts. |
+| `quill-core` | The editor: the text buffer, the character and paragraph formatting, the caret, layout, undo, the Markdown parser and the syntax tokeniser. | Any user interface dependency. Its tests run with no window, no graphics card and no fonts. |
 | `quill-terminal` | The terminal: the session over a pseudoterminal, the screen the painter reads, the colour palette, the key encoding and the mouse reports. | Any user interface dependency, for the same reason. |
-| `quill-app` | The window: drawing, input, real fonts, the settings on disk, the menus. | Editor behaviour or terminal emulation. Those belong in the crates above. |
+| `quill-git` | Reading and changing a git repository: the status, blame, the log, diffs, branches, and every operation on the Git menu, plus the thread they run on. | Any user interface dependency, and any decision about what a dialog looks like. Its tests build real repositories in a temporary folder and ask git what happened. |
+| `quill-app` | The window: drawing, input, real fonts, the settings on disk, the menus, and the plugin registry. | Editor behaviour, terminal emulation or git plumbing. Those belong in the crates above. |
 
 `quill-app` is laid out in four folders and a new file belongs in one of them:
 
@@ -18,6 +19,43 @@ change looks like the rest of the code rather than like a second style laid over
 - `services/` — everything that is not drawing: the file tree, the fonts and the glyph atlas, the settings
   and recent projects on disk, starting a second window, the macOS menu bar.
 - `theme/` — the palette, the measurements and the drawn icons.
+
+## The look is written down, and a new control is measured against it
+
+`design/style-guide.md` says what a control in Quill is built from: the palette is closed, a list row
+is 28 points and a menu row is 24, selection is one pill drawn one way, a modal has one shape, icons
+are drawn rather than lettered, and every control has a plain name. **Read it before drawing anything
+new**, and add to it rather than inventing a second answer.
+
+Two things it separates that are easy to confuse. `design/` holds **intent** — the image a component
+is compared against, changed only when the design changes. `crates/quill-app/tests/snapshots` holds
+**accepted output** — a change that alters the rendering fails against it, and `UPDATE_SNAPSHOTS=1`
+accepts a new one after somebody has opened the image and looked at it.
+
+`components::modal` is the furniture every modal is made of: the frame, the header, the body
+rectangle, the footer, the buttons, the rows, a field and a tick box. The Settings window, the commit
+panel, the git dialogs, the text prompt and the confirmation are all built from it. A tenth modal
+that draws its own header would be a tenth modal that almost agrees with the other nine.
+
+## Git runs the `git` program, on a thread
+
+`quill-git` shells out to `git` rather than using a library, and the reason is what the machine's own
+git already knows: a credential helper, an ssh agent, `commit.gpgsign`, hooks, `safe.directory`, an
+identity for this repository in particular. A push from Quill has to be the same push you get in the
+terminal. The cost is that the output has to be read, which is answered by asking for the formats git
+provides for being read — `--porcelain=v2 -z`, `--line-porcelain`, `--format` with the record
+separators — never the ones meant for a person.
+
+Two rules follow, and a change should keep both.
+
+**Nothing invents an error message.** Every call returns git's own standard output and standard error
+whether it worked or not, and that is what the status bar shows. A rejected push, a merge conflict, a
+detached HEAD and a missing upstream all explain themselves better than Quill could.
+
+**Every command goes through `quill_git::Worker`**, which runs one at a time on a thread. Not because
+the window would be slow — because it would stop drawing until git finished, which on a fetch looks
+exactly like a crash. One at a time, because two commands at once in one repository fight over
+`index.lock`.
 
 ## Every pane is resized by dragging its edge
 
@@ -83,7 +121,9 @@ Four layers, and a change should leave all four green:
    — because the menus, the window buttons and the font are all deliberately different there, so one set
    cannot be the baseline for both. `shot()` at the top of the test file is where that is decided.
 4. The real application: `cargo run --release`, and `cargo run --example terminal_capture -- claude` for the
-   terminal. Layer 3 renders through the same code but offscreen, so only a real run shows that the
+   terminal. For git, `pwsh tools/build-git-demo.ps1` builds a small repository under the temporary
+   folder — three commits by three authors on three widely separated dates, a branch, an uncommitted
+   change and an untracked file — which is enough to exercise every entry on the Git menu by hand. Layer 3 renders through the same code but offscreen, so only a real run shows that the
    operating system honoured the window's transparency or drew the menu bar.
 
 A screenshot test must be the same on every run. The terminal's screenshot tests feed fixed bytes to a
@@ -105,9 +145,27 @@ Quill window is a second process.
 British spelling in prose, and the American spelling where a name in the code already uses it, such as
 `color` in `egui`.
 
+## Plugins are data, and nothing in one is executed
+
+A plugin is a folder with a `plugin.conf` and an icon in it, read by the same value store the
+settings file uses. It describes a language: its extensions, its keywords, what a comment and a
+string look like, and a colour per kind of token. **Nothing is run.** A dynamic library would mean an
+unstable interface across a `dlopen` boundary and a plugin crash taking the editor with it;
+WebAssembly answers both and costs a runtime and a host interface that has to be designed first.
+
+`plugin.kind` is the seam a later version widens, and it is checked: a manifest asking for anything
+but `language` is refused with a message rather than half-loaded. Do not quietly widen it.
+
+A colour scheme **colours the tokens and not the editing area**. The window letting the desktop show
+through is the whole character of the product, and a scheme that repaints the background opaque would
+trade that away to be a shade nearer a screenshot.
+
 ## The documents
 
 - `README.md` — what Quill is and how to run it.
+- `design/style-guide.md` — how a control in Quill is built, and what the baselines are.
+- `tasks/quill-ide-tdd.md` — the line numbers, the tabs, the explorer's menu, git and the plugins:
+  what was chosen, what was rejected and why.
 - `tasks/quill-technical-design-document.md` — the editor: the options that were considered, what was
   chosen and why, and what is deliberately not included.
 - `tasks/quill-terminal-tdd.md` — the same for the terminal.

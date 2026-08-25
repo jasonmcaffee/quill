@@ -42,11 +42,14 @@ pub struct Status<'a> {
     /// It stays until something replaces it, because a message that goes away on its own is a message that
     /// is missed.
     pub message: Option<&'a str>,
+    /// The branch, how far it is from its upstream, and anything half-finished. Absent when the
+    /// folder that is open is not in a repository.
+    pub git: Option<&'a str>,
 }
 
 /// Draw the status bar into `area`.
 pub fn show(ui: &egui::Ui, area: Rect, status: &Status<'_>, opacity: f32) {
-    let Status { name, unsaved, kind, position, family, font_size, message } = *status;
+    let Status { name, unsaved, kind, position, family, font_size, message, git } = *status;
     let painter = ui.painter_at(area);
     // The bottom two corners are rounded to match the window.
     painter.rect_filled(
@@ -94,12 +97,16 @@ pub fn show(ui: &egui::Ui, area: Rect, status: &Status<'_>, opacity: f32) {
         label(&painter, &mut pen, message.to_owned(), color::TEXT_CONTROL);
     }
 
-    // The family and size sit against the right edge.
+    // The family and size sit against the right edge, and the branch sits before them, which is
+    // where every editor with a status bar puts it.
     let right_text = format!("{family} \u{00B7} {font_size:.0} pt");
-    let galley = painter.layout_no_wrap(right_text, font, color::TEXT_DIM);
-    painter.galley(
-        Pos2::new(area.right() - 16.0 - galley.size().x, middle - galley.size().y / 2.0),
-        galley,
-        color::TEXT_DIM,
-    );
+    let galley = painter.layout_no_wrap(right_text, font.clone(), color::TEXT_DIM);
+    let mut right = area.right() - 16.0 - galley.size().x;
+    painter.galley(Pos2::new(right, middle - galley.size().y / 2.0), galley, color::TEXT_DIM);
+    if let Some(git) = git {
+        let galley = painter.layout_no_wrap(git.to_owned(), font, color::TEXT_CONTROL);
+        right -= 18.0 + galley.size().x;
+        crate::theme::icon::branch(&painter, Pos2::new(right - 12.0, middle), color::TEXT_DIM);
+        painter.galley(Pos2::new(right, middle - galley.size().y / 2.0), galley, color::TEXT_CONTROL);
+    }
 }

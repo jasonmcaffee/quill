@@ -12,6 +12,8 @@
 use egui::{CornerRadius, Pos2, Rect, Sense, Stroke, Vec2};
 
 use crate::components::controls;
+use crate::components::plugins_page::{self, PluginsOutcome, PluginsState};
+use crate::services::plugins::Plugins;
 use crate::settings::{Page, Settings, FONT_SIZES, MIN_OPACITY, TERMINAL_FONT_SIZES};
 use crate::theme::{color, icon, size};
 
@@ -30,6 +32,8 @@ pub struct SettingsWindow {
     pub open: bool,
     pub page: Page,
     pub search: String,
+    /// What the Plugins page is showing.
+    pub plugins: PluginsState,
 }
 
 impl SettingsWindow {
@@ -39,12 +43,14 @@ impl SettingsWindow {
 }
 
 /// What happened in the Settings window this frame.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq)]
 pub struct SettingsOutcome {
     /// A setting was changed, so the window applies it and writes the settings file.
     pub changed: bool,
     /// The window was closed.
     pub closed: bool,
+    /// What the Plugins page asked for.
+    pub plugins: PluginsOutcome,
 }
 
 /// Draw the Settings window. Does nothing when it is not open.
@@ -54,6 +60,9 @@ pub fn show(
     settings: &mut Settings,
     families: &[String],
     project: &str,
+    plugins: &Plugins,
+    installed_on_disk: &dyn Fn(&str) -> bool,
+    icon_for: &dyn Fn(&str) -> Option<egui::TextureHandle>,
 ) -> SettingsOutcome {
     let mut outcome = SettingsOutcome::default();
     if !state.open {
@@ -75,17 +84,21 @@ pub fn show(
             let width = WIDTH.min(available.x - 40.0);
             let height = HEIGHT.min(available.y - 40.0);
             let (area, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
-            contents(ui, area, state, settings, families, project)
+            contents(ui, area, state, settings, families, project, plugins, installed_on_disk, icon_for)
         });
 
+    let should_close = response.should_close();
     outcome.changed = response.inner.changed;
-    if response.inner.closed || response.should_close() {
+    let inner_closed = response.inner.closed;
+    outcome.plugins = response.inner.plugins;
+    if inner_closed || should_close {
         state.open = false;
         outcome.closed = true;
     }
     outcome
 }
 
+#[allow(clippy::too_many_arguments)]
 fn contents(
     ui: &mut egui::Ui,
     area: Rect,
@@ -93,6 +106,9 @@ fn contents(
     settings: &mut Settings,
     families: &[String],
     project: &str,
+    plugins: &Plugins,
+    installed_on_disk: &dyn Fn(&str) -> bool,
+    icon_for: &dyn Fn(&str) -> Option<egui::TextureHandle>,
 ) -> SettingsOutcome {
     let mut outcome = SettingsOutcome::default();
 
@@ -138,6 +154,19 @@ fn contents(
     match state.page {
         Page::Appearance => {
             outcome.changed |= appearance_page(ui, page_area, settings, families);
+        }
+        Page::Editor => {
+            outcome.changed |= editor_page(ui, page_area, settings);
+        }
+        Page::Plugins => {
+            outcome.plugins = plugins_page::show(
+                ui,
+                page_area,
+                &mut state.plugins,
+                plugins,
+                installed_on_disk,
+                icon_for,
+            );
         }
         Page::Terminal => {
             outcome.changed |= terminal_page(ui, page_area, settings);
@@ -204,7 +233,7 @@ fn show_list(ui: &mut egui::Ui, area: Rect, state: &mut SettingsWindow) {
             continue;
         }
         any = true;
-        if group_drawn != Some(page.group()) {
+        if !page.group().is_empty() && group_drawn != Some(page.group()) {
             group_drawn = Some(page.group());
             let row = Rect::from_min_size(
                 Pos2::new(area.left(), pen),
@@ -230,7 +259,9 @@ fn show_list(ui: &mut egui::Ui, area: Rect, state: &mut SettingsWindow) {
         }
         let row =
             Rect::from_min_size(Pos2::new(area.left(), pen), Vec2::new(area.width(), size::ROW));
-        if page_row(ui, row, page, state.page == page) {
+        // A page with no group of its own is not indented under one.
+        let indent = if page.group().is_empty() { 16.0 } else { 46.0 };
+        if page_row(ui, row, page, state.page == page, indent) {
             state.page = page;
         }
         pen += size::ROW;
@@ -247,7 +278,7 @@ fn show_list(ui: &mut egui::Ui, area: Rect, state: &mut SettingsWindow) {
 
 /// One page in the list. The chosen one is drawn as a filled row, the way the open file is in the
 /// explorer, so the two lists in the application look like each other.
-fn page_row(ui: &mut egui::Ui, row: Rect, page: Page, chosen: bool) -> bool {
+fn page_row(ui: &mut egui::Ui, row: Rect, page: Page, chosen: bool, indent: f32) -> bool {
     let response = ui.interact(row, ui.id().with(("settings-page", page.title())), Sense::click());
     let pill = row.shrink2(Vec2::new(8.0, 1.0));
     if chosen {
@@ -262,7 +293,7 @@ fn page_row(ui: &mut egui::Ui, row: Rect, page: Page, chosen: bool) -> bool {
         tint,
     );
     ui.painter().galley(
-        Pos2::new(row.left() + 46.0, row.center().y - galley.size().y / 2.0),
+        Pos2::new(row.left() + indent, row.center().y - galley.size().y / 2.0),
         galley,
         tint,
     );
@@ -371,6 +402,55 @@ fn appearance_page(
     changed
 }
 
+/// `Editor > Editor`: what the gutter down the left of the editing area shows.
+fn editor_page(ui: &mut egui::Ui, area: Rect, settings: &mut Settings) -> bool {
+    let mut changed = false;
+    let mut pen = breadcrumb(ui, area, Page::Editor);
+    pen = section(ui, area, pen, "Gutter");
+    let row = row_at(area, pen);
+    changed |= checkbox(ui, row, "Show line numbers", &mut settings.line_numbers);
+    pen += 32.0;
+    note(
+        ui,
+        area,
+        pen,
+        "A number against each line of the file. Quill wraps, so a paragraph that runs over several rows is numbered once, against its first row. Right clicking the gutter puts the numbers away and annotates with git blame.",
+    );
+    changed
+}
+
+/// A tick box with its label to the right of it, drawn the way every other control here is.
+fn checkbox(ui: &mut egui::Ui, row: Rect, name: &str, value: &mut bool) -> bool {
+    let box_rect = Rect::from_min_size(Pos2::new(row.left(), row.center().y - 8.0), Vec2::splat(16.0));
+    let response = ui.interact(row, ui.id().with(("settings-check", name)), Sense::click());
+    let painter = ui.painter();
+    painter.rect(
+        box_rect,
+        CornerRadius::same(3),
+        if *value { color::ACCENT } else { color::FIELD },
+        Stroke::new(1.0, if *value { color::ACCENT } else { color::CONTROL_BORDER }),
+        egui::StrokeKind::Inside,
+    );
+    if *value {
+        icon::tick(painter, box_rect.center(), color::TEXT_STRONG);
+    }
+    let galley =
+        painter.layout_no_wrap(name.to_owned(), egui::FontId::proportional(12.5), color::TEXT_CONTROL);
+    painter.galley(
+        Pos2::new(box_rect.right() + 10.0, row.center().y - galley.size().y / 2.0),
+        galley,
+        color::TEXT_CONTROL,
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), *value, name)
+    });
+    if response.clicked() {
+        *value = !*value;
+        return true;
+    }
+    false
+}
+
 /// `Tools > Terminal`.
 fn terminal_page(ui: &mut egui::Ui, area: Rect, settings: &mut Settings) -> bool {
     let mut changed = false;
@@ -418,6 +498,15 @@ fn terminal_page(ui: &mut egui::Ui, area: Rect, settings: &mut Settings) -> bool
 fn breadcrumb(ui: &mut egui::Ui, area: Rect, page: Page) -> f32 {
     let painter = ui.painter_at(area);
     let y = area.top() + 26.0;
+    if page.group().is_empty() {
+        let title = painter.layout_no_wrap(
+            page.title().to_owned(),
+            egui::FontId::proportional(13.5),
+            color::TEXT_STRONG,
+        );
+        painter.galley(Pos2::new(area.left() + 24.0, y - title.size().y / 2.0), title, color::TEXT_STRONG);
+        return y + 22.0;
+    }
     let group = painter.layout_no_wrap(
         page.group().to_owned(),
         egui::FontId::proportional(13.5),

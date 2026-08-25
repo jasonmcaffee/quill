@@ -42,10 +42,79 @@ pub fn open_window(folder: &Path) -> bool {
     }
 }
 
+/// The command that opens the platform's file manager with `path` selected.
+///
+/// Split out from running it for the same reason [`command_for`] is: a test can check what would be
+/// run without a file manager window appearing on the machine running the tests.
+pub fn reveal_command(path: &Path) -> Command {
+    if cfg!(target_os = "windows") {
+        // `/select,` and the path must be one argument with no space after the comma, which is why
+        // this is built as a single string rather than as two arguments.
+        let mut command = Command::new("explorer");
+        command.arg(format!("/select,{}", path.display()));
+        command
+    } else if cfg!(target_os = "macos") {
+        let mut command = Command::new("open");
+        command.arg("-R").arg(path);
+        command
+    } else {
+        // Every desktop on Linux has its own file manager, and `xdg-open` on a folder is the closest
+        // thing to a common answer. It opens the folder rather than selecting the file in it.
+        let mut command = Command::new("xdg-open");
+        command.arg(path.parent().unwrap_or(path));
+        command
+    }
+}
+
+/// Show `path` in the platform's file manager.
+///
+/// The name of the entry says `Explorer` on Windows and `Finder` on macOS, because those are what
+/// the thing is called there.
+pub fn reveal(path: &Path) -> bool {
+    match reveal_command(path).spawn() {
+        Ok(_) => true,
+        Err(problem) => {
+            eprintln!("Quill could not show {} in the file manager: {problem}", path.display());
+            false
+        }
+    }
+}
+
+/// What the entry that does it is called on this platform.
+pub fn file_manager_name() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Reveal in Finder"
+    } else if cfg!(target_os = "windows") {
+        "Show in Explorer"
+    } else {
+        "Open Containing Folder"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn revealing_a_file_asks_the_platform_for_its_own_file_manager() {
+        let command = reveal_command(Path::new("/tmp/notes/one.md"));
+        let program = command.get_program().to_string_lossy().to_string();
+        let arguments: Vec<String> =
+            command.get_args().map(|arg| arg.to_string_lossy().to_string()).collect();
+        if cfg!(target_os = "windows") {
+            assert_eq!(program, "explorer");
+            // One argument, with no space after the comma: `explorer` will not select the file if
+            // the switch and the path are separate arguments.
+            assert_eq!(arguments, vec!["/select,/tmp/notes/one.md".to_owned()]);
+        } else if cfg!(target_os = "macos") {
+            assert_eq!(program, "open");
+            assert_eq!(arguments, vec!["-R".to_owned(), "/tmp/notes/one.md".to_owned()]);
+        } else {
+            assert_eq!(program, "xdg-open");
+            assert_eq!(arguments, vec!["/tmp/notes".to_owned()]);
+        }
+    }
 
     #[test]
     fn the_command_runs_quill_again_with_the_folder_after_it() {

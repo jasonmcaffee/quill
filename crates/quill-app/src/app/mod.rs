@@ -23,6 +23,8 @@
 //! test all go down that one path.
 
 pub mod actions;
+pub mod files;
+pub mod git;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -30,8 +32,14 @@ use std::sync::Arc;
 use egui::{Color32, CornerRadius, Pos2, Rect, Vec2};
 use quill_core::{layout, Command, Document, Layout};
 
+use crate::components::context_menu;
 use crate::components::editor_view;
 use crate::components::explorer;
+use crate::components::file_tabs::{self, TabView};
+use crate::components::git_dialogs::{self, Dialog};
+use crate::components::git_panel;
+use crate::components::gutter::{self, Gutter};
+use crate::components::prompt_dialog::{self, Prompt, Purpose};
 use crate::components::settings_dialog::{self, SettingsWindow};
 use crate::components::splitter;
 use crate::components::status_bar;
@@ -40,17 +48,36 @@ use crate::components::title_bar::{self, MenuPlacement};
 use crate::components::toolbar;
 use crate::services::file_kind;
 use crate::services::file_tree::FileTree;
+use crate::services::file_clipboard::FileClipboard;
 use crate::services::launcher;
+use crate::services::icons::Icons;
+use crate::services::plugins::Plugins;
 use crate::services::native_menu::NativeMenu;
 use crate::services::store::Store;
 use crate::services::text_renderer::TextRenderer;
 use crate::settings::{self, Panes, Settings};
 use crate::theme::{self, color, size};
 
-use actions::{Action, MenuState};
+use actions::{Action, GitAction, MenuState};
+use git::GitState;
+use files::OpenFiles;
 
 /// How opaque the background is when Quill starts.
 pub const DEFAULT_OPACITY: f32 = settings::DEFAULT_OPACITY;
+
+/// A question with two answers, and what to do when it is answered.
+///
+/// Everything Quill asks about first is something git cannot undo, so what is held is the request
+/// itself and confirming simply sends it. That is what keeps the dialog from having to know what
+/// any of them mean.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Confirmation {
+    pub title: String,
+    pub note: String,
+    /// The word on the button that does it.
+    pub button: String,
+    pub request: quill_git::worker::Request,
+}
 
 /// Which of the three ways of looking at a Markdown file is showing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -105,7 +132,8 @@ pub enum Focus {
 }
 
 pub struct QuillApp {
-    pub document: Document,
+    /// The files that are open, one to a tab, and which of them is showing.
+    pub files: OpenFiles,
     pub tree: FileTree,
     pub renderer: TextRenderer,
     /// The font and the background, as chosen in `Edit -> Settings`.
@@ -149,20 +177,14 @@ pub struct QuillApp {
     /// the layout of the file that was open before. That is a real fault, found by looking at a screenshot
     /// where a file had been opened and the editing area was empty.
     layout_stale: bool,
-    /// How far the editing area is scrolled.
-    scroll: f32,
     /// The rectangle the editing area last occupied, so a test can measure the document's own text without
     /// also measuring the bars round it.
     editor_area: Rect,
-    /// Which of the three ways of looking at the file is showing.
-    pub view_mode: ViewMode,
     /// The Markdown preview, worked out from the source and kept until the source changes.
     preview: Option<quill_core::Preview>,
     preview_layout: Layout,
     preview_revision: u64,
     preview_width: f32,
-    /// How far the preview is scrolled, which is separate from the editor's own scrolling.
-    preview_scroll: f32,
     /// Set when the theme has been applied, which has to happen once the context exists.
     themed: bool,
     /// The family the toolbar uses for its bold B. It is the real bold face once [`Self::prepare`] has
@@ -173,6 +195,32 @@ pub struct QuillApp {
     context: Option<egui::Context>,
     /// What had the keyboard on the last frame, so that the terminal can be told when it gains or loses it.
     last_focus: Focus,
+    /// The plugins that are installed, which is what decides how a file is coloured and what icon
+    /// it has.
+    pub plugins: Plugins,
+    /// The revision the open file was last coloured at, so it is not coloured again for nothing.
+    coloured_revision: Option<u64>,
+    /// The plugins' icons, decoded once each.
+    icons: Icons,
+    /// The repository the project is in, when it is in one, and the thread that runs git.
+    pub git: Option<GitState>,
+    /// Set once the folder has been looked at, so a folder that is not in a repository is not
+    /// looked at again on every frame.
+    git_looked: bool,
+    /// A question with two answers, and the request to send when it is answered.
+    ///
+    /// Everything that asks first is something git cannot undo — a rollback, a hard reset, dropping
+    /// a stash — so what is held is the request, and confirming sends it.
+    pub confirmation: Option<Confirmation>,
+    /// What was cut or copied in the explorer, waiting to be pasted.
+    pub clipboard: FileClipboard,
+    /// Where the explorer's own menu is open, and what it is about.
+    pub explorer_menu: Option<(Pos2, PathBuf, bool)>,
+    /// The text prompt, when one is open.
+    pub prompt: Option<Prompt>,
+    /// Where the gutter's own menu is open, when it is. Held here rather than in egui's memory so
+    /// that a test can open it: a screenshot test cannot press the right mouse button.
+    pub gutter_menu: Option<Pos2>,
 }
 
 impl QuillApp {
@@ -186,7 +234,7 @@ impl QuillApp {
         // Start in a family this system actually has, so the first thing typed is visible.
         document.set_base_style(settings.as_style_change());
         Self {
-            document,
+            files: OpenFiles::new(document),
             tree: FileTree::new(&folder),
             renderer,
             settings,
@@ -207,26 +255,33 @@ impl QuillApp {
             laid_out_revision: 0,
             laid_out_width: 0.0,
             layout_stale: true,
-            scroll: 0.0,
             editor_area: Rect::ZERO,
-            view_mode: ViewMode::Raw,
             preview: None,
             preview_layout: Layout::default(),
             preview_revision: 0,
             preview_width: 0.0,
-            preview_scroll: 0.0,
             themed: false,
             bold_family: egui::FontFamily::Proportional,
             context: None,
             last_focus: Focus::Editor,
+            plugins: Plugins::load(None).0,
+            coloured_revision: None,
+            icons: Icons::new(),
+            git: None,
+            git_looked: false,
+            confirmation: None,
+            clipboard: FileClipboard::new(),
+            explorer_menu: None,
+            prompt: None,
+            gutter_menu: None,
         }
     }
 
     /// A window whose document already holds `text`, which the screenshot tests use to set a scene.
     pub fn with_text(folder: impl Into<PathBuf>, text: &str) -> Self {
         let mut app = Self::new(folder);
-        app.document.apply(Command::Insert(text.to_owned()));
-        app.document.apply(Command::MoveDocumentStart { extend: false });
+        app.document_mut().apply(Command::Insert(text.to_owned()));
+        app.document_mut().apply(Command::MoveDocumentStart { extend: false });
         app
     }
 
@@ -271,6 +326,13 @@ impl QuillApp {
         self.panes = panes;
         store.remember_project(self.tree.root());
         self.recent = store.recent_projects();
+        let (plugins, problems) = Plugins::load(Some(&store));
+        self.plugins = plugins;
+        // A plugin that will not parse is skipped and said out loud, rather than stopping Quill.
+        // The same rule the settings file already keeps for a line it cannot read.
+        if let Some(first) = problems.first() {
+            self.message = Some(format!("A plugin could not be read \u{2014} {first}"));
+        }
         // On the first run there is no settings file. One is written straight away, holding the defaults,
         // so that a person looking for it finds it and can see what its names are rather than having to
         // change a setting first to make it appear.
@@ -279,7 +341,8 @@ impl QuillApp {
         if first_run {
             self.write_settings();
         }
-        self.document.set_base_style(self.settings.as_style_change());
+        let change = self.settings.as_style_change();
+        self.document_mut().set_base_style(change);
     }
 
     /// Build the macOS menu bar. Called by the released binary only: a test has no application to attach a
@@ -287,6 +350,28 @@ impl QuillApp {
     pub fn install_native_menu(&mut self) {
         let menus = actions::menus(&self.menu_state());
         self.native_menu = Some(NativeMenu::install(&menus, self.context.as_ref()));
+    }
+
+    /// The document in the tab that is showing.
+    ///
+    /// A method rather than a field, because which document is the open one is a property of the
+    /// tabs. Everything that used to reach for `app.document` now goes through here, so there is one
+    /// answer to what "the open file" means.
+    pub fn document(&self) -> &Document {
+        &self.files.active().document
+    }
+
+    pub fn document_mut(&mut self) -> &mut Document {
+        &mut self.files.active_mut().document
+    }
+
+    /// Which of the three ways of looking at the open file is showing.
+    pub fn view_mode(&self) -> ViewMode {
+        self.files.active().view_mode
+    }
+
+    pub fn set_view_mode(&mut self, mode: ViewMode) {
+        self.files.active_mut().view_mode = mode;
     }
 
     /// The layout as it was last painted, which the tests assert against.
@@ -306,12 +391,12 @@ impl QuillApp {
 
     /// Where the caret is, as the status bar reports it.
     pub fn caret_position(&self) -> status_bar::Position {
-        status_bar::position_of(self.document.text(), self.document.selection().head)
+        status_bar::position_of(self.document().text(), self.document().selection().head)
     }
 
     /// Run a command, as the toolbar or a test would.
     pub fn command(&mut self, command: Command) {
-        self.document.apply(command);
+        self.document_mut().apply(command);
     }
 
     /// The colour of the window background at the current opacity setting.
@@ -325,14 +410,20 @@ impl QuillApp {
     /// What the menus need to know about the window.
     pub fn menu_state(&self) -> MenuState {
         MenuState {
-            can_undo: self.document.can_undo(),
-            can_redo: self.document.can_redo(),
-            has_selection: !self.document.selection().is_empty(),
+            can_undo: self.document().can_undo(),
+            can_redo: self.document().can_redo(),
+            has_selection: !self.document().selection().is_empty(),
             recent: self.recent.clone(),
-            view_mode: self.view_mode,
+            view_mode: self.view_mode(),
             explorer_visible: self.explorer_visible,
+            line_numbers: self.settings.line_numbers,
             terminal_visible: self.terminal.visible,
             terminal_tabs: self.terminal.tabs.count(),
+            open_files: self.files.len(),
+            in_repository: self.git.is_some(),
+            has_file: self.document().path().is_some(),
+            annotated: self.files.active().blame.is_some(),
+            unfinished: self.git.as_ref().and_then(|git| git.snapshot.in_progress),
         }
     }
 
@@ -401,7 +492,7 @@ impl QuillApp {
                 if let Some(target) =
                     rfd::FileDialog::new().set_title("Save As").set_directory(&start).save_file()
                 {
-                    if self.document.save_as(&target).is_ok() {
+                    if self.document_mut().save_as(&target).is_ok() {
                         self.tree.reload();
                     }
                 }
@@ -413,19 +504,19 @@ impl QuillApp {
             }
             Action::Settings => self.settings_window.open(),
             Action::Undo => {
-                self.document.apply(Command::Undo);
+                self.document_mut().apply(Command::Undo);
             }
             Action::Redo => {
-                self.document.apply(Command::Redo);
+                self.document_mut().apply(Command::Redo);
             }
             Action::Cut => {
                 if self.focus == Focus::Terminal {
                     if let Some(text) = self.terminal.tabs.active().and_then(|s| s.selected_text()) {
                         ctx.copy_text(text);
                     }
-                } else if !self.document.selection().is_empty() {
-                    ctx.copy_text(self.document.selected_text());
-                    self.document.apply(Command::DeleteBackward);
+                } else if !self.document().selection().is_empty() {
+                    ctx.copy_text(self.document().selected_text());
+                    self.document_mut().apply(Command::DeleteBackward);
                 }
             }
             Action::Copy => {
@@ -433,8 +524,8 @@ impl QuillApp {
                     if let Some(text) = self.terminal.tabs.active().and_then(|s| s.selected_text()) {
                         ctx.copy_text(text);
                     }
-                } else if !self.document.selection().is_empty() {
-                    ctx.copy_text(self.document.selected_text());
+                } else if !self.document().selection().is_empty() {
+                    ctx.copy_text(self.document().selected_text());
                 }
             }
             Action::Paste => {
@@ -453,7 +544,7 @@ impl QuillApp {
                             }
                         } else {
                             let text = text.replace("\r\n", "\n").replace('\r', "\n");
-                            self.document.apply(Command::Insert(text));
+                            self.document_mut().apply(Command::Insert(text));
                         }
                     }
                     Ok(_) => {}
@@ -461,10 +552,14 @@ impl QuillApp {
                 }
             }
             Action::SelectAll => {
-                self.document.apply(Command::SelectAll);
+                self.document_mut().apply(Command::SelectAll);
             }
-            Action::SetViewMode(mode) => self.view_mode = mode,
+            Action::SetViewMode(mode) => self.set_view_mode(mode),
             Action::ToggleExplorer => self.explorer_visible = !self.explorer_visible,
+            Action::ToggleLineNumbers => {
+                self.settings.line_numbers = !self.settings.line_numbers;
+                self.unsaved_settings = true;
+            }
             Action::ToggleTerminal => {
                 self.terminal.visible = !self.terminal.visible;
                 if self.terminal.visible {
@@ -473,6 +568,18 @@ impl QuillApp {
                 } else {
                     self.focus = Focus::Editor;
                 }
+            }
+            Action::CloseTab => {
+                let index = self.files.active_index();
+                self.close_tab(index);
+            }
+            Action::NextTab => {
+                self.files.next();
+                self.forget_layout();
+            }
+            Action::PreviousTab => {
+                self.files.previous();
+                self.forget_layout();
             }
             Action::NewTerminalTab => {
                 self.terminal.visible = true;
@@ -487,6 +594,43 @@ impl QuillApp {
                     self.focus = Focus::Editor;
                 }
             }
+            Action::NewFile(folder) => {
+                self.prompt = Some(Prompt::new(
+                    "New File",
+                    &format!("A new, empty file in {}. Any extension: example.txt, test.json, main.rs.", folder.display()),
+                    "example.txt",
+                    "Create",
+                    Purpose::NewFile(folder),
+                ));
+            }
+            Action::CutPath(path) => self.clipboard.cut(path),
+            Action::CopyPath(path) => self.clipboard.copy(path),
+            Action::CopyPathReference(path) => ctx.copy_text(path.display().to_string()),
+            Action::PasteInto(folder) => match self.clipboard.paste_into(&folder) {
+                Ok(target) => {
+                    self.tree.reload();
+                    self.message = Some(format!("Pasted {}", target.display()));
+                }
+                Err(problem) => self.message = Some(format!("Quill could not paste: {problem}")),
+            },
+            Action::RenamePath(path) => {
+                let name = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                self.prompt = Some(Prompt::new(
+                    "Rename",
+                    &format!("Rename {}.", path.display()),
+                    &name,
+                    "Rename",
+                    Purpose::Rename(path),
+                ));
+            }
+            Action::RevealPath(path) => {
+                launcher::reveal(&path);
+            }
+            Action::ReloadPath(path) => self.reload_from_disk(&path),
+            Action::Git(what) => self.run_git(what),
             Action::About => {
                 self.message = Some(format!(
                     "Quill {} \u{00B7} a text editor written in Rust",
@@ -553,31 +697,54 @@ impl QuillApp {
             store.remember_project(folder);
             self.recent = store.recent_projects();
         }
+        // The second folder may be a different repository, or none at all.
+        self.open_repository();
     }
 
-    /// Open a file into the editor.
+    /// Open a file into the tab that a single click reuses.
     ///
-    /// Any file holding text opens. A `.md` file is Markdown, which means the preview button does something
-    /// with it; everything else opens as plain text, which is what `tasks/improvements.md` asks for.
+    /// Any file holding text opens. A `.md` file is Markdown, which means the preview button does
+    /// something with it; everything else opens as plain text, which is what
+    /// `tasks/improvements.md` asks for.
     pub fn open_path(&mut self, path: &Path) {
+        self.open_path_in_tab(path, false);
+    }
+
+    /// Open a file in a tab of its own, which is what a double click in the explorer does.
+    pub fn open_path_permanently(&mut self, path: &Path) {
+        self.open_path_in_tab(path, true);
+    }
+
+    /// The one place a file is loaded. `permanent` decides whether it takes a tab of its own or
+    /// reuses the transient one; [`files::OpenFiles::open`] decides what that means.
+    fn open_path_in_tab(&mut self, path: &Path, permanent: bool) {
         if let Err(refusal) = file_kind::openable(path) {
             self.message = Some(format!("{}: {}", path.display(), refusal.reason()));
+            return;
+        }
+        // A file that is already open is shown rather than read from disk again, so switching back
+        // to a tab does not throw away what has been typed into it.
+        if let Some(index) = self.files.index_of(path) {
+            self.show_tab(index);
+            if permanent {
+                self.files.make_permanent(index);
+            }
             return;
         }
         match Document::open(path) {
             Ok(mut document) => {
                 document.apply(Command::MoveDocumentStart { extend: false });
-                self.document = document;
-                self.document.set_base_style(self.settings.as_style_change());
-                self.scroll = 0.0;
+                self.files.open(document, permanent);
+                let change = self.settings.as_style_change();
+                self.document_mut().set_base_style(change);
                 self.message = None;
-                // The new document counts its revisions from the beginning, so what was laid out for the last
-                // one has to be thrown away rather than compared against.
-                self.forget_layout();
                 // A file that is not Markdown has nothing to preview, so the raw source is shown.
                 if !file_kind::is_markdown(Some(path)) {
-                    self.view_mode = ViewMode::Raw;
+                    self.files.active_mut().view_mode = ViewMode::Raw;
                 }
+                // The new document counts its revisions from the beginning, so what was laid out for
+                // the last one has to be thrown away rather than compared against.
+                self.forget_layout();
             }
             Err(error) => {
                 // Nothing is thrown away: the document that was open stays open, and the reason is said in
@@ -588,20 +755,632 @@ impl QuillApp {
         }
     }
 
+    /// Start working on the repository the project is in, if it is in one.
+    ///
+    /// Called when a window opens and again when it is pointed at another folder, because the second
+    /// folder may be a different repository, or none.
+    pub fn open_repository(&mut self) {
+        let waker = self.git_waker();
+        self.git = GitState::open(self.tree.root(), waker);
+        self.git_looked = true;
+        self.files.forget_git();
+    }
+
+    /// The largest file that is coloured.
+    ///
+    /// Colouring is one linear pass over the text and it runs whenever the text changes, so on a
+    /// very large file it is a pause a person can feel while typing. Two megabytes is where it is
+    /// switched off, and the status bar says so rather than leaving the colours quietly missing.
+    /// It is a number to be measured rather than a law: change it, and change this comment.
+    const COLOUR_LIMIT: usize = 2 * 1024 * 1024;
+
+    /// Colour the open file by what its text is, if a plugin claims it.
+    ///
+    /// This is not an edit. `Document::set_syntax` pushes nothing onto the undo history and does not
+    /// mark the file as changed, for the same reasons setting the font does not: what Quill saves is
+    /// plain text and carries no formatting.
+    fn colour_the_open_file(&mut self) {
+        let revision = self.document().revision();
+        if self.coloured_revision == Some(revision) {
+            return;
+        }
+        let Some(path) = self.files.active().path().map(Path::to_path_buf) else {
+            self.coloured_revision = Some(revision);
+            return;
+        };
+        let Some(plugin) = self.plugins.for_path(&path) else {
+            self.coloured_revision = Some(revision);
+            return;
+        };
+        let base = quill_core::Color::rgb(color::TEXT.r(), color::TEXT.g(), color::TEXT.b());
+        let text = self.document().text().to_string();
+        if text.len() > Self::COLOUR_LIMIT {
+            self.message = Some(format!(
+                "{} is too large to colour, so it is shown as plain text.",
+                path.display()
+            ));
+            self.coloured_revision = Some(revision);
+            return;
+        }
+        let theme = plugin.theme.clone();
+        let spans: Vec<(std::ops::Range<usize>, quill_core::Color)> =
+            quill_core::syntax::highlight(&text, &plugin.grammar)
+                .into_iter()
+                .filter_map(|(range, token)| theme.colour(token).map(|colour| (range, colour)))
+                .collect();
+        self.document_mut().set_syntax(base, &spans);
+        // `set_syntax` bumps the revision, so what is remembered is the revision *after* it, or the
+        // next frame would colour it all over again for ever.
+        self.coloured_revision = Some(self.document().revision());
+        self.layout_stale = true;
+    }
+
+    /// Write a bundled plugin out to the settings folder and load it back from there.
+    fn install_plugin(&mut self, id: &str) {
+        let Some(store) = self.store.clone() else {
+            self.message = Some("There is nowhere to install a plugin to.".to_owned());
+            return;
+        };
+        match self.plugins.install(&store, id) {
+            Ok(()) => {
+                self.message = Some(format!(
+                    "Installed {id} into {}",
+                    Plugins::folder(&store, id).display()
+                ));
+                self.coloured_revision = None;
+            }
+            Err(problem) => self.message = Some(format!("{id} could not be installed: {problem}")),
+        }
+    }
+
+    /// The picture the plugin that claims `path` puts in front of it, decoded and ready to draw.
+    fn plugin_icon(
+        &mut self,
+        ctx: &egui::Context,
+        path: Option<&Path>,
+    ) -> Option<egui::TextureHandle> {
+        let path = path?;
+        let (id, bytes) = {
+            let plugin = self.plugins.for_path(path)?;
+            (plugin.id.clone(), plugin.icon.clone()?)
+        };
+        self.icons.texture(ctx, &id, &bytes)
+    }
+
+    /// Ask git what it thinks of the file that is showing, once per file.
+    ///
+    /// Only the change bars are asked for. Blame is not, because annotating is something a person
+    /// turns on: reading the whole history of every file that is opened would be work nobody asked
+    /// for, on a large file it is slow, and the column takes room the text would rather have.
+    fn ask_git_about_the_open_file(&mut self) {
+        if self.files.active().git_asked || self.git.is_none() {
+            return;
+        }
+        let Some(path) = self.files.active().path().map(Path::to_path_buf) else {
+            return;
+        };
+        self.files.active_mut().git_asked = true;
+        if let Some(git) = self.git.as_mut() {
+            if git.relative(&path).is_some() {
+                git.send(quill_git::worker::Request::ChangedLines(path));
+            }
+        }
+    }
+
+    /// What the git thread calls to have the window drawn again when a command finishes.
+    fn git_waker(&self) -> std::sync::Arc<dyn Fn() + Send + Sync> {
+        match &self.context {
+            Some(context) => {
+                let context = context.clone();
+                Arc::new(move || context.request_repaint())
+            }
+            None => Arc::new(|| {}),
+        }
+    }
+
+    /// The path a git entry is about: the one the menu named, or the file that is open.
+    fn git_target(&self, named: Option<PathBuf>) -> Option<PathBuf> {
+        named.or_else(|| self.document().path().map(Path::to_path_buf))
+    }
+
+    /// Do what the Git menu asked for.
+    ///
+    /// Nothing here runs a git command: each arm either opens a dialog or sends a request to the
+    /// worker thread, so the window never waits for git.
+    fn run_git(&mut self, what: GitAction) {
+        use quill_git::worker::Request;
+        let target = match &what {
+            GitAction::Add(path)
+            | GitAction::ShowDiff(path)
+            | GitAction::CompareWithRevision(path)
+            | GitAction::ShowHistory(path)
+            | GitAction::Rollback(path) => self.git_target(path.clone()),
+            _ => self.document().path().map(Path::to_path_buf),
+        };
+        // Clone is the one entry that works with no repository, because it is how you get one.
+        if what == GitAction::Clone {
+            self.prompt = Some(Prompt::new(
+                "Clone",
+                &format!("Clone into a folder under {}, and open it in a window of its own.", self.tree.root().display()),
+                "",
+                "Clone",
+                Purpose::Clone,
+            ));
+            return;
+        }
+        let Some(git) = self.git.as_mut() else {
+            self.message = Some("This folder is not in a git repository.".to_owned());
+            return;
+        };
+        let relative = target.as_deref().and_then(|path| git.relative(path));
+        match what {
+            GitAction::Commit => {
+                git.panel.open();
+                git.send(Request::Log { path: None, limit: git::HISTORY_LIMIT });
+            }
+            GitAction::Add(_) => {
+                if let Some(path) = relative {
+                    git.send(Request::Add(vec![path]));
+                }
+            }
+            GitAction::ShowDiff(_) => {
+                if let Some(path) = target {
+                    git.send(Request::Diff { path, staged: false, revision: None });
+                }
+            }
+            GitAction::CompareWithRevision(_) => {
+                if let Some(path) = target {
+                    self.prompt = Some(Prompt::new(
+                        "Compare with Revision",
+                        "A commit, a branch or a tag to compare this file against.",
+                        "HEAD~1",
+                        "Compare",
+                        Purpose::CompareWithRevision(path),
+                    ));
+                }
+            }
+            GitAction::ShowHistory(path) => {
+                let of = path.or(target);
+                git.send(Request::Log { path: of, limit: git::HISTORY_LIMIT });
+                git.dialogs.open = Some(Dialog::History);
+            }
+            GitAction::ShowCurrentRevision => git.send(Request::ShowCommit("HEAD".to_owned())),
+            GitAction::Annotate => {
+                let annotated = self.files.active().blame.is_some();
+                if annotated {
+                    self.files.active_mut().blame = None;
+                } else if let Some(path) = target {
+                    git.send(Request::Blame(path));
+                }
+            }
+            GitAction::Rollback(_) => {
+                if let Some(path) = relative {
+                    self.confirmation = Some(Confirmation {
+                        title: "Rollback".to_owned(),
+                        note: format!(
+                            "Throw away the changes to {path}. They are not in a commit and not in a stash, so this cannot be undone."
+                        ),
+                        button: "ROLL BACK".to_owned(),
+                        request: Request::Rollback(vec![path]),
+                    });
+                }
+            }
+            GitAction::Push => {
+                let (status, remotes) = (git.snapshot.status.clone(), git.snapshot.remotes.clone());
+                git.dialogs.open(Dialog::Push, &status, &remotes);
+            }
+            GitAction::Pull => {
+                let (status, remotes) = (git.snapshot.status.clone(), git.snapshot.remotes.clone());
+                git.dialogs.open(Dialog::Pull, &status, &remotes);
+            }
+            GitAction::Fetch => git.send(Request::Fetch),
+            GitAction::Merge => {
+                let (status, remotes) = (git.snapshot.status.clone(), git.snapshot.remotes.clone());
+                git.dialogs.open(Dialog::Merge { rebase: false }, &status, &remotes);
+            }
+            GitAction::Rebase => {
+                let (status, remotes) = (git.snapshot.status.clone(), git.snapshot.remotes.clone());
+                git.dialogs.open(Dialog::Merge { rebase: true }, &status, &remotes);
+            }
+            GitAction::Continue => {
+                let request = match git.snapshot.in_progress {
+                    Some("Rebasing") => Request::ResumeRebase(quill_git::Resume::Continue),
+                    _ => Request::ResumeMerge(quill_git::Resume::Continue),
+                };
+                git.send(request);
+            }
+            GitAction::Abort => {
+                let request = match git.snapshot.in_progress {
+                    Some("Rebasing") => Request::ResumeRebase(quill_git::Resume::Abort),
+                    _ => Request::ResumeMerge(quill_git::Resume::Abort),
+                };
+                git.send(request);
+            }
+            GitAction::Branches => {
+                let (status, remotes) = (git.snapshot.status.clone(), git.snapshot.remotes.clone());
+                git.dialogs.open(Dialog::Branches, &status, &remotes);
+            }
+            GitAction::NewBranch => {
+                self.prompt = Some(Prompt::new(
+                    "New Branch",
+                    "Start a branch here and move to it.",
+                    "",
+                    "Create",
+                    Purpose::NewBranch,
+                ));
+            }
+            GitAction::NewTag => {
+                self.prompt = Some(Prompt::new(
+                    "New Tag",
+                    "Tag the commit that is checked out.",
+                    "",
+                    "Tag",
+                    Purpose::NewTag,
+                ));
+            }
+            GitAction::ResetHead => {
+                let (status, remotes) = (git.snapshot.status.clone(), git.snapshot.remotes.clone());
+                git.dialogs.open(Dialog::Reset, &status, &remotes);
+                git.send(Request::Log { path: None, limit: git::HISTORY_LIMIT });
+            }
+            GitAction::Stash => {
+                self.prompt = Some(Prompt::new(
+                    "Stash Changes",
+                    "Put the changes away under a message, leaving the working tree clean. Untracked files go with them.",
+                    "",
+                    "Stash",
+                    Purpose::Stash,
+                ));
+            }
+            GitAction::Unstash => {
+                git.panel.open();
+                git.panel.tab = git_panel::Tab::Stashes;
+            }
+            GitAction::Remotes => {
+                let (status, remotes) = (git.snapshot.status.clone(), git.snapshot.remotes.clone());
+                git.dialogs.open(Dialog::Remotes, &status, &remotes);
+            }
+            GitAction::Clone => {}
+            GitAction::Exclude => {
+                let exclude = git.repository.root().join(".git/info/exclude");
+                let path = exclude.clone();
+                if !path.is_file() {
+                    let _ = std::fs::create_dir_all(path.parent().unwrap_or(&path));
+                    let _ = std::fs::write(&path, "# Paths listed here are ignored, and this file is not committed.\n");
+                }
+                self.open_path_permanently(&path);
+            }
+            GitAction::Refresh => git.send(Request::Refresh),
+        }
+    }
+
+    /// Draw the commit panel, whichever git dialog is open, and the confirmation.
+    ///
+    /// Returns an action when one of them asked for something that goes through `run_action`, which
+    /// is how a click in the commit panel and an entry on the Git menu end up in the same place.
+    fn show_git_windows(&mut self, ctx: &egui::Context) -> Option<Action> {
+        use quill_git::worker::Request;
+        // The confirmation first: it is drawn over whatever asked the question.
+        if let Some(question) = self.confirmation.clone() {
+            let outcome = prompt_dialog::confirm(
+                ctx,
+                &prompt_dialog::Confirmation {
+                    title: question.title.clone(),
+                    note: question.note.clone(),
+                    confirm: question.button.clone(),
+                    purpose: String::new(),
+                },
+            );
+            if outcome.confirmed {
+                if let Some(git) = self.git.as_mut() {
+                    git.send(question.request);
+                }
+                self.confirmation = None;
+            } else if outcome.cancelled {
+                self.confirmation = None;
+            }
+        }
+        let git = self.git.as_mut()?;
+        let mut action = None;
+
+        // The commit panel.
+        let status = git.snapshot.status.clone();
+        let stashes = git.snapshot.stashes.clone();
+        let repository = git.repository.name();
+        let recent = git.recent_messages.clone();
+        let outcome =
+            git_panel::show(ctx, &mut git.panel, &status, &stashes, &repository, &recent);
+        if !outcome.stage.is_empty() {
+            git.send(Request::Add(outcome.stage));
+        }
+        if !outcome.unstage.is_empty() {
+            git.send(Request::Unstage(outcome.unstage));
+        }
+        if let Some(path) = outcome.show {
+            git.send(Request::Diff {
+                path: git.repository.root().join(&path),
+                staged: false,
+                revision: None,
+            });
+        }
+        if let Some(push) = outcome.commit {
+            let message = git.panel.message.clone();
+            let amend = git.panel.amend;
+            git.panel.message.clear();
+            git.panel.amend = false;
+            git.panel.open = false;
+            if push {
+                let target = quill_git::PushTarget {
+                    remote: git
+                        .snapshot
+                        .remotes
+                        .first()
+                        .map(|remote| remote.name.clone())
+                        .unwrap_or_else(|| "origin".to_owned()),
+                    branch: status.branch.clone().unwrap_or_default(),
+                    set_upstream: status.upstream.is_none(),
+                    force: false,
+                    tags: false,
+                };
+                git.send(Request::CommitAndPush { message, amend, target });
+            } else {
+                git.send(Request::Commit { message, amend });
+            }
+        }
+        if let Some((name, drop)) = outcome.unstash {
+            git.send(Request::Unstash { name, drop });
+        }
+        if let Some(name) = outcome.drop_stash {
+            self.confirmation = Some(Confirmation {
+                title: "Drop Stash".to_owned(),
+                note: format!("Throw {name} away. What is in it is nowhere else, so this cannot be undone."),
+                button: "DROP".to_owned(),
+                request: Request::DropStash(name),
+            });
+            return action;
+        }
+        if outcome.refresh {
+            git.send(Request::Refresh);
+        }
+
+        // The dialogs.
+        let branches = git.snapshot.branches.clone();
+        let remotes = git.snapshot.remotes.clone();
+        let history = git.history.clone();
+        let outcome =
+            git_dialogs::show(ctx, &mut git.dialogs, &status, &branches, &remotes, &history);
+        if let Some(target) = outcome.push {
+            git.send(Request::Push(target));
+            git.dialogs.close();
+        }
+        if let Some((remote, branch, strategy)) = outcome.pull {
+            git.send(Request::Pull { remote, branch, strategy });
+            git.dialogs.close();
+        }
+        if let Some((branch, options)) = outcome.merge {
+            git.send(Request::Merge { branch, options });
+            git.dialogs.close();
+        }
+        if let Some(branch) = outcome.rebase {
+            git.send(Request::Rebase(branch));
+            git.dialogs.close();
+        }
+        if let Some((revision, mode)) = outcome.reset {
+            git.dialogs.close();
+            // Only a hard reset throws work away, so only a hard reset asks first.
+            if mode == quill_git::ResetMode::Hard {
+                self.confirmation = Some(Confirmation {
+                    title: "Reset HEAD".to_owned(),
+                    note: format!(
+                        "Move the branch to {revision} and throw away everything after it, including changes that were never committed. This cannot be undone."
+                    ),
+                    button: "RESET".to_owned(),
+                    request: Request::Reset { revision, mode },
+                });
+                return action;
+            }
+            git.send(Request::Reset { revision, mode });
+        }
+        if let Some(name) = outcome.switch {
+            git.send(Request::Switch(name));
+            git.dialogs.close();
+        }
+        if let Some(name) = outcome.delete_branch {
+            self.confirmation = Some(Confirmation {
+                title: "Delete Branch".to_owned(),
+                note: format!("Delete {name}. Git refuses if it holds commits that are nowhere else."),
+                button: "DELETE".to_owned(),
+                request: Request::DeleteBranch { name, force: false },
+            });
+            self.git.as_mut()?.dialogs.close();
+            return action;
+        }
+        if let Some(hash) = outcome.show_commit {
+            git.send(Request::ShowCommit(hash));
+        }
+        if let Some((name, url)) = outcome.add_remote {
+            git.send(Request::AddRemote { name, url });
+            git.dialogs.remote_name.clear();
+            git.dialogs.remote_url.clear();
+        }
+        if let Some(name) = outcome.remove_remote {
+            git.send(Request::RemoveRemote(name));
+        }
+        if action.is_none() && self.confirmation.is_none() {
+            action = None;
+        }
+        action
+    }
+
+    /// Read a path again from disk: the folder it is in, and the file itself if it is open.
+    ///
+    /// Unsaved changes are kept rather than thrown away. A person asking to reload has asked for
+    /// what is on disk, but nothing in the entry says "and lose what I typed", and quietly losing an
+    /// edit is not a thing an editor should do without asking. So a file with unsaved changes says
+    /// so and is left alone.
+    pub fn reload_from_disk(&mut self, path: &Path) {
+        self.tree.reload();
+        let Some(index) = self.files.index_of(path) else {
+            self.message = Some(format!("Reloaded {}", path.display()));
+            return;
+        };
+        if self.files.get(index).is_some_and(|file| file.document.is_modified()) {
+            self.message =
+                Some(format!("{} has unsaved changes, so it was not reloaded", path.display()));
+            return;
+        }
+        match Document::open(path) {
+            Ok(mut document) => {
+                document.apply(Command::MoveDocumentStart { extend: false });
+                let change = self.settings.as_style_change();
+                document.set_base_style(change);
+                // The tab that holds the file, which is not necessarily the one showing: reloading
+                // a file from the explorer must not drag a different tab into view.
+                if let Some(file) = self.files.get_mut(index) {
+                    file.document = document;
+                    file.scroll = 0.0;
+                    file.forget_git();
+                }
+                if index == self.files.active_index() {
+                    self.forget_layout();
+                }
+                self.message = Some(format!("Reloaded {}", path.display()));
+            }
+            Err(problem) => {
+                self.message = Some(format!("Quill could not reload {}: {problem}", path.display()))
+            }
+        }
+    }
+
+    /// Confirm a prompt, which is what pressing its button does.
+    ///
+    /// Public so a test can drive it: a screenshot test can put a name in the field but cannot press
+    /// the button, and a prompt that can only be answered with the mouse cannot be tested.
+    pub fn run_prompt_for_test(&mut self, prompt: Prompt) {
+        self.run_prompt(prompt);
+    }
+
+    /// Do what the text prompt was asking about, now that it has been confirmed.
+    ///
+    /// The prompt itself knows nothing about files or git; this is where a typed name turns into a
+    /// change, which is the same rule every menu entry follows.
+    fn run_prompt(&mut self, prompt: Prompt) {
+        let name = prompt.value.trim().to_owned();
+        if name.is_empty() {
+            return;
+        }
+        match prompt.purpose {
+            Purpose::NewFile(folder) => {
+                let target = crate::services::file_clipboard::free_name(&folder, &name);
+                match std::fs::write(&target, "") {
+                    Ok(()) => {
+                        self.tree.reload();
+                        self.tree.expand(&folder);
+                        self.open_path_permanently(&target);
+                    }
+                    Err(problem) => {
+                        self.message =
+                            Some(format!("Quill could not make {}: {problem}", target.display()))
+                    }
+                }
+            }
+            Purpose::Rename(path) => {
+                let Some(folder) = path.parent() else {
+                    return;
+                };
+                let target = folder.join(&name);
+                if target == path {
+                    return;
+                }
+                if target.exists() {
+                    self.message = Some(format!("{} is already there", target.display()));
+                    return;
+                }
+                match std::fs::rename(&path, &target) {
+                    Ok(()) => {
+                        self.tree.reload();
+                        // A tab on the file that was renamed is now looking at a path with nothing
+                        // at it, so it is reopened at the new one rather than left pointing at
+                        // nothing.
+                        if let Some(index) = self.files.index_of(&path) {
+                            self.files.show(index);
+                            self.close_tab(index);
+                            if target.is_file() {
+                                self.open_path_permanently(&target);
+                            }
+                        }
+                        self.message = Some(format!("Renamed to {name}"));
+                    }
+                    Err(problem) => {
+                        self.message = Some(format!("Quill could not rename {}: {problem}", path.display()))
+                    }
+                }
+            }
+            Purpose::NewBranch => self.send_git(quill_git::worker::Request::CreateBranch(name)),
+            Purpose::NewTag => self.send_git(quill_git::worker::Request::Tag(name)),
+            Purpose::Stash => self.send_git(quill_git::worker::Request::Stash {
+                message: name,
+                include_untracked: true,
+            }),
+            Purpose::Clone => {
+                let parent = self.tree.root().to_path_buf();
+                self.send_git(quill_git::worker::Request::Clone { parent, url: name });
+            }
+            Purpose::CompareWithRevision(path) => {
+                self.send_git(quill_git::worker::Request::Diff {
+                    path,
+                    staged: false,
+                    revision: Some(name),
+                });
+            }
+            Purpose::ResetTo(mode) => {
+                let _ = mode;
+            }
+        }
+    }
+
+    /// Send a request to the git thread, saying so when there is no repository to send it to.
+    fn send_git(&mut self, request: quill_git::worker::Request) {
+        match self.git.as_mut() {
+            Some(git) => git.send(request),
+            None => self.message = Some("This folder is not in a git repository.".to_owned()),
+        }
+    }
+
+    /// Show the tab at `index`.
+    ///
+    /// The laid out text is a cache of the tab that is showing, and each document counts its own
+    /// revisions from one, so two tabs can be at the same revision. Comparing revisions alone would
+    /// therefore keep the layout of the file that was showing before. That is the same fault
+    /// [`Self::forget_layout`] exists for, wearing a different hat.
+    pub fn show_tab(&mut self, index: usize) {
+        if index == self.files.active_index() && index < self.files.len() {
+            return;
+        }
+        self.files.show(index);
+        self.forget_layout();
+    }
+
+    /// Close the tab at `index`, and show whatever is left.
+    pub fn close_tab(&mut self, index: usize) {
+        self.files.close(index);
+        self.forget_layout();
+    }
+
     /// Throw away what was laid out, because the document it belonged to has gone.
     fn forget_layout(&mut self) {
         self.layout_stale = true;
         self.preview = None;
-        self.preview_scroll = 0.0;
+        // The revision counts changes to one document, so it starts again for the next one and two
+        // documents can be at the same number. Comparing revisions alone would leave the new file
+        // wearing the last one's colours, or none at all — the same trap `layout_stale` exists for.
+        self.coloured_revision = None;
+        self.files.active_mut().preview_scroll = 0.0;
     }
 
     /// The name shown in the title bar and the status bar.
     fn file_name(&self) -> String {
-        self.document
-            .path()
-            .and_then(|path| path.file_name())
-            .map(|name| name.to_string_lossy().to_string())
-            .unwrap_or_else(|| "untitled".to_owned())
+        self.files.active().name()
     }
 
     /// The folder shown after the file name in the title bar.
@@ -610,16 +1389,16 @@ impl QuillApp {
     }
 
     fn save(&mut self) {
-        if self.document.path().is_none() {
+        if self.document().path().is_none() {
             // With no file to save to, write into the folder the explorer is showing rather than silently
             // doing nothing.
             let target = self.tree.root().join("untitled.md");
-            if self.document.save_as(&target).is_ok() {
+            if self.document_mut().save_as(&target).is_ok() {
                 self.tree.reload();
             }
             return;
         }
-        let _ = self.document.save();
+        let _ = self.document_mut().save();
     }
 
     /// Write the settings and the pane sizes, if there is anywhere to write them.
@@ -646,7 +1425,7 @@ impl QuillApp {
     /// things a document holds, so the ordinary layout engine and the ordinary painter draw it. Nothing
     /// here knows how to render Markdown.
     fn refresh_preview(&mut self, width: f32) {
-        let revision = self.document.revision();
+        let revision = self.document().revision();
         if self.preview.is_some()
             && !self.layout_stale
             && revision == self.preview_revision
@@ -656,7 +1435,7 @@ impl QuillApp {
         }
         let base = quill_core::CharStyle {
             family: self.settings.font_family.clone(),
-            size: self.document.active_style().size,
+            size: self.document().active_style().size,
             color: quill_core::Color::rgb(color::TEXT.r(), color::TEXT.g(), color::TEXT.b()),
             ..quill_core::CharStyle::default()
         };
@@ -680,7 +1459,7 @@ impl QuillApp {
             ),
         };
         let preview = quill_core::markdown::render(
-            &self.document.text().to_string(),
+            &self.document().text().to_string(),
             &base,
             colors,
             self.renderer.monospaced_family(),
@@ -699,7 +1478,7 @@ impl QuillApp {
 
     /// Lay the document out if the text, the formatting or the width changed since the last time.
     fn refresh_layout(&mut self, width: f32) {
-        let revision = self.document.revision();
+        let revision = self.document().revision();
         if !self.layout_stale
             && revision == self.laid_out_revision
             && (width - self.laid_out_width).abs() < 0.5
@@ -708,9 +1487,9 @@ impl QuillApp {
         }
         self.layout_stale = false;
         self.layout = layout(
-            self.document.text(),
-            self.document.chars(),
-            self.document.paragraphs(),
+            self.document().text(),
+            self.document().chars(),
+            self.document().paragraphs(),
             &self.renderer,
             width,
         );
@@ -729,6 +1508,14 @@ impl QuillApp {
         if self.context.is_none() {
             self.context = Some(ui.ctx().clone());
         }
+        // Looked for once, on the first frame, rather than in `new`: a window built by a test has no
+        // context to wake and no business starting a thread, and this is the first point at which
+        // there is one.
+        if !self.git_looked {
+            self.open_repository();
+        }
+        self.ask_git_about_the_open_file();
+        self.colour_the_open_file();
         let full = ui.max_rect();
 
         // The window is one painted surface with rounded corners, because it has no operating system
@@ -776,8 +1563,18 @@ impl QuillApp {
         };
         let explorer_rect =
             Rect::from_min_size(upper.min, Vec2::new(explorer_width, upper.height()));
-        let editor_rect =
+        let editing_area =
             Rect::from_min_max(Pos2::new(upper.left() + explorer_width, upper.top()), upper.max);
+        // The tabs belong to the editor, so the strip spans the editing area rather than the window:
+        // the explorer is to the left of it, which is where IntelliJ puts it too.
+        let tabs_rect = Rect::from_min_size(
+            editing_area.min,
+            Vec2::new(editing_area.width(), file_tabs::HEIGHT),
+        );
+        let editor_rect = Rect::from_min_max(
+            Pos2::new(editing_area.left(), tabs_rect.bottom()),
+            editing_area.max,
+        );
 
         // The menus, which the title bar draws when they are not in the screen's own bar.
         let menus = actions::menus(&self.menu_state());
@@ -789,7 +1586,7 @@ impl QuillApp {
             title_rect,
             &self.file_name(),
             self.folder_name().as_deref(),
-            self.document.is_modified(),
+            self.document().is_modified(),
             self.settings.opacity,
             self.menu_placement,
             &menus,
@@ -824,17 +1621,17 @@ impl QuillApp {
             toolbar::show(
                 &mut toolbar_ui,
                 toolbar_rect,
-                &self.document,
+                self.document(),
                 self.settings.opacity,
                 &self.bold_family,
-                self.view_mode,
+                self.view_mode(),
             )
         };
         for command in toolbar_outcome.commands {
-            self.document.apply(command);
+            self.document_mut().apply(command);
         }
         if let Some(mode) = toolbar_outcome.view_mode {
-            self.view_mode = mode;
+            self.set_view_mode(mode);
         }
         title_bar::divider(
             ui.painter(),
@@ -864,15 +1661,44 @@ impl QuillApp {
         // The explorer, and the divider that sets its width.
         if self.explorer_visible {
             let explorer_outcome = {
+                let open = self.files.active().path().map(std::path::Path::to_path_buf);
+                let unsaved = self.document().is_modified();
+                // Worked out for every row before the explorer is drawn, because decoding an icon
+                // needs the context mutably and the explorer already has the window borrowed.
+                let rows: Vec<PathBuf> = if self.filter.trim().is_empty() {
+                    self.tree.rows().iter().map(|row| row.entry.path.clone()).collect()
+                } else {
+                    self.tree.matching(&self.filter).iter().map(|path| path.to_path_buf()).collect()
+                };
+                let decorations: Vec<(PathBuf, explorer::Decoration)> = rows
+                    .into_iter()
+                    .map(|path| {
+                        let icon = self.plugin_icon(ui.ctx(), Some(&path));
+                        let tint = self
+                            .git
+                            .as_ref()
+                            .and_then(|git| git.state_of(&path))
+                            .map(git_colour);
+                        (path, explorer::Decoration { tint, icon })
+                    })
+                    .collect();
+                let decorate = move |path: &std::path::Path| -> explorer::Decoration {
+                    decorations
+                        .iter()
+                        .find(|(known, _)| known == path)
+                        .map(|(_, decoration)| decoration.clone())
+                        .unwrap_or_default()
+                };
                 let mut explorer_ui = ui.new_child(egui::UiBuilder::new().max_rect(explorer_rect));
                 explorer::show(
                     &mut explorer_ui,
                     explorer_rect,
                     &self.tree,
                     &mut self.filter,
-                    self.document.path(),
-                    self.document.is_modified(),
+                    open.as_deref(),
+                    unsaved,
                     self.settings.opacity,
+                    &decorate,
                 )
             };
             if let Some(path) = explorer_outcome.toggle {
@@ -882,16 +1708,68 @@ impl QuillApp {
                 self.open_path(&path);
                 self.focus = Focus::Editor;
             }
+            if let Some(path) = explorer_outcome.open_permanently {
+                self.open_path_permanently(&path);
+                self.focus = Focus::Editor;
+            }
             if explorer_outcome.hide {
                 self.explorer_visible = false;
             }
             if explorer_outcome.add {
                 self.save();
             }
+            if let Some((at, path, directory)) = explorer_outcome.context_menu {
+                self.explorer_menu = Some((at, path, directory));
+            }
+        }
+
+        // The tabs, one for each open file.
+        {
+            let icons: Vec<Option<egui::TextureHandle>> = self
+                .files
+                .iter()
+                .map(|file| file.path().map(std::path::Path::to_path_buf))
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|path| self.plugin_icon(ui.ctx(), path.as_deref()))
+                .collect();
+            let tabs: Vec<TabView> = self
+                .files
+                .iter()
+                .zip(icons)
+                .map(|(file, icon)| TabView {
+                    name: file.name(),
+                    modified: file.document.is_modified(),
+                    transient: file.transient,
+                    marker: file
+                        .path()
+                        .map(theme::file_marker)
+                        .unwrap_or(color::FILE_TEXT),
+                    icon,
+                })
+                .collect();
+            let active = self.files.active_index();
+            let opacity = self.settings.opacity;
+            let outcome = {
+                let mut tabs_ui = ui.new_child(egui::UiBuilder::new().max_rect(tabs_rect));
+                file_tabs::show(&mut tabs_ui, tabs_rect, &tabs, active, opacity)
+            };
+            if let Some(index) = outcome.show {
+                self.show_tab(index);
+                self.focus = Focus::Editor;
+            }
+            if let Some(index) = outcome.keep {
+                self.show_tab(index);
+                self.files.make_permanent(index);
+                self.focus = Focus::Editor;
+            }
+            if let Some(index) = outcome.close {
+                self.close_tab(index);
+            }
         }
 
         // The editing area, split according to the view mode.
-        match self.view_mode {
+        match self.view_mode() {
             ViewMode::Raw => self.show_editor(ui, editor_rect),
             ViewMode::Preview => {
                 self.editor_area = editor_rect;
@@ -967,6 +1845,36 @@ impl QuillApp {
             }
         }
 
+        // The explorer's own menu, drawn after the explorer and the editing area so it sits over
+        // both rather than under either.
+        if let Some((at, path, directory)) = self.explorer_menu.clone() {
+            let entries = actions::explorer_menu_with_git(
+                &self.menu_state(),
+                &path,
+                directory,
+                !self.clipboard.is_empty(),
+            );
+            let outcome = context_menu::show(ui, "explorer", at, &entries);
+            if let Some(chosen) = outcome.chosen {
+                action = Some(chosen);
+            }
+            if outcome.close {
+                self.explorer_menu = None;
+            }
+        }
+
+        // The gutter's own menu, drawn after the editing area so it sits over it rather than under.
+        if let Some(at) = self.gutter_menu {
+            let entries = actions::gutter_menu(&self.menu_state());
+            let outcome = context_menu::show(ui, "gutter", at, &entries);
+            if let Some(chosen) = outcome.chosen {
+                action = Some(chosen);
+            }
+            if outcome.close {
+                self.gutter_menu = None;
+            }
+        }
+
         // The terminal.
         if self.terminal.visible {
             let panel_outcome = {
@@ -1031,18 +1939,24 @@ impl QuillApp {
         }
 
         // The status bar.
-        let style = self.document.active_style();
+        let style = self.document().active_style();
+        let branch = self.git.as_ref().and_then(|git| git.status_label());
         status_bar::show(
             ui,
             status_rect,
             &status_bar::Status {
                 name: &self.file_name(),
-                unsaved: self.document.is_modified(),
-                kind: file_kind::kind_name(self.document.path()),
+                unsaved: self.document().is_modified(),
+                kind: file_kind::kind_name(self.document().path()),
                 position: self.caret_position(),
                 family: &style.family,
                 font_size: style.size,
-                message: self.message.as_deref(),
+                message: self
+                    .git
+                    .as_ref()
+                    .and_then(|git| git.message.as_deref())
+                    .or(self.message.as_deref()),
+                git: branch.as_deref(),
             },
             self.settings.opacity,
         );
@@ -1052,17 +1966,72 @@ impl QuillApp {
             Pos2::new(status_rect.right(), status_rect.top()),
         );
 
+        // Anything git has answered since the last frame.
+        if let Some(git) = self.git.as_mut() {
+            if git.take_replies(&mut self.files) {
+                ui.ctx().request_repaint();
+            }
+        }
+        if let Some(chosen) = self.show_git_windows(ui.ctx()) {
+            action = Some(chosen);
+        }
+
+        // The text prompt, drawn before the Settings window because a prompt opened from a menu
+        // belongs over the window rather than over the settings.
+        if let Some(mut prompt) = self.prompt.take() {
+            let outcome = prompt_dialog::show(ui.ctx(), &mut prompt);
+            if outcome.confirmed {
+                self.run_prompt(prompt);
+            } else if !outcome.cancelled {
+                self.prompt = Some(prompt);
+            }
+        }
+
         // The Settings window, drawn last because it is a modal and sits over everything.
         let before = self.settings.clone();
         let project = self.folder_name().unwrap_or_default();
         let families: Vec<String> = self.renderer.families().to_vec();
+        // Worked out before the window is drawn, because decoding an icon needs the context and
+        // the settings window already has the plugins borrowed.
+        let plugin_icons: Vec<(String, Option<egui::TextureHandle>)> = self
+            .plugins
+            .all()
+            .iter()
+            .map(|plugin| (plugin.id.clone(), plugin.icon.clone()))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|(id, bytes)| {
+                let texture = bytes.and_then(|bytes| self.icons.texture(ui.ctx(), &id, &bytes));
+                (id, texture)
+            })
+            .collect();
+        let icon_for = |id: &str| -> Option<egui::TextureHandle> {
+            plugin_icons.iter().find(|(known, _)| known == id).and_then(|(_, icon)| icon.clone())
+        };
+        let store_folder = self.store.as_ref().map(|store| store.folder().to_path_buf());
+        let on_disk = |id: &str| -> bool {
+            store_folder
+                .as_ref()
+                .is_some_and(|folder| folder.join("plugins").join(id).join("plugin.conf").is_file())
+        };
         let settings_outcome = settings_dialog::show(
             ui.ctx(),
             &mut self.settings_window,
             &mut self.settings,
             &families,
             &project,
+            &self.plugins,
+            &on_disk,
+            &icon_for,
         );
+        if let Some(id) = settings_outcome.plugins.install {
+            self.install_plugin(&id);
+        }
+        if let Some((id, on)) = settings_outcome.plugins.set_enabled {
+            self.plugins.set_enabled(self.store.as_ref(), &id, on);
+            // The open file may have just gained or lost its colours.
+            self.coloured_revision = None;
+        }
         if settings_outcome.changed || self.settings != before {
             self.apply_settings(&before);
         }
@@ -1094,7 +2063,8 @@ impl QuillApp {
             // The whole document is shown in the new font. This is not an edit: it pushes nothing onto the
             // undo history and does not mark the file as having unsaved changes, because what Quill saves is
             // plain text and carries no formatting.
-            self.document.set_base_style(self.settings.as_style_change());
+            let change = self.settings.as_style_change();
+            self.document_mut().set_base_style(change);
             self.preview = None;
         }
         self.unsaved_settings = true;
@@ -1110,72 +2080,121 @@ impl QuillApp {
         // The preview scrolls on its own, so reading the rendered page does not move the caret.
         let wheel = ui.input(|input| input.smooth_scroll_delta.y);
         if wheel != 0.0 && response.hovered() {
-            self.preview_scroll -= wheel;
+            self.files.active_mut().preview_scroll -= wheel;
         }
         let overflow =
             (self.preview_layout.height - (area.height() - size::EDITOR_PADDING_Y * 2.0)).max(0.0);
-        self.preview_scroll = self.preview_scroll.clamp(0.0, overflow);
+        let scroll = self.files.active().preview_scroll.clamp(0.0, overflow);
+        self.files.active_mut().preview_scroll = scroll;
 
         let origin = Pos2::new(
             area.left() + size::EDITOR_PADDING_X,
-            area.top() + size::EDITOR_PADDING_Y - self.preview_scroll,
+            area.top() + size::EDITOR_PADDING_Y - scroll,
         );
         let mut painter_ui = ui.new_child(egui::UiBuilder::new().max_rect(area));
         painter_ui.set_clip_rect(ui.painter().clip_rect().intersect(area));
         editor_view::paint_text(&painter_ui, &self.renderer, &self.preview_layout, origin);
     }
 
+    /// What the gutter is showing for the file that is open.
+    fn gutter(&self) -> Gutter<'_> {
+        let file = self.files.active();
+        Gutter {
+            numbers: self.settings.line_numbers,
+            blame: file.blame.as_deref(),
+            changes: &file.line_changes,
+        }
+    }
+
     fn show_editor(&mut self, ui: &mut egui::Ui, area: Rect) {
+        // The gutter takes the left of the editing area, and the text starts after it. With no
+        // gutter the text keeps the padding it always had, so putting the numbers away leaves the
+        // window looking exactly as it did before there were any.
+        let gutter = self.gutter();
+        let lines = self.document().text().len_lines();
+        let gutter_width = gutter::width(ui, &gutter, lines);
+        let gutter_rect =
+            Rect::from_min_size(area.min, Vec2::new(gutter_width, area.height()));
+        let area = Rect::from_min_max(
+            Pos2::new(area.left() + gutter_width, area.top()),
+            area.max,
+        );
+        let padding =
+            if gutter_width > 0.0 { editor_view::PADDING } else { size::EDITOR_PADDING_X };
+
         self.editor_area = area;
         let response = ui.interact(area, ui.id().with("editor"), egui::Sense::click_and_drag());
         if response.clicked() || response.drag_started() {
             self.focus = Focus::Editor;
         }
         let has_keyboard = self.focus == Focus::Editor;
-        let text_width = (area.width() - size::EDITOR_PADDING_X * 2.0).max(50.0);
+        let text_width = (area.width() - padding - size::EDITOR_PADDING_X).max(50.0);
         self.refresh_layout(text_width);
 
-        let origin = Pos2::new(
-            area.left() + size::EDITOR_PADDING_X,
-            area.top() + size::EDITOR_PADDING_Y - self.scroll,
-        );
-        let pointer_changed =
-            editor_view::handle_pointer(&response, &mut self.document, &self.layout, origin);
-        let outcome =
-            editor_view::handle_input(ui, &mut self.document, &self.layout, has_keyboard);
+        let scroll = self.files.active().scroll;
+        let origin = Pos2::new(area.left() + padding, area.top() + size::EDITOR_PADDING_Y - scroll);
+        // Taken apart by field, because the input handlers want the document mutably while the
+        // layout they measure against is borrowed at the same time, and a method on `self` would
+        // borrow the whole window.
+        let Self { files, layout, .. } = self;
+        let document = &mut files.active_mut().document;
+        let pointer_changed = editor_view::handle_pointer(&response, document, layout, origin);
+        let outcome = editor_view::handle_input(ui, document, layout, has_keyboard);
         if let Some(text) = outcome.copy {
             ui.ctx().copy_text(text);
+        }
+        if outcome.changed {
+            // Typing into a file you were only glancing at plainly means you meant to open it, so
+            // the transient tab stops being one a single click will take away.
+            let active = self.files.active_index();
+            self.files.make_permanent(active);
         }
         if outcome.changed || pointer_changed {
             self.refresh_layout(text_width);
         }
 
         let wheel = ui.input(|input| input.smooth_scroll_delta.y);
+        let mut scroll = self.files.active().scroll;
         if wheel != 0.0 && response.hovered() {
-            self.scroll -= wheel;
+            scroll -= wheel;
         }
         if outcome.scroll_to_caret {
-            let caret = self.layout.caret_at(self.document.selection().head);
+            let caret = self.layout.caret_at(self.document().selection().head);
             let view_height = area.height() - size::EDITOR_PADDING_Y * 2.0;
-            if caret.y < self.scroll {
-                self.scroll = caret.y;
-            } else if caret.y + caret.height > self.scroll + view_height {
-                self.scroll = caret.y + caret.height - view_height;
+            if caret.y < scroll {
+                scroll = caret.y;
+            } else if caret.y + caret.height > scroll + view_height {
+                scroll = caret.y + caret.height - view_height;
             }
         }
         let overflow = (self.layout.height - (area.height() - size::EDITOR_PADDING_Y * 2.0)).max(0.0);
-        self.scroll = self.scroll.clamp(0.0, overflow);
+        let scroll = scroll.clamp(0.0, overflow);
+        self.files.active_mut().scroll = scroll;
 
-        let origin = Pos2::new(
-            area.left() + size::EDITOR_PADDING_X,
-            area.top() + size::EDITOR_PADDING_Y - self.scroll,
-        );
+        let origin = Pos2::new(area.left() + padding, area.top() + size::EDITOR_PADDING_Y - scroll);
+
+        // The gutter is drawn from the same origin as the text, so a number cannot drift away from
+        // the line it belongs to.
+        if gutter_width > 0.0 {
+            let outcome = gutter::show(
+                ui,
+                gutter_rect,
+                &self.gutter(),
+                &self.layout,
+                origin.y,
+                self.document().text().byte_to_line(self.document().selection().head),
+            );
+            if let Some(at) = outcome.context_menu {
+                self.gutter_menu = Some(at);
+            }
+        }
+
         let mut painter_ui = ui.new_child(egui::UiBuilder::new().max_rect(area));
         painter_ui.set_clip_rect(ui.painter().clip_rect().intersect(area));
         editor_view::paint(
             &painter_ui,
             &self.renderer,
-            &self.document,
+            self.document(),
             &self.layout,
             origin,
             editor_view::PaintStyle {
@@ -1184,6 +2203,20 @@ impl QuillApp {
                 show_caret: has_keyboard,
             },
         );
+    }
+}
+
+/// The colour a file is drawn in for what git thinks of it.
+///
+/// The same three colours the change bars in the gutter and the markers in the commit panel use, so
+/// a modified file is one colour wherever it is shown.
+fn git_colour(state: quill_git::State) -> Color32 {
+    match state {
+        quill_git::State::Untracked => color::GIT_UNTRACKED,
+        quill_git::State::Added | quill_git::State::Copied => color::GIT_ADDED,
+        quill_git::State::Unmerged => color::CLOSE,
+        quill_git::State::Ignored | quill_git::State::Unchanged => color::TEXT_FAINT.gamma_multiply(0.7),
+        _ => color::GIT_MODIFIED,
     }
 }
 

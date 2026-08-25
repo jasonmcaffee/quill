@@ -62,36 +62,6 @@ fn popup(ui: &mut egui::Ui, response: &egui::Response, entries: &[Entry]) -> Opt
         // Window` at `Cmd+Option+O` is the longest pair, and at 260 points they overlapped, which a
         // screenshot showed.
         .width(340.0)
-        .show(|ui| rows(ui, entries, 0.0))
+        .show(|ui| controls::menu_rows(ui, entries, 0.0))
         .and_then(|inner| inner.inner)
-}
-
-/// The rows of one menu.
-///
-/// A menu inside a menu is drawn as a heading with its entries indented under it rather than as a second
-/// list that opens sideways. Recent Projects is the only one, it holds a short list, and a heading with
-/// rows under it needs no hovering to reach. The macOS menu bar does have a real submenu there, because
-/// that is what the platform draws.
-fn rows(ui: &mut egui::Ui, entries: &[Entry], indent: f32) -> Option<Action> {
-    let mut chosen = None;
-    for entry in entries {
-        match entry {
-            Entry::Separator => {
-                ui.separator();
-            }
-            Entry::Item { name, action, shortcut, enabled, checked, .. } => {
-                let keys = shortcut.map(|shortcut| shortcut.label()).unwrap_or_default();
-                if controls::menu_row(ui, name, &keys, *enabled, *checked, indent) {
-                    chosen = Some(action.clone());
-                }
-            }
-            Entry::Submenu { name, entries } => {
-                controls::menu_heading(ui, name, indent);
-                if let Some(action) = rows(ui, entries, indent + 14.0) {
-                    chosen = Some(action);
-                }
-            }
-        }
-    }
-    chosen
 }

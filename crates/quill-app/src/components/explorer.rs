@@ -13,13 +13,29 @@ use crate::services::file_kind::Refusal;
 use crate::services::file_tree::FileTree;
 use crate::theme::{color, icon, size, file_marker};
 
+/// What a row shows besides its name: the colour git wants it in, and the icon its plugin gives it.
+///
+/// A component draws and does not reach into the window's state, so it is handed one of these for
+/// each row rather than being given the plugins and the repository to look in.
+#[derive(Default, Clone)]
+pub struct Decoration {
+    /// The colour git wants the name in, when git has something to say about the file.
+    pub tint: Option<egui::Color32>,
+    /// The picture the file's plugin puts in front of it, in place of the coloured square.
+    pub icon: Option<egui::TextureHandle>,
+}
+
 /// What the user did in the explorer.
 #[derive(Debug, Default)]
 pub struct ExplorerOutcome {
     /// A folder to open or close.
     pub toggle: Option<PathBuf>,
-    /// A file to load into the editor.
+    /// A file to load into the editor, in the tab a single click reuses.
     pub open: Option<PathBuf>,
+    /// A file that was double clicked, which opens it in a tab of its own.
+    pub open_permanently: Option<PathBuf>,
+    /// A row was right clicked: where the pointer was, and what it was over.
+    pub context_menu: Option<(Pos2, PathBuf, bool)>,
     /// The button that hides the panel was pressed.
     pub hide: bool,
     /// The add button was pressed.
@@ -38,6 +54,7 @@ pub fn show(
     current: Option<&std::path::Path>,
     unsaved: bool,
     opacity: f32,
+    decorate: &dyn Fn(&std::path::Path) -> Decoration,
 ) -> ExplorerOutcome {
     let mut outcome = ExplorerOutcome::default();
     let painter = ui.painter_at(area);
@@ -150,20 +167,28 @@ pub fn show(
             for path in matches {
                 let depth = tree.depth_of(path);
                 let refusal = crate::services::file_kind::openable(path).err();
-                if let Some(clicked) = file_row(ui, path, depth, current, unsaved, refusal) {
-                    outcome.open = Some(clicked);
-                }
+                let row = file_row(ui, path, depth, current, unsaved, refusal, decorate(path));
+                row.apply(&mut outcome, path, false);
             }
         } else {
             for row in tree.rows() {
                 if row.entry.is_directory {
-                    if folder_row(ui, &row.entry.name, row.depth, row.entry.expanded) {
+                    let clicked = folder_row(ui, &row.entry.name, row.depth, row.entry.expanded);
+                    if clicked.open {
                         outcome.toggle = Some(row.entry.path.clone());
                     }
-                } else if let Some(clicked) =
-                    file_row(ui, &row.entry.path, row.depth, current, unsaved, row.entry.refusal)
-                {
-                    outcome.open = Some(clicked);
+                    clicked.apply(&mut outcome, &row.entry.path, true);
+                } else {
+                    let clicked = file_row(
+                        ui,
+                        &row.entry.path,
+                        row.depth,
+                        current,
+                        unsaved,
+                        row.entry.refusal,
+                        decorate(&row.entry.path),
+                    );
+                    clicked.apply(&mut outcome, &row.entry.path, false);
                 }
             }
         }
@@ -200,10 +225,54 @@ pub fn show(
     outcome
 }
 
+/// What happened to one row, before the caller knows which path it was.
+///
+/// A row cannot decide what a click means — that is the window's business — so it reports the three
+/// things that can happen to it and the caller turns them into an outcome.
+#[derive(Debug, Default)]
+struct RowClick {
+    /// Clicked once: open the file, or open or close the folder.
+    open: bool,
+    /// Clicked twice: open the file in a tab of its own.
+    twice: bool,
+    /// Right clicked, at this position.
+    menu: Option<Pos2>,
+}
+
+impl RowClick {
+    fn apply(self, outcome: &mut ExplorerOutcome, path: &std::path::Path, directory: bool) {
+        if let Some(at) = self.menu {
+            outcome.context_menu = Some((at, path.to_path_buf(), directory));
+        }
+        if directory {
+            return;
+        }
+        if self.twice {
+            outcome.open_permanently = Some(path.to_path_buf());
+        } else if self.open {
+            outcome.open = Some(path.to_path_buf());
+        }
+    }
+
+    /// Read a response into a click. Right clicking is separate from left clicking, so a menu can
+    /// be opened over a row without also opening the file.
+    fn from(response: &egui::Response) -> Self {
+        Self {
+            open: response.clicked(),
+            twice: response.double_clicked(),
+            menu: response
+                .secondary_clicked()
+                .then(|| response.interact_pointer_pos().or_else(|| response.hover_pos()))
+                .flatten(),
+        }
+    }
+}
+
 /// A folder row: a triangle that points down when open, then the name.
-fn folder_row(ui: &mut egui::Ui, name: &str, depth: usize, expanded: bool) -> bool {
+fn folder_row(ui: &mut egui::Ui, name: &str, depth: usize, expanded: bool) -> RowClick {
     let row = allocate_row(ui);
-    let response = ui.interact(row, ui.id().with(("folder", name, depth)), Sense::click());
+    let response =
+        ui.interact(row, ui.id().with(("folder", name, depth)), Sense::click_and_drag());
     if response.hovered() {
         ui.painter().rect_filled(row.shrink2(Vec2::new(8.0, 1.0)), CornerRadius::same(5), color::CONTROL);
     }
@@ -223,7 +292,7 @@ fn folder_row(ui: &mut egui::Ui, name: &str, depth: usize, expanded: bool) -> bo
     response.widget_info(|| {
         egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), expanded, name)
     });
-    response.clicked()
+    RowClick::from(&response)
 }
 
 /// A file row: a small coloured square saying what kind of file it is, then the name. The file that is open
@@ -235,13 +304,16 @@ fn file_row(
     current: Option<&std::path::Path>,
     unsaved: bool,
     refusal: Option<Refusal>,
-) -> Option<PathBuf> {
+    decoration: Decoration,
+) -> RowClick {
     let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
     let row = allocate_row(ui);
     // A file Quill cannot open is drawn dimmed and does not take clicks, so the tree says what is in the
     // folder without pretending everything in it can be opened.
     let openable = refusal.is_none();
-    let sense = if openable { Sense::click() } else { Sense::hover() };
+    // A file Quill cannot open still takes a right click, because renaming it or revealing it in the
+    // file manager has nothing to do with whether it holds text.
+    let sense = if openable { Sense::click_and_drag() } else { Sense::click() };
     let response = ui.interact(row, ui.id().with(("file", path)), sense);
     if let Some(refusal) = refusal {
         // The row says which of the two reasons it is: the file is not text, or it is too large.
@@ -255,14 +327,29 @@ fn file_row(
         ui.painter().rect_filled(pill, CornerRadius::same(5), color::CONTROL);
     }
     let x = row.left() + 16.0 + depth as f32 * size::INDENT;
-    let marker = if openable { file_marker(path) } else { color::TEXT_FAINT.gamma_multiply(0.45) };
-    ui.painter().rect_filled(
-        Rect::from_center_size(Pos2::new(x + 4.0, row.center().y), Vec2::splat(8.0)),
-        CornerRadius::same(2),
-        marker,
-    );
+    match &decoration.icon {
+        // A file whose plugin gives it a picture gets the picture in place of the square.
+        Some(icon) => crate::services::icons::draw(
+            ui.painter(),
+            Pos2::new(x + 4.0, row.center().y),
+            icon,
+        ),
+        None => {
+            let marker =
+                if openable { file_marker(path) } else { color::TEXT_FAINT.gamma_multiply(0.45) };
+            ui.painter().rect_filled(
+                Rect::from_center_size(Pos2::new(x + 4.0, row.center().y), Vec2::splat(8.0)),
+                CornerRadius::same(2),
+                marker,
+            );
+        }
+    }
+    // A file git has something to say about is drawn in git's colour for it, which is what IntelliJ
+    // does and is the cheapest way to see at a glance what a commit would hold.
     let tint = if open {
         color::TEXT_STRONG
+    } else if let Some(mark) = decoration.tint {
+        mark
     } else if openable {
         color::TEXT_CONTROL
     } else {
@@ -281,7 +368,13 @@ fn file_row(
     response.widget_info(|| {
         egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), open, &name)
     });
-    response.clicked().then(|| path.to_path_buf())
+    let mut click = RowClick::from(&response);
+    if !openable {
+        // It cannot be opened, so a click on it opens nothing. The menu still works.
+        click.open = false;
+        click.twice = false;
+    }
+    click
 }
 
 fn allocate_row(ui: &mut egui::Ui) -> Rect {

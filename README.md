@@ -4,6 +4,10 @@ A text editor for macOS and Windows, written in Rust. It opens any file holding 
 with folders that expand in place, a terminal along the bottom with tabs, and it lets the desktop show
 through its background while the text stays solid.
 
+It is also, now, an editor you can write code in: line numbers down the left, a tab for each open
+file, a right click menu on the explorer, git in full, and plugins that colour JavaScript, TypeScript
+and Rust.
+
 ## Running it
 
 ```
@@ -46,7 +50,7 @@ same programs after the tile was made shorter and the explorer wider.
 
 ## The menus
 
-`Quill`, `File`, `Edit` and `View`, in that order, with `Quill` first. On macOS they are in the bar along the
+`Quill`, `File`, `Edit`, `View` and `Git`, in that order, with `Quill` first. On macOS they are in the bar along the
 top of the screen, where macOS puts menus. On Windows they are drawn at the left of Quill's own title bar,
 and the three window buttons move to the right hand end, where Windows puts them.
 
@@ -55,7 +59,8 @@ and the three window buttons move to the right hand end, where Windows puts them
 | `Quill` | About Quill, Settings, Quit. |
 | `File` | New Window, Open File, Open Folder, Open Folder in New Window, Recent Projects, Save, Save As, Close Window. |
 | `Edit` | Undo, Redo, Cut, Copy, Paste, Select All, Settings. |
-| `View` | The three view modes, show or hide the explorer, show or hide the terminal, a new terminal tab. |
+| `View` | The three view modes, show or hide the explorer, show or hide the line numbers, close a tab and move between tabs, show or hide the terminal, a new terminal tab. |
+| `Git` | Commit, Add, Show Diff, Compare with Revision, Show History, Show Current Revision, Annotate with Git Blame, Rollback, Push, Pull, Fetch, Merge, Rebase, Branches, New Branch, New Tag, Reset HEAD, Stash, Unstash, Manage Remotes, Clone. Dimmed when the folder is not in a repository, and it grows `Continue` and `Abort` while a merge or a rebase has stopped on a conflict. |
 
 Both bars are built from one list, so they hold the same entries with the same shortcuts. Run
 `quill --print-menus` to see it.
@@ -81,11 +86,64 @@ pages down the left under their headings, and the chosen page on the right.
   `with_no_redirection_bitmap` and eframe gives no way to reach, its only hook taking an
   `egui::ViewportBuilder`. So the setting is left doing nothing on Windows rather than turning the
   window into a white pane, and it will work there when eframe can pass that attribute through.
+- `Editor -> Editor -> Gutter` shows or hides the line numbers.
+- `Plugins` is the marketplace and what is installed.
 - `Tools -> Terminal` sets the size the terminal draws its grid at.
 
 Changes take effect as they are made. The settings, the recent projects and where the dividers between the
 panes were left are kept in `~/Library/Application Support/Quill` on macOS and `%APPDATA%\Quill` on Windows,
 in two plain text files that can be read and edited by hand.
+
+## Writing code in it
+
+**Line numbers** down the left of the editing area. Quill wraps, so a paragraph that runs over several
+rows on screen carries one number against its first row and nothing against its continuations, which
+is what a line number means everywhere else. Right clicking the gutter puts them away or annotates
+the file with git blame.
+
+**A tab for each open file.** A single click in the explorer opens a file in the tab a single click
+reuses, drawn faintly to say so; a double click opens it in a tab of its own, and so does typing into
+a tab you were only glancing at. The tab that is showing carries an accent line along its bottom
+edge. `Ctrl+Tab` and `Ctrl+Shift+Tab` move between them and `Ctrl+F4` closes one.
+
+**A right click menu on the explorer**: New > File with any extension you like, Cut, Copy, Copy Path,
+Paste, Rename, Show in Explorer or Reveal in Finder, Reload from Disk, and a `Git` submenu aimed at
+that row. Cut and paste go through Quill's own clipboard rather than the operating system's, so a
+file cut in Quill cannot be pasted in Explorer; pasting onto a name that is taken adds a number
+rather than overwriting what is there.
+
+**Git**, in the `Git` menu, in the same submenu on any explorer row, and in three places you do not
+have to ask for: the branch and how far it is from its upstream in the status bar, each file in the
+explorer tinted by what git thinks of it, and a change bar in the gutter against each line that
+differs from the version git has.
+
+`Commit...` opens a panel laid out like IntelliJ's: a changes tree with a tick box a file, the
+repository's row carrying its branch, an `Unversioned Files` group, `Amend`, the counts, the message
+box with the last twenty messages behind a button, and `COMMIT` and `COMMIT AND PUSH...`. **Ticking a
+file stages it at once**, so Quill's idea of what is staged and git's cannot disagree while the panel
+is open.
+
+Quill runs the `git` program rather than a library, so a push from Quill is the same push you get in
+your terminal — the same credential helper, the same ssh agent, the same hooks, the same signing.
+When something goes wrong it shows **git's own message**, because a rejected push and a merge
+conflict explain themselves better than anything Quill could say about them. Every command runs on a
+thread, so the window never stops drawing to wait for one. `Rollback`, a hard `Reset HEAD` and
+dropping a stash each ask first, because none of them can be undone. Pushing with force always uses
+`--force-with-lease`.
+
+A merge or a rebase that stops on a conflict is not hidden: the status bar says so, the conflicted
+files are marked, the Git menu grows `Continue` and `Abort`, and the file opens with its markers in
+it — which is a file holding text, and therefore something Quill already edits.
+
+**Plugins** colour a file by what its text is. Three ship with Quill — JavaScript, TypeScript and
+Rust — and each gives its files an icon, a set of words to colour, and the Dracula colour scheme. A
+plugin is a folder holding a `plugin.conf` and an icon, in the same `name = value` format the
+settings file uses; **nothing in one is executed**, so installing one is copying a folder.
+`Settings -> Plugins` lists them, and `Install` writes a plugin's folder out where it can be edited
+by hand.
+
+A colour scheme colours the tokens and not the editing area, so a coloured file still lets the
+desktop through.
 
 ## What it does
 
@@ -122,7 +180,7 @@ shows its shortcut. On Windows the control key takes the place of the command ke
 
 ## How it is put together
 
-Three crates.
+Four crates.
 
 `crates/quill-core` is the editor. It holds the text buffer, the formatting, the caret, layout, undo and the
 Markdown parser, and it has no user interface dependencies at all, so its tests run with no window, no
@@ -137,6 +195,13 @@ knows how to render Markdown.
 sequence emulation and the pseudoterminal come from `alacritty_terminal`; the colour palette, the key
 encoding, the mouse reports, the screen the painter reads and the tabs are ours.
 `tasks/quill-terminal-tdd.md` records why that line was drawn there and what else was considered.
+
+`crates/quill-git` is git. It has no user interface dependencies either, and it runs the `git`
+program rather than binding a library: what matters is that the machine's own git is already
+configured — a credential helper, an ssh agent, signing, hooks — and a push from Quill has to be the
+same push you get in a terminal. It reads the formats git provides for being read rather than the
+ones meant for a person, and every call hands back git's own output whether it worked or not. Its
+tests build real repositories in a temporary folder and ask **git** what happened afterwards.
 
 `crates/quill-app` is the window. It uses `eframe` and `egui` for the window, the input events, the graphics
 device and the ordinary controls, `fontdb` to find installed fonts, `ab_glyph` to read and rasterise them,
@@ -210,7 +275,17 @@ Right to left and complex writing systems. Version one places one grapheme clust
 left to right, which is correct for Latin, Greek and Cyrillic and wrong for Arabic and Hindi. The
 `FontMetrics` boundary is where a shaping step would go.
 
-Search and replace, several carets at once, and tabbed documents.
+Search and replace, and several carets at once.
+
+Code folding. The 12 point gap beside the line numbers is where its arrows would go, and nothing else
+about the gutter would have to move; what it needs is a notion of a block, which needs a real parser.
+
+A three way merge editor, a language server, and a marketplace that fetches a plugin over the
+network. Each is named with its reason in `tasks/quill-ide-tdd.md`.
+
+In the syntax colouring: a regular expression literal, which cannot be told from division without
+parsing; nested block comments in Rust; interpolation inside a template literal; and JSX. Each
+plugin says so on its own page in `Settings -> Plugins`.
 
 In the Markdown preview: tables, footnotes, images shown as pictures rather than as their text, reference
 style links, nested block quotes and HTML. Tables need layout Quill does not have; the rest are rare in

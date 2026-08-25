@@ -132,6 +132,42 @@ pub fn cross(painter: &egui::Painter, centre: Pos2, color: Color32) {
     );
 }
 
+/// A tick, for a box that is ticked. Drawn rather than lettered, like every other icon here.
+pub fn tick(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    let stroke = Stroke::new(1.8, color);
+    painter.line_segment(
+        [Pos2::new(centre.x - 4.0, centre.y), Pos2::new(centre.x - 1.2, centre.y + 3.0)],
+        stroke,
+    );
+    painter.line_segment(
+        [Pos2::new(centre.x - 1.2, centre.y + 3.0), Pos2::new(centre.x + 4.0, centre.y - 3.2)],
+        stroke,
+    );
+}
+
+/// A circle with two hands, for the button that offers the recent commit messages.
+pub fn clock(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    let stroke = Stroke::new(1.3, color);
+    painter.circle_stroke(centre, 5.0, stroke);
+    painter.line_segment([centre, Pos2::new(centre.x, centre.y - 3.2)], stroke);
+    painter.line_segment([centre, Pos2::new(centre.x + 2.6, centre.y + 0.6)], stroke);
+}
+
+/// A branch: a line with a second one leaving it, for anything about git.
+pub fn branch(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    let stroke = Stroke::new(1.4, color);
+    painter.line_segment(
+        [Pos2::new(centre.x - 3.0, centre.y - 5.0), Pos2::new(centre.x - 3.0, centre.y + 5.0)],
+        stroke,
+    );
+    painter.line_segment(
+        [Pos2::new(centre.x - 3.0, centre.y), Pos2::new(centre.x + 3.5, centre.y - 3.5)],
+        stroke,
+    );
+    painter.circle_filled(Pos2::new(centre.x - 3.0, centre.y + 5.0), 1.8, color);
+    painter.circle_filled(Pos2::new(centre.x + 3.5, centre.y - 3.5), 1.8, color);
+}
+
 /// Two crossed lines.
 pub fn plus(painter: &egui::Painter, centre: Pos2, color: Color32) {
     let stroke = Stroke::new(1.5, color);

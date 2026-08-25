@@ -40,17 +40,23 @@ pub enum Page {
     /// The editor's font and the window's background.
     #[default]
     Appearance,
+    /// The editing area itself: the gutter, and the colour scheme code is set in.
+    Editor,
+    /// The plugins that are installed, and the marketplace they came from.
+    Plugins,
     /// The terminal at the bottom of the window.
     Terminal,
 }
 
 impl Page {
-    pub const ALL: [Page; 2] = [Page::Appearance, Page::Terminal];
+    pub const ALL: [Page; 4] = [Page::Appearance, Page::Editor, Page::Plugins, Page::Terminal];
 
     /// The name in the list on the left, and the last part of the heading.
     pub fn title(self) -> &'static str {
         match self {
             Page::Appearance => "Appearance",
+            Page::Editor => "Editor",
+            Page::Plugins => "Plugins",
             Page::Terminal => "Terminal",
         }
     }
@@ -59,6 +65,10 @@ impl Page {
     pub fn group(self) -> &'static str {
         match self {
             Page::Appearance => "Appearance & Behavior",
+            Page::Editor => "Editor",
+            // No heading of its own, the way IntelliJ lists Plugins: it is one page rather than a
+            // group with pages under it.
+            Page::Plugins => "",
             Page::Terminal => "Tools",
         }
     }
@@ -67,6 +77,8 @@ impl Page {
     pub fn sections(self) -> &'static [&'static str] {
         match self {
             Page::Appearance => &["Font", "Background"],
+            Page::Editor => &["Gutter"],
+            Page::Plugins => &["Marketplace", "Installed", "Colour Scheme", "Syntax"],
             Page::Terminal => &["Font"],
         }
     }
@@ -94,6 +106,8 @@ pub struct Settings {
     pub opacity: f32,
     /// The point size the terminal sets its grid in.
     pub terminal_font_size: f32,
+    /// Whether the editing area has a column of line numbers down its left.
+    pub line_numbers: bool,
 }
 
 impl Settings {
@@ -105,6 +119,9 @@ impl Settings {
             font_size: 16.0,
             opacity: DEFAULT_OPACITY,
             terminal_font_size: 13.0,
+            // On, because a line number is useful in prose as well as in code and a person who does
+            // not want one can put it away from the gutter's own menu.
+            line_numbers: true,
         }
     }
 
@@ -122,6 +139,9 @@ impl Settings {
         if let Some(size) = values.number("terminal.font.size") {
             settings.terminal_font_size = size.clamp(6.0, 48.0);
         }
+        if let Some(on) = values.flag("editor.line_numbers") {
+            settings.line_numbers = on;
+        }
         settings
     }
 
@@ -132,6 +152,7 @@ impl Settings {
         values.set("appearance.font.size", format!("{:.0}", self.font_size));
         values.set("appearance.background.opacity", format!("{:.3}", self.opacity));
         values.set("terminal.font.size", format!("{:.0}", self.terminal_font_size));
+        values.set("editor.line_numbers", if self.line_numbers { "true" } else { "false" });
     }
 
     /// The change to hand to `Document::set_base_style` so the document is shown in this font.
@@ -222,6 +243,7 @@ mod tests {
             font_size: 20.0,
             opacity: 0.4,
             terminal_font_size: 14.0,
+            line_numbers: false,
         };
         let mut values = Values::new();
         settings.write_into(&mut values);
@@ -269,9 +291,14 @@ mod tests {
     fn every_page_is_listed_under_a_group_and_has_sections() {
         for page in Page::ALL {
             assert!(!page.title().is_empty());
-            assert!(!page.group().is_empty());
             assert!(!page.sections().is_empty(), "{} should have sections", page.title());
         }
+        // Every page but one is listed under a heading. `Plugins` has none, because it is one page
+        // rather than a group with pages under it, which is how IntelliJ lists it too, and the list
+        // draws a page with no heading at the left margin instead of indented under one.
+        let ungrouped: Vec<&str> =
+            Page::ALL.into_iter().filter(|page| page.group().is_empty()).map(Page::title).collect();
+        assert_eq!(ungrouped, vec!["Plugins"]);
     }
 
     #[test]

@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use crate::cursor::{self, Selection};
 use crate::layout::Layout;
 use crate::rope::Rope;
-use crate::style::{Align, CharStyle, ParagraphStyle, ParagraphStyles, StyleChange, StyleSpans};
+use crate::style::{Align, CharStyle, Color, ParagraphStyle, ParagraphStyles, StyleChange, StyleSpans};
 
 /// Something the user asked for.
 #[derive(Debug, Clone, PartialEq)]
@@ -238,6 +238,37 @@ impl Document {
         // Also the formatting for text typed next, so that an empty document and a document with text in
         // it behave the same way.
         change.apply_over_change(&mut self.pending);
+        self.revision += 1;
+    }
+
+    /// Colour the document by what its text is: keywords, strings, comments and the rest.
+    ///
+    /// This is not an edit, and follows the same three rules [`Self::set_base_style`] does and for
+    /// the same reasons. It pushes nothing onto the undo history, because undoing a colour scheme
+    /// from the editor would be surprising. It does not mark the document as having unsaved
+    /// changes, because what Quill saves is plain text and carries no formatting, so nothing about
+    /// the file has changed. It does bump the revision, because the text has to be drawn again.
+    ///
+    /// The spans are given as ranges of bytes and a colour each. Everything not covered goes back to
+    /// `base`, so switching from one language to another, or turning colouring off, does not leave
+    /// the last language's colours behind.
+    pub fn set_syntax(&mut self, base: Color, spans: &[(Range<usize>, Color)]) {
+        let end = self.text.len_bytes();
+        if end == 0 {
+            return;
+        }
+        self.chars.set(0..end, &StyleChange::color(base));
+        for (range, color) in spans {
+            // A span from a highlighter that has not caught up with an edit yet would otherwise
+            // panic inside the span list, and a colour is never worth a crash.
+            let start = range.start.min(end);
+            let stop = range.end.min(end);
+            if start >= stop || !self.text.is_char_boundary(start) || !self.text.is_char_boundary(stop)
+            {
+                continue;
+            }
+            self.chars.set(start..stop, &StyleChange::color(*color));
+        }
         self.revision += 1;
     }
 

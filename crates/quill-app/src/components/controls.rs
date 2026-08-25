@@ -7,6 +7,7 @@
 
 use egui::{Color32, CornerRadius, Pos2, Rect, Sense, Stroke, Vec2};
 
+use crate::app::actions::{Action, Entry};
 use crate::theme::{color, icon, size};
 
 /// A button showing the current value, which opens a list when clicked.
@@ -65,6 +66,71 @@ pub fn dropdown<T>(
         .and_then(|inner| inner.inner);
     if chosen.is_some() {
         egui::Popup::close_id(ui.ctx(), id);
+    }
+    chosen
+}
+
+/// The rows of one menu, whether it hangs from the bar or from a right click.
+///
+/// A menu inside a menu is drawn as a heading with its entries indented under it rather than as a
+/// second list that opens sideways. Recent Projects and the explorer's `Git` submenu are the only
+/// ones, both hold a short list, and a heading with rows under it needs no hovering to reach. The
+/// macOS menu bar does have a real submenu there, because that is what the platform draws.
+///
+/// This lives here rather than in `menu_bar` because there are three menus in Quill now — the bar
+/// inside the window, the explorer's context menu and the gutter's — and one renderer is what stops
+/// them growing three row heights.
+pub fn menu_rows(ui: &mut egui::Ui, entries: &[Entry], indent: f32) -> Option<Action> {
+    // A menu taller than the window scrolls rather than running off the bottom of it. The Git menu
+    // has twenty-two entries and does not fit in a small window; before this, its last few could
+    // not be reached at all.
+    let room = (ui.ctx().content_rect().height() - 120.0).max(180.0);
+    // egui puts `item_spacing.y` between every row, so a count of row heights alone comes out short
+    // by a third and the menu is decided to fit when it does not.
+    let gap = ui.spacing().item_spacing.y;
+    let height: f32 = entries
+        .iter()
+        .map(|entry| match entry {
+            Entry::Separator => 8.0 + gap,
+            Entry::Item { .. } => 24.0 + gap,
+            Entry::Submenu { entries, .. } => 22.0 + gap + entries.len() as f32 * (24.0 + gap),
+        })
+        .sum();
+    if height > room {
+        return egui::ScrollArea::vertical()
+            .max_height(room)
+            // Without this the box comes out about two thirds of what it was allowed, because a
+            // scroll area inside a popup measures itself against the popup's own idea of how much
+            // room there is rather than against the number it was given.
+            .min_scrolled_height(room)
+            .id_salt("quill-menu-scroll")
+            .show(ui, |ui| rows(ui, entries, indent))
+            .inner;
+    }
+    rows(ui, entries, indent)
+}
+
+/// The rows themselves, once it has been decided whether they scroll.
+fn rows(ui: &mut egui::Ui, entries: &[Entry], indent: f32) -> Option<Action> {
+    let mut chosen = None;
+    for entry in entries {
+        match entry {
+            Entry::Separator => {
+                ui.separator();
+            }
+            Entry::Item { name, action, shortcut, enabled, checked, .. } => {
+                let keys = shortcut.map(|shortcut| shortcut.label()).unwrap_or_default();
+                if menu_row(ui, name, &keys, *enabled, *checked, indent) {
+                    chosen = Some(action.clone());
+                }
+            }
+            Entry::Submenu { name, entries } => {
+                menu_heading(ui, name, indent);
+                if let Some(action) = rows(ui, entries, indent + 14.0) {
+                    chosen = Some(action);
+                }
+            }
+        }
     }
     chosen
 }

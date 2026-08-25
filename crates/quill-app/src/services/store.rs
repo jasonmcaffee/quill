@@ -49,12 +49,19 @@ impl Values {
         }
     }
 
-    /// Read `name = value` lines. Anything after a `#` is a comment, and a line without an `=` is
-    /// ignored rather than making the whole file unreadable.
+    /// Read `name = value` lines. A line without an `=` is ignored rather than making the whole file
+    /// unreadable.
+    ///
+    /// A `#` starts a comment **when it is followed by a space or ends the line**. That rule is a
+    /// little more particular than "everything after a hash", and it is that way because of colours:
+    /// a plugin's colour scheme is written `theme.keyword = #FF79C6`, and the plain rule ate the
+    /// value and left the plugin with no colours at all. Writing the hash is what anybody would do,
+    /// so the format accommodates it rather than making it a trap. `size = 20  # after the value`
+    /// still reads as a comment, because that hash is followed by a space.
     pub fn parse(text: &str) -> Self {
         let mut values = Self::new();
         for line in text.lines() {
-            let line = match line.find('#') {
+            let line = match Self::comment_at(line) {
                 Some(at) => &line[..at],
                 None => line,
             };
@@ -68,6 +75,15 @@ impl Values {
             values.set(name, value.trim().to_owned());
         }
         values
+    }
+
+    /// Where the comment starts on this line, if it has one.
+    fn comment_at(line: &str) -> Option<usize> {
+        line.char_indices().find(|(at, character)| {
+            *character == '#'
+                && line[at + 1..].chars().next().map(char::is_whitespace).unwrap_or(true)
+        })
+        .map(|(at, _)| at)
     }
 
     pub fn to_text(&self) -> String {
@@ -249,6 +265,16 @@ mod tests {
         );
         assert_eq!(values.number("appearance.font.size"), Some(20.0));
         assert_eq!(values.text("no equals sign here"), None);
+    }
+
+    #[test]
+    fn a_hash_that_is_part_of_a_value_is_not_a_comment() {
+        // A colour is written the way anybody would write one, and the value is not eaten.
+        let values = Values::parse("theme.keyword = #FF79C6  # pink
+theme.comment = #6272A4
+");
+        assert_eq!(values.text("theme.keyword"), Some("#FF79C6"));
+        assert_eq!(values.text("theme.comment"), Some("#6272A4"));
     }
 
     #[test]
