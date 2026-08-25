@@ -303,7 +303,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------------------------
-# The disk image.
+# The application's own notarisation, before the image is built round it.
 # ---------------------------------------------------------------------------------------------
 if [ "$notarize" = 1 ]; then
     step "Notarising the application"
@@ -324,6 +324,9 @@ if [ "$notarize" = 1 ]; then
     fi
 fi
 
+# ---------------------------------------------------------------------------------------------
+# The disk image, holding the application that now carries its ticket.
+# ---------------------------------------------------------------------------------------------
 dmg=""
 if [ "$make_dmg" = 1 ]; then
     need hdiutil

@@ -224,8 +224,16 @@ fn accelerator(shortcut: &crate::app::actions::Shortcut) -> Option<muda::acceler
     Some(Accelerator::new(Some(modifiers), code))
 }
 
-/// The key code AppKit knows a key by. Only the keys Quill's menus use are here; a key that is not listed
-/// means the entry is shown without a shortcut rather than with the wrong one.
+/// The key code AppKit knows a key by.
+///
+/// Every letter, digit, function key and punctuation key is here rather than only the ones the menus use
+/// today. It used to be only those, and the test below caught what that costs: `Find in Files...` arrived
+/// with `Cmd+Shift+F`, `F` was not in the list, and the entry would have appeared in the menu bar with no
+/// shortcut at all and no failure anywhere — a silent fault, on macOS only, in a menu nothing on this
+/// platform can look at from a test.
+///
+/// A key that is still not listed shows the entry without a shortcut rather than with the wrong one, and
+/// the test says which key it was.
 #[cfg(target_os = "macos")]
 fn code(key: egui::Key) -> Option<muda::accelerator::Code> {
     use egui::Key;
@@ -235,19 +243,66 @@ fn code(key: egui::Key) -> Option<muda::accelerator::Code> {
         Key::B => Code::KeyB,
         Key::C => Code::KeyC,
         Key::D => Code::KeyD,
+        Key::E => Code::KeyE,
+        Key::F => Code::KeyF,
+        Key::G => Code::KeyG,
+        Key::H => Code::KeyH,
         Key::I => Code::KeyI,
+        Key::J => Code::KeyJ,
         Key::K => Code::KeyK,
+        Key::L => Code::KeyL,
+        Key::M => Code::KeyM,
         Key::N => Code::KeyN,
         Key::O => Code::KeyO,
+        Key::P => Code::KeyP,
         Key::Q => Code::KeyQ,
+        Key::R => Code::KeyR,
         Key::S => Code::KeyS,
         Key::T => Code::KeyT,
         Key::U => Code::KeyU,
         Key::V => Code::KeyV,
         Key::W => Code::KeyW,
         Key::X => Code::KeyX,
+        Key::Y => Code::KeyY,
         Key::Z => Code::KeyZ,
+        Key::Num0 => Code::Digit0,
+        Key::Num1 => Code::Digit1,
+        Key::Num2 => Code::Digit2,
+        Key::Num3 => Code::Digit3,
+        Key::Num4 => Code::Digit4,
+        Key::Num5 => Code::Digit5,
+        Key::Num6 => Code::Digit6,
+        Key::Num7 => Code::Digit7,
+        Key::Num8 => Code::Digit8,
+        Key::Num9 => Code::Digit9,
+        Key::F1 => Code::F1,
+        Key::F2 => Code::F2,
+        Key::F3 => Code::F3,
+        Key::F4 => Code::F4,
+        Key::F5 => Code::F5,
+        Key::F6 => Code::F6,
+        Key::F7 => Code::F7,
+        Key::F8 => Code::F8,
+        Key::F9 => Code::F9,
+        Key::F10 => Code::F10,
+        Key::F11 => Code::F11,
+        Key::F12 => Code::F12,
+        Key::F13 => Code::F13,
+        Key::F14 => Code::F14,
+        Key::F15 => Code::F15,
+        Key::F16 => Code::F16,
+        Key::F17 => Code::F17,
+        Key::F18 => Code::F18,
+        Key::F19 => Code::F19,
+        Key::F20 => Code::F20,
         Key::Comma => Code::Comma,
+        Key::Period => Code::Period,
+        Key::Semicolon => Code::Semicolon,
+        Key::Slash => Code::Slash,
+        Key::Backslash => Code::Backslash,
+        Key::OpenBracket => Code::BracketLeft,
+        Key::CloseBracket => Code::BracketRight,
+        Key::Quote => Code::Quote,
         Key::Backtick => Code::Backquote,
         // `+` is the shifted `=` on the keys AppKit names, so a shortcut asking for plus is the
         // equals key with no shift on the accelerator: `Cmd+=` is what the bar shows, and the same
@@ -255,11 +310,20 @@ fn code(key: egui::Key) -> Option<muda::accelerator::Code> {
         Key::Plus | Key::Equals => Code::Equal,
         Key::Minus => Code::Minus,
         Key::Tab => Code::Tab,
-        Key::F4 => Code::F4,
-        Key::Num0 => Code::Digit0,
-        Key::Num1 => Code::Digit1,
-        Key::Num2 => Code::Digit2,
-        Key::Num3 => Code::Digit3,
+        Key::Enter => Code::Enter,
+        Key::Space => Code::Space,
+        Key::Escape => Code::Escape,
+        Key::Backspace => Code::Backspace,
+        Key::Delete => Code::Delete,
+        Key::Insert => Code::Insert,
+        Key::Home => Code::Home,
+        Key::End => Code::End,
+        Key::PageUp => Code::PageUp,
+        Key::PageDown => Code::PageDown,
+        Key::ArrowUp => Code::ArrowUp,
+        Key::ArrowDown => Code::ArrowDown,
+        Key::ArrowLeft => Code::ArrowLeft,
+        Key::ArrowRight => Code::ArrowRight,
         _ => return None,
     })
 }
