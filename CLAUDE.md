@@ -79,6 +79,9 @@ Four layers, and a change should leave all four green:
    person or an agent confirms that bold text is bolder and that the terminal's colours are right. Once
    accepted they are the comparison baseline, so a later change that alters the rendering fails a test.
    `UPDATE_SNAPSHOTS=1 cargo test` accepts new images, and nothing should be accepted without opening it.
+   Each platform has its own accepted set — macOS reads `tests/snapshots`, Windows `tests/snapshots/windows`
+   — because the menus, the window buttons and the font are all deliberately different there, so one set
+   cannot be the baseline for both. `shot()` at the top of the test file is where that is decided.
 4. The real application: `cargo run --release`, and `cargo run --example terminal_capture -- claude` for the
    terminal. Layer 3 renders through the same code but offscreen, so only a real run shows that the
    operating system honoured the window's transparency or drew the menu bar.

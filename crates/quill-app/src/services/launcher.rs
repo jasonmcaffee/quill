@@ -57,15 +57,33 @@ mod tests {
         assert_eq!(arguments, vec![folder.as_os_str()], "the folder is the only argument");
     }
 
+    /// A small program this machine is certain to have, that takes a path after it and stops straight
+    /// away. `/bin/echo` is a Unix path and there is nothing at it on Windows, so the test asked the
+    /// operating system to start a program that was not there and read the refusal as the plumbing being
+    /// broken. `where` is the nearest thing Windows ships: it is in the folder `SystemRoot` names on every
+    /// installation, and whatever it is handed it prints a line and exits.
+    fn harmless_program() -> PathBuf {
+        if cfg!(target_os = "windows") {
+            let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_owned());
+            PathBuf::from(system_root).join("System32").join("where.exe")
+        } else {
+            PathBuf::from("/bin/echo")
+        }
+    }
+
     /// Starting a real second window is what the `New Window` entry does, and this checks the plumbing
     /// under it without opening a window: `true` is only returned once a process has actually started.
     #[test]
     fn a_second_process_can_be_started() {
         // `std::env::current_exe` inside a test is the test binary, so this would run the tests again.
         // The command is built for a program that exists and does nothing instead.
-        let program = PathBuf::from("/bin/echo");
+        let program = harmless_program();
         let folder = std::env::temp_dir();
-        let started = command_for(&program, &folder).spawn().is_ok();
-        assert!(started, "spawning a second process should work on this machine");
+        let child = command_for(&program, &folder).spawn();
+        assert!(child.is_ok(), "spawning a second process should work on this machine");
+        // Wait for it, so the test leaves nothing behind for the operating system to collect.
+        if let Ok(mut child) = child {
+            child.wait().ok();
+        }
     }
 }

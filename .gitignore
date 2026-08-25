@@ -1,8 +1,13 @@
 /target
 reference/
+# The accepted images are kept; the three a differing run writes beside them are not. The second
+# pattern of each pair covers the per-platform folders, such as tests/snapshots/windows.
 **/tests/snapshots/*.new.png
 **/tests/snapshots/*.diff.png
 **/tests/snapshots/*.old.png
+**/tests/snapshots/**/*.new.png
+**/tests/snapshots/**/*.diff.png
+**/tests/snapshots/**/*.old.png
 
 # IntelliJ workspace state, which is per machine rather than part of the project.
 .idea/

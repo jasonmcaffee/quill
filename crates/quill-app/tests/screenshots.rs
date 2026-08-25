@@ -109,6 +109,28 @@ fn collapse(harness: &mut Harness<'static, QuillApp>) {
     harness.run();
 }
 
+/// Where the accepted image for `name` lives on the platform the test is running on.
+///
+/// The window is deliberately not the same on both platforms. macOS puts the menus in the bar along the
+/// top of the screen and the window buttons at the left; Windows draws the menus in Quill's own title bar
+/// and the buttons at the right. The text is not the same either, because Helvetica is not installed on
+/// Windows and the family falls through to Arial. So one set of images cannot be the baseline for both:
+/// run against the macOS set, 32 of the 72 differed on Windows for reasons that are the program working
+/// exactly as it is meant to.
+///
+/// Each platform therefore has its own accepted set, and a difference in one really is a change to what
+/// Quill draws there. macOS keeps the folder it already had, because those images were looked at and
+/// accepted by a person and moving them would have said they were new.
+fn shot(name: &str) -> String {
+    if cfg!(target_os = "macos") {
+        name.to_owned()
+    } else if cfg!(target_os = "windows") {
+        format!("windows/{name}")
+    } else {
+        format!("linux/{name}")
+    }
+}
+
 /// Report the snapshots taken by a test that builds more than one window.
 ///
 /// The harness requires every snapshot result in one test to be collected together, so that a run with
@@ -123,7 +145,7 @@ fn report(results: SnapshotResults) {
 #[test]
 fn startup_shows_the_explorer_the_toolbar_and_an_empty_editor() {
     let mut harness = harness("");
-    harness.snapshot("startup");
+    harness.snapshot(shot("startup"));
 }
 
 #[test]
@@ -136,7 +158,7 @@ fn a_nested_folder_opens_with_its_children_indented_under_it() {
     harness.run();
     let rows = harness.state().tree.rows().len();
     assert!(rows >= 8, "the tree should show the nested folders, it has {rows} rows");
-    harness.snapshot("file_tree_expanded");
+    harness.snapshot(shot("file_tree_expanded"));
 }
 
 #[test]
@@ -158,7 +180,7 @@ fn clicking_a_file_in_the_explorer_opens_it_in_the_editor() {
         lines[0].runs.iter().any(|run| !run.clusters.is_empty()),
         "and the first line should hold the characters of the file"
     );
-    harness.snapshot("file_opened");
+    harness.snapshot(shot("file_opened"));
 }
 
 #[test]
@@ -174,7 +196,7 @@ fn typing_on_the_keyboard_puts_text_in_the_document() {
     harness.input_mut().events.push(egui::Event::Text("A second line.".to_owned()));
     harness.run();
     assert_eq!(harness.state().document.text().to_string(), "Quill typed this.\nA second line.");
-    harness.snapshot("typed_text");
+    harness.snapshot(shot("typed_text"));
 }
 
 #[test]
@@ -196,7 +218,7 @@ fn a_selection_is_highlighted_behind_part_of_a_line_only() {
     assert_eq!(harness.state().document.selected_text(), "the middle words");
     let rects = harness.state().layout().selection_rects(harness.state().document.selection().range());
     assert_eq!(rects.len(), 1, "the selection is inside one line, so it is one rectangle");
-    harness.snapshot("selection");
+    harness.snapshot(shot("selection"));
 }
 
 #[test]
@@ -208,7 +230,7 @@ fn select_all_then_pressing_bold_makes_the_whole_document_bold() {
     harness.get_by_label("Bold").click();
     harness.run();
     assert!(harness.state().document.chars().style_at(4).bold, "the toolbar button should have applied bold");
-    harness.snapshot("bold_all");
+    harness.snapshot(shot("bold_all"));
 }
 
 #[test]
@@ -216,7 +238,7 @@ fn bold_applies_to_the_middle_word_and_not_the_words_either_side() {
     let mut harness = harness("plain BOLD plain");
     select_phrase(&mut harness, "BOLD", &[Command::ToggleBold]);
     collapse(&mut harness);
-    harness.snapshot("bold");
+    harness.snapshot(shot("bold"));
 }
 
 #[test]
@@ -224,7 +246,7 @@ fn italic_applies_to_the_middle_word_and_not_the_words_either_side() {
     let mut harness = harness("plain ITALIC plain");
     select_phrase(&mut harness, "ITALIC", &[Command::ToggleItalic]);
     collapse(&mut harness);
-    harness.snapshot("italic");
+    harness.snapshot(shot("italic"));
 }
 
 #[test]
@@ -234,7 +256,7 @@ fn underline_draws_a_rule_under_the_middle_word_only() {
     collapse(&mut harness);
     let rules = harness.state().layout().decorations(&harness.state().renderer);
     assert_eq!(rules.len(), 1, "one underline rule to draw");
-    harness.snapshot("underline");
+    harness.snapshot(shot("underline"));
 }
 
 #[test]
@@ -242,7 +264,7 @@ fn strikethrough_draws_a_rule_through_the_middle_word_only() {
     let mut harness = harness("plain STRUCK plain");
     select_phrase(&mut harness, "STRUCK", &[Command::ToggleStrikethrough]);
     collapse(&mut harness);
-    harness.snapshot("strikethrough");
+    harness.snapshot(shot("strikethrough"));
 }
 
 #[test]
@@ -267,7 +289,7 @@ fn three_font_sizes_stand_at_three_visibly_different_heights() {
         heights[0] < heights[1] && heights[1] < heights[2],
         "each line should be taller than the one before, heights were {heights:?}"
     );
-    harness.snapshot("font_size");
+    harness.snapshot(shot("font_size"));
 }
 
 #[test]
@@ -278,7 +300,7 @@ fn four_words_are_shown_in_four_colours() {
     select_phrase(&mut harness, "blue", &[Command::ApplyStyle(StyleChange::color(Color::BLUE))]);
     collapse(&mut harness);
     assert_eq!(harness.state().document.chars().style_at(7).color, Color::RED);
-    harness.snapshot("font_colour");
+    harness.snapshot(shot("font_colour"));
 }
 
 #[test]
@@ -299,7 +321,7 @@ fn the_same_sentence_is_shown_in_each_installed_family() {
         ]);
     }
     collapse(&mut harness);
-    harness.snapshot("font_family");
+    harness.snapshot(shot("font_family"));
 }
 
 /// The four alignments, each in its own screenshot, so a reader can see the same paragraph placed four
@@ -319,7 +341,7 @@ fn each_alignment_places_the_same_paragraph_differently() {
         harness.state_mut().command(Command::SetAlign(align));
         harness.run();
         assert_eq!(harness.state().document.paragraphs().get(0).align, align);
-        results.add(harness.try_snapshot(name));
+        results.add(harness.try_snapshot(shot(name)));
     }
     report(results);
 }
@@ -350,7 +372,7 @@ fn double_spacing_puts_the_lines_twice_as_far_apart() {
     single.state_mut().command(Command::SelectAll);
     single.run();
     let single_height = single.state().layout().height;
-    results.add(single.try_snapshot("line_spacing_single"));
+    results.add(single.try_snapshot(shot("line_spacing_single")));
 
     let mut double = harness(text);
     double.state_mut().command(Command::SelectAll);
@@ -361,7 +383,7 @@ fn double_spacing_puts_the_lines_twice_as_far_apart() {
         (double_height - single_height * 2.0).abs() < 1.0,
         "double spacing should be twice as tall: {single_height} then {double_height}"
     );
-    results.add(double.try_snapshot("line_spacing_double"));
+    results.add(double.try_snapshot(shot("line_spacing_double")));
     report(results);
 }
 
@@ -378,7 +400,7 @@ fn a_long_paragraph_wraps_inside_the_editing_area() {
         harness.state().layout().lines.iter().all(|line| line.paragraph == 0),
         "every line belongs to the one paragraph"
     );
-    harness.snapshot("word_wrap");
+    harness.snapshot(shot("word_wrap"));
 }
 
 #[test]
@@ -488,7 +510,7 @@ fn the_background_fades_with_the_slider_and_the_text_stays_opaque() {
         );
 
         measurements.push((name, expected_alpha, text_body));
-        results.add(harness.try_snapshot(name));
+        results.add(harness.try_snapshot(shot(name)));
     }
 
     let (low_name, low_alpha, low_text) = measurements[0];
@@ -567,7 +589,7 @@ fn a_document_holding_every_feature_at_once_renders() {
         Command::SetLineSpacing(2.0),
     ]);
     collapse(&mut harness);
-    harness.snapshot("everything");
+    harness.snapshot(shot("everything"));
 }
 
 #[test]
@@ -579,7 +601,7 @@ fn the_title_bar_names_the_file_and_its_folder() {
     for button in ["Close", "Minimise", "Maximise"] {
         harness.get_by_label(button);
     }
-    harness.snapshot("title_bar");
+    harness.snapshot(shot("title_bar"));
 }
 
 #[test]
@@ -593,7 +615,7 @@ fn an_edited_file_is_marked_as_unsaved_in_three_places() {
     assert!(harness.state().document.is_modified());
     // The dot appears in the title bar, on the file's row in the explorer and in the status bar. The
     // screenshot is how those are checked; this asserts the state that drives all three.
-    harness.snapshot("unsaved");
+    harness.snapshot(shot("unsaved"));
 }
 
 #[test]
@@ -639,7 +661,7 @@ fn the_filter_box_narrows_the_list_to_matching_files() {
     harness.run();
     let matches = harness.state().tree.matching("two");
     assert_eq!(matches.len(), 1, "only two.md matches");
-    harness.snapshot("filter");
+    harness.snapshot(shot("filter"));
 }
 
 #[test]
@@ -655,7 +677,7 @@ fn the_explorer_can_be_hidden_and_brought_back() {
         editor_without > editor_with,
         "hiding the explorer should give the editor its width: {editor_with} then {editor_without}"
     );
-    harness.snapshot("explorer_hidden");
+    harness.snapshot(shot("explorer_hidden"));
     harness.get_by_label("Show the explorer").click();
     harness.run();
     assert!(harness.state().explorer_visible);
@@ -725,7 +747,7 @@ fn the_window_matches_the_design() {
         harness.state().caret_position(),
         quill_app::components::status_bar::Position { line: 1, column: 1 }
     );
-    harness.snapshot("design_comparison");
+    harness.snapshot(shot("design_comparison"));
 }
 
 // The three view modes, and the Markdown preview behind them.
@@ -789,7 +811,7 @@ fn raw_markdown_shows_the_source_as_it_is_on_disk() {
     // The editing area holds the source, marks and all.
     assert!(harness.state().document.text().to_string().contains("**bold**"));
     assert_eq!(harness.state().editor_area().width(), harness.state().editor_area().width());
-    harness.snapshot("view_raw");
+    harness.snapshot(shot("view_raw"));
 }
 
 #[test]
@@ -808,7 +830,7 @@ fn the_preview_removes_the_marks_and_applies_them() {
     assert!(preview.contains("code keeps its spacing"), "a code block keeps its lines");
     // The source itself is untouched: the preview is worked out from it, not instead of it.
     assert!(harness.state().document.text().to_string().contains("**bold**"));
-    harness.snapshot("view_preview");
+    harness.snapshot(shot("view_preview"));
 }
 
 #[test]
@@ -840,7 +862,7 @@ fn side_by_side_shows_the_source_and_the_preview_at_once() {
         "the editing area should give up half its width to the preview: {full_width} then {half}"
     );
     assert!(!harness.state().preview_text().is_empty(), "the preview should have been worked out");
-    harness.snapshot("view_side_by_side");
+    harness.snapshot(shot("view_side_by_side"));
 }
 
 #[test]
@@ -900,7 +922,7 @@ fn the_file_menu_holds_new_window_open_save_and_recent_projects() {
     harness.get_by_label("quill-recent-one");
     harness.get_by_label("quill-recent-two");
     harness.get_by_label("Forget Recent Projects");
-    harness.snapshot("file_menu");
+    harness.snapshot(shot("file_menu"));
 }
 
 #[test]
@@ -922,7 +944,7 @@ fn opening_a_folder_shows_it_in_the_explorer() {
         harness.state().tree.rows().iter().map(|row| row.entry.name.clone()).collect();
     assert_eq!(names, vec!["inner", "alpha.md"], "the new folder's contents are listed");
     assert_eq!(harness.state().tree.file_count(), 2, "including the file in the sub folder");
-    harness.snapshot("opened_folder");
+    harness.snapshot(shot("opened_folder"));
     std::fs::remove_dir_all(&other).ok();
 }
 
@@ -950,7 +972,7 @@ fn a_file_that_is_not_text_is_listed_and_does_nothing_when_clicked() {
         before,
         "clicking a file that is not text should do nothing"
     );
-    harness.snapshot("unopenable_file");
+    harness.snapshot(shot("unopenable_file"));
 }
 
 /// The file types improvement: a file Quill has no special handling for opens as plain text.
@@ -969,7 +991,7 @@ fn a_rust_file_opens_as_plain_text() {
         !harness.state().layout().lines.is_empty(),
         "the Rust file's text should have been laid out"
     );
-    harness.snapshot("plain_text_file");
+    harness.snapshot(shot("plain_text_file"));
 }
 
 #[test]
@@ -1049,7 +1071,7 @@ fn the_settings_window_opens_from_the_edit_menu_and_holds_the_font_and_the_backg
     harness.get_by_label("Background opacity");
     harness.get_by_label("Appearance");
     harness.get_by_label("Terminal");
-    harness.snapshot("settings_appearance");
+    harness.snapshot(shot("settings_appearance"));
 }
 
 #[test]
@@ -1069,7 +1091,7 @@ fn the_terminal_page_holds_the_terminal_font_size() {
     harness.run();
     harness.get_by_label("Terminal font size");
     assert!(harness.query_by_label("Background opacity").is_none(), "that is on the Appearance page");
-    harness.snapshot("settings_terminal");
+    harness.snapshot(shot("settings_terminal"));
 }
 
 #[test]
@@ -1115,7 +1137,7 @@ fn choosing_a_family_in_the_settings_leaves_bold_and_colour_alone() {
     let style = harness.state().document.chars().style_at(7);
     assert_eq!(style.family, other, "the word is in the new family");
     assert!(style.bold, "and still bold");
-    harness.snapshot("settings_font_applied");
+    harness.snapshot(shot("settings_font_applied"));
 }
 
 #[test]
@@ -1126,7 +1148,7 @@ fn the_background_setting_fades_the_window() {
     harness.state_mut().set_settings(settings);
     harness.run();
     assert_eq!(harness.state().background().a(), 51, "a fifth of the way up from nothing");
-    harness.snapshot("settings_background_faint");
+    harness.snapshot(shot("settings_background_faint"));
 }
 
 // The panes, all of which are resized by dragging their edge.
@@ -1146,7 +1168,7 @@ fn the_explorer_can_be_dragged_wider_and_the_editor_gives_up_the_room() {
         harness.state().editor_area().width() < editor_before,
         "and the editing area should have given up the room"
     );
-    harness.snapshot("explorer_wide");
+    harness.snapshot(shot("explorer_wide"));
 }
 
 #[test]
@@ -1176,7 +1198,7 @@ fn the_split_between_the_source_and_the_preview_can_be_dragged() {
         source_after > source_before + 100.0,
         "the source should have taken the room: {source_before} then {source_after}"
     );
-    harness.snapshot("preview_split_dragged");
+    harness.snapshot(shot("preview_split_dragged"));
 }
 
 // The terminal.
@@ -1211,7 +1233,7 @@ fn the_terminal_opens_along_the_bottom_and_shows_what_a_program_wrote() {
     );
     let screen = harness.state().terminal.tabs.active().expect("a tab").snapshot();
     assert!(screen.contains("Compiling quill-terminal"), "the output should be on the screen");
-    harness.snapshot("terminal");
+    harness.snapshot(shot("terminal"));
 }
 
 #[test]
@@ -1232,7 +1254,7 @@ fn the_terminal_draws_colour_bold_and_the_other_attributes() {
     );
     bytes.extend_from_slice(b"\x1b[48;5;24m background \x1b[0m \x1b[38;2;255;120;0mtrue colour\x1b[0m\r\n");
     feed(&mut harness, &bytes);
-    harness.snapshot("terminal_colours");
+    harness.snapshot(shot("terminal_colours"));
 }
 
 #[test]
@@ -1265,7 +1287,7 @@ fn the_terminal_draws_a_program_that_takes_over_the_screen() {
         harness.state().terminal.tabs.active().expect("a tab").on_alternate_screen(),
         "the program should be on its own screen"
     );
-    harness.snapshot("terminal_full_screen");
+    harness.snapshot(shot("terminal_full_screen"));
 }
 
 #[test]
@@ -1279,7 +1301,7 @@ fn a_second_terminal_tab_is_added_and_shown_in_front() {
     assert_eq!(harness.state().terminal.tabs.active_index(), 1);
     let screen = harness.state().terminal.tabs.active().expect("a tab").snapshot();
     assert!(screen.contains("the second tab"));
-    harness.snapshot("terminal_tabs");
+    harness.snapshot(shot("terminal_tabs"));
 
     // Going back to the first tab shows what was in it, so a tab keeps its own screen.
     harness.get_by_label("Terminal tab: detached").click();
@@ -1305,7 +1327,7 @@ fn the_terminal_is_told_the_new_size_when_the_tile_is_dragged() {
     feed(&mut harness, b"before the resize");
     let tall = harness.state().terminal.tabs.active().expect("a tab").size();
     let results = &mut SnapshotResults::new();
-    results.add(harness.try_snapshot("terminal_tall"));
+    results.add(harness.try_snapshot(shot("terminal_tall")));
 
     // Drag the tile's top edge downwards, which makes it shorter.
     let handle = harness.get_by_label("Resize terminal").rect();
@@ -1324,7 +1346,7 @@ fn the_terminal_is_told_the_new_size_when_the_tile_is_dragged() {
         harness.state().terminal.tabs.active().expect("a tab").snapshot().contains("before the resize"),
         "and what was written is still there"
     );
-    results.add(harness.try_snapshot("terminal_short"));
+    results.add(harness.try_snapshot(shot("terminal_short")));
     report(std::mem::replace(results, SnapshotResults::new()));
 }
 
@@ -1342,7 +1364,7 @@ fn the_terminal_font_size_changes_the_size_of_the_grid() {
         after.columns < before.columns && after.rows <= before.rows,
         "a bigger font means fewer cells fit: {before:?} then {after:?}"
     );
-    harness.snapshot("terminal_large_font");
+    harness.snapshot(shot("terminal_large_font"));
 }
 
 #[test]
@@ -1511,7 +1533,7 @@ fn the_recent_projects_menu_opens_a_project_without_closing_this_one() {
     harness.get_by_label("File").click();
     harness.run();
     harness.get_by_label("quill-recent-open-test");
-    harness.snapshot("recent_projects_menu");
+    harness.snapshot(shot("recent_projects_menu"));
 
     assert_eq!(
         harness.state().tree.root(),
@@ -1604,5 +1626,5 @@ fn a_shell_that_will_not_start_says_so_rather_than_leaving_an_empty_tile() {
         reason.contains("/no/such/program/at/all"),
         "the reason should name the program, it said {reason:?}"
     );
-    harness.snapshot("terminal_will_not_start");
+    harness.snapshot(shot("terminal_will_not_start"));
 }

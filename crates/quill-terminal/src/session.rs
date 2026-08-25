@@ -229,8 +229,14 @@ impl Session {
     }
 
     /// The name for the tab: the title the program set, or the program's own name.
+    ///
+    /// A title that says no more than where the program was started from is not a name, so the program's
+    /// own name is used instead. `cmd.exe` sets the console title to its own full path, which put
+    /// `C:\Windows\system32\cmd.exe` on a Windows tab where the same tab on macOS read `zsh`. `zsh` sets
+    /// no title at all, so the fallback below did all the work there and the fault could not be seen
+    /// until Quill ran on Windows.
     pub fn name(&self) -> &str {
-        if self.title.is_empty() {
+        if self.title.is_empty() || title_is_only_the_program(&self.title, &self.name) {
             &self.name
         } else {
             &self.title
@@ -533,6 +539,16 @@ fn default_shell() -> String {
     } else {
         std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_owned())
     }
+}
+
+/// Whether a title says no more than the name of the program that is running.
+///
+/// The last part of the title is compared, so a title that is the program's whole path counts, and so
+/// does one that has something in front of it, which is what a console started with more rights has.
+/// The comparison ignores case because Windows paths do.
+fn title_is_only_the_program(title: &str, program: &str) -> bool {
+    let last = title.rsplit(['\\', '/']).next().unwrap_or(title);
+    last.eq_ignore_ascii_case(program)
 }
 
 /// The last part of a program's path, which is what a tab is named until the program sets a title.
@@ -845,6 +861,20 @@ mod tests {
         assert_eq!(session.take_clipboard(), None, "it is only handed over once");
     }
 
+    /// A shell this machine certainly has, that answers `echo` and leaves on `exit`.
+    ///
+    /// `/bin/sh` is named rather than whatever `SHELL` says, so the test does not depend on the shell the
+    /// person running it happens to use. It is a Unix path though, and there is nothing at it on Windows,
+    /// where the same job is done by the program `COMSPEC` names — so on Windows the test asks for that
+    /// instead. Both understand `echo` and `exit`, which is all these two tests send.
+    fn test_shell() -> String {
+        if cfg!(target_os = "windows") {
+            default_shell()
+        } else {
+            "/bin/sh".to_owned()
+        }
+    }
+
     #[test]
     fn a_shell_runs_a_command_and_its_output_appears() {
         // The one test here that starts a real shell in a real pseudoterminal. It is what proves the
@@ -856,13 +886,16 @@ mod tests {
             counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         });
         let settings = SessionSettings {
-            shell: Some("/bin/sh".to_owned()),
+            shell: Some(test_shell()),
             args: Vec::new(),
             working_directory: Some(std::env::temp_dir()),
         };
         let mut session =
             Session::spawn(&settings, Size::new(12, 60), waker).expect("start a shell");
-        session.send(b"echo quill-terminal-works\n".to_vec());
+        // A carriage return, which is what the Enter key sends and what `keys.rs` puts on the wire. A line
+        // feed is enough for a Unix line discipline, but a ConPTY does not take one as the line being
+        // finished, so on Windows the command was typed and never run.
+        session.send(b"echo quill-terminal-works\r".to_vec());
 
         // A shell answers when it answers, so this waits for the output rather than assuming it is there.
         // A generous wait, because this runs on whatever machine the tests are run on and a shell answering
@@ -891,12 +924,12 @@ mod tests {
     fn a_shell_that_is_told_to_leave_stops_running() {
         let waker: Waker = Arc::new(|| {});
         let settings = SessionSettings {
-            shell: Some("/bin/sh".to_owned()),
+            shell: Some(test_shell()),
             args: Vec::new(),
             working_directory: None,
         };
         let mut session = Session::spawn(&settings, Size::new(8, 40), waker).expect("start a shell");
-        session.send(b"exit\n".to_vec());
+        session.send(b"exit\r".to_vec());
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while session.is_running() {
             session.pump();

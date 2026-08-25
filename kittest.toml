@@ -16,8 +16,9 @@ max_failed_pixels = 60
 threshold = 1.0
 max_failed_pixels = 60
 
-# Windows has not been run yet, so this allowance is a guess and should be tightened once there is a
-# baseline from a Windows machine.
+# There is a Windows baseline now, in tests/snapshots/windows, taken on a machine running Windows 11.
+# The allowance no longer has to cover a different platform's images, only the same machine's own
+# rasterising, so it is the same as the one macOS gets rather than the guess it used to be.
 [windows]
 threshold = 1.0
-max_failed_pixels = 4000
+max_failed_pixels = 60

@@ -70,7 +70,17 @@ pages down the left under their headings, and the chosen page on the right.
   it pushes nothing onto the undo history and does not mark the file as having unsaved changes, because what
   Quill saves is plain text and carries no formatting.
 - `Appearance & Behavior -> Appearance -> Background` sets the background opacity, which is what lets the
-  desktop show through the window.
+  desktop show through the window. **It has no visible effect on Windows**, and the reason is below the
+  application: wgpu's DX12 backend offers only `CompositeAlphaMode::Opaque` for a swapchain made from a
+  plain window handle, so `egui-wgpu` finds no transparent mode to ask for and the window is composited
+  solid. Building the swapchain from a DirectComposition visual instead
+  (`WGPU_DX12_PRESENTATION_SYSTEM=visual`) does offer `PreMultiplied`, and the window then really does
+  blend — but not with the desktop: at an opacity of 0.05 over a solid red window, the panels measure
+  `#F3F4F4`, which is 5% of the theme over pure white. It is compositing over the window's own
+  redirection bitmap. Suppressing that needs `WS_EX_NOREDIRECTIONBITMAP`, which winit offers as
+  `with_no_redirection_bitmap` and eframe gives no way to reach, its only hook taking an
+  `egui::ViewportBuilder`. So the setting is left doing nothing on Windows rather than turning the
+  window into a white pane, and it will work there when eframe can pass that attribute through.
 - `Tools -> Terminal` sets the size the terminal draws its grid at.
 
 Changes take effect as they are made. The settings, the recent projects and where the dividers between the
@@ -165,6 +175,12 @@ render it through `wgpu` and write a PNG for each one to `crates/quill-app/tests
 are meant to be looked at: they are how a person or an agent confirms that bold text is bolder, that the
 settings window is laid out like the design, and that the terminal's colours are right. Once accepted they
 are also the comparison baseline, so a later change that alters the rendering fails a test.
+
+Each platform has its own accepted set, because the window is deliberately not the same on both: macOS has
+the menus in the bar along the top of the screen and the window buttons at the left, Windows draws both in
+Quill's own title bar, and the text is Arial rather than Helvetica because Helvetica is not installed there.
+macOS reads `tests/snapshots` and Windows `tests/snapshots/windows`. Run against the macOS images, 32 of
+the 50 differed on Windows for reasons that were the program working exactly as it should.
 
 To accept new images after a deliberate change:
 
