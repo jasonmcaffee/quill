@@ -256,21 +256,45 @@ business rather than the runtime's. Checked by installing the hardened ad-hoc bu
 **The image is signed too, not only the application inside it.** An unsigned image around a signed
 application is a thing a person can be handed and told to trust, and Apple refuses to notarise one.
 
-**What notarising actually does here.** `notarytool submit --wait` sends the image and waits, because
-without waiting the script would finish before Apple had looked at anything and there would be nothing to
-staple. `stapler staple` then attaches the ticket to the image, and that is the part that matters: a
-stapled ticket is checked locally, so the image opens for somebody with no network. `stapler validate`
-and `spctl --assess --type open` confirm it took, and the script fails if they disagree.
+**Two submissions, application first, and that ordering was found rather than designed.** The first
+version notarised the image only. Apple accepted it, the ticket stapled, and a copy of the image with the
+quarantine flag set on it was accepted as `Notarized Developer ID` — and then `stapler validate` on the
+application *inside* the image said `Quill.app does not have a ticket stapled to it`. It was accepted
+anyway, because Gatekeeper asked Apple over the network. On a machine with no network, the application a
+person had dragged to their Applications folder would not have opened.
 
-Credentials come from the environment — either `NOTARY_PROFILE`, a profile stored once by
-`notarytool store-credentials`, or `NOTARY_APPLE_ID`, `NOTARY_TEAM_ID` and `NOTARY_PASSWORD` — and
-nothing here prints or stores one.
+So the application is notarised and stapled first, and the image is built round the stapled application
+and notarised in its turn. Two submissions, a minute or two each. The application is sent as a zip made
+with `ditto -c -k --sequesterRsrc --keepParent`, because `zip` does not keep the symlinks and the metadata
+a bundle needs; the zip is only the parcel, and what is stapled is the bundle. `stapler validate` now
+passes on the image, on the application inside it and on the copy in `/Applications`.
 
-**What a checkout cannot carry.** A Developer ID Application certificate needs a paid membership, and it
-lives in a keychain rather than in a repository. `installer/README.md` lists the four things only the
-account holder can do: the membership, the certificate, the Team ID and an app-specific password. Until
-the certificate is there, `security find-identity -v -p codesigning` says `0 valid identities found`, and
-the script stops with that list rather than producing something that looks signed and is not.
+`notarytool submit --wait` waits for the answer, because without waiting the script would finish before
+Apple had looked at anything and there would be nothing to staple. `spctl --assess` afterwards is the
+question a person downloading it will ask, asked here instead, and the script fails if it and `stapler`
+disagree.
+
+**Credentials are written down once, in `installer/macos/notarize.env`,** which is ignored by git and has
+a committed `notarize.env.example` beside it saying where each value comes from. The script reads it if it
+is there, the environment wins over it for a one-off run, and the first run stores the keychain profile
+from either an App Store Connect API key or an app-specific password, so nothing has to be looked up in
+Xcode or App Store Connect a second time. Nothing here prints or stores a password.
+
+An API key is the better of the two: it is a file plus two identifiers rather than a password, it can be
+revoked on its own, and an app-specific password needs two-factor authentication turned on before Apple
+will even offer one.
+
+**What a checkout cannot carry.** A Developer ID Application certificate needs a paid membership and lives
+in a keychain rather than in a repository. `installer/README.md` lists the four things only the account
+holder can do. Until the certificate is there, `security find-identity -v -p codesigning` says
+`0 valid identities found` and the script stops with that list rather than producing something that looks
+signed and is not.
+
+One trap on the way there, recorded because it looks like success. Signing in to Xcode with a developer
+account produces an **Apple Development** certificate, not a **Developer ID Application** one. It signs
+without complaint, with the hardened runtime and a timestamp, and it is useless for distribution: `spctl`
+answers `rejected` exactly as it does for an ad-hoc signature, and Apple will not notarise it. The second
+certificate has to be created deliberately, in Xcode under *Manage Certificates*.
 
 The disk image is `hdiutil create` over a staging folder holding `Quill.app` and a symlink to
 `/Applications`, converted to a compressed read-only `UDZO` image.
@@ -346,6 +370,10 @@ The same five steps on macOS, all of which have now been done:
    at the top of `recent.txt` — which is how a machine with no view of its own screen can tell the
    installed copy ran and did something.
 5. `--install` again over the running copy, which succeeds, and the bundle on disk verifies afterwards.
+6. Signed with a Developer ID and notarised, on 2026-08-25: both submissions accepted, `stapler validate`
+   passing on the image, on the application inside it and on the installed copy, and a copy of the image
+   with the quarantine flag set by hand assessed as `accepted, source=Notarized Developer ID` — which is
+   what a person downloading it gets, with no warning and no network needed.
 
 The screenshot tests are untouched by any of this, and must stay green: `build.rs` adds a resource to
 a binary and does not change a pixel the window draws.

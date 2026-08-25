@@ -19,10 +19,12 @@ installer's Add or Remove Programs entry and the file names here from that one p
 
 ## What a person who receives one of these sees
 
-**macOS.** With a Developer ID signature and a stapled notarisation ticket, opening the image and
-dragging the application across is all there is to it. Without them the image is signed ad-hoc, and
-macOS says it cannot check the application for malicious software: the way past that is a right click on
-`Quill.app` and *Open*, once. Which of the two a file is can be read from the file itself:
+**macOS.** `quill-0.1.0.dmg` is signed with a Developer ID and notarised, with the ticket stapled to the
+image and to the application inside it, so opening the image and dragging the application across is all
+there is to it: no warning, and no network needed to check it. A build made without the certificate is
+signed ad-hoc instead, and macOS then says it cannot check the application for malicious software, which
+takes a right click on `Quill.app` and *Open*, once. Which of the two a file is can be read from the file
+itself:
 
 ```bash
 spctl --assess --type open --context context:primary-signature --verbose=2 releases/quill-0.1.0.dmg

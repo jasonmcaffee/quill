@@ -113,21 +113,26 @@ restricted by the runtime.
 
 ### Notarising
 
+The identity and the credentials are written down once, in a file the script reads:
+
 ```bash
-export CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
-xcrun notarytool store-credentials quill \
-    --apple-id you@example.com --team-id TEAMID --password <app-specific-password>
-export NOTARY_PROFILE=quill
+cp installer/macos/notarize.env.example installer/macos/notarize.env
+# fill it in, then
 installer/macos/build.sh --notarize
 ```
 
-`NOTARY_APPLE_ID`, `NOTARY_TEAM_ID` and `NOTARY_PASSWORD` work instead of a stored profile, for a
-machine where storing one is not wanted. Nothing is printed or written by the script either way.
+`notarize.env` is ignored by git — the API key it points at is a credential and the identity and the
+issuer are account details. Anything already in the environment wins over it, so a one-off run can still
+override a value. Nothing is printed or written by the script either way.
 
-`--notarize` signs the application and the image with the identity, sends the image to Apple, waits for
-the answer, staples the ticket to the image and then asks `spctl` and `stapler validate` whether it
-took. The staple is the point: the ticket is checked locally, so the image opens for somebody with no
-network.
+**Two submissions, and the order is the point.** A notarisation ticket has to be stapled to the thing it
+covers, and what a person ends up running is the application they dragged out of the image. So the
+application is notarised and stapled *first*, and only then is the image built round it and notarised in
+its turn. Doing the image alone leaves `Quill.app does not have a ticket stapled to it`, which works only
+while the machine can reach Apple; a stapled ticket is checked locally, so both work with no network.
+
+Each submission takes a minute or two. Afterwards the script asks `stapler validate` and `spctl` whether
+it took, and fails if they disagree, so a green run means a person downloading the image sees no warning.
 
 ### What is needed before any of that works
 
@@ -136,14 +141,20 @@ None of it can be done from a checkout alone, and each one is a thing only the a
 1. **A paid Apple Developer Program membership.** A free Apple ID cannot have a Developer ID
    Application certificate, which is the only kind of signature Gatekeeper accepts outside the App
    Store.
-2. **The certificate, in the login keychain.** The short way is Xcode: *Settings*, *Accounts*, sign in,
-   select the team, *Manage Certificates*, the `+`, *Developer ID Application*. It needs the Account
-   Holder or Admin role. The long way is a certificate signing request from Keychain Access uploaded at
-   developer.apple.com and the issued certificate downloaded and double clicked.
-3. **The Team ID**, ten characters, from developer.apple.com under Membership. It is the part in
+2. **The certificate, in the login keychain.** Xcode: *Settings*, *Accounts*, sign in, select the team,
+   *Manage Certificates*, the `+`, *Developer ID Application*. It needs the Account Holder or Admin role.
+   Signing in to Xcode on its own is not enough: that produces an `Apple Development` certificate, which
+   is for running on your own machines. Signing with one of those and asking `spctl` gives `rejected`
+   exactly as ad-hoc does, and Apple refuses to notarise it.
+3. **The Team ID**, ten characters, from developer.apple.com under Membership, and also the part in
    brackets in the identity's name.
-4. **An app-specific password** for the Apple ID, from appleid.apple.com under *Sign-In and Security*.
-   The Apple ID's own password is refused. An App Store Connect API key works too, with `--key`.
+4. **Credentials for `notarytool`**, either of:
+   - an **App Store Connect API key**: appstoreconnect.apple.com, *Users and Access*, *Integrations*,
+     *App Store Connect API*, `+`, role Developer. Download the `AuthKey_<keyid>.p8` — one chance only —
+     and note the Key ID in its row and the Issuer ID above the table.
+   - an **app-specific password**: appleid.apple.com, *Sign-In and Security*, *App-Specific Passwords*.
+     The Apple ID's own password is refused, and that section only exists on an account with two-factor
+     authentication turned on.
 
 `security find-identity -v -p codesigning` lists what the machine actually has. Until step 2 is done it
 says `0 valid identities found`, and the script stops with that same list rather than producing
@@ -168,11 +179,17 @@ What was checked afterwards:
 | Installing | `--install` puts it in `/Applications`, `open -a` launches it, and the folder passed after `--args` reaches the window: it turns up at the top of `recent.txt` |
 | Installing over a running copy | works, because a Mac replaces the bundle and leaves the running process on its old inode. There is nothing here like the Restart Manager problem the Windows side has |
 
-**The one thing still not done** is a real identity, and it is not something a checkout can carry: this
-machine has `0 valid identities found`. Everything up to that point is in place and was exercised — the
-hardened runtime is on and the application runs under it, the image is built and signed, and `--notarize`
-stops with the list of identities and the four steps above rather than producing something that looks
-signed. The moment the certificate is in the keychain, one run does the rest.
+**Signed and notarised, as of 2026-08-25.** `Developer ID Application: Jason McAffee (A7L778FFNA)`, the
+hardened runtime, a secure timestamp, and both submissions accepted by Apple. Checked the way a person
+receiving the image is: the quarantine flag was set on a copy of the `.dmg` by hand, and
+
+```
+spctl --assess --type open --context context:primary-signature  →  accepted, source=Notarized Developer ID
+```
+
+for the image, the same for `Quill.app` inside it, and `stapler validate` passes on the image, on the
+application in the image, and on the copy installed in `/Applications`. So a downloaded copy opens with
+no warning and with no network.
 
 Two smaller things left as they are, deliberately. The binary is **arm64 only** on a machine with only
 that target installed — `rustup target add x86_64-apple-darwin` and another run makes it universal, and

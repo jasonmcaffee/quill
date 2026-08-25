@@ -24,3 +24,7 @@ reference/
 
 # Anything an agent writes while working: captures, logs, comparisons.
 /_agent_output/
+
+AuthKey_K2466BV829.p8
+# The signing identity and notarising credentials, which are per machine and partly secret.
+installer/macos/notarize.env

@@ -49,6 +49,15 @@ app="$dist/Quill.app"
 # this is what is kept, and every file in it carries the version it was built from.
 releases="$repo/releases"
 
+# The identity and the notarising credentials, written down once rather than exported by hand every time.
+# Ignored by git, because the key it points at is a credential and the rest are account details.
+# `notarize.env.example` beside it says where each value comes from. Anything already in the environment
+# wins, so a one-off run can still override it.
+if [ -f "$here/notarize.env" ]; then
+    # shellcheck disable=SC1091
+    . "$here/notarize.env"
+fi
+
 install_it=0
 make_dmg=1
 draw_icon=0
@@ -74,6 +83,86 @@ need() {
         echo "$1 is not on the PATH. Install the Xcode command line tools: xcode-select --install" >&2
         exit 1
     }
+}
+
+# ---------------------------------------------------------------------------------------------
+# Notarising, in two submissions: the application, then the image holding it.
+#
+# The order matters and it is the reason this is not one step. A notarisation ticket has to be stapled
+# to the thing it covers, and what a person ends up running is the application they dragged out of the
+# image — so the application has to carry its own ticket, and it has to be stapled before the image is
+# built round it. Then the image is notarised in its turn, so that the image itself opens without a
+# warning as well. A stapled ticket is checked locally, which is what makes both work with no network.
+# ---------------------------------------------------------------------------------------------
+notary_credentials=()
+
+# Work out how to talk to the notary service, storing the keychain profile the first time.
+prepare_notarising() {
+    if [ "$signed_properly" != 1 ]; then
+        echo "Notarising needs a Developer ID signature. Set CODESIGN_IDENTITY to one of these:" >&2
+        security find-identity -v -p codesigning >&2
+        exit 1
+    fi
+    need xcrun
+
+    # The profile is stored the first time, from an App Store Connect API key or from an app-specific
+    # password, so that the values are looked up once and never again. After that the profile's name is
+    # the only thing needed.
+    if [ -n "${NOTARY_PROFILE:-}" ] && ! xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1; then
+        if [ -n "${NOTARY_KEY:-}" ] && [ -n "${NOTARY_KEY_ID:-}" ] && [ -n "${NOTARY_ISSUER:-}" ]; then
+            echo "  storing the profile $NOTARY_PROFILE from the API key $NOTARY_KEY_ID"
+            if [ ! -f "$NOTARY_KEY" ]; then
+                echo "NOTARY_KEY points at $NOTARY_KEY, which is not there." >&2
+                exit 1
+            fi
+            xcrun notarytool store-credentials "$NOTARY_PROFILE" \
+                --key "$NOTARY_KEY" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" >/dev/null
+        elif [ -n "${NOTARY_APPLE_ID:-}" ] && [ -n "${NOTARY_TEAM_ID:-}" ] && [ -n "${NOTARY_PASSWORD:-}" ]; then
+            echo "  storing the profile $NOTARY_PROFILE from the app-specific password"
+            xcrun notarytool store-credentials "$NOTARY_PROFILE" \
+                --apple-id "$NOTARY_APPLE_ID" --team-id "$NOTARY_TEAM_ID" --password "$NOTARY_PASSWORD" >/dev/null
+        fi
+    fi
+
+    if [ -n "${NOTARY_PROFILE:-}" ] && xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1; then
+        notary_credentials=(--keychain-profile "$NOTARY_PROFILE")
+        echo "  as the stored profile $NOTARY_PROFILE"
+    elif [ -n "${NOTARY_APPLE_ID:-}" ] && [ -n "${NOTARY_TEAM_ID:-}" ] && [ -n "${NOTARY_PASSWORD:-}" ]; then
+        notary_credentials=(--apple-id "$NOTARY_APPLE_ID" --team-id "$NOTARY_TEAM_ID" --password "$NOTARY_PASSWORD")
+        echo "  as $NOTARY_APPLE_ID, team $NOTARY_TEAM_ID"
+    else
+        cat >&2 <<'MISSING'
+Notarising needs credentials for notarytool, and the place to put them is
+installer/macos/notarize.env, which is ignored by git:
+
+  cp installer/macos/notarize.env.example installer/macos/notarize.env
+
+Then fill in either an App Store Connect API key, from appstoreconnect.apple.com under Users and
+Access, Integrations:
+
+  NOTARY_KEY, NOTARY_KEY_ID, NOTARY_ISSUER
+
+or an app-specific password, from appleid.apple.com under Sign-In and Security:
+
+  NOTARY_APPLE_ID, NOTARY_TEAM_ID, NOTARY_PASSWORD
+
+An Apple ID's own password is refused, and app-specific passwords only exist on an account with
+two-factor authentication turned on. The profile named by NOTARY_PROFILE is stored from whichever of
+the two is filled in, on the first run.
+MISSING
+        exit 1
+    fi
+}
+
+# Send something to Apple, wait for the answer, and staple the ticket to it.
+#
+# --wait, because the answer is the point: without it the script would finish before Apple had looked
+# at anything and there would be nothing to staple.
+notarise() {
+    local what="$1" staple_to="$2"
+    xcrun notarytool submit "$what" "${notary_credentials[@]}" --wait
+    xcrun stapler staple "$staple_to"
+    xcrun stapler validate "$staple_to"
 }
 
 if [ "$(uname -s)" != "Darwin" ]; then
@@ -216,6 +305,25 @@ fi
 # ---------------------------------------------------------------------------------------------
 # The disk image.
 # ---------------------------------------------------------------------------------------------
+if [ "$notarize" = 1 ]; then
+    step "Notarising the application"
+    prepare_notarising
+    # A zip to send, made with ditto because it keeps the symlinks and the metadata a bundle needs and
+    # `zip` does not. It is only the parcel: what gets stapled is the bundle itself.
+    parcel="$dist/Quill.app.zip"
+    rm -f "$parcel"
+    ditto -c -k --sequesterRsrc --keepParent "$app" "$parcel"
+    notarise "$parcel" "$app"
+    rm -f "$parcel"
+    if spctl --assess --type execute --verbose=2 "$app" >/dev/null 2>&1; then
+        echo "  Gatekeeper accepts the application, and its ticket is stapled to it"
+    else
+        echo "  Gatekeeper still rejects the application" >&2
+        spctl --assess --type execute --verbose=2 "$app" >&2 || true
+        exit 1
+    fi
+fi
+
 dmg=""
 if [ "$make_dmg" = 1 ]; then
     need hdiutil
@@ -237,68 +345,24 @@ if [ "$make_dmg" = 1 ]; then
         echo "  signed the image too"
     fi
     echo "  $dmg ($(du -h "$dmg" | cut -f1))"
+
+    if [ "$notarize" = 1 ]; then
+        step "Notarising the image"
+        notarise "$dmg" "$dmg"
+        # The question a person downloading it asks, asked here instead. `--type open` with the primary
+        # signature context is how a disk image is assessed rather than an application.
+        if spctl --assess --type open --context context:primary-signature "$dmg" >/dev/null 2>&1; then
+            echo "  Gatekeeper accepts the image: it will open with no warning"
+        else
+            echo "  Gatekeeper still rejects the image, so something above did not take" >&2
+            spctl --assess --type open --context context:primary-signature --verbose=2 "$dmg" >&2 || true
+            exit 1
+        fi
+    fi
 fi
 
-# ---------------------------------------------------------------------------------------------
-# Notarising: Apple looks at the image and sends back a ticket, which is stapled to it.
-#
-# The ticket is what lets a person who downloads the image open it with no warning and with no
-# network connection, because the stapled ticket is checked locally.
-# ---------------------------------------------------------------------------------------------
-if [ "$notarize" = 1 ]; then
-    step "Notarising"
-    if [ "$signed_properly" != 1 ]; then
-        echo "Notarising needs a Developer ID signature. Set CODESIGN_IDENTITY to one of these:" >&2
-        security find-identity -v -p codesigning >&2
-        exit 1
-    fi
-    if [ -z "$dmg" ]; then
-        echo "Nothing to notarise: --notarize and --no-dmg together." >&2
-        exit 2
-    fi
-    need xcrun
-
-    # Either a stored profile or the three values. Neither is printed.
-    credentials=()
-    if [ -n "${NOTARY_PROFILE:-}" ]; then
-        credentials=(--keychain-profile "$NOTARY_PROFILE")
-        echo "  as the stored profile $NOTARY_PROFILE"
-    elif [ -n "${NOTARY_APPLE_ID:-}" ] && [ -n "${NOTARY_TEAM_ID:-}" ] && [ -n "${NOTARY_PASSWORD:-}" ]; then
-        credentials=(--apple-id "$NOTARY_APPLE_ID" --team-id "$NOTARY_TEAM_ID" --password "$NOTARY_PASSWORD")
-        echo "  as $NOTARY_APPLE_ID, team $NOTARY_TEAM_ID"
-    else
-        cat >&2 <<'MISSING'
-Notarising needs credentials for notarytool. Either store them once:
-
-  xcrun notarytool store-credentials quill \
-      --apple-id you@example.com --team-id TEAMID --password <app-specific-password>
-  export NOTARY_PROFILE=quill
-
-or pass them each time:
-
-  export NOTARY_APPLE_ID=you@example.com NOTARY_TEAM_ID=TEAMID NOTARY_PASSWORD=<app-specific-password>
-
-The app-specific password comes from appleid.apple.com, not the Apple ID's own password.
-MISSING
-        exit 1
-    fi
-
-    # --wait, because the answer is the point: without it the script would finish before Apple had
-    # looked at anything and there would be nothing to staple.
-    xcrun notarytool submit "$dmg" "${credentials[@]}" --wait
-
-    step "Stapling the ticket"
-    xcrun stapler staple "$dmg"
-    xcrun stapler validate "$dmg"
-    # The question a person downloading it asks, asked here instead. `--type open` with the primary
-    # signature context is how a disk image is assessed rather than an application.
-    if spctl --assess --type open --context context:primary-signature "$dmg" >/dev/null 2>&1; then
-        echo "  Gatekeeper accepts the image: it will open with no warning"
-    else
-        echo "  Gatekeeper still rejects the image, so something above did not take" >&2
-        spctl --assess --type open --context context:primary-signature --verbose=2 "$dmg" >&2 || true
-        exit 1
-    fi
+if [ "$notarize" = 1 ] && [ -z "$dmg" ] && [ "$make_dmg" = 1 ]; then
+    echo "Nothing to notarise: --notarize and --no-dmg together leave only the application." >&2
 fi
 
 # ---------------------------------------------------------------------------------------------
