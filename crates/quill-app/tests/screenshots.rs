@@ -24,6 +24,7 @@ use egui_kittest::{Harness, SnapshotResults};
 use quill_app::QuillApp;
 use quill_app::app::ViewMode;
 use quill_app::app::actions::{Action, HighlightColor};
+use quill_app::components::about_dialog::About;
 use quill_app::components::title_bar::MenuPlacement;
 use quill_app::settings;
 use quill_core::{Align, Color, Command, StyleChange};
@@ -1394,6 +1395,74 @@ fn drag(harness: &mut Harness<'static, QuillApp>, from: egui::Pos2, to: egui::Po
         modifiers,
     });
     harness.run();
+}
+
+/// Open the About box the way a person does: `Quill` in the bar, then `About Quill`.
+fn open_about(harness: &mut Harness<'static, QuillApp>) {
+    harness.state_mut().menu_placement = MenuPlacement::InWindow;
+    harness.run();
+    harness.get_by_label("Quill").click();
+    harness.run();
+    harness.get_by_label("About Quill").click();
+    harness.run();
+}
+
+/// The version and the build date this build really has would put a different picture in front of
+/// the comparison every time the binary was rebuilt, so the test fixes them. `About::current` is
+/// covered by a unit test beside the component.
+fn a_fixed_about() -> About {
+    About {
+        developer: "Jason McAffee".to_owned(),
+        version: "0.2.0".to_owned(),
+        built: "2026-08-25 10:45pm".to_owned(),
+    }
+}
+
+#[test]
+fn the_about_box_names_the_developer_the_version_and_the_build_date() {
+    let mut harness = harness("Text behind the About box.");
+    assert!(harness.state().about.is_none());
+    open_about(&mut harness);
+    assert!(harness.state().about.is_some(), "Quill then About Quill should open it");
+
+    harness.state_mut().about = Some(a_fixed_about());
+    harness.run();
+    harness.get_by_label("Developed by Jason McAffee");
+    harness.get_by_label("Version: 0.2.0");
+    harness.get_by_label("Build Date: 2026-08-25 10:45pm");
+    harness.snapshot(shot("about"));
+}
+
+#[test]
+fn the_about_box_closes_on_its_button() {
+    let mut harness = harness("");
+    open_about(&mut harness);
+    harness.get_by_label("Done").click();
+    harness.run();
+    assert!(harness.state().about.is_none());
+}
+
+#[test]
+fn the_about_box_closes_on_escape() {
+    let mut harness = harness("");
+    open_about(&mut harness);
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+    assert!(harness.state().about.is_none());
+}
+
+#[test]
+fn opening_the_about_box_shuts_whatever_else_was_open() {
+    // One modal at a time is the rule every other entry point already keeps, and the About box is
+    // reached from a menu rather than from `modal open`, which is where it would be easy to forget.
+    let mut harness = harness("");
+    open_settings(&mut harness);
+    assert!(harness.state().settings_window.open);
+    let ctx = harness.ctx.clone();
+    harness.state_mut().run_action(Action::About, &ctx);
+    harness.run();
+    assert!(harness.state().about.is_some());
+    assert!(!harness.state().settings_window.open, "the Settings window went away");
 }
 
 /// Open the Settings window the way a person does on Windows: `Edit` in the bar, then `Settings`.

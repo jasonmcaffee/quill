@@ -11,8 +11,10 @@
 //! - `services` is everything that is not drawing: the file tree, the fonts and the glyph atlas, the
 //!   settings and recent projects on disk, starting a second window, and the macOS menu bar.
 //! - `theme` is the palette, the measurements and the drawn icons.
+//! - `build_info` is what this build is: the version and the date it was built.
 
 pub mod app;
+pub mod build_info;
 pub mod components;
 pub mod services;
 pub mod settings;

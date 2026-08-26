@@ -30,6 +30,11 @@ The version comes from `Cargo.toml` and nowhere else. It reaches `quill.exe`'s v
 installer's file name, the Add or Remove Programs entry and `Quill.app`'s `Info.plist` from there, so
 releasing a new version is changing one number.
 
+**Releasing is one command, and it is not this one.** `pwsh tools/release.ps1` bumps that number,
+runs the Windows script below with `-Install`, tags, pushes and publishes the GitHub release with the
+installer attached. The scripts here are what it drives, and are what to run when you want an
+installer without a release. `CLAUDE.md` records the rule that a finished task ends with a release.
+
 ---
 
 ## Windows

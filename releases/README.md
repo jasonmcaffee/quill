@@ -1,21 +1,29 @@
 # Releases
 
-The finished installers, one file per version, named after the version in `Cargo.toml`:
+**The downloads live on the GitHub releases page**, one release per version:
+<https://github.com/jasonmcaffee/quill/releases>. This folder is where the file is staged on its way
+there.
 
 ```
 releases/
-  quill-0.1.0.dmg          macOS: the application and an alias to /Applications
-  QuillSetup-0.1.0-x64.exe Windows: the Inno Setup installer
+  QuillSetup-0.2.0-x64.exe   Windows: the Inno Setup installer, uploaded to the v0.2.0 release
+  quill-0.1.0.dmg            macOS: the application and an alias to /Applications
 ```
 
-`installer/macos/build.sh` and `installer/windows/build.ps1` write here. `installer/dist/` is their
-working area — the bundle, the staging folder for the image — and is rewritten on every run; this is what
-is kept.
+`installer/macos/build.sh` and `installer/windows/build.ps1` write the installers; `installer/dist/`
+is their working area and is rewritten on every run. `tools/release.ps1` copies the finished file
+here and uploads it, and **the `.exe` and `.dmg` files here are not committed** — a 7 MB installer per
+finished task is not something a git repository should carry, and a release asset is a better place
+for something a person downloads. (`quill-0.1.0.dmg` predates that decision and is still tracked.)
 
 The name carries the version so that two builds cannot be confused for one another, and so that an
-older version can be handed to somebody who needs it. Releasing a new version is changing the number in
-`Cargo.toml`: it reaches the executable's version block, the bundle's `Info.plist`, the Windows
-installer's Add or Remove Programs entry and the file names here from that one place.
+older version can be handed to somebody who needs it. Releasing a new version is
+`pwsh tools/release.ps1`: it changes the number in `Cargo.toml`, which reaches the executable's
+version block, the bundle's `Info.plist`, the Windows installer's Add or Remove Programs entry and
+the file names here from that one place.
+
+**Which build am I running?** `Quill -> About Quill` says, and so does `quill-cli status --json`:
+both carry the version and the date the binary was built.
 
 ## What a person who receives one of these sees
 

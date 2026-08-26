@@ -464,7 +464,8 @@ impl QuillApp {
     fn status_value(&self, ctx: &egui::Context) -> Value {
         let screen = ctx.content_rect();
         json!({
-            "version": env!("CARGO_PKG_VERSION"),
+            "version": crate::build_info::VERSION,
+            "buildDate": crate::build_info::BUILD_DATE,
             "pid": std::process::id(),
             "port": self.control.as_ref().map(|server| server.port()),
             "project": self.tree.root().to_string_lossy(),
@@ -2179,6 +2180,9 @@ impl QuillApp {
         if self.settings_window.open {
             return Some("settings".to_owned());
         }
+        if self.about.is_some() {
+            return Some("about".to_owned());
+        }
         if let Some(prompt) = &self.prompt {
             return Some(prompt_name(prompt).to_owned());
         }
@@ -2225,6 +2229,11 @@ impl QuillApp {
             map.insert("results".to_owned(), json!(find.hits().len()));
             map.insert("chosen".to_owned(), json!(find.chosen));
             map.insert("searching".to_owned(), json!(find.is_searching()));
+        }
+        if let Some(about) = &self.about {
+            map.insert("developer".to_owned(), json!(about.developer));
+            map.insert("version".to_owned(), json!(about.version));
+            map.insert("buildDate".to_owned(), json!(about.built));
         }
         if self.settings_window.open {
             map.insert("page".to_owned(), json!(self.settings_window.page.title()));
@@ -2299,6 +2308,18 @@ impl QuillApp {
                     format!("Settings is open at {}", self.settings_window.page.title()),
                     json!({ "open": "settings", "page": self.settings_window.page.title() }),
                 )
+            }
+            "about" => {
+                self.close_every_modal();
+                let about = crate::components::about_dialog::About::current();
+                let answer = json!({
+                    "open": "about",
+                    "developer": about.developer,
+                    "version": about.version,
+                    "buildDate": about.built,
+                });
+                self.about = Some(about);
+                ok(request, "About Quill is open", answer)
             }
             "new-file" | "rename" => self.cli_modal_open_prompt(request, &name, &query),
             other => no(
@@ -2574,6 +2595,11 @@ impl QuillApp {
             self.settings_window.open = false;
             return done(request, "Closed Settings.");
         }
+        if self.about.take().is_some() {
+            // There is nothing to accept in the About box, so its one button and `modal accept` do
+            // the same thing the Close button does.
+            return done(request, "Closed About Quill.");
+        }
         if let Some(prompt) = self.prompt.take() {
             let value = prompt.value.clone();
             self.run_prompt(prompt);
@@ -2608,9 +2634,13 @@ impl QuillApp {
     }
 
     /// Shut whatever is open, which is what opening another one does and what Escape does.
-    fn close_every_modal(&mut self) {
+    ///
+    /// `pub(super)` because `run_action` is in `app` rather than here, and `About Quill` shuts the
+    /// others exactly as `modal open` does.
+    pub(super) fn close_every_modal(&mut self) {
         self.go_to_file = None;
         self.find_in_files = None;
+        self.about = None;
         self.settings_window.open = false;
         self.prompt = None;
         self.confirmation = None;
@@ -3195,6 +3225,7 @@ const MODALS: &[(&str, &str)] = &[
     ("go-to-file", "Find a file in the project by part of its name and open it."),
     ("find-in-files", "Search every file's text, with the chosen file shown underneath."),
     ("settings", "Edit -> Settings: the font, the background, the gutter, the plugins, the terminal."),
+    ("about", "Who wrote Quill, what version this is and when it was built."),
     ("new-file", "Make an empty file in a folder. Takes --path."),
     ("rename", "Rename a file or a folder. Takes --path."),
 ];
@@ -3205,6 +3236,7 @@ fn modal_id(name: &str) -> Option<&'static str> {
         "go-to-file" => "quill-go-to-file",
         "find-in-files" => "quill-find-in-files",
         "settings" => "quill-settings",
+        "about" => "quill-about",
         "new-file" | "rename" | "prompt" => "quill-prompt",
         "confirmation" => "quill-confirmation",
         "commit" => "quill-commit",

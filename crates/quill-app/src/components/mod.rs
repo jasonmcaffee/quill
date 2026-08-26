@@ -4,6 +4,7 @@
 //! returns what the user did in it. None of them changes the document or the window's state directly, so
 //! the state changes in one place, `app`, and two components cannot disagree about what happened.
 
+pub mod about_dialog;
 pub mod activity_bar;
 pub mod color_wheel;
 pub mod context_menu;

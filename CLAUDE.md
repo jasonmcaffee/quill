@@ -3,6 +3,25 @@
 Read this before changing anything. It records the conventions the code already follows, so that a later
 change looks like the rest of the code rather than like a second style laid over it.
 
+## Finishing a task means releasing it
+
+**When the work is done and verified, run `pwsh tools/release.ps1`.** Patch by default, `-Part minor`
+for a feature. It bumps the version in `Cargo.toml`, rebuilds — which is what moves the build date
+the About box shows — reinstalls Quill on this machine, tags `v<version>`, pushes, and publishes the
+GitHub release with the installer attached. Commit the task's own work first; the script refuses to
+run on a dirty checkout, and the version bump is a commit of its own so the history stays greppable
+by ticket.
+
+This is not paperwork. `Quill -> About Quill` is how a person answers "is this the build with the fix
+in it", and it can only answer that if the build they are running is the build that was just made. A
+task whose change is still sitting in `target/release` is a task that was not finished: the editor on
+the desktop is the old one, and the version on the About box says a number that no longer means
+anything.
+
+`tools/release.ps1 -WhatIf` says what it would do and changes nothing. It installs `gh` with winget
+the first time, exactly as the Windows installer script installs Inno Setup, and takes the GitHub
+token from the credential helper git already uses, so there is no second credential to keep.
+
 ## What the crates are for
 
 | Crate | What is in it | What must never be in it |
@@ -523,6 +542,15 @@ still produces a working, if unlabelled, `quill.exe`.
 file name, the Add or Remove Programs entry and `Info.plist` from there. Do not write it down a second
 time.
 
+**And it is read in one place too**, `build_info`, which also holds the build date. The date is
+stamped by `crates/quill-app/build.rs` while the binary is compiled — the local time of the machine
+that built it — so it is never edited by hand and cannot be forgotten. That file's comment says when
+the stamp moves and why it does not move more often than that: the value is part of the crate's
+fingerprint, so a script that restamped on every invocation would recompile `quill-app` and relink
+every screenshot test each time the clock ticked. `components::about_dialog` is what shows the two,
+and it takes them as text rather than reading them, because a picture that changes every build cannot
+be a screenshot test.
+
 ## Tests
 
 Four layers, and a change should leave all four green:
@@ -655,7 +683,11 @@ trade that away to be a shade nearer a screenshot.
   measured against a live window.
 - `tasks/quill-installer-tdd.md` — how Quill is delivered: the icon, the Windows installer and the
   macOS bundle, and the options that were weighed for each.
+- `tasks/task-1667-version-and-release-tdd.md` — the About box, the build date stamped at compile
+  time, and the one-command release: why the date is not a hand-written number, not the executable's
+  mtime and not a dates crate, and why the instruction is a script rather than a paragraph.
 - `installer/README.md` — how to build an installer, on either platform.
+- `tools/release.ps1` — the one command that releases: bump, build, install, tag, push, publish.
 - `tasks/improvements.md` — the ask that the settings window, the panes, the terminal and the menus came
   from.
 

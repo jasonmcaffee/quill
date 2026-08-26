@@ -160,7 +160,7 @@ pub const COMMANDS: &[Command] = &[
     Command {
         area: "",
         verb: "status",
-        summary: "Everything about the window in one answer: the project, the tabs, the panes, the terminal, the modal that is open, the settings and git.",
+        summary: "Everything about the window in one answer: its version and build date, the project, the tabs, the panes, the terminal, the modal that is open, the settings and git.",
         arguments: NO_ARGUMENTS,
         flags: NO_FLAGS,
         examples: &["quill-cli status --json"],
@@ -208,7 +208,7 @@ pub const COMMANDS: &[Command] = &[
     Command {
         area: "",
         verb: "version",
-        summary: "What version this command line tool is. The version of the Quill editor it is talking to is in `status`, and `action run about` puts it in the status bar.",
+        summary: "What version this command line tool is. The version and build date of the Quill editor it is talking to are in `status`, and `modal open about` shows them in the window.",
         arguments: NO_ARGUMENTS,
         flags: NO_FLAGS,
         examples: &["quill-cli version"],
@@ -801,7 +801,7 @@ pub const COMMANDS: &[Command] = &[
         area: "modal",
         verb: "open",
         summary: "Open a modal, and put something in its box in the same breath.",
-        arguments: &[argument("name", true, "go-to-file, find-in-files, settings, new-file or rename.")],
+        arguments: &[argument("name", true, "go-to-file, find-in-files, settings, about, new-file or rename.")],
         flags: &[
             option("query", "text", "Type this into the modal's box as it opens."),
             option("path", "path", "The folder a new file goes in, or the file being renamed. Needed by new-file and rename."),
@@ -811,6 +811,7 @@ pub const COMMANDS: &[Command] = &[
             "quill-cli modal open go-to-file --query mdrs",
             "quill-cli modal open find-in-files --query \"fn main\"",
             "quill-cli modal open settings --page terminal",
+            "quill-cli modal open about",
             "quill-cli modal open new-file --path notes",
         ],
         local: false,

@@ -37,6 +37,7 @@ use std::sync::Arc;
 use egui::{Color32, CornerRadius, Pos2, Rect, Vec2};
 use quill_core::{layout, relayout, Command, Document, Highlights, Layout, Rgba};
 
+use crate::components::about_dialog::{self, About};
 use crate::components::activity_bar;
 use crate::components::context_menu;
 use crate::components::diagram_view;
@@ -373,6 +374,10 @@ pub struct QuillApp {
     /// The `Find in Files` modal, when it is open. It holds the thread the searching runs on, so
     /// shutting the modal is what stops that thread.
     pub find_in_files: Option<FindInFiles>,
+    /// The About box, when it is open. It holds the version and the build date as text rather than
+    /// reading them when it draws, so that a screenshot test can fix them; `About::current` is what
+    /// `Action::About` puts here.
+    pub about: Option<About>,
     /// Set when something outside the editing area moved the caret — opening a `Find in Files`
     /// result is the only one — so the next frame scrolls the file to show it.
     reveal_caret: bool,
@@ -455,6 +460,7 @@ impl QuillApp {
             prompt: None,
             go_to_file: None,
             find_in_files: None,
+            about: None,
             reveal_caret: false,
             gutter_menu: None,
             text_menu: None,
@@ -490,7 +496,7 @@ impl QuillApp {
         if let Some(server) = &self.control {
             self.message = Some(format!(
                 "Quill {} \u{00B7} the command line is listening on port {}",
-                env!("CARGO_PKG_VERSION"),
+                crate::build_info::VERSION,
                 server.port()
             ));
         }
@@ -1128,10 +1134,9 @@ impl QuillApp {
                 }
             }
             Action::About => {
-                self.message = Some(format!(
-                    "Quill {} \u{00B7} a text editor written in Rust",
-                    env!("CARGO_PKG_VERSION")
-                ));
+                // One modal at a time, which is what opening any of the others does.
+                self.close_every_modal();
+                self.about = Some(About::current());
             }
         }
     }
@@ -2831,6 +2836,15 @@ impl QuillApp {
             }
             if !outcome.close {
                 self.find_in_files = Some(find);
+            }
+        }
+
+        // The About box. Only one modal is open at a time — `Action::About` shuts whatever was —
+        // so where it is drawn among the others decides nothing; it is here because it is the same
+        // kind of thing as the two above, a small window over the project rather than about a file.
+        if let Some(about) = self.about.take() {
+            if !about_dialog::show(ui.ctx(), &about) {
+                self.about = Some(about);
             }
         }
 

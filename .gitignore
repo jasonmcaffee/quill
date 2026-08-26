@@ -19,6 +19,13 @@ reference/
 # What the two installer build scripts write.
 /installer/dist/
 
+# The finished installers. They are staged in `releases/` and uploaded to the GitHub release by
+# `tools/release.ps1`, which is where a downloadable file belongs; a 7 MB installer per finished
+# task is not something a git repository should carry. `releases/quill-0.1.0.dmg` predates this and
+# is still tracked.
+/releases/*.exe
+/releases/*.dmg
+
 # The icon generator is a workspace of its own, so it has a target folder of its own.
 /installer/icon/target/
 

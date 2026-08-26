@@ -238,7 +238,7 @@ Six commands are typed on their own, because they are about the CLI or about a w
 quill-cli status
 ```
 
-Everything about the window in one answer: the project, the tabs, the panes, the terminal, the modal that is open, the settings and git.
+Everything about the window in one answer: its version and build date, the project, the tabs, the panes, the terminal, the modal that is open, the settings and git.
 
 ```sh
 quill-cli status --json
@@ -313,7 +313,7 @@ Answered by the CLI itself; no Quill needs to be running.
 quill-cli version
 ```
 
-What version this command line tool is. The version of the Quill editor it is talking to is in `status`, and `action run about` puts it in the status bar.
+What version this command line tool is. The version and build date of the Quill editor it is talking to are in `status`, and `modal open about` shows them in the window.
 
 ```sh
 quill-cli version
@@ -1173,7 +1173,7 @@ quill-cli modal open <name> [--query <text>] [--path <path>] [--page <name>]
 
 Open a modal, and put something in its box in the same breath.
 
-- `name` — go-to-file, find-in-files, settings, new-file or rename.
+- `name` — go-to-file, find-in-files, settings, about, new-file or rename.
 
 - `--query <text>` — Type this into the modal's box as it opens.
 - `--path <path>` — The folder a new file goes in, or the file being renamed. Needed by new-file and rename.
@@ -1183,6 +1183,7 @@ Open a modal, and put something in its box in the same breath.
 quill-cli modal open go-to-file --query mdrs
 quill-cli modal open find-in-files --query "fn main"
 quill-cli modal open settings --page terminal
+quill-cli modal open about
 quill-cli modal open new-file --path notes
 ```
 
