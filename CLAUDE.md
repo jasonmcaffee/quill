@@ -1180,6 +1180,14 @@ a third-party manifest can do is suggest text, visibly. Rust names a detector an
 runner, because running one file of a Cargo project is not a thing cargo does — so `Run Current
 File` is absent for a `.rs` file rather than offered and wrong.
 
+**A run that could not start is a failure, and `run_a_configuration` is what says so.** It returns
+`Result<(), String>` rather than leaving the reason in the status bar for `cli_run_do` to read back
+and report as `ok` — which is what it did, so `task-1691` measured `run start` on `node primes.js`
+with no node on the window's `PATH` coming back with `isError` false, `started` false and no reason
+anywhere. The one place a run action turns into a change is also the one place that knows whether it
+did. `run add` asks `run_configurations::found_on_path` and **says so without refusing**, because a
+configuration may name a program that will exist by the time it is run.
+
 `quill-cli run` is the whole feature from the command line, and `run output` is the one to notice:
 it reads the run's `Screen`, so an agent can start a dev server, read its port out of the log,
 exercise it and stop it with nobody watching.
@@ -1493,6 +1501,35 @@ drawn, which is what makes a screenshot taken straight after a command show what
 `quill --control off` closes it. `tasks/quill-cli-tdd.md` records what was weighed;
 `quill-cli/docs/protocol.md` is what a client in another language needs.
 
+**One `request_repaint` is not a wake, and `task-1691` is the measurement.** An idle window answered
+nothing for sixty-five seconds while sleeping at no processor use, with four connection threads
+parked on their deadlines and the queue full. Two mechanisms lose a single repaint request, both in
+code Quill does not own: `ContextImpl::request_repaint_after` calls the backend's callback only `if
+delay < viewport.repaint.repaint_delay`, so a request made while the window is already repainting
+sends nothing at all; and `eframe`'s `user_event` discards one whose pass number is more than one
+behind — "Got outdated UserEvent::RequestRepaint" — because for a repaint that means it already
+happened. For a wake meaning *there is work on a queue* it does not. The terminal's waker is the same
+call and never had the problem, because it fires many times a second.
+
+So **the wake repeats while the request is on the queue and stops the moment the window takes it**.
+`Pending::taken` is what says which, set by `Server::take`, so a command the window is *holding* —
+`terminal read --wait-for`, a git action — costs no wakes at all for the minutes it may wait, and
+`pump_control` is already keeping the window drawing for those. Do not go back to waking once.
+
+**A request the caller gave up on is thrown away rather than applied later.** The caller says how
+long it will wait in `deadline_ms`, because a client that gives up says nothing — it stops reading —
+and without it the command ran whenever the window next drew, long after the caller had been told it
+failed. `Pending::was_abandoned` is what `pump_control` checks before running anything. Only a
+request **still on the queue** is abandoned: a command the window has taken owns its own wait, and
+cutting that to the transport's deadline would silently shorten every waiting command in the
+catalogue.
+
+**`Server::take` is also the frame's heartbeat**, because it is the one thing the window does once at
+the top of every frame and nowhere else — `follow_the_open_file`'s rule, that a list of the places
+which have to say "I did this" is a list whose next entry will be the one that forgot. What it counts
+is what a timeout reply says: how long since a frame was drawn and how many requests are queued, so
+a caller can tell a busy window from a stopped one without running `sample` on the process.
+
 **How well it reads.** `quill-cli/agent-assessment/` measures it rather than assuming it: the local
 Qwen 3.8 27B, given only `docs/commands.md`, carries out 64 instructions phrased as a person would
 say them and scores **100%**, five rounds running, at two temperatures. The same 64 instructions with
@@ -1518,12 +1555,26 @@ from inside one. `tools::offered` is where that is written down and
 `exactly_one_command_is_held_back...` fails if the list grows, because an exclusion nobody argued
 about is how "everything is reachable" quietly stops being true.
 
-**One tool an area is the default, and it was measured rather than assumed.** A hundred and four
-commands are a hundred and four tool definitions in an agent's context on every conversation — about
-**18,800 tokens**, against **8,200** for the fifteen area tools, which still carry every command's usage line
-and summary. `quill-cli mcp tools --count` prints both figures against the catalogue as it is now, so
-the choice is never made against a number in a comment. `mcp.tools = every` is there for a client that
-permits tools by name, which is the one thing grouping really costs.
+**One tool an area is the default, and it was measured rather than assumed.** A hundred and thirty-six
+commands are a hundred and thirty-six tool definitions in an agent's context on every conversation —
+about **32,900 tokens**, against **11,900** for the eighteen area tools, which still carry every
+command's usage line and summary. `quill-cli mcp tools --count` prints both figures against the
+catalogue as it is now, so the choice is never made against a number in a comment. `mcp.tools = every`
+is there for a client that permits tools by name, which is the one thing grouping really costs.
+
+**Two properties are on every tool in both shapes, and both are about the call rather than the
+command**: `instance`, which window to drive, and — since `task-1691` — `timeout`, how long to wait.
+`timeout` had been accepted on every call since the channel was written and was documented nowhere,
+because it is a global flag of the command line rather than part of any usage line, so the agent that
+found it found it by reading `parse.rs`. Both are generated in one place, so a tool added tomorrow has
+them. Keep the wording of each **short**: it is paid once per tool, and a first, fuller sentence for
+`timeout` cost 1,500 tokens more in the default shape than the one that shipped.
+
+**An explicit `timeout` is used as given unless the command itself waits**, and `Command::flag`
+decides which — the catalogue already knows, because it is the list the client parses against.
+`DEFAULT_TIMEOUT.max(...)` made fifteen seconds a floor, so a caller could raise the deadline and
+never lower it. `mcp::driver::timeout_for` and `quill-cli`'s own `client_timeout` read the same rule
+from the same place, because two answers to one flag would be one too many.
 
 **The server holds no session, and that is deliberate.** MCP `2025-06-18` has an `initialize`
 handshake and an optional session id; `2026-07-28` deleted both. A server that never *requires*
@@ -1841,6 +1892,14 @@ trade that away to be a shade nearer a screenshot.
   rather than drawn, and what `language.renders` buys.
 - `tasks/quill-cli-tdd.md` — the command line: the transports that were weighed, the command surface,
   the wire format, what the token is and is not worth, and how the 97% was to be measured.
+- `tasks/mcp-issues.md` — what was seen driving a window through the MCP tools, measured on a real
+  session: the five faults, with the source of each and the evidence for it.
+- `tasks/task-1691-mcp-control-channel-tdd.md` — what was done about them, three of the five being
+  one fault: why a single repaint request is not a wake and where egui and eframe each
+  drop it, why the fix is nudging from outside the event loop rather than the two other options the
+  ticket offered, the deadline that travels with a request so an abandoned one is never applied, what
+  a timeout says now and why a last-frame screenshot is not it, the run that reported a failure as a
+  success, and the `timeout` that was accepted everywhere and written down nowhere.
 - `quill-cli/docs/commands.md` — **the reference, written to be handed to an AI agent whole.**
 - `quill-cli/docs/protocol.md` — the socket underneath, for a client in another language.
 - `quill-cli/agent-assessment/qwen-38-27B-assessment.md` — how well a local model does with it,

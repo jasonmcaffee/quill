@@ -547,8 +547,18 @@ fn remotely(command: &'static Command, typed: Typed) -> i32 {
 /// and `git action --wait` hold the answer open on purpose, and a client that gave up before the
 /// window did would report a timeout for something that was about to work. Five seconds of slack
 /// on top, so the window's own timeout is always the one that fires.
+///
+/// That stretch applies only to a command that really does wait, which the catalogue already knows
+/// because it is the list this line was parsed against. For everything else `--timeout` is exactly
+/// how long to wait, so `--timeout 500 tab list` fails in half a second — `task-1691` reported that
+/// the floor made failing fast impossible, and `mcp::driver::timeout_for` reads the same rule from
+/// the same place, because the two must not come to different answers about one flag.
 fn client_timeout(typed: &Typed) -> Duration {
-    let asked = typed.global.timeout.map(Duration::from_millis).unwrap_or(DEFAULT_TIMEOUT);
+    let asked = typed.global.timeout.map(Duration::from_millis);
+    let waits = typed
+        .command
+        .map(|command| command.flag("timeout").is_some() || command.flag("wait").is_some())
+        .unwrap_or(false);
     let waiting: u64 = ["timeout", "wait"]
         .iter()
         .filter_map(|name| typed.arguments.get(*name))
@@ -559,7 +569,11 @@ fn client_timeout(typed: &Typed) -> Duration {
         })
         .max()
         .unwrap_or(0);
-    asked.max(Duration::from_millis(waiting + 5_000))
+    match (asked, waits) {
+        (asked, true) => asked.unwrap_or(DEFAULT_TIMEOUT).max(Duration::from_millis(waiting + 5_000)),
+        (Some(asked), false) => asked,
+        (None, false) => DEFAULT_TIMEOUT,
+    }
 }
 
 /// Print a reply, and turn it into an exit code.
@@ -705,6 +719,16 @@ mod tests {
             client_timeout(&typed) >= Duration::from_millis(35_000),
             "the client must outlast the window's own wait"
         );
+    }
+
+    #[test]
+    fn a_command_that_does_not_wait_is_given_exactly_the_deadline_it_was_asked_for() {
+        // `task-1691`: fifteen seconds was a floor, so `--timeout` could raise the deadline and
+        // never lower it. `tab list` waits for nothing, so it is exactly what was asked for.
+        let typed = parse::parse(&words("--timeout 500 tab list")).expect("parses");
+        assert_eq!(client_timeout(&typed), Duration::from_millis(500));
+        let quiet = parse::parse(&words("tab list")).expect("parses");
+        assert_eq!(client_timeout(&quiet), DEFAULT_TIMEOUT);
     }
 
     #[test]

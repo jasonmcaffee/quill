@@ -59,10 +59,17 @@ A refusal is the same shape with `ok` false:
 | `token` | Required. The token from the instance file. A request without the right one is refused with `refused`. |
 | `command` | Required. The command's **wire name**, with a dot: `tab.open`, `terminal.send`, `status`. |
 | `arguments` | Optional. An object holding every value the command takes, positional or flag, under the name the catalogue gives it. An absent `arguments` is an empty one. |
+| `deadline_ms` | Optional. How long you will wait for an answer, in milliseconds. Say it and a request still on the queue when it passes is **thrown away** rather than applied to a caller that has gone; leave it out and the window's own backstop of two minutes applies. |
 
 Values may be sent as strings or as their natural type: `{"line": 42}` and `{"line": "42"}` mean the
 same thing, because the CLI sends what somebody typed and a program sends what it has. A switch is
 `true`.
+
+`deadline_ms` is worth sending. A client that gives up says nothing — it stops reading — so without
+it the window has no way to know, and the command runs whenever the window next draws, which may be
+long after the caller was told it timed out. With it, `timed-out` means the command did not happen,
+and the message says what the window was doing: how long it has been since it drew a frame and how
+many requests are queued behind this one. `quill-cli` and the MCP server both send it.
 
 `quill-cli commands --json` prints every command's wire name, arguments and flags, which is the list
 to generate a client from.
@@ -141,3 +148,9 @@ at the top of its next frame, so a command's effect is in the frame about to be 
 why a screenshot taken straight after a command shows what the command did. Four commands are
 answered later than the frame they arrived on: `window screenshot`, `terminal read --wait-for`,
 `modal results --wait` and `git action --wait`. Each has a timeout, so nothing waits for ever.
+
+**An idle window is woken until it answers.** The window has to draw a frame to drain the queue, and
+one request for a repaint can be lost — the graphics layer discards one it believes it has already
+served. So the listener keeps asking for as long as the request is still on the queue, and stops the
+moment the window picks it up. Nothing a client has to do; it is here because it is the reason a
+command sent to a window nobody is looking at comes back in milliseconds rather than not at all.

@@ -975,7 +975,7 @@ pub const COMMANDS: &[Command] = &[
     Command {
         area: "run",
         verb: "add",
-        summary: "Keep a new run configuration in the project. The command is one line: the first word is the program and the rest are its arguments, and no shell runs it, so nothing is expanded and && is an argument.",
+        summary: "Keep a new run configuration in the project. The command is one line: the first word is the program and the rest are its arguments, and no shell runs it, so nothing is expanded and && is an argument. It says so when the program cannot be found on this window's PATH, and keeps the configuration anyway.",
         arguments: &[
             argument("name", true, "What to call it, which is what the widget and the Run menu show."),
             rest("command", true, "The command line. Everything after the name is taken as the command, so it needs no quotes."),
@@ -1003,7 +1003,7 @@ pub const COMMANDS: &[Command] = &[
     Command {
         area: "run",
         verb: "start",
-        summary: "Run a configuration, showing the run tile. Starting one that is already running stops it and starts it again rather than making a second copy. A detector's suggestion started this way is kept as a temporary configuration.",
+        summary: "Run a configuration, showing the run tile. Starting one that is already running stops it and starts it again rather than making a second copy. A detector's suggestion started this way is kept as a temporary configuration. A program that could not be started is a failure carrying the reason, not a reply that says nothing ran.",
         arguments: &[argument("name", false, "The configuration. The chosen one when it is left out.")],
         flags: NO_FLAGS,
         examples: &["quill-cli run start", "quill-cli run start \"Dev server\""],
@@ -1012,7 +1012,7 @@ pub const COMMANDS: &[Command] = &[
     Command {
         area: "run",
         verb: "stop",
-        summary: "Stop a run: the interrupt a program can catch, and a hard kill two seconds later or on a second stop. The tab stays, holding what the program wrote.",
+        summary: "Stop a run: the interrupt a program can catch, and a hard kill two seconds later or on a second stop. The tab stays, holding what the program wrote. Stopping when nothing is running is a failure that says so rather than a quiet success.",
         arguments: &[argument("name", false, "The configuration. The chosen one when it is left out.")],
         flags: NO_FLAGS,
         examples: &["quill-cli run stop", "quill-cli run stop \"Dev server\""],

@@ -45,19 +45,44 @@ pub struct Request {
     pub command: String,
     /// Every value the command was given, positional or flag, under the name the catalogue gives it.
     pub arguments: Map<String, Value>,
+    /// How long the caller is prepared to wait for an answer, in milliseconds.
+    ///
+    /// The window has no other way of knowing when a caller has gone: a client that gives up says
+    /// nothing, it simply stops reading. So it says so in advance, and a request still sitting on
+    /// the queue when the deadline passes is thrown away rather than applied to a window nobody is
+    /// listening to any more — `task-1691` measured three commands that reported a timeout and had
+    /// been applied. Absent from an older client, where the window's own backstop still applies.
+    pub deadline_ms: Option<u64>,
 }
 
 impl Request {
     pub fn new(token: &str, command: &str, arguments: Map<String, Value>) -> Self {
-        Self { token: token.to_owned(), command: command.to_owned(), arguments }
+        Self {
+            token: token.to_owned(),
+            command: command.to_owned(),
+            arguments,
+            deadline_ms: None,
+        }
+    }
+
+    /// The same request, saying how long the caller will wait for it.
+    pub fn waiting_for(mut self, deadline: Duration) -> Self {
+        self.deadline_ms = Some(deadline.as_millis().min(u64::MAX as u128) as u64);
+        self
     }
 
     pub fn to_json(&self) -> Value {
-        json!({
+        let mut out = json!({
             "token": self.token,
             "command": self.command,
             "arguments": Value::Object(self.arguments.clone()),
-        })
+        });
+        // Left out altogether when nobody said, rather than written as null, so a request from a
+        // client that has never heard of it looks exactly as it did before.
+        if let Some(deadline) = self.deadline_ms {
+            out["deadline_ms"] = json!(deadline);
+        }
+        out
     }
 
     pub fn from_json(value: &Value) -> Option<Self> {
@@ -70,6 +95,13 @@ impl Request {
                 // sent as `{"token":"...","command":"tab.next"}`.
                 None | Some(Value::Null) => Map::new(),
                 Some(_) => return None,
+            },
+            deadline_ms: match value.get("deadline_ms") {
+                Some(Value::Number(number)) => number.as_u64(),
+                // A string, because a caller in another language may spell a number that way and
+                // `text` already accepts both for every other value on the wire.
+                Some(Value::String(text)) => text.trim().parse().ok(),
+                _ => None,
             },
         })
     }
@@ -234,6 +266,11 @@ pub fn ask(port: u16, request: &Request, timeout: Duration) -> std::io::Result<R
     let stream = TcpStream::connect_timeout(&address, timeout.min(Duration::from_secs(5)))?;
     stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(timeout))?;
+    // The deadline goes with the request, so the window stops waiting when the caller does and a
+    // request nobody is listening for any more is thrown away rather than applied later. Set here
+    // rather than by each caller, because this is the one function that knows both the request and
+    // how long the caller will wait for it.
+    let request = request.clone().waiting_for(timeout);
     let mut writing = stream.try_clone()?;
     writeln!(writing, "{}", request.to_json())?;
     writing.flush()?;
@@ -275,6 +312,24 @@ mod tests {
         let value = json!({ "token": "abc", "command": "tab.next" });
         let request = Request::from_json(&value).expect("a request");
         assert!(request.arguments.is_empty());
+        assert_eq!(request.deadline_ms, None, "a client that says nothing asks for nothing");
+    }
+
+    #[test]
+    fn a_deadline_that_arrives_with_the_request_is_read_back() {
+        let request = Request::new("abc", "tab.list", Map::new())
+            .waiting_for(Duration::from_millis(15_000));
+        let line = request.to_json();
+        assert_eq!(line["deadline_ms"], json!(15_000));
+        assert_eq!(Request::from_json(&line), Some(request));
+        // An older client leaves it out altogether rather than writing null, so what it sends is
+        // byte for byte what it sent before.
+        let without = Request::new("abc", "tab.list", Map::new());
+        assert!(without.to_json().get("deadline_ms").is_none());
+        assert_eq!(Request::from_json(&without.to_json()), Some(without));
+        // And a caller in another language may spell the number as text.
+        let spelled = json!({ "token": "abc", "command": "tab.list", "deadline_ms": "2500" });
+        assert_eq!(Request::from_json(&spelled).expect("a request").deadline_ms, Some(2_500));
     }
 
     #[test]

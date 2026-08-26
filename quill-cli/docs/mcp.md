@@ -54,9 +54,21 @@ that permits tools by name — Claude Code does — can only say "may open tabs,
 
 ```sh
 $ quill-cli mcp tools --count
-grouped     15 tools    31954 bytes    7988 tokens (roughly)
-every      101 tools    72065 bytes   18016 tokens (roughly)
+grouped     18 tools    47684 bytes   11921 tokens (roughly)
+every      136 tools   131623 bytes   32905 tokens (roughly)
 ```
+
+Two properties are on **every** tool in both shapes, because both are about the call rather than
+about the command:
+
+- **`instance`** — which running Quill to drive. See the next section.
+- **`timeout`** — how long to wait for an answer, in milliseconds, 15000 by default. Raise it for
+  something slow and lower it to fail fast; a command that waits for something of its own (the ones
+  whose usage line carries a `--timeout`) waits for that and the call outlasts it. A call that does
+  time out says what the window was doing — how long since it last drew a frame and how many
+  requests are queued — so "it is busy" and "it has stopped" can be told apart, and it says whether
+  the command was run. It usually was not: a request the caller gave up on is thrown away rather
+  than applied later, so a timeout is safe to retry.
 
 Two more things an agent gets:
 

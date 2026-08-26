@@ -70,7 +70,7 @@ The `error.code` in a JSON reply is the same thing in words: `not-found`, `not-a
 | `--json` | Print the whole reply as JSON. Always pass this from a program. |
 | `--instance <pid\|port\|path>` | Which Quill, when several are running. |
 | `--quiet` | Print nothing when it worked. The exit code still says whether it did. |
-| `--timeout <milliseconds>` | How long to wait for an answer. 15000 by default. |
+| `--timeout <milliseconds>` | How long to wait for an answer. 15000 by default. Lower it to fail fast. A command that waits for something of its own — `terminal read --wait-for`, `debug start --wait-for-pause`, `git action --wait` — is still waited out in full. |
 | `--dry-run`, `-n` | Print the command and arguments that *would* be sent, and send nothing. Needs no running Quill, so it checks a script before there is a window. |
 | `--no-color` | Never colour the output. `NO_COLOR` in the environment does the same. |
 | `--help` | Help for the command, or for the whole CLI. |
@@ -1351,7 +1351,7 @@ quill-cli run list --json
 quill-cli run add <name> <command> [--directory <path>] [--env <pairs>]
 ```
 
-Keep a new run configuration in the project. The command is one line: the first word is the program and the rest are its arguments, and no shell runs it, so nothing is expanded and && is an argument.
+Keep a new run configuration in the project. The command is one line: the first word is the program and the rest are its arguments, and no shell runs it, so nothing is expanded and && is an argument. It says so when the program cannot be found on this window's PATH, and keeps the configuration anyway.
 
 - `name` — What to call it, which is what the widget and the Run menu show.
 - `command` — The command line. Everything after the name is taken as the command, so it needs no quotes. Everything after it on the line belongs to it.
@@ -1385,7 +1385,7 @@ quill-cli run remove "Dev server"
 quill-cli run start [name]
 ```
 
-Run a configuration, showing the run tile. Starting one that is already running stops it and starts it again rather than making a second copy. A detector's suggestion started this way is kept as a temporary configuration.
+Run a configuration, showing the run tile. Starting one that is already running stops it and starts it again rather than making a second copy. A detector's suggestion started this way is kept as a temporary configuration. A program that could not be started is a failure carrying the reason, not a reply that says nothing ran.
 
 - `name` (optional) — The configuration. The chosen one when it is left out.
 
@@ -1400,7 +1400,7 @@ quill-cli run start "Dev server"
 quill-cli run stop [name]
 ```
 
-Stop a run: the interrupt a program can catch, and a hard kill two seconds later or on a second stop. The tab stays, holding what the program wrote.
+Stop a run: the interrupt a program can catch, and a hard kill two seconds later or on a second stop. The tab stays, holding what the program wrote. Stopping when nothing is running is a failure that says so rather than a quiet success.
 
 - `name` (optional) — The configuration. The chosen one when it is left out.
 

@@ -82,7 +82,7 @@ pub const GLOBAL_FLAGS: &[(&str, Option<&str>, &str)] = &[
     ("instance", Some("pid|port|path"), "Which Quill to talk to when several are running: its process id, its port, or part of its project's path."),
     ("json", None, "Print the whole reply as JSON. This is what a program or an agent should always pass."),
     ("quiet", None, "Print nothing when it worked. The exit code still says whether it did."),
-    ("timeout", Some("milliseconds"), "How long to wait for an answer. 15000 by default."),
+    ("timeout", Some("milliseconds"), "How long to wait for an answer. 15000 by default. Lower it to fail fast; a command that waits for something of its own, such as `terminal read --wait-for`, is still waited out in full."),
     ("dry-run", None, "Print the command and the arguments that would be sent, and send nothing. Needs no running Quill."),
     ("no-color", None, "Never colour the output. NO_COLOR in the environment does the same."),
     ("help", None, "Print help for the command, or for the whole CLI, and do nothing else."),

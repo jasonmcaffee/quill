@@ -8,14 +8,14 @@
 //!
 //! ## Two shapes, and why there is a choice at all
 //!
-//! There are 97 commands. A tool definition costs an agent context on every conversation the server
-//! is connected to, before it reads a word of the question, so the two shapes were generated from
-//! the real catalogue and measured rather than guessed at:
+//! There are a hundred and thirty-six commands. A tool definition costs an agent context on every
+//! conversation the server is connected to, before it reads a word of the question, so the two
+//! shapes were generated from the real catalogue and measured rather than guessed at:
 //!
 //! | Shape | Tools | Bytes of JSON | Tokens (≈ bytes ÷ 4) |
 //! |---|---|---|---|
-//! | [`Shape::Every`] — one tool a command | 97 | 64,355 | ~16,100 |
-//! | [`Shape::Grouped`] — one tool an area | 14 | 22,140 | ~5,500 |
+//! | [`Shape::Every`] — one tool a command | 136 | 131,623 | ~32,900 |
+//! | [`Shape::Grouped`] — one tool an area | 18 | 47,684 | ~11,900 |
 //!
 //! Nearly three times the context, which is what makes `Grouped` the default. It is not a smaller
 //! description of Quill: every command is still there, with its usage line and its summary, in the
@@ -152,6 +152,7 @@ fn grouped() -> Vec<Tool> {
                         "additionalProperties": true,
                     },
                     "instance": instance_property(),
+                    "timeout": timeout_property(),
                 },
                 "required": ["command"],
                 "additionalProperties": false,
@@ -234,6 +235,10 @@ fn command_schema(command: &Command) -> Value {
         properties.insert(flag.name.to_owned(), described);
     }
     properties.insert("instance".to_owned(), instance_property());
+    // Not for a command that already has a `timeout` of its own: there the flag's own help says
+    // what it waits for, and a second description of one name would be two answers to one question.
+    // The call's deadline follows it — `mcp::driver::timeout_for` — so nothing is lost.
+    properties.entry("timeout".to_owned()).or_insert_with(timeout_property);
     let mut schema = json!({
         "type": "object",
         "properties": Value::Object(properties),
@@ -245,7 +250,7 @@ fn command_schema(command: &Command) -> Value {
     schema
 }
 
-/// The one property every tool has, in both shapes.
+/// The first of the two properties every tool has, in both shapes.
 ///
 /// A project is a window — `File -> New Window` starts a second process — so several Quills run at
 /// once and a call may have to say which one it means.
@@ -253,6 +258,25 @@ fn instance_property() -> Value {
     json!({
         "type": "string",
         "description": "Which running Quill to drive: its process id, its port, or any part of its project's path. Only needed when several are running; with one, leave it out.",
+    })
+}
+
+/// The second, and it is here because it was written down nowhere at all.
+///
+/// `timeout` is accepted on every call and has been since the channel was written, but it is a
+/// global flag of the command line rather than part of any usage line, so no tool description
+/// mentioned it — and `task-1691`'s agent found it only by reading `quill-cli/src/parse.rs`. It
+/// belongs beside `instance` for the same reason `instance` is there: it is about the call rather
+/// than about the command, so it is generated once and every tool has it.
+/// It is kept short on purpose. Every word here is paid eighteen times in the default shape and a
+/// hundred and thirty-six times in the other, so this is a sentence rather than a paragraph:
+/// measured against the catalogue as it is, the grouped shape went from 43,364 bytes to 47,684, and
+/// a first, fuller wording of it cost 49,250. `quill-cli mcp tools --count` is how that is measured
+/// again.
+fn timeout_property() -> Value {
+    json!({
+        "type": "integer",
+        "description": "How long to wait for an answer, in milliseconds. 15000 by default: raise it for something slow, lower it to fail fast. A command with a --timeout of its own waits for that, and this outlasts it.",
     })
 }
 
@@ -328,7 +352,7 @@ pub fn resolve(shape: Shape, name: &str, given: &Map<String, Value>) -> Result<C
                         .join(", ")
                 )));
             };
-            let arguments = match given.get("arguments") {
+            let mut arguments = match given.get("arguments") {
                 Some(Value::Object(map)) => map.clone(),
                 // An absent or null `arguments` is an empty one, exactly as it is on the wire, so a
                 // command that takes nothing is called with the verb alone.
@@ -339,6 +363,15 @@ pub fn resolve(shape: Shape, name: &str, given: &Map<String, Value>) -> Result<C
                     ))
                 }
             };
+            // An area tool's `timeout` is a property of the call, beside `command` and `instance`,
+            // rather than one of the values in `arguments` — which is where the schema says to put
+            // it and where an agent will. Carried across so `driver::timeout_for` sees it at all:
+            // it was silently dropped, so a tool call asking to fail fast waited the whole default
+            // fifteen seconds. A `timeout` the caller put in `arguments` is the command's own and
+            // wins, because that is the one the window reads.
+            if let Some(given_timeout) = given.get("timeout") {
+                arguments.entry("timeout".to_owned()).or_insert_with(|| given_timeout.clone());
+            }
             Ok(Call { command, arguments, instance })
         }
     }
@@ -472,6 +505,44 @@ mod tests {
     }
 
     #[test]
+    fn every_tool_says_how_to_change_the_deadline() {
+        // `task-1691`: `timeout` was accepted on every call and written down nowhere, so the agent
+        // driving Quill found it by reading the parser's source. It is about the call rather than
+        // about the command, which is why it is generated beside `instance` rather than added to
+        // any command's own list.
+        for shape in [Shape::Grouped, Shape::Every] {
+            for tool in tools(shape) {
+                let properties = tool.schema["properties"].as_object().expect("properties");
+                let described = properties
+                    .get("timeout")
+                    .unwrap_or_else(|| panic!("{} does not say it takes a timeout", tool.name));
+                // A command with a `timeout` of its own keeps its own words for it — its help says
+                // what it waits for, which is the more useful sentence. Only the generated one has
+                // to spell out that it is the call's own deadline.
+                let own = matches!(tool.target, Target::One(command) if command.flag("timeout").is_some());
+                if !own {
+                    assert_eq!(
+                        described,
+                        &timeout_property(),
+                        "{} does not offer the generated timeout",
+                        tool.name
+                    );
+                }
+            }
+        }
+        // A command with a `timeout` of its own keeps its own words for it, rather than having two
+        // descriptions of one name.
+        let read = tools(Shape::Every)
+            .into_iter()
+            .find(|tool| tool.name == "quill_terminal_read")
+            .expect("terminal read");
+        let described = read.schema["properties"]["timeout"]["description"]
+            .as_str()
+            .expect("a description");
+        assert!(described.contains("--wait-for"), "{described}");
+    }
+
+    #[test]
     fn an_area_tool_turns_a_verb_and_a_values_object_into_the_request_the_cli_would_send() {
         let call = resolve(
             Shape::Grouped,
@@ -484,6 +555,30 @@ mod tests {
         assert_eq!(call.command.wire(), "tab.open");
         assert_eq!(call.arguments["path"], json!("README.md"));
         assert_eq!(call.instance, None);
+    }
+
+    #[test]
+    fn an_area_tools_timeout_reaches_the_command_it_names() {
+        // It is a property of the call, where the schema puts it, and it used to be dropped on the
+        // floor — so a tool call asking to fail fast waited the whole default fifteen seconds.
+        let call = resolve(
+            Shape::Grouped,
+            "quill_tab",
+            json!({ "command": "list", "timeout": 800 }).as_object().expect("an object"),
+        )
+        .expect("it resolves");
+        assert_eq!(call.arguments["timeout"], json!(800));
+        // And a `timeout` the caller put among the command's own values is the command's, so it
+        // is not overwritten by the call's.
+        let both = resolve(
+            Shape::Grouped,
+            "quill_terminal",
+            json!({ "command": "read", "timeout": 800, "arguments": { "timeout": 30000 } })
+                .as_object()
+                .expect("an object"),
+        )
+        .expect("it resolves");
+        assert_eq!(both.arguments["timeout"], json!(30000));
     }
 
     #[test]

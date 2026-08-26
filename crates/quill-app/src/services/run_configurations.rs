@@ -109,6 +109,67 @@ impl Configuration {
     }
 }
 
+/// Whether the program this command names can be found, without starting anything.
+///
+/// `task-1691` reported a configuration of `node primes.js` that `run add` accepted without comment
+/// and `run start` then failed on, because a window launched from Finder has no version manager's
+/// directory on its `PATH`. An agent writes `node`, `python` or `cargo`, and those are exactly the
+/// programs a version manager keeps off a desktop-launched application's `PATH` — so the answer is
+/// worth having at the moment the configuration is written down rather than only when it is run.
+///
+/// It is a **question**, not a refusal. A configuration may name a program that will exist by the
+/// time it is run, and a `run add` that refused one would be a `run add` nobody could use to write
+/// down what they are about to install. What the caller does with the answer is the caller's.
+///
+/// A program with a separator in it is a path, resolved against the configuration's own folder;
+/// anything else is looked for on `PATH`, with `PATHEXT` on Windows because `node` there is really
+/// `node.exe` or `node.cmd`. Nothing is spawned and nothing is executed to find out.
+pub fn found_on_path(program: &str, directory: &Path) -> bool {
+    if program.trim().is_empty() {
+        return false;
+    }
+    if program.contains('/') || program.contains('\\') {
+        let named = Path::new(program);
+        let against = match named.is_absolute() {
+            true => named.to_path_buf(),
+            false => directory.join(named),
+        };
+        return with_extensions(&against).any(|candidate| candidate.is_file());
+    }
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path)
+        .filter(|folder| !folder.as_os_str().is_empty())
+        .any(|folder| with_extensions(&folder.join(program)).any(|candidate| candidate.is_file()))
+}
+
+/// The spellings of one program name that the platform will actually run.
+///
+/// One on every platform but Windows, where a bare name is completed from `PATHEXT` — and where the
+/// name as written is tried first, so a command naming `node.exe` outright is not looked for as
+/// `node.exe.COM`.
+fn with_extensions(candidate: &Path) -> impl Iterator<Item = PathBuf> + '_ {
+    let mut spellings = vec![candidate.to_path_buf()];
+    #[cfg(windows)]
+    {
+        let already = candidate
+            .extension()
+            .map(|extension| !extension.is_empty())
+            .unwrap_or(false);
+        if !already {
+            let listed = std::env::var("PATHEXT")
+                .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_owned());
+            for extension in listed.split(';').filter(|part| !part.trim().is_empty()) {
+                let mut name = candidate.as_os_str().to_owned();
+                name.push(extension.trim());
+                spellings.push(PathBuf::from(name));
+            }
+        }
+    }
+    spellings.into_iter()
+}
+
 /// Where a configuration came from, which is what decides how it is drawn and whether it is written
 /// down.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -854,5 +915,45 @@ run.4.command = cargo test
         assert_eq!(configuration.command, "npx tsx \"my notes.ts\"");
         // And it splits back into the two parts it was built from.
         assert_eq!(split_command(&configuration.command), vec!["npx", "tsx", "my notes.ts"]);
+    }
+
+    #[test]
+    fn a_program_is_looked_for_on_the_path_and_a_path_is_looked_for_where_it_points() {
+        // `task-1691`. Nothing is spawned to find out, so this runs anywhere.
+        let folder = std::env::temp_dir().join("quill-run-found-on-path");
+        std::fs::remove_dir_all(&folder).ok();
+        std::fs::create_dir_all(&folder).expect("make the folder");
+        let program = folder.join(if cfg!(windows) { "tool.exe" } else { "tool" });
+        std::fs::write(&program, b"not really a program").expect("write it");
+
+        assert!(!found_on_path("definitely-not-a-real-program", &folder));
+        assert!(!found_on_path("", &folder));
+        // An absolute path is looked for where it points, whatever the `PATH` says.
+        assert!(found_on_path(&program.to_string_lossy(), Path::new("/somewhere/else")));
+        // A relative one is resolved against the configuration's own folder, and the separator is
+        // what makes it a path rather than a name.
+        let relative = format!("./{}", program.file_name().expect("a name").to_string_lossy());
+        assert!(found_on_path(&relative, &folder));
+        assert!(!found_on_path(&relative, Path::new("/somewhere/else")));
+        // And the real thing: whatever started this test is on the `PATH`.
+        assert!(found_on_path("cargo", &folder), "cargo is what started this test");
+        std::fs::remove_dir_all(&folder).ok();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_bare_name_on_windows_is_completed_from_pathext() {
+        // `node` on Windows is really `node.exe` or `node.cmd`, so a walk that looked for the name
+        // as written would say every program on the machine was missing.
+        let folder = std::env::temp_dir().join("quill-run-pathext");
+        std::fs::remove_dir_all(&folder).ok();
+        std::fs::create_dir_all(&folder).expect("make the folder");
+        std::fs::write(folder.join("thing.cmd"), b"@echo off").expect("write it");
+        let bare = folder.join("thing");
+        assert!(with_extensions(&bare).any(|candidate| candidate.is_file()));
+        // A name already carrying its extension is not looked for as `thing.cmd.COM`.
+        let spelled: Vec<_> = with_extensions(&folder.join("thing.cmd")).collect();
+        assert_eq!(spelled, vec![folder.join("thing.cmd")]);
+        std::fs::remove_dir_all(&folder).ok();
     }
 }

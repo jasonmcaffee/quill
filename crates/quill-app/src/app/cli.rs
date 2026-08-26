@@ -57,7 +57,7 @@ use crate::components::status_bar;
 use crate::components::prompt_dialog::{Prompt, Purpose};
 use crate::services::control::Pending;
 use crate::services::file_kind;
-use crate::services::run_configurations::{Configuration, Origin};
+use crate::services::run_configurations::{self, Configuration, Origin};
 use crate::settings;
 use crate::theme::size;
 
@@ -190,6 +190,13 @@ impl QuillApp {
             None => Vec::new(),
         };
         for pending in arrived {
+            // A request whose caller gave up before the window ever picked it up is thrown away
+            // rather than run. It has already been told the command did not happen — `task-1691`
+            // measured three that reported a timeout and had been applied — and an agent that
+            // retries after a timeout would otherwise apply the command twice.
+            if pending.was_abandoned() {
+                continue;
+            }
             let outcome = self.run_cli(&pending.request, ctx);
             self.settle(pending, outcome);
         }
@@ -3087,13 +3094,27 @@ impl QuillApp {
             directory: request.text("directory").unwrap_or_default(),
             env: request.text("env").unwrap_or_default(),
         };
-        if configuration.program_and_arguments().is_none() {
+        let Some((program, _)) = configuration.program_and_arguments() else {
             return no(request, code::USAGE, "The command has no program in it.");
-        }
+        };
+        // Said rather than refused. A configuration may name a program that will exist by the time
+        // it is run, so this is a note; what it saves is `task-1691`'s first failure, where `node
+        // primes.js` was accepted without comment and only failed at `run start`, on a window
+        // launched from Finder with no nvm directory on its `PATH`.
+        let directory = configuration.working_directory(self.tree.root());
+        let said = match run_configurations::found_on_path(&program, &directory) {
+            true => format!("Added {name}"),
+            false => format!(
+                "Added {name}, but {program} could not be found on this window's PATH. It will not \
+                 start until it can be — a Quill opened from the desktop does not have a version \
+                 manager's directories on its PATH, so naming the program in full may be what is \
+                 wanted."
+            ),
+        };
         self.run_configurations.add_permanent(configuration);
         self.run_selected = Some(name.clone());
         self.unsaved_run_configurations = true;
-        ok(request, format!("Added {name}"), self.run_value())
+        ok(request, said, self.run_value())
     }
 
     fn cli_run_remove(&mut self, request: &Request) -> Outcome {
@@ -3145,7 +3166,13 @@ impl QuillApp {
             );
         }
         self.message = None;
-        self.run_a_configuration(what(named));
+        // A program that could not be spawned is a failure, not a success with an apology in the
+        // message. `task-1691` measured this arm reporting `isError` false for `node primes.js`
+        // with no node on the window's `PATH`, which left an agent unable to tell a program that
+        // failed to start from one that ran and exited at once.
+        if let Err(problem) = self.run_a_configuration(what(named)) {
+            return no(request, code::FAILED, problem);
+        }
         let said = self.message.clone().unwrap_or_default();
         ok(request, said, self.run_value())
     }
@@ -3157,7 +3184,9 @@ impl QuillApp {
         if self.configuration_named(Some(&name)).is_none() {
             return no(request, code::NOT_FOUND, format!("There is no run configuration called {name}."));
         }
-        self.run_a_configuration(RunAction::Select(name.clone()));
+        if let Err(problem) = self.run_a_configuration(RunAction::Select(name.clone())) {
+            return no(request, code::FAILED, problem);
+        }
         ok(request, format!("{name} is chosen"), self.run_value())
     }
 

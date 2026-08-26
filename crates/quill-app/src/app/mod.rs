@@ -1505,7 +1505,12 @@ impl QuillApp {
                 let showing = !self.run.visible;
                 self.show_the_run_tile(showing);
             }
-            Action::Run(what) => self.run_a_configuration(what),
+            // The reason is already in the status bar, which is the whole of what a menu can say
+            // about a run that would not start. It is the command line that needed it as a value,
+            // and `cli_run_do` is what takes it.
+            Action::Run(what) => {
+                let _ = self.run_a_configuration(what);
+            }
             Action::CloseTerminalTab => {
                 let index = self.terminal.tabs.active_index();
                 self.terminal.tabs.close(index);
@@ -1595,18 +1600,25 @@ impl QuillApp {
     /// Split out of [`Self::run_action`] rather than written into it, for the reason `run_git` is
     /// split out: seven arms about one subject read better together, and the arm in `run_action`
     /// stays one line. It is still the one place a run action turns into a change.
-    pub fn run_a_configuration(&mut self, what: RunAction) {
+    /// The reply is the reason it could not be done, or nothing when it was.
+    ///
+    /// It used to say nothing at all and leave the reason in the status bar, which the command line
+    /// then read back and reported as a **success**: `task-1691` measured `run start` on a
+    /// configuration whose program was not on the `PATH` coming back with `isError` false, `started`
+    /// false and no reason anywhere. The one place a run action turns into a change is also the one
+    /// place that knows whether it did, so it is what says so.
+    pub fn run_a_configuration(&mut self, what: RunAction) -> Result<(), String> {
         match what {
             RunAction::Start(named) => match self.configuration_named(named.as_deref()) {
                 Some(configuration) => self.start_a_run(configuration),
-                None => self.no_such_configuration(named.as_deref()),
+                None => Err(self.no_such_configuration(named.as_deref())),
             },
             // Rerun and start are the same thing, because starting one that is already running
             // stops it and starts it again — §5.2. Two entries because two words are what a person
             // reaches for, one path because they mean the same.
             RunAction::Rerun(named) => match self.configuration_named(named.as_deref()) {
                 Some(configuration) => self.start_a_run(configuration),
-                None => self.no_such_configuration(named.as_deref()),
+                None => Err(self.no_such_configuration(named.as_deref())),
             },
             RunAction::Stop(named) => {
                 let name = named.or_else(|| self.run_selected.clone());
@@ -1615,26 +1627,34 @@ impl QuillApp {
                         let name = self.run.at(at).map(|run| run.name().to_owned()).unwrap_or_default();
                         self.run.stop(at);
                         self.message = Some(format!("Stopping {name}"));
+                        Ok(())
                     }
                     None => {
-                        self.message = Some(match name {
+                        // Nothing to stop is a refusal rather than a quiet nothing, for the same
+                        // reason a run that would not start is: a caller that is told it worked
+                        // cannot tell it from a program that stopped by itself a moment ago.
+                        let problem = match name {
                             Some(name) => format!("{name} is not running."),
                             None => "Nothing is running.".to_owned(),
-                        })
+                        };
+                        self.message = Some(problem.clone());
+                        Err(problem)
                     }
                 }
             }
             RunAction::Select(name) => match self.configuration_named(Some(&name)) {
                 Some(_) => {
                     self.run_selected = Some(name);
+                    Ok(())
                 }
-                None => self.no_such_configuration(Some(&name)),
+                None => Err(self.no_such_configuration(Some(&name))),
             },
             RunAction::CurrentFile => self.run_the_current_file(),
             RunAction::Edit => {
                 self.close_every_modal();
                 let chosen = self.run_selected.clone();
                 self.run_dialog.open(chosen);
+                Ok(())
             }
         }
     }
@@ -1642,11 +1662,13 @@ impl QuillApp {
     /// Say that a configuration of this name is not there, in the words that fit which question was
     /// asked: naming one that is not there and having chosen nothing at all are two different
     /// things to be told.
-    fn no_such_configuration(&mut self, named: Option<&str>) {
-        self.message = Some(match named {
+    fn no_such_configuration(&mut self, named: Option<&str>) -> String {
+        let problem = match named {
             Some(name) => format!("There is no run configuration called {name}."),
             None => "No run configuration is chosen. Press the play button to make one.".to_owned(),
-        });
+        };
+        self.message = Some(problem.clone());
+        problem
     }
 
     /// The configuration of this name, or the one the widget has chosen when no name is given.
@@ -1708,7 +1730,7 @@ impl QuillApp {
     ///
     /// Running a suggestion or a file makes a **temporary**, which is what puts it in the list so
     /// it can be run again and kept. Running something that is already permanent adds nothing.
-    fn start_a_run(&mut self, configuration: Configuration) {
+    fn start_a_run(&mut self, configuration: Configuration) -> Result<(), String> {
         let root = self.tree.root().to_path_buf();
         let size = self.run_grid_size();
         let waker = self.waker();
@@ -1724,26 +1746,31 @@ impl QuillApp {
                 self.show_the_run_tile(true);
                 self.focus = Focus::Terminal;
                 self.message = Some(format!("Running {name}"));
+                Ok(())
             }
-            Err(problem) => self.message = Some(problem),
+            Err(problem) => {
+                self.message = Some(problem.clone());
+                Err(problem)
+            }
         }
     }
 
     /// `Run Current File`: the open file's language's own command, with `{file}` replaced.
-    fn run_the_current_file(&mut self) {
+    fn run_the_current_file(&mut self) -> Result<(), String> {
         let Some(template) = self.run_file_template() else {
-            self.message =
-                Some("This file's language has not said how one file of it is run.".to_owned());
-            return;
+            let problem = "This file's language has not said how one file of it is run.".to_owned();
+            self.message = Some(problem.clone());
+            return Err(problem);
         };
         let Some(path) = self.document().path().map(Path::to_path_buf) else {
             // A document that has never been saved has no path, so there is nothing to run.
-            self.message = Some("Save the file first, so there is something to run.".to_owned());
-            return;
+            let problem = "Save the file first, so there is something to run.".to_owned();
+            self.message = Some(problem.clone());
+            return Err(problem);
         };
         let root = self.tree.root().to_path_buf();
         let configuration = run_configurations::for_file(&template, &root, &path);
-        self.start_a_run(configuration);
+        self.start_a_run(configuration)
     }
 
     /// The open file's `run.file`, when a plugin that is switched on claims it and the file has
@@ -1768,7 +1795,12 @@ impl QuillApp {
         match what {
             DebugAction::Start(named) => match self.configuration_named(named.as_deref()) {
                 Some(configuration) => self.start_debugging(configuration, None),
-                None => self.no_such_configuration(named.as_deref()),
+                // The sentence goes into the status bar, which is where every other refusal in
+                // this family goes; `cli_debug_start` reads back whether a session exists rather
+                // than what was said, so it needs no value here.
+                None => {
+                    self.no_such_configuration(named.as_deref());
+                }
             },
             DebugAction::CurrentFile => self.debug_the_current_file(),
             DebugAction::Stop => match self.debug.as_mut() {

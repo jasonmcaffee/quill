@@ -7781,6 +7781,51 @@ fn the_command_line_chooses_removes_and_refuses_a_name_nothing_holds() {
 }
 
 #[test]
+fn a_run_that_could_not_start_is_a_failure_rather_than_a_success() {
+    // `task-1691`. `run start` on a configuration whose program is not on the window's `PATH` used
+    // to come back with `isError` false, `started` false and no reason anywhere, because the arm
+    // read the reason out of the status bar and answered `ok` whatever it found. An agent holding
+    // only that could not tell a program that failed to spawn from one that ran and exited at once.
+    let mut harness = run_project("quill-cli-run-cannot-start");
+    did(&mut harness, "run add bogus definitely-not-a-real-program");
+    let reply = run(&mut harness, "run start bogus");
+    assert!(!reply.ok, "a program that could not be spawned is not a success: {}", reply.message);
+    let failure = reply.error.expect("a refusal carries an error");
+    assert_eq!(failure.code, "failed");
+    assert!(
+        failure.message.contains("definitely-not-a-real-program"),
+        "the refusal should carry the reason the window had: {}",
+        failure.message
+    );
+    // And it is still in the list, because what was tried is worth keeping — the rule
+    // `start_a_run` already followed.
+    assert!(harness.state().run_configurations.find("bogus").is_some());
+}
+
+#[test]
+fn adding_a_configuration_whose_program_cannot_be_found_says_so_and_still_adds_it() {
+    // The first failure `task-1691`'s agent hit: `run add` accepted `node primes.js` without
+    // comment and only `run start` failed, on a window launched from Finder with no version
+    // manager's directory on its `PATH`. It is a note rather than a refusal, because a
+    // configuration may name a program that will exist by the time it is run.
+    let mut harness = run_project("quill-cli-run-add-path");
+    let reply = run(&mut harness, "run add bogus definitely-not-a-real-program --port 3000");
+    assert!(reply.ok, "it is a note, not a refusal: {}", reply.message);
+    assert!(
+        reply.message.contains("could not be found on this window's PATH"),
+        "the reply should say the program is not there: {}",
+        reply.message
+    );
+    assert!(harness.state().run_configurations.find("bogus").is_some(), "and it was still added");
+
+    // A program that really is on the `PATH` says nothing about it. `cargo` is there, because
+    // cargo is what started this test.
+    let found = run(&mut harness, "run add build cargo build");
+    assert!(found.ok, "{}", found.message);
+    assert_eq!(found.message, "Added build");
+}
+
+#[test]
 fn the_command_line_reads_what_a_run_has_written() {
     // A detached run, so what is being tested is the reading rather than a program's timing.
     let mut harness = harness("");

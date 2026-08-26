@@ -37,6 +37,10 @@ use crate::protocol::{code, Reply};
 /// comes back says what it was waiting for rather than "no answer".
 const DEFAULT_TIMEOUT: Duration = client::DEFAULT_TIMEOUT;
 
+/// Added to the wait of a command that waits on purpose, so the window's own timeout is the one
+/// that fires and says what it was waiting for.
+const SLACK: Duration = Duration::from_secs(5);
+
 /// The driver a real server uses.
 pub struct Quills {
     /// The project this server would rather drive when several are running. See the module comment.
@@ -102,7 +106,15 @@ impl Driver for Quills {
             return Ok(reply);
         }
         let instance = self.choose(instance)?;
-        let timeout = timeout_for(&arguments);
+        let timeout = timeout_for(command, &arguments);
+        let mut arguments = arguments;
+        // `timeout` on a command that has no such flag is about the call rather than about the
+        // command, exactly as `instance` is, so it does not go on the wire — what is sent is
+        // exactly the request `quill-cli` would have sent, which is the rule this module is built
+        // on.
+        if command.flag("timeout").is_none() {
+            arguments.remove("timeout");
+        }
         client::ask(&instance, &command.wire(), arguments, timeout)
             .map_err(|problem| Failure { code: problem.code, message: problem.message })
     }
@@ -203,14 +215,29 @@ fn launched(arguments: &Map<String, Value>) -> Reply {
 }
 
 /// How long to wait for this call.
-fn timeout_for(arguments: &Map<String, Value>) -> Duration {
-    let waiting = ["timeout", "wait"]
+///
+/// Two readings of one argument, and the catalogue is what tells them apart. For the fourteen
+/// commands that take a `timeout` **of their own** — `terminal read --wait-for`, `debug start
+/// --wait-for-pause`, `git action --wait` — the window is going to hold the answer open for that
+/// long on purpose, and a transport that gave up first would report a timeout for something about
+/// to work. So those get what they asked for and [`SLACK`] on top.
+///
+/// For every other command `timeout` means nothing to the window at all: it is simply how long this
+/// call is prepared to wait, and it is used exactly as given. `task-1691` reported that it could
+/// not be: `DEFAULT_TIMEOUT.max(...)` made fifteen seconds a floor, so an agent could raise the
+/// deadline and never lower it, and there was no way to fail fast.
+fn timeout_for(command: &Command, arguments: &Map<String, Value>) -> Duration {
+    let asked = ["timeout", "wait"]
         .iter()
         .filter_map(|name| arguments.get(*name))
         .filter_map(as_millis)
-        .max()
-        .unwrap_or(0);
-    DEFAULT_TIMEOUT.max(Duration::from_millis(waiting + 5_000))
+        .max();
+    let waits = command.flag("timeout").is_some() || command.flag("wait").is_some();
+    match (asked, waits) {
+        (Some(asked), true) => DEFAULT_TIMEOUT.max(Duration::from_millis(asked) + SLACK),
+        (Some(asked), false) => Duration::from_millis(asked),
+        (None, _) => DEFAULT_TIMEOUT,
+    }
 }
 
 fn as_millis(value: &Value) -> Option<u64> {
@@ -287,9 +314,24 @@ mod tests {
 
     #[test]
     fn a_command_told_to_wait_outlasts_its_own_wait() {
+        let read = crate::catalogue::find("terminal.read").expect("terminal read");
+        assert!(read.flag("timeout").is_some(), "this is the half of the rule that waits");
         let mut arguments = Map::new();
         arguments.insert("timeout".to_owned(), Value::String("60000".to_owned()));
-        assert!(timeout_for(&arguments) >= Duration::from_millis(65_000));
-        assert_eq!(timeout_for(&Map::new()), DEFAULT_TIMEOUT);
+        assert!(timeout_for(read, &arguments) >= Duration::from_millis(65_000));
+        assert_eq!(timeout_for(read, &Map::new()), DEFAULT_TIMEOUT);
+    }
+
+    #[test]
+    fn a_command_that_does_not_wait_is_given_exactly_the_deadline_it_asked_for() {
+        // `task-1691`: fifteen seconds was a floor, so an agent could raise the deadline and never
+        // lower it. `tab list` does not wait for anything, so `timeout` is purely how long this
+        // call will wait for it.
+        let list = crate::catalogue::find("tab.list").expect("tab list");
+        assert!(list.flag("timeout").is_none(), "this is the half of the rule that does not wait");
+        let mut arguments = Map::new();
+        arguments.insert("timeout".to_owned(), Value::Number(500.into()));
+        assert_eq!(timeout_for(list, &arguments), Duration::from_millis(500));
+        assert_eq!(timeout_for(list, &Map::new()), DEFAULT_TIMEOUT);
     }
 }
