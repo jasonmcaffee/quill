@@ -32,18 +32,68 @@ use std::path::{Path, PathBuf};
 /// A file argument opens that file and shows the folder it sits in. A folder argument shows that folder. No
 /// argument at all shows `fallback`, which the binary passes as the current directory.
 ///
+/// **What comes back is absolute**, resolved against `fallback`. It used to be whatever was typed, and
+/// `quill .` — which is what `quill-cli launch .` runs — left the window with a project literally called
+/// `.`. The explorer still worked, because the process's own directory was right, but everything that
+/// *reports* the project was then lying: the title bar, the recent projects list, the instance file that
+/// `quill-cli instances` prints, `--instance <part of a path>`, and the rule the MCP server uses to
+/// choose which window a tool call is for when several are running. A path is turned into an answer once,
+/// here, rather than in each of the six places that read one.
+///
+/// It is done lexically rather than with `canonicalize`, which on Windows answers with a `\\?\` prefix
+/// that would then be in the title bar and in every reply.
+///
 /// This lives here rather than in `main.rs` so that it can be tested. It looked wrong once when a
 /// translucent window let the folder tree of another application show through Quill's explorer, and the only
 /// way to settle whether the resolution was at fault was to be able to run it.
 pub fn resolve_target(argument: Option<&Path>, fallback: &Path) -> (PathBuf, Option<PathBuf>) {
+    let against = |path: &Path| -> PathBuf {
+        tidy(if path.is_absolute() { path.to_path_buf() } else { fallback.join(path) })
+    };
     match argument {
         Some(path) if path.is_file() => {
-            let folder = path.parent().filter(|parent| !parent.as_os_str().is_empty());
-            (folder.map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from(".")), Some(path.to_path_buf()))
+            let file = against(path);
+            let folder = file.parent().map(Path::to_path_buf).unwrap_or_else(|| tidy(fallback.to_path_buf()));
+            (folder, Some(file))
         }
-        Some(path) => (path.to_path_buf(), None),
-        None => (fallback.to_path_buf(), None),
+        Some(path) => (against(path), None),
+        None => (tidy(fallback.to_path_buf()), None),
     }
+}
+
+/// A path with `.` dropped and `..` walked back, without touching the disk.
+///
+/// `Path::components` already drops a `.` that is not at the front; what it keeps is `..`, which has to be
+/// applied here or `C:\jason\dev\quill\..\space-invaders` would be shown to a person as exactly that.
+/// A `..` with nothing to walk back into is kept, because turning `..\thing` into `thing` would be a
+/// different folder rather than a tidier spelling of the same one.
+fn tidy(path: PathBuf) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    let mut walked_back: Vec<Component> = Vec::new();
+    for part in path.components() {
+        match part {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                let last_is_a_name = out
+                    .components()
+                    .next_back()
+                    .is_some_and(|part| matches!(part, Component::Normal(_)));
+                if last_is_a_name {
+                    out.pop();
+                } else {
+                    walked_back.push(part);
+                    out.push(part);
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    if out.as_os_str().is_empty() {
+        // Every component cancelled out, which is what `.` on its own does.
+        return PathBuf::from(".");
+    }
+    out
 }
 
 /// The folder to show when nothing was named on the command line.
@@ -100,6 +150,41 @@ mod tests {
     }
 
     #[test]
+    fn what_comes_back_is_absolute_however_it_was_typed() {
+        // `quill .` is what `quill-cli launch .` runs, and it used to leave the window with a project
+        // called `.` — which the title bar, the recent list, the instance file and the MCP server's
+        // choice of window all then repeated.
+        let root = sample();
+        let (folder, opened) = resolve_target(Some(Path::new(".")), &root);
+        assert_eq!(folder, root, "a dot means the folder we are standing in");
+        assert_eq!(opened, None);
+
+        let (folder, _) = resolve_target(Some(Path::new("inner")), &root);
+        assert_eq!(folder, root.join("inner"));
+
+        let (folder, opened) = resolve_target(Some(&root.join("inner/note.md")), Path::new("/nowhere"));
+        assert_eq!(folder, root.join("inner"));
+        assert_eq!(opened, Some(root.join("inner/note.md")));
+
+        // An absolute argument is left where it is, and nothing at all is the folder we are in.
+        let (folder, _) = resolve_target(Some(&root), Path::new("/nowhere"));
+        assert_eq!(folder, root);
+        let (folder, _) = resolve_target(None, &root);
+        assert_eq!(folder, root);
+    }
+
+    #[test]
+    fn a_step_back_is_walked_rather_than_shown_to_a_person() {
+        let root = sample();
+        let (folder, _) = resolve_target(Some(Path::new("inner/..")), &root);
+        assert_eq!(folder, root);
+        // With nothing to walk back into it is kept, because dropping it would name a different
+        // folder rather than spell the same one more tidily.
+        assert_eq!(tidy(PathBuf::from("../elsewhere")), PathBuf::from("../elsewhere"));
+        assert_eq!(tidy(PathBuf::from(".")), PathBuf::from("."));
+    }
+
+    #[test]
     fn a_file_shows_the_folder_it_sits_in_and_opens_the_file() {
         let root = sample();
         let file = root.join("inner/note.md");
@@ -125,15 +210,20 @@ mod tests {
 
     #[test]
     fn a_file_with_no_folder_in_front_of_it_resolves_to_the_current_directory() {
-        // `quill note.md` run inside the folder holding it: `parent` is empty rather than absent, and an
-        // empty path is not a folder anything can be read from.
+        // `quill note.md` run inside the folder holding it. `parent` is empty rather than absent, and an
+        // empty path is not a folder anything can be read from — so it used to come back as `.`, which
+        // was true of the process and useless to anything that reports the project. It is now the folder
+        // itself, and the file is named in full.
         let root = sample();
+        let inner = root.join("inner");
         let previous = std::env::current_dir().expect("read the current directory");
-        std::env::set_current_dir(root.join("inner")).expect("move into the folder");
-        let (folder, opened) = resolve_target(Some(Path::new("note.md")), Path::new("/nowhere"));
+        std::env::set_current_dir(&inner).expect("move into the folder");
+        // The fallback is the current directory, which is what `main.rs` passes.
+        let here = std::env::current_dir().expect("read it back");
+        let (folder, opened) = resolve_target(Some(Path::new("note.md")), &here);
         std::env::set_current_dir(previous).expect("move back");
-        assert_eq!(folder, Path::new("."), "the folder is the current directory, not an empty path");
-        assert_eq!(opened, Some(PathBuf::from("note.md")));
+        assert_eq!(folder, here, "the folder is the one the file is in, named in full");
+        assert_eq!(opened, Some(here.join("note.md")));
     }
 
     #[test]
