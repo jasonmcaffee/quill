@@ -480,13 +480,46 @@ fn terminal_page(ui: &mut egui::Ui, area: Rect, settings: &mut Settings) -> bool
         pen,
         "The size of one cell in the terminal grid. Changing it tells the running program the new size.",
     );
-    note(
+
+    pen = section(ui, area, pen + 12.0, "Shell");
+    let shell_row = row_at(area, pen);
+    label(ui, area, shell_row, "Program:");
+    let before = settings.terminal_shell.clone();
+    modal::field(
+        ui,
+        Rect::from_min_size(
+            Pos2::new(area.left() + 130.0, shell_row.top()),
+            Vec2::new(240.0, 28.0),
+        ),
+        "Terminal shell",
+        &mut settings.terminal_shell,
+    );
+    // Compared rather than taken from the field's own `changed`, because a field reports a change on
+    // every letter and this is written to disk: what matters is that the setting is not what it was.
+    if settings.terminal_shell != before {
+        changed = true;
+    }
+    pen += 34.0;
+    pen = note(
         ui,
         area,
-        pen + 8.0,
-        "Each tab runs the shell in $SHELL, started in the folder the explorer is showing.",
+        pen,
+        "The program each tab runs, started in the folder the explorer is showing.",
     );
+    // A note is one line and is not wrapped, so what an empty field means is a note of its own rather
+    // than a longer sentence that would run off the end of the page.
+    note(ui, area, pen + 8.0, &format!("Leave it empty for {}.", default_shell_name()));
     changed
+}
+
+/// What an empty shell setting means on this machine, in words, so the note under the field says the
+/// name a person would type rather than `$SHELL`.
+fn default_shell_name() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "PowerShell"
+    } else {
+        "the shell named in $SHELL"
+    }
 }
 
 /// `Appearance & Behavior  >  Appearance` across the top of the page, and the line under it.

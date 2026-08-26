@@ -1148,11 +1148,13 @@ impl QuillApp {
         }
     }
 
-    /// Start another terminal, in the folder the explorer is showing.
+    /// Start another terminal, in the folder the explorer is showing, running the shell the settings
+    /// name — or this machine's own when they name none.
     pub fn new_terminal_tab(&mut self) {
         let rows = self.terminal_rows();
         let cell = self.renderer.cell_metrics(self.settings.terminal_font_size);
         let size = quill_terminal::session::Size::new(rows, 80).with_cell(cell.width, cell.height);
+        self.terminal.tabs.settings.shell = self.settings.shell();
         self.terminal.tabs.settings.working_directory = Some(self.tree.root().to_path_buf());
         let waker = self.waker();
         self.terminal.tabs.open(size, waker);

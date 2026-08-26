@@ -938,6 +938,7 @@ pub const COMMANDS: &[Command] = &[
             "quill-cli settings set appearance.font.size 20",
             "quill-cli settings set appearance.background.opacity 0.5",
             "quill-cli settings set editor.line_numbers false",
+            "quill-cli settings set terminal.shell cmd.exe",
             "quill-cli settings set appearance.font.family \"Courier New\"",
         ],
         local: false,

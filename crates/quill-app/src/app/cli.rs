@@ -2784,6 +2784,7 @@ impl QuillApp {
             "appearance.font.size" => format!("{:.0}", self.settings.font_size),
             "appearance.background.opacity" => format!("{:.3}", self.settings.opacity),
             "terminal.font.size" => format!("{:.0}", self.settings.terminal_font_size),
+            "terminal.shell" => self.settings.terminal_shell.clone(),
             "editor.line_numbers" => self.settings.line_numbers.to_string(),
             "panes.explorer.width" => format!("{:.0}", self.panes.explorer_width),
             "panes.terminal.height" => format!("{:.0}", self.panes.terminal_height),
@@ -2828,6 +2829,11 @@ impl QuillApp {
                 settings.opacity = number()?.clamp(settings::MIN_OPACITY, 1.0)
             }
             "terminal.font.size" => settings.terminal_font_size = number()?.clamp(6.0, 48.0),
+            // Not checked against the machine the way a font family is: a shell may be a bare name to
+            // be found on the path, an absolute path, or something installed a moment from now. When
+            // it is wrong the tile says so in the shell's own words, which is `Tabs::open`'s answer
+            // and is a better message than one made up here.
+            "terminal.shell" => settings.terminal_shell = value.trim().to_owned(),
             "editor.line_numbers" => settings.line_numbers = flag()?,
             "panes.explorer.width" => {
                 self.panes.explorer_width =
@@ -3299,6 +3305,11 @@ const SETTINGS: &[SettingKey] = &[
         help: "The point size the terminal sets its grid in.",
     },
     SettingKey {
+        name: "terminal.shell",
+        accepts: "a program, or empty for this machine's own",
+        help: "What each terminal tab runs. Empty means PowerShell on Windows and $SHELL elsewhere.",
+    },
+    SettingKey {
         name: "editor.line_numbers",
         accepts: "true or false",
         help: "Whether the editing area has a column of line numbers.",
@@ -3337,6 +3348,7 @@ fn fresh_value(name: &str, fresh: &crate::settings::Settings) -> String {
         "appearance.font.size" => format!("{:.0}", fresh.font_size),
         "appearance.background.opacity" => format!("{:.3}", fresh.opacity),
         "terminal.font.size" => format!("{:.0}", fresh.terminal_font_size),
+        "terminal.shell" => fresh.terminal_shell.clone(),
         "editor.line_numbers" => fresh.line_numbers.to_string(),
         "panes.explorer.width" => format!("{:.0}", panes.explorer_width),
         "panes.terminal.height" => format!("{:.0}", panes.terminal_height),

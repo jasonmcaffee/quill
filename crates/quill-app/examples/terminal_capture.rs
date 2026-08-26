@@ -91,7 +91,9 @@ fn main() {
     // A taller tile than the usual one, because a full screen program needs room to draw itself.
     harness.state_mut().panes.terminal_height = 520.0;
     harness.state_mut().terminal.visible = true;
-    harness.state_mut().terminal.tabs.settings.shell = Some(program.clone());
+    // Through the setting rather than the tab's own copy, because `new_terminal_tab` is what puts the
+    // chosen shell on a tab and it is the released binary's path as well as this one's.
+    harness.state_mut().settings.terminal_shell = program.clone();
     harness.state_mut().terminal.tabs.settings.args = rest.clone();
     harness.state_mut().terminal.tabs.settings.working_directory = Some(folder.clone());
     harness.state_mut().new_terminal_tab();

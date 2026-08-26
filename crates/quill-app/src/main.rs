@@ -12,8 +12,11 @@
 //! from a test, so this is how what it was built from can be read.
 //!
 //! `path` is a folder to show in the explorer, or a file to open, in which case the explorer shows the
-//! folder that file is in. Several Quills can run at once, each on its own project, which is what
-//! `File -> New Window` and `File -> Recent Projects` start.
+//! folder that file is in. With no path at all it is the current directory — or, when Quill was started
+//! from the desktop and the current directory is only wherever the shortcut points, the project that was
+//! open last time. `quill_app::starting_folder` is that rule and says why it is drawn so narrowly.
+//! Several Quills can run at once, each on its own project, which is what `File -> New Window` and
+//! `File -> Recent Projects` start.
 //!
 //! `--control off` closes the command channel `quill-cli` drives the window down. It is open by
 //! default, because a command line that needs to be switched on first is a command line an agent
@@ -155,9 +158,21 @@ fn main() -> eframe::Result {
     }
 
     // A file argument opens that file and shows the folder it sits in. A folder argument just shows the
-    // folder. With no argument at all, the explorer shows the current directory. The rule lives in the
-    // library so that it is tested.
-    let fallback = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    // folder. With no argument at all, the explorer shows the current directory — except when Quill was
+    // started from the desktop rather than from a terminal, where the current directory is the folder
+    // holding `quill.exe` and the project that was open last time is what was meant. Both rules live in
+    // the library so that they are tested.
+    //
+    // The recent projects are read here rather than waiting for `load_settings`, because which folder to
+    // show has to be decided before the window is built. It is still the released binary reading the
+    // person's own files, which is the rule `Store` keeps.
+    let current_directory = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let recent = quill_app::services::store::Store::open().recent_projects();
+    let fallback = quill_app::starting_folder(
+        &current_directory,
+        std::env::current_exe().ok().as_deref(),
+        recent.first().map(PathBuf::as_path),
+    );
     let (folder, file) = quill_app::resolve_target(arguments.path.as_deref(), &fallback);
 
     let options = eframe::NativeOptions {

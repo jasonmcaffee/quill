@@ -162,7 +162,10 @@ impl Store {
             if line.is_empty() {
                 continue;
             }
-            let path = PathBuf::from(line);
+            // Through `plain`, so that a list written by an earlier Quill — every line of which held a
+            // verbatim path — is read as the folders it names rather than as nine folders nobody can
+            // open a terminal in. The next `remember_project` writes the repaired list back.
+            let path = quill_terminal::paths::plain(Path::new(line));
             if out.contains(&path) || !path.is_dir() {
                 continue;
             }
@@ -176,8 +179,16 @@ impl Store {
     ///
     /// The path is made absolute first, so that opening `.` and opening the folder it stands for are one
     /// entry rather than two.
+    ///
+    /// And then plain, because on Windows `canonicalize` gives back a **verbatim** path —
+    /// `\\?\C:\jason\dev\quill` — and this list is not only read back by Quill. It is the explorer's
+    /// root, the folder the `.quill` state is written beside, and the directory a shell is started in,
+    /// and `cmd.exe` will not start in a verbatim path at all. `task-1670` is what that looked like from
+    /// the outside: a terminal that opened in `C:\Windows` and said why in a message about network
+    /// shares. `quill_terminal::paths` says what the prefix is and why the terminal strips it again.
     pub fn remember_project(&self, folder: &Path) {
         let folder = std::fs::canonicalize(folder).unwrap_or_else(|_| folder.to_path_buf());
+        let folder = quill_terminal::paths::plain(&folder);
         let mut projects = self.recent_projects();
         projects.retain(|existing| existing != &folder);
         projects.insert(0, folder);
@@ -328,6 +339,49 @@ theme.comment = #6272A4
         assert!(
             !store.recent_projects().contains(&newest),
             "a folder that has been removed is not offered"
+        );
+        std::fs::remove_dir_all(&folder).ok();
+    }
+
+    #[test]
+    fn a_remembered_project_is_written_down_as_a_plain_path() {
+        // `task-1670`. `canonicalize` on Windows gives back `\\?\C:\...`, and this list is where the
+        // explorer's root and the terminal's working directory come from, so a verbatim path here is a
+        // terminal that starts in `C:\Windows`.
+        let folder = temporary("quill-store-plain-path");
+        let store = Store::at(&folder);
+        let project = folder.join("project");
+        std::fs::create_dir_all(&project).expect("make a project");
+        store.remember_project(&project);
+
+        let written = std::fs::read_to_string(store.recent_path()).expect("read the list");
+        assert!(
+            !written.contains(r"\\?\"),
+            "the recent list should hold plain paths, and holds {written:?}"
+        );
+        assert_eq!(store.recent_projects().len(), 1);
+        std::fs::remove_dir_all(&folder).ok();
+    }
+
+    #[test]
+    fn a_list_written_by_an_earlier_quill_is_read_as_plain_paths() {
+        // Every line of the list on a machine that had run the earlier Quill was verbatim. Reading it
+        // repairs it rather than leaving somebody to edit the file by hand.
+        let folder = temporary("quill-store-old-list");
+        let store = Store::at(&folder);
+        let project = folder.join("project");
+        std::fs::create_dir_all(&project).expect("make a project");
+        let verbatim = std::fs::canonicalize(&project).expect("resolve the project");
+        std::fs::create_dir_all(store.folder()).expect("make the settings folder");
+        std::fs::write(store.recent_path(), format!("{}\n", verbatim.display()))
+            .expect("write the old list");
+
+        let recent = store.recent_projects();
+        assert_eq!(recent.len(), 1, "the folder is still found, got {recent:?}");
+        assert!(
+            !recent[0].to_string_lossy().contains(r"\\?\"),
+            "it comes back plain, got {:?}",
+            recent[0]
         );
         std::fs::remove_dir_all(&folder).ok();
     }

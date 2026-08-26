@@ -155,7 +155,10 @@ impl Session {
         let name = program_name(&shell);
         let options = alacritty_terminal::tty::Options {
             shell: Some(alacritty_terminal::tty::Shell::new(shell, settings.args.clone())),
-            working_directory: settings.working_directory.clone(),
+            // Through `paths::plain`, because a verbatim Windows path is a path `cmd.exe` will not
+            // start in: it says so and starts in `C:\Windows` instead, which is a terminal that opens,
+            // works, and is quietly in the wrong folder. That module says where such a path comes from.
+            working_directory: settings.working_directory.as_deref().map(crate::paths::plain),
             drain_on_exit: false,
             env: Default::default(),
             #[cfg(target_os = "windows")]
@@ -531,14 +534,47 @@ fn config() -> Config {
     Config { scrolling_history: SCROLLBACK, ..Config::default() }
 }
 
-/// The shell to run when none was chosen: what the environment says, and a sensible one when it says
-/// nothing.
+/// The shell to run when none was chosen.
+///
+/// Everywhere but Windows this is `SHELL`, which is the shell the person has actually chosen.
+///
+/// Windows has no `SHELL`, and `COMSPEC` — which is what this used to read — is not the answer to the
+/// same question. It names the interpreter that runs a batch file, and on every Windows there has ever
+/// been it says `cmd.exe`. So Quill opened a `cmd.exe` while the machine's own commands live in a
+/// PowerShell profile, and `task-1670` reported the visible half of that: a function defined in
+/// `Documents\WindowsPowerShell\Microsoft.PowerShell_profile.ps1` cannot exist in `cmd`, so it is
+/// `'claude-skip' is not recognized`, in a terminal that looks like every other terminal on the machine.
+///
+/// PowerShell it is, then, and the newer one when it is installed: `pwsh.exe` and `powershell.exe` read
+/// **different** profiles — `Documents\PowerShell` and `Documents\WindowsPowerShell` — so this is not a
+/// preference between two spellings of the same shell, it is which set of a person's own commands the
+/// terminal comes up holding. Choosing the newest installed is what Windows Terminal does.
+///
+/// `COMSPEC` is still the last resort, for a Windows with no PowerShell on the path at all.
+/// `terminal.shell` in the settings file beats all of it, which is how a person who wants `cmd` back
+/// asks for it.
 fn default_shell() -> String {
     if cfg!(target_os = "windows") {
-        std::env::var("COMSPEC").unwrap_or_else(|_| "powershell.exe".to_owned())
+        for shell in ["pwsh.exe", "powershell.exe"] {
+            if on_the_path(shell) {
+                return shell.to_owned();
+            }
+        }
+        std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_owned())
     } else {
         std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_owned())
     }
+}
+
+/// Whether `program` is a file in one of the folders on `PATH`.
+///
+/// Named rather than run: asking a program whether it exists by starting it would put a window on the
+/// screen on the one system where that matters, and this is asked once for each terminal opened.
+fn on_the_path(program: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|folder| folder.join(program).is_file())
 }
 
 /// Whether a title says no more than the name of the program that is running.
@@ -866,10 +902,13 @@ mod tests {
     /// `/bin/sh` is named rather than whatever `SHELL` says, so the test does not depend on the shell the
     /// person running it happens to use. It is a Unix path though, and there is nothing at it on Windows,
     /// where the same job is done by the program `COMSPEC` names — so on Windows the test asks for that
-    /// instead. Both understand `echo` and `exit`, which is all these two tests send.
+    /// instead. Both understand `echo` and `exit`, which is all these tests send, and neither reads a
+    /// profile, so what they are waiting for is the pseudoterminal rather than somebody's own startup
+    /// file. Naming it here rather than calling `default_shell` is deliberate for the same reason: these
+    /// tests are about the plumbing, and what the default *is* has a test of its own.
     fn test_shell() -> String {
         if cfg!(target_os = "windows") {
-            default_shell()
+            std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_owned())
         } else {
             "/bin/sh".to_owned()
         }
@@ -934,6 +973,69 @@ mod tests {
         while session.is_running() {
             session.pump();
             assert!(std::time::Instant::now() < deadline, "the shell did not stop in thirty seconds");
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn the_default_shell_is_powershell_rather_than_the_batch_interpreter() {
+        // `COMSPEC` says `cmd.exe` on every Windows there is, so reading it meant Quill's terminal never
+        // held the commands in a person's PowerShell profile — `task-1670`. Either PowerShell counts:
+        // which one depends on whether the newer one is installed on the machine running the test.
+        let shell = default_shell().to_lowercase();
+        assert!(
+            shell.ends_with("powershell.exe") || shell.ends_with("pwsh.exe"),
+            "the default shell on Windows should be PowerShell, and is {shell:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn a_shell_starts_in_the_folder_it_was_given_even_when_the_path_is_verbatim() {
+        // `task-1670`: the folder reached the terminal as `\\?\C:\jason\dev\quill`, because that is what
+        // `canonicalize` gives back on Windows and it had been written into the recent projects file.
+        // `cmd.exe` reads the two leading backslashes as a network share, says so, and starts in
+        // `C:\Windows` instead. So this asks for the folder in exactly that form and checks the shell
+        // came up in it.
+        let folder = std::env::temp_dir().join("quill-verbatim-working-directory");
+        std::fs::create_dir_all(&folder).expect("make the folder");
+        let verbatim = std::fs::canonicalize(&folder).expect("resolve the folder");
+        assert!(
+            verbatim.to_string_lossy().starts_with(r"\\?\"),
+            "this test is only worth anything while `canonicalize` gives back a verbatim path, and it gave {verbatim:?}"
+        );
+
+        let settings = SessionSettings {
+            shell: Some(test_shell()),
+            args: Vec::new(),
+            working_directory: Some(verbatim),
+        };
+        let waker: Waker = Arc::new(|| {});
+        let mut session =
+            Session::spawn(&settings, Size::new(12, 100), waker).expect("start a shell");
+        // The shell's own answer to where it is standing, rather than Quill's. In brackets, because
+        // when `cmd` refuses the folder it prints the path it was given as part of the complaint — so
+        // the path appearing somewhere on the screen proves nothing, and only the path in brackets is
+        // the shell saying it started there.
+        session.send(b"echo [%CD%]\r".to_vec());
+
+        let wanted = format!("[{}]", folder.to_string_lossy()).to_lowercase();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            session.pump();
+            let screen = session.snapshot().text().to_lowercase();
+            assert!(
+                !screen.contains("unc paths are not supported"),
+                "the shell refused the folder it was given: {screen}"
+            );
+            if screen.contains(&wanted) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the shell did not say where it was in thirty seconds, the screen holds {screen:?}"
+            );
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
     }

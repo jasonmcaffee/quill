@@ -102,7 +102,7 @@ impl Page {
             Page::Appearance => &["Font", "Background"],
             Page::Editor => &["Gutter"],
             Page::Plugins => &["Marketplace", "Installed", "Colour Scheme", "Syntax"],
-            Page::Terminal => &["Font"],
+            Page::Terminal => &["Font", "Shell"],
         }
     }
 
@@ -129,6 +129,9 @@ pub struct Settings {
     pub opacity: f32,
     /// The point size the terminal sets its grid in.
     pub terminal_font_size: f32,
+    /// The program a new terminal runs. Empty means the one this machine says the person has, which
+    /// `quill_terminal::session` decides and which is PowerShell on Windows.
+    pub terminal_shell: String,
     /// Whether the editing area has a column of line numbers down its left.
     pub line_numbers: bool,
 }
@@ -142,6 +145,9 @@ impl Settings {
             font_size: DEFAULT_FONT_SIZE,
             opacity: DEFAULT_OPACITY,
             terminal_font_size: 13.0,
+            // Empty rather than a name, because which shell is right is a question about the machine
+            // Quill is running on, and the settings file is copied between machines.
+            terminal_shell: String::new(),
             // On, because a line number is useful in prose as well as in code and a person who does
             // not want one can put it away from the gutter's own menu.
             line_numbers: true,
@@ -162,6 +168,9 @@ impl Settings {
         if let Some(size) = values.number("terminal.font.size") {
             settings.terminal_font_size = size.clamp(6.0, 48.0);
         }
+        if let Some(shell) = values.text("terminal.shell") {
+            settings.terminal_shell = shell.trim().to_owned();
+        }
         if let Some(on) = values.flag("editor.line_numbers") {
             settings.line_numbers = on;
         }
@@ -175,7 +184,21 @@ impl Settings {
         values.set("appearance.font.size", format!("{:.0}", self.font_size));
         values.set("appearance.background.opacity", format!("{:.3}", self.opacity));
         values.set("terminal.font.size", format!("{:.0}", self.terminal_font_size));
+        // Written only once it has been chosen, so the file does not name a shell on every machine it
+        // is copied to. An empty line would read as a shell called nothing.
+        if !self.terminal_shell.is_empty() {
+            values.set("terminal.shell", self.terminal_shell.clone());
+        }
         values.set("editor.line_numbers", if self.line_numbers { "true" } else { "false" });
+    }
+
+    /// The program a new terminal should run, or nothing when this machine's own default is wanted.
+    ///
+    /// One function rather than the same `is_empty` test at each of the places that start a terminal,
+    /// so a later one cannot come to a different answer about what an empty setting means.
+    pub fn shell(&self) -> Option<String> {
+        let shell = self.terminal_shell.trim();
+        (!shell.is_empty()).then(|| shell.to_owned())
     }
 
     /// The change to hand to `Document::set_base_style` so the document is shown in this font.
@@ -278,11 +301,31 @@ mod tests {
             font_size: 20.0,
             opacity: 0.4,
             terminal_font_size: 14.0,
+            terminal_shell: "pwsh.exe".to_owned(),
             line_numbers: false,
         };
         let mut values = Values::new();
         settings.write_into(&mut values);
         assert_eq!(Settings::read_from(&values), settings);
+    }
+
+    #[test]
+    fn no_shell_chosen_means_the_one_this_machine_says_the_person_has() {
+        // `task-1670`: the setting exists so that a person can ask for `cmd.exe` back, and an empty one
+        // has to mean "whatever the machine says" rather than a program with no name.
+        let settings = Settings::new();
+        assert_eq!(settings.shell(), None);
+
+        let mut values = Values::new();
+        settings.write_into(&mut values);
+        assert_eq!(values.text("terminal.shell"), None, "nothing is written until it is chosen");
+
+        let chosen = Settings::read_from(&Values::parse("terminal.shell = cmd.exe
+"));
+        assert_eq!(chosen.shell().as_deref(), Some("cmd.exe"));
+        let blank = Settings::read_from(&Values::parse("terminal.shell =   
+"));
+        assert_eq!(blank.shell(), None, "a line with nothing after it is not a shell");
     }
 
     #[test]

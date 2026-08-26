@@ -27,7 +27,7 @@ token from the credential helper git already uses, so there is no second credent
 | Crate | What is in it | What must never be in it |
 |---|---|---|
 | `quill-core` | The editor: the text buffer, the character and paragraph formatting, the caret, layout, undo, the Markdown parser, the syntax tokeniser, and the Mermaid reader and diagram layout. | Any user interface dependency. Its tests run with no window, no graphics card and no fonts. |
-| `quill-terminal` | The terminal: the session over a pseudoterminal, the screen the painter reads, the colour palette, the key encoding and the mouse reports. | Any user interface dependency, for the same reason. |
+| `quill-terminal` | The terminal: the session over a pseudoterminal, the screen the painter reads, the colour palette, the key encoding, the mouse reports, and which shell to start and in what folder. | Any user interface dependency, for the same reason. |
 | `quill-git` | Reading and changing a git repository: the status, blame, the log, diffs, branches, and every operation on the Git menu, plus the thread they run on. | Any user interface dependency, and any decision about what a dialog looks like. Its tests build real repositories in a temporary folder and ask git what happened. |
 | `quill-app` | The window: drawing, input, real fonts, the settings on disk, the menus, and the plugin registry. | Editor behaviour, terminal emulation or git plumbing. Those belong in the crates above. |
 | `quill-cli` | The command line: the catalogue of commands, the wire format, and the client program. It lives in `quill-cli/` beside its own documentation rather than under `crates/`, because the two are read together. | Anything that depends on `quill-app`. The dependency points one way, so the client stays a small program with no window, no graphics card and no fonts behind it. |
@@ -343,6 +343,46 @@ the folder holding the open file shut it deliberately, and a reveal that ran eve
 again before the pointer was up. `scroll_to_rect(row, None)` is what "the least amount" means, and it
 is the same call `Go to File` and `Find in Files` already make. `View -> Select Opened File` and
 `quill-cli explorer select-open-file` ask for it by hand.
+
+## A terminal opens in the project, running the shell the person actually uses
+
+`task-1670` reported a terminal that opened in `C:\Windows` and could not find the machine's own
+commands. Four rules came out of it, and a change to the terminal or to what Quill remembers has to
+keep all four.
+
+**A path Quill writes down or hands to a program is plain.** `std::fs::canonicalize` on Windows gives
+back a **verbatim** path — `\\?\C:\jason\dev\quill` — and every Rust file call takes one happily, so
+nothing inside Quill notices while it travels: into `recent.txt`, onto the explorer's root, and from
+there to the directory a shell is started in. `cmd.exe` is where it stops, because two leading
+backslashes are a network share as far as it is concerned; it says so and starts in `C:\Windows`
+instead, which is a terminal that opens, works and is quietly in the wrong folder.
+`quill_terminal::paths::plain` takes the prefix off. `Store::remember_project` calls it so one is never
+written down, `Store::recent_projects` calls it while reading so a list already on disk is repaired,
+and `Session::spawn` calls it again at the point the shell is started — because the window is not the
+only thing that hands a directory over, and a list of the places that have to remember to strip it is
+a list whose next entry will be the one that forgot.
+
+**`COMSPEC` is not the shell.** It names the interpreter that runs a batch file and says `cmd.exe` on
+every Windows there is, so reading it meant Quill's terminal never held the commands in a person's
+PowerShell profile. The default is `pwsh.exe` when it is installed and `powershell.exe` otherwise —
+they read **different** profiles, so it is not a preference between two spellings of one shell — and
+`terminal.shell` in the settings is how a person asks for something else back. Empty means "what this
+machine says", and `Settings::shell()` is the one function that says so.
+
+**With no path on the command line, where Quill starts depends on how it was started.** The current
+directory is the honest answer when somebody typed `quill` in a terminal and no answer at all from a
+desktop shortcut, where it is only wherever the shortcut points. `quill_app::starting_folder` reopens
+the last project **only** when the current directory is the folder `quill.exe` itself lives in. Narrow
+on purpose: `quill` typed in a folder has to open that folder.
+
+**What a menu calls a key is not what a terminal sends.** `actions::key_name` spells the punctuation as
+words — `Backslash`, `OpenBracket` — because `Ctrl+Backslash` reads better in a menu. The key encoder
+used to ask it, and a word is not one character, so `Ctrl+]`, `Ctrl+\` and `Ctrl+Space` were sent as
+nothing at all — and `Ctrl+]` is how a person detaches from `claude`.
+`components::terminal_panel::symbol` answers the terminal's question instead. It also refuses a
+**shifted** digit or symbol, because `Shift+4` is `$` here and `"` on a British layout and there is no
+control code to be had from a key whose character depends on the keyboard; a letter is untouched,
+since `Ctrl+Shift+C` is `Ctrl+C` in every terminal there is.
 
 ## Git runs the `git` program, on a thread
 
@@ -669,6 +709,9 @@ trade that away to be a shade nearer a screenshot.
 - `tasks/task-1663-highlights-tdd.md` — highlighting a passage: where the ranges live so they move
   with the text, the file beside the project that remembers them, the right click menu and the drawn
   colour wheel, and the bulk commands.
+- `tasks/task-1670-terminal-tdd.md` — the terminal that opened in `C:\Windows` running the wrong
+  shell: the verbatim Windows path and where it came from, why `COMSPEC` is not the shell, when Quill
+  reopens the last project, and the punctuation keys that reached no program at all.
 - `tasks/task-1666-performance-tdd.md` — why a frame cost 818 ms and now costs 20: the eight faults
   that were found, what each was worth, the two revisions a document counts, the incremental layout
   and why its fingerprint is derived rather than reported, and what was deliberately not done.

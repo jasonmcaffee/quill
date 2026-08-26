@@ -1501,14 +1501,38 @@ fn the_settings_window_closes_on_the_close_button() {
 }
 
 #[test]
-fn the_terminal_page_holds_the_terminal_font_size() {
+fn the_terminal_page_holds_the_font_size_and_the_shell() {
     let mut harness = harness("");
     open_settings(&mut harness);
     harness.get_by_label("Terminal").click();
     harness.run();
     harness.get_by_label("Terminal font size");
+    // `task-1670`: the shell is a setting because the default cannot be right for everybody, and this
+    // is where a person who wants `cmd.exe` back asks for it.
+    harness.get_by_label("Terminal shell");
     assert!(harness.query_by_label("Background opacity").is_none(), "that is on the Appearance page");
     harness.snapshot(shot("settings_terminal"));
+}
+
+#[test]
+fn the_shell_typed_into_the_settings_is_what_a_new_terminal_runs() {
+    let mut harness = harness("");
+    open_settings(&mut harness);
+    harness.get_by_label("Terminal").click();
+    harness.run();
+    harness.get_by_label("Terminal shell").click();
+    harness.run();
+    harness.get_by_label("Terminal shell").type_text("/no/such/program/at/all");
+    harness.run();
+    assert_eq!(harness.state().settings.terminal_shell, "/no/such/program/at/all");
+
+    // Which is what a terminal opened afterwards tries to run — it cannot start, and the tile says so
+    // in the shell's own words, which is how the setting is seen to have reached the tab at all.
+    harness.state_mut().terminal.visible = true;
+    harness.state_mut().new_terminal_tab();
+    harness.run();
+    let reason = harness.state().terminal.tabs.last_error.clone().expect("a reason");
+    assert!(reason.contains("/no/such/program/at/all"), "it said {reason:?}");
 }
 
 #[test]
@@ -2422,8 +2446,7 @@ fn control_and_backtick_opens_the_terminal_and_puts_it_away() {
 #[test]
 fn a_shell_that_will_not_start_says_so_rather_than_leaving_an_empty_tile() {
     let mut harness = harness("");
-    harness.state_mut().terminal.tabs.settings.shell =
-        Some("/no/such/program/at/all".to_owned());
+    harness.state_mut().settings.terminal_shell = "/no/such/program/at/all".to_owned();
     harness.state_mut().terminal.visible = true;
     harness.state_mut().new_terminal_tab();
     harness.run();

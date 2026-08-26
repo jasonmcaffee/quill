@@ -46,6 +46,48 @@ pub fn resolve_target(argument: Option<&Path>, fallback: &Path) -> (PathBuf, Opt
     }
 }
 
+/// The folder to show when nothing was named on the command line.
+///
+/// `current_directory` is the honest answer when a person typed `quill` in a terminal: they are standing
+/// in the folder they mean. It is not an answer at all when Quill was started from the desktop, the Start
+/// menu or a file association, because then the current directory is whatever the shortcut points at —
+/// which for Quill's own installer is the folder `quill.exe` sits in. `task-1670` is what that looked
+/// like: quit Quill with a project open, start it again from the desktop, and the explorer and the
+/// terminal both came up in `AppData\Local\Programs\Quill`.
+///
+/// So: when the current directory is the folder the program itself lives in, nobody chose it, and the
+/// project that was open last time is what was meant. Otherwise the current directory stands. That is a
+/// narrower rule than "always reopen the last project", and deliberately — `quill` typed in a folder has
+/// to open *that* folder, or the command line would be lying about what it does.
+///
+/// `most_recent` is the head of the recent projects list, and `program` is `std::env::current_exe`. Both
+/// are passed in rather than read here, so this is a rule that can be tested rather than a rule that
+/// depends on where the test binary happens to live.
+pub fn starting_folder(
+    current_directory: &Path,
+    program: Option<&Path>,
+    most_recent: Option<&Path>,
+) -> PathBuf {
+    let installed_here = program
+        .and_then(|program| program.parent())
+        .is_some_and(|folder| same_folder(folder, current_directory));
+    match most_recent {
+        Some(project) if installed_here && project.is_dir() => project.to_path_buf(),
+        _ => current_directory.to_path_buf(),
+    }
+}
+
+/// Whether two paths name the same folder, as far as this can be told without asking the disk twice.
+///
+/// Compared through `canonicalize` when both resolve, because one of them has come from the operating
+/// system and the other from the person, and `C:\Quill` and `C:\quill\` are the same folder.
+fn same_folder(left: &Path, right: &Path) -> bool {
+    match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -92,6 +134,49 @@ mod tests {
         std::env::set_current_dir(previous).expect("move back");
         assert_eq!(folder, Path::new("."), "the folder is the current directory, not an empty path");
         assert_eq!(opened, Some(PathBuf::from("note.md")));
+    }
+
+    #[test]
+    fn started_from_the_desktop_shows_the_project_that_was_open_last_time() {
+        // `task-1670`: the current directory is then the folder holding `quill.exe`, which nobody chose.
+        let root = sample();
+        let program = root.join("Programs/Quill/quill.exe");
+        std::fs::create_dir_all(program.parent().expect("a folder")).expect("make the folder");
+        let installed = program.parent().expect("a folder").to_path_buf();
+        let project = root.join("inner");
+
+        assert_eq!(
+            starting_folder(&installed, Some(&program), Some(&project)),
+            project,
+            "the last project is what was meant"
+        );
+        assert_eq!(
+            starting_folder(&installed, Some(&program), None),
+            installed,
+            "with nothing opened before, there is nothing better than where it started"
+        );
+    }
+
+    #[test]
+    fn started_from_a_terminal_shows_the_folder_the_person_is_standing_in() {
+        // The rule has to be this narrow, or `quill` typed in a folder would open a different one.
+        let root = sample();
+        let program = root.join("Programs/Quill/quill.exe");
+        std::fs::create_dir_all(program.parent().expect("a folder")).expect("make the folder");
+        let here = root.join("inner");
+        let project = root.to_path_buf();
+        assert_eq!(starting_folder(&here, Some(&program), Some(&project)), here);
+    }
+
+    #[test]
+    fn a_last_project_that_has_gone_leaves_the_current_directory() {
+        let root = sample();
+        let program = root.join("Programs/Quill/quill.exe");
+        std::fs::create_dir_all(program.parent().expect("a folder")).expect("make the folder");
+        let installed = program.parent().expect("a folder").to_path_buf();
+        let missing = root.join("a-project-that-was-deleted");
+        std::fs::remove_dir_all(&missing).ok();
+        assert_eq!(starting_folder(&installed, Some(&program), Some(&missing)), installed);
     }
 
     #[test]

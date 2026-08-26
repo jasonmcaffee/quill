@@ -733,18 +733,51 @@ fn key_press(key: egui::Key, modifiers: &egui::Modifiers) -> Option<KeyPress> {
             if !control && !modifiers.alt {
                 return None;
             }
-            let name = crate::app::actions::key_name(other);
-            let mut characters = name.chars();
-            let character = characters.next()?;
-            if characters.next().is_some() {
-                // A key whose name is a word, such as `Escape`, which is handled above; anything else left
-                // is not a character a terminal can send.
-                return None;
-            }
-            TermKey::Character(character.to_ascii_lowercase())
+            TermKey::Character(symbol(other, modifiers.shift)?)
         }
     };
     Some(KeyPress::new(terminal_key, terminal_modifiers))
+}
+
+/// The character an ordinary key stands for, as a terminal reads it, or nothing when it stands for no
+/// character this key press can be turned into.
+///
+/// This used to ask `actions::key_name`, which is what a **menu** shows and so spells the punctuation as
+/// words — `Backslash`, `OpenBracket`, `Semicolon` — because `Ctrl+Backslash` reads better in a menu than
+/// `Ctrl+\`. A word is not one character, so every one of those keys fell out and was sent as nothing at
+/// all. `Ctrl+]` is how a person detaches from `claude`, `Ctrl+\` is how a program is quit and
+/// `Ctrl+Space` is how a null is sent, and in Quill's terminal all three did nothing.
+///
+/// **A digit or a piece of punctuation held with shift is a different character**, and which one depends
+/// on the keyboard: `Shift+4` is `$` here and `"` on a British layout. So there is no control code to be
+/// had from the digit, and taking the digit's own was how the stray `^\` on the prompt in `task-1670`
+/// got there — that is 0x1c, which is what `4` makes, and `Ctrl+Shift+4` is a screenshot on this
+/// machine. A letter is not affected: shift does not change which letter it is, and `Ctrl+Shift+C` is
+/// `Ctrl+C` in every terminal there is.
+fn symbol(key: egui::Key, shift: bool) -> Option<char> {
+    // Two are named here rather than taken from egui. The minus key, because egui spells it with the
+    // typographic minus sign at U+2212 rather than the hyphen a shell reads; and space, whose name is a
+    // word. Everything else — the letters, the digits and the punctuation — egui already gives as the
+    // character itself.
+    let character = match key {
+        egui::Key::Minus => '-',
+        egui::Key::Space => ' ',
+        other => {
+            let text = other.symbol_or_name();
+            let mut characters = text.chars();
+            let character = characters.next()?;
+            if characters.next().is_some() {
+                // A key whose name is a word, such as `Escape`, which is handled above; anything else
+                // left is not a character a terminal can send.
+                return None;
+            }
+            character.to_ascii_lowercase()
+        }
+    };
+    if shift && !character.is_ascii_alphabetic() {
+        return None;
+    }
+    Some(character)
 }
 
 /// The height a tile with `rows` rows of text needs, which the window uses to open the tile at a sensible
@@ -827,6 +860,45 @@ mod tests {
             let press = key_press(key, &plain).unwrap_or_else(|| panic!("{key:?} should be sent"));
             assert_eq!(press.key, expected);
         }
+    }
+
+    #[test]
+    fn control_and_a_piece_of_punctuation_reaches_the_program() {
+        // `task-1670`. These all fell out before, because the name a menu shows for them is a word:
+        // `Ctrl+]` detaches from `claude`, `Ctrl+\` quits a program and `Ctrl+Space` sends a null.
+        let control = egui::Modifiers { ctrl: true, ..Default::default() };
+        for (key, expected) in [
+            (egui::Key::CloseBracket, 0x1d_u8),
+            (egui::Key::OpenBracket, 0x1b),
+            (egui::Key::Backslash, 0x1c),
+            (egui::Key::Space, 0x00),
+            (egui::Key::Minus, 0x1f),
+        ] {
+            let press =
+                key_press(key, &control).unwrap_or_else(|| panic!("Control and {key:?} is a key press"));
+            let bytes = keys::encode(press, keys::Mode::default())
+                .unwrap_or_else(|| panic!("Control and {key:?} should send something"));
+            assert_eq!(bytes, vec![expected], "Control and {key:?}");
+        }
+    }
+
+    #[test]
+    fn control_and_a_shifted_digit_sends_nothing() {
+        // A shifted digit is punctuation, and which punctuation depends on the layout, so the digit's
+        // own control code is not the answer. 0x1c is what `4` makes, and it is the stray `^\` on the
+        // prompt in `task-1670` — `Ctrl+Shift+4` takes a screenshot on that machine.
+        let control_shift = egui::Modifiers { ctrl: true, shift: true, ..Default::default() };
+        assert!(key_press(egui::Key::Num4, &control_shift).is_none(), "Ctrl+Shift+4 is Ctrl+$");
+        assert!(key_press(egui::Key::Num3, &control_shift).is_none());
+
+        // The digit on its own still is: `Ctrl+4` is 0x1c in every terminal.
+        let control = egui::Modifiers { ctrl: true, ..Default::default() };
+        let press = key_press(egui::Key::Num4, &control).expect("Ctrl+4 is a key press");
+        assert_eq!(keys::encode(press, keys::Mode::default()), Some(vec![0x1c]));
+
+        // And a letter is not affected, because shift does not change which letter it is.
+        let press = key_press(egui::Key::C, &control_shift).expect("Ctrl+Shift+C is a key press");
+        assert_eq!(keys::encode(press, keys::Mode::default()), Some(vec![0x03]));
     }
 
     #[test]
