@@ -188,7 +188,18 @@ function Get-GitHubCli {
 function Get-GitHubToken {
     if ($env:GH_TOKEN) { return $env:GH_TOKEN }
     if ($env:GITHUB_TOKEN) { return $env:GITHUB_TOKEN }
-    $answer = "protocol=https`nhost=github.com`n`n" | & git credential fill 2>$null
+    # The request goes in through a file rather than a pipe. Windows PowerShell 5.1 does not deliver a
+    # piped string to a native program's standard input in a form `git credential` accepts — it
+    # answers `refusing to work with credential missing protocol field` — and a redirection from a
+    # file does. The file holds the protocol and the host and no secret; the answer, which does hold
+    # one, is only ever in memory.
+    $ask = Join-Path ([System.IO.Path]::GetTempPath()) ("quill-credential-" + [guid]::NewGuid().ToString('N') + ".txt")
+    try {
+        Set-Content -Path $ask -Value "protocol=https`nhost=github.com`n" -NoNewline -Encoding ascii
+        $answer = & cmd /c "git credential fill < `"$ask`"" 2>$null
+    } finally {
+        Remove-Item -Path $ask -Force -ErrorAction SilentlyContinue
+    }
     $line = $answer | Where-Object { $_ -like 'password=*' } | Select-Object -First 1
     if (-not $line) {
         throw 'No GitHub credential is stored for github.com. Run `gh auth login` (or set GH_TOKEN) and run this again.'
