@@ -35,6 +35,15 @@ pub enum Command {
     SelectAll,
     /// Put the caret at a document offset, from a mouse click.
     PlaceCaret { offset: usize, extend: bool },
+    /// Replace several ranges at once, as **one** undo step.
+    ///
+    /// This is what a rename is applied by. Undo in Quill restores a snapshot, so a whole
+    /// document's rename being one step is not something this has to arrange — it follows from
+    /// pushing one snapshot and then making every edit. The edits are applied back to front, so no
+    /// range can shift one still to be made; `symbols::replacements` is what puts them in that
+    /// order and drops the overlapping ones, and this trusts nothing it is given: a range outside
+    /// the text or across a character is left alone rather than panicking.
+    ReplaceMany(Vec<(Range<usize>, String)>),
     /// Apply character formatting to the selection, or to the next text typed if nothing is selected.
     ApplyStyle(StyleChange),
     /// Turn bold on for the selection, or off if all of it is already bold.
@@ -452,6 +461,7 @@ impl Document {
                 self.desired_x = None;
                 self.caret_moved(selection_before);
             }
+            Command::ReplaceMany(edits) => self.replace_many(edits),
             Command::ApplyStyle(change) => self.apply_style(change),
             Command::ToggleBold => {
                 let on = !self.active_style().bold;
@@ -639,6 +649,65 @@ impl Document {
         self.desired_x = None;
         self.mark_changed();
         self.last_edit = if single { EditKind::Typing } else { EditKind::Other };
+    }
+
+    /// Replace several ranges in one undo step, back to front.
+    ///
+    /// One `push_undo` and then every edit, which is what makes a rename across a file a single
+    /// step to undo. Each edit is deliberately the same three lines [`Self::insert`] uses — the
+    /// text, the character formatting and the marked passages moving together — because a place
+    /// that knew the bytes had moved and forgot one of the three would be a mark left behind on the
+    /// wrong word, and that is a fault that looks like a drawing bug and lives in the model.
+    fn replace_many(&mut self, edits: Vec<(Range<usize>, String)>) {
+        // Put in order here as well as by the caller, because a `Command` can be built by hand —
+        // the command line builds one — and applying these in the wrong order would corrupt the
+        // file rather than refuse. Nothing is trusted: a range outside the text or across the
+        // middle of a character is dropped, and where two overlap the earlier one wins, which is
+        // the same choice `symbols::replacements` makes so the two cannot disagree.
+        let mut edits: Vec<(Range<usize>, String)> = edits
+            .into_iter()
+            .filter(|(range, _)| {
+                range.start < range.end
+                    && range.end <= self.text.len_bytes()
+                    && self.clamp_to_boundary(range.start) == range.start
+                    && self.clamp_to_boundary(range.end) == range.end
+            })
+            .collect();
+        edits.sort_by_key(|(range, _)| range.start);
+        let mut reached = 0;
+        edits.retain(|(range, _)| {
+            if range.start < reached {
+                return false;
+            }
+            reached = range.end;
+            true
+        });
+        edits.reverse();
+        if edits.is_empty() {
+            return;
+        }
+        self.push_undo(EditKind::Other);
+        for (range, replacement) in edits {
+            let at = range.start;
+            // Read before the deletion, because deleting can take away the very span the new text
+            // should inherit from — the same order `insert` reads it in.
+            let style = self.chars.style_for_insertion(at);
+            self.remove_range(range);
+            if replacement.is_empty() {
+                continue;
+            }
+            let paragraph = self.text.byte_to_line(at);
+            let line_breaks = replacement.bytes().filter(|byte| *byte == b'\n').count();
+            self.text.insert(at, &replacement);
+            self.chars.insert(at, replacement.len());
+            self.highlights.insert(at, replacement.len());
+            self.chars.set(at..at + replacement.len(), &style_as_change(&style));
+            self.paragraphs.split(paragraph, line_breaks);
+            self.selection.set_caret(at + replacement.len());
+        }
+        self.desired_x = None;
+        self.mark_changed();
+        self.last_edit = EditKind::Other;
     }
 
     fn remove_range(&mut self, range: Range<usize>) {
@@ -925,6 +994,88 @@ mod tests {
     use crate::metrics::FixedMetrics;
     use crate::style::Color;
 
+    /// A rename inside an open document is **one** undo step, however many places it touched.
+    ///
+    /// It follows from `push_undo` being called once and then every edit being made, rather than
+    /// from anything `ReplaceMany` arranges: undo in Quill restores a state, so the state it
+    /// restores is the one before the first of them.
+    #[test]
+    fn replacing_many_ranges_is_one_edit_to_undo() {
+        let mut document = Document::new();
+        document.apply(Command::Insert("let value = value + value;".to_owned()));
+        let before = document.text().to_string();
+        let edits = quill_core_replacements(&before, "value", "total");
+        assert_eq!(edits.len(), 3);
+        assert!(document.apply(Command::ReplaceMany(edits)));
+        assert_eq!(document.text().to_string(), "let total = total + total;");
+        assert!(document.is_modified());
+        document.apply(Command::Undo);
+        assert_eq!(document.text().to_string(), before, "one step puts all three back");
+    }
+
+    /// And the marked passages come back with it, because they ride the snapshot.
+    #[test]
+    fn undoing_a_rename_brings_back_the_marks_it_moved() {
+        let mut document = Document::new();
+        document.apply(Command::Insert("let value = 1;\nlet other = value;".to_owned()));
+        // Mark `other`, which sits after the first replacement and so is shifted by it.
+        let at = document.text().to_string().find("other").expect("other");
+        document.set_highlights(Highlights::from_list([crate::highlights::Highlight {
+            range: at..at + 5,
+            color: Rgba::parse("#ffff0080").expect("a colour"),
+        }]));
+        let text = document.text().to_string();
+        document.apply(Command::ReplaceMany(quill_core_replacements(&text, "value", "v")));
+        let moved = document.highlights().iter().next().expect("the mark").range.clone();
+        assert_eq!(
+            &document.text().to_string()[moved.clone()],
+            "other",
+            "the mark moved with the text: {moved:?}"
+        );
+        document.apply(Command::Undo);
+        assert_eq!(document.text().to_string(), text);
+        assert_eq!(
+            document.highlights().iter().next().expect("the mark").range,
+            at..at + 5,
+            "and undo restored where it was"
+        );
+    }
+
+    #[test]
+    fn a_replacement_range_outside_the_text_is_left_alone_rather_than_panicking() {
+        // A `Command` can be built by hand — the command line builds one — so nothing here trusts
+        // what it is given.
+        let mut document = Document::new();
+        document.apply(Command::Insert("short".to_owned()));
+        assert!(!document.apply(Command::ReplaceMany(vec![(40..50, "x".to_owned())])));
+        assert!(!document.apply(Command::ReplaceMany(Vec::new())));
+        assert_eq!(document.text().to_string(), "short");
+        // Overlapping ranges are applied once rather than twice.
+        document.apply(Command::ReplaceMany(vec![
+            (0..3, "A".to_owned()),
+            (1..4, "B".to_owned()),
+        ]));
+        assert_eq!(document.text().to_string(), "Art", "the earlier of two overlapping edits wins");
+    }
+
+    /// The ranges of a rename built the way the modal builds them.
+    fn quill_core_replacements(
+        text: &str,
+        name: &str,
+        to: &str,
+    ) -> Vec<(Range<usize>, String)> {
+        let grammar = crate::syntax::Grammar {
+            word_characters: Vec::new(),
+            ..crate::syntax::Grammar::default()
+        };
+        let ranges: Vec<Range<usize>> = crate::symbols::occurrences(text, name, &grammar)
+            .into_iter()
+            .map(|found| found.range)
+            .collect();
+        crate::symbols::replacements(text, &ranges, to)
+    }
+
+
     fn typed(text: &str) -> Document {
         let mut document = Document::new();
         document.apply(Command::Insert(text.to_owned()));
@@ -981,6 +1132,9 @@ the fourth line");
             Command::MoveDocumentEnd { extend: true },
             Command::PlaceCaret { offset: 7, extend: false },
             Command::PlaceCaret { offset: 12, extend: true },
+            Command::ReplaceMany(vec![(3..5, "XY".to_owned())]),
+            Command::ReplaceMany(vec![(6..8, "a much longer replacement".to_owned())]),
+            Command::ReplaceMany(Vec::new()),
             Command::SelectAll,
             Command::ApplyStyle(StyleChange::size(28.0)),
             Command::ToggleBold,

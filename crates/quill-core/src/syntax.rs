@@ -53,6 +53,8 @@
 
 use std::ops::Range;
 
+use crate::symbols::SymbolKind;
+
 /// What a stretch of source is. The window turns this into a colour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Token {
@@ -131,6 +133,22 @@ pub struct Grammar {
     /// True when `#` and three, four, six or eight hexadecimal digits is a number, which is what a
     /// colour in a stylesheet is.
     pub hex_colors: bool,
+    /// The keywords that make the word after them a definition, and what kind of thing it names.
+    ///
+    /// `language.definers` in the manifest, off unless a language asks for it, exactly as the three
+    /// fields above are. `fn=function, struct=type, let=variable` is most of Rust's. This is what
+    /// [`crate::symbols::file_definitions`] reads, and it is why go to definition is a language's
+    /// own decision rather than a list of languages written into Quill: CSS deliberately names
+    /// none, because `--brand-hue: 280` defines a custom property by position rather than by
+    /// keyword and a rule that read `:` as a definer would call every property a definition.
+    pub definers: Vec<(String, SymbolKind)>,
+    /// True when a word directly before `(` whose brackets close on the same line and are followed
+    /// by `{` is a likely definition.
+    ///
+    /// `language.brace_definitions`, and it exists for the definition Rust never hides but
+    /// JavaScript and TypeScript do: **a class method has no keyword in front of its name**. What
+    /// it finds is marked [`crate::symbols::Confidence::Likely`] all the way to the screen.
+    pub brace_definitions: bool,
 }
 
 impl Grammar {
@@ -147,13 +165,34 @@ impl Grammar {
         self.types.iter().any(|known| known == word)
     }
 
+    /// The kind of thing this keyword defines, if the language named it as a definer.
+    ///
+    /// A list rather than a map: a language names a handful of them, and a linear search over five
+    /// or ten short strings costs less than hashing one.
+    pub fn definer(&self, word: &str) -> Option<SymbolKind> {
+        self.definers.iter().find(|(keyword, _)| keyword == word).map(|(_, kind)| *kind)
+    }
+
+    /// True when this language has said enough for the symbol mechanism to find a definition in it.
+    ///
+    /// One function, so the menu, the right click menu and `services::file_kind` cannot come to
+    /// different answers about whether `Go to Definition` applies to a file. A language that has
+    /// said nothing gets the entries **absent** rather than dimmed, which is Quill's rule for a
+    /// control that can never apply.
+    pub fn defines_symbols(&self) -> bool {
+        !self.definers.is_empty() || self.brace_definitions
+    }
+
     /// Whether `character` may be part of a word, given where in the word it is.
     ///
     /// A word starts with a letter, an underscore or a dollar, and carries on with those and the
     /// digits. The dollar is there because `$state` is one word in JavaScript and colouring it as an
     /// operator and then a word would look wrong. Anything in `word_characters` is a word character
     /// in either position, which is how `--brand-hue` and `@font-face` are each one word.
-    fn is_word_character(&self, character: char, first: bool) -> bool {
+    ///
+    /// Public because `symbols` grows a word around a point with it, and a second answer to "what
+    /// is a word here" would be a second answer to what `count` matches.
+    pub fn is_word_character(&self, character: char, first: bool) -> bool {
         if self.word_characters.contains(&character) {
             return true;
         }
@@ -169,18 +208,38 @@ impl Grammar {
 /// Only the spans that are not plain text are produced. Everything the window is not told about is
 /// drawn in the document's own colour, which is what makes the result cheap to apply.
 pub fn highlight(text: &str, grammar: &Grammar) -> Vec<(Range<usize>, Token)> {
-    let bytes = text.as_bytes();
     let mut spans: Vec<(Range<usize>, Token)> = Vec::new();
+    scan(text, grammar, |range, token| {
+        if token != Token::Text {
+            spans.push((range, token));
+        }
+    });
+    spans
+}
+
+/// Read `text` and report every token in it, in order, including the plain words.
+///
+/// The one pass, and the seam [`crate::symbols`] reads a file's definitions through — because a
+/// second reading of the same rules would be a second answer to what a word is, and the two would
+/// drift the first time a language asked for something new. [`highlight`] is this with the plain
+/// words dropped, which is the only difference between colouring a file and reading it.
+///
+/// A visitor rather than a returned list, deliberately. Colouring runs whenever the text changes,
+/// and `task-1666` says that nothing which runs that often may allocate more than it already does:
+/// collecting every plain word into a list only to throw most of it away would have made a
+/// coloured file cost more than it did before this module grew a second caller.
+pub fn scan(text: &str, grammar: &Grammar, mut report: impl FnMut(Range<usize>, Token)) {
+    let bytes = text.as_bytes();
     let mut at = 0;
     while at < bytes.len() {
         let rest = &text[at..];
         if let Some(length) = comment(rest, grammar) {
-            spans.push((at..at + length, Token::Comment));
+            report(at..at + length, Token::Comment);
             at += length;
             continue;
         }
         if let Some(length) = string(rest, grammar) {
-            spans.push((at..at + length, Token::String));
+            report(at..at + length, Token::String);
             at += length;
             continue;
         }
@@ -188,34 +247,30 @@ pub fn highlight(text: &str, grammar: &Grammar) -> Vec<(Range<usize>, Token)> {
         // an operator, and before the number, which is the token it becomes.
         if grammar.hex_colors {
             if let Some(length) = hex_colour(rest) {
-                spans.push((at..at + length, Token::Number));
+                report(at..at + length, Token::Number);
                 at += length;
                 continue;
             }
         }
         if grammar.numbers {
             if let Some(length) = number(rest) {
-                spans.push((at..at + length, Token::Number));
+                report(at..at + length, Token::Number);
                 at += length;
                 continue;
             }
         }
         if let Some(length) = word_length(rest, grammar) {
             let word = &rest[..length];
-            let token = classify(word, &rest[length..], grammar);
-            if token != Token::Text {
-                spans.push((at..at + length, token));
-            }
+            report(at..at + length, classify(word, &rest[length..], grammar));
             at += length;
             continue;
         }
         let character = rest.chars().next().unwrap_or(' ');
         if grammar.operators.contains(&character) {
-            spans.push((at..at + character.len_utf8(), Token::Operator));
+            report(at..at + character.len_utf8(), Token::Operator);
         }
         at += character.len_utf8();
     }
-    spans
 }
 
 /// What a word is, once it has been read.

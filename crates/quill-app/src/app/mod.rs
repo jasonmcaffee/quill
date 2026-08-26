@@ -30,6 +30,9 @@ pub mod actions;
 pub mod cli;
 pub mod files;
 pub mod git;
+pub mod symbols;
+
+use crate::services::symbol_index::Indexer;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -45,6 +48,7 @@ use crate::components::editor_view;
 use crate::components::explorer;
 use crate::components::file_tabs::{self, TabView};
 use crate::components::find_in_files::{self, FindInFiles};
+use crate::components::references::References;
 use crate::components::git_dialogs::{self, Dialog};
 use crate::components::git_panel;
 use crate::components::go_to_file::{self, GoToFile};
@@ -405,6 +409,39 @@ pub struct QuillApp {
     /// The `Find in Files` modal, when it is open. It holds the thread the searching runs on, so
     /// shutting the modal is what stops that thread.
     pub find_in_files: Option<FindInFiles>,
+    /// The references, candidates or rename modal, when one is open. Like `Find in Files` it holds
+    /// the thread it searches on, so shutting it is what stops that thread.
+    pub references: Option<References>,
+    /// The project's definitions, and the thread they are read on.
+    ///
+    /// `None` until something asks a question about a symbol, so a window a unit test builds has no
+    /// thread reading a folder behind it. See `app::symbols`.
+    pub(crate) symbols: Option<Indexer>,
+    /// What the index was last asked about: the project, how many files were in it, and how many
+    /// plugins were switched on. A change to any of the three is what asks for another read.
+    pub(crate) symbols_asked: Option<(PathBuf, usize, usize)>,
+    /// Set when a file on the disk changed under the index — a save, a rename, a reload.
+    pub(crate) symbols_stale: bool,
+    /// The word under the pointer while the modifier is held, and where a click on it would go.
+    /// Cached against the text revision and the word, so a resting pointer costs one comparison.
+    pub(crate) hover: Option<symbols::Hover>,
+    /// What the name being renamed resolved to, which is what decides how widely the change set is
+    /// ticked by default. Taken when the modal opens, while the caret is still where the question
+    /// was asked from.
+    pub(crate) rename_kind: Option<quill_core::symbols::SymbolKind>,
+    /// The file the rename was asked in, which is what "this file only" means.
+    pub(crate) rename_here: Option<PathBuf>,
+    /// How many of the rename's rows have had a default tick worked out for them.
+    ///
+    /// The search streams, so this counts up as batches land: what is ticked by default is the tail
+    /// that has just arrived, and everything above it is left as it is — which after the first
+    /// batch means it belongs to whoever has been clicking the boxes.
+    pub(crate) rename_ticked_up_to: usize,
+    /// Where the caret has been, so `Navigate Back` can go there. Travel history rather than state:
+    /// bounded, and not written to disk.
+    pub(crate) back: Vec<symbols::Place>,
+    /// The mirror stack, pushed by `Navigate Back` and cleared by any new jump.
+    pub(crate) forward: Vec<symbols::Place>,
     /// The About box, when it is open. It holds the version and the build date as text rather than
     /// reading them when it draws, so that a screenshot test can fix them; `About::current` is what
     /// `Action::About` puts here.
@@ -500,6 +537,16 @@ impl QuillApp {
             prompt: None,
             go_to_file: None,
             find_in_files: None,
+            references: None,
+            symbols: None,
+            symbols_asked: None,
+            symbols_stale: false,
+            hover: None,
+            rename_kind: None,
+            rename_here: None,
+            rename_ticked_up_to: 0,
+            back: Vec::new(),
+            forward: Vec::new(),
             about: None,
             reveal_caret: false,
             gutter_menu: None,
@@ -887,6 +934,10 @@ impl QuillApp {
             unfinished: self.git.as_ref().and_then(|git| git.snapshot.in_progress),
             highlights: self.document().highlights().len(),
             on_a_highlight: self.marks_under_the_caret(),
+            definitions_apply: self.definitions_apply_here(),
+            symbols_apply: self.symbols_apply_here(),
+            can_go_back: !self.back.is_empty(),
+            can_go_forward: !self.forward.is_empty(),
         }
     }
 
@@ -955,6 +1006,20 @@ impl QuillApp {
                     let _ = std::fs::remove_file(store.recent_path());
                 }
             }
+            Action::GoToDefinition => {
+                let offset = self.caret_offset();
+                self.go_to_definition(offset);
+            }
+            Action::FindReferences => {
+                let offset = self.caret_offset();
+                self.find_references(offset);
+            }
+            Action::RenameSymbol => {
+                let offset = self.caret_offset();
+                self.rename_symbol(offset);
+            }
+            Action::NavigateBack => self.navigate(true),
+            Action::NavigateForward => self.navigate(false),
             Action::Save => self.save(),
             Action::SaveAs if self.files.active().is_picture() => {
                 self.message =
@@ -2038,10 +2103,15 @@ impl QuillApp {
             let target = self.tree.root().join("untitled.md");
             if self.document_mut().save_as(&target).is_ok() {
                 self.tree.reload();
+                self.the_project_changed_on_disk();
             }
             return;
         }
         let _ = self.document_mut().save();
+        // The file on the disk is what the index holds for every file that is not open, and this
+        // one is about to stop being open one day. Reading the project again is tens of
+        // milliseconds on a thread, and saving is not something anybody does sixty times a second.
+        self.the_project_changed_on_disk();
     }
 
     /// Write the settings and the pane sizes, if there is anywhere to write them.
@@ -2370,6 +2440,10 @@ impl QuillApp {
         self.pump_control(ui.ctx());
         self.ask_git_about_the_open_file();
         self.colour_the_open_file();
+        // The project's definitions, read on a thread. Beside the colouring because it is the same
+        // kind of thing — what the files say, worked out from what they hold — and because both are
+        // keyed on something cheap enough to ask about every frame.
+        self.keep_the_symbol_index_fresh();
         // Before the explorer is drawn, so the folders it needs are already open on this frame.
         self.follow_the_open_file();
         let full = ui.max_rect();
@@ -2913,6 +2987,11 @@ impl QuillApp {
                 self.find_in_files = Some(find);
             }
         }
+
+        // The references, the candidate list and the rename, which are one modal wearing three
+        // faces and are drawn beside the two above for the same reason: a question about the
+        // project, asked over the top of it.
+        self.show_the_references(ui);
 
         // The About box. Only one modal is open at a time — `Action::About` shuts whatever was —
         // so where it is drawn among the others decides nothing; it is here because it is the same
@@ -3681,6 +3760,36 @@ impl QuillApp {
     /// `focused` is whether this pane has the keyboard. Only that pane draws a caret and only that
     /// pane reads the keyboard, or every pane would take the same key presses. Returns true when the
     /// pane was clicked in, which is what moves the keyboard to it.
+    /// What the pointer is over in this pane while the platform's modifier is held.
+    ///
+    /// `Modifiers::command` is the Apple key on macOS and the control key on Windows, which is what
+    /// a person means by the modifier in either place. Nothing at all is worked out while it is not
+    /// held, and letting go of it forgets what was: an underline that outlived the modifier would be
+    /// an affordance promising something the next click would not do.
+    ///
+    /// Only the pane with the keyboard is asked. Two panes each resolving a word under one pointer
+    /// would be two underlines, and the pointer is only ever over one of them anyway.
+    fn symbol_under_the_pointer(
+        &mut self,
+        ui: &egui::Ui,
+        response: &egui::Response,
+        origin: Pos2,
+        focused: bool,
+    ) -> editor_view::SymbolPointer {
+        let held = ui.input(|input| input.modifiers.command);
+        if !held || !focused || !self.definitions_apply_here() {
+            self.forget_the_hover();
+            return editor_view::SymbolPointer::default();
+        }
+        let Some(at) = response.hover_pos() else {
+            return editor_view::SymbolPointer::default();
+        };
+        let local = at - origin;
+        let offset = self.layout().offset_at(local.x, local.y);
+        let hover = self.resolve_under_the_pointer(offset);
+        editor_view::SymbolPointer { word: hover.map(|hover| hover.word) }
+    }
+
     fn show_editor(&mut self, ui: &mut egui::Ui, area: Rect, focused: bool) -> bool {
         // The gutter takes the left of the editing area, and the text starts after it. With no
         // gutter the text keeps the padding it always had, so putting the numbers away leaves the
@@ -3744,6 +3853,18 @@ impl QuillApp {
 
         let scroll = self.files.active().scroll;
         let origin = Pos2::new(area.left() + padding, area.top() + size::EDITOR_PADDING_Y - scroll);
+
+        // What the pointer is over while the modifier is held, worked out **before** the click and
+        // cached against the text revision and the word. Resolve first is VS Code's model and it is
+        // what makes the click feel instantaneous: the answer is already in hand, and only a word
+        // that really has somewhere to go is underlined.
+        let symbol = self.symbol_under_the_pointer(ui, &response, origin, focused);
+        if symbol.resolved() {
+            // A hand rather than the writing bar, which is what says the word is a link.
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        let formatting = file_kind::formatting_applies(self.files.active().path());
+
         // Taken apart by field, because the input handlers want the document mutably while the
         // layout they measure against is borrowed at the same time, and a method on `self` would
         // borrow the whole window. Both now live on the same tab, and the two are separate fields of
@@ -3751,8 +3872,15 @@ impl QuillApp {
         let file = self.files.active_mut();
         let laid = &file.cached.layout;
         let document = &mut file.document;
-        let pointer_changed = editor_view::handle_pointer(&response, document, laid, origin);
-        let outcome = editor_view::handle_input(ui, document, laid, has_keyboard);
+        let pointer = editor_view::handle_pointer(&response, document, laid, origin, &symbol);
+        let pointer_changed = pointer.changed;
+        let outcome = editor_view::handle_input(ui, document, laid, has_keyboard, formatting);
+        // The window decides what a jump means, which is the rule every component follows.
+        if let Some(offset) = pointer.jump {
+            self.focus = Focus::Editor;
+            self.go_to_definition(offset);
+            return true;
+        }
         if let Some(text) = outcome.copy {
             ui.ctx().copy_text(text);
         }
@@ -3867,6 +3995,7 @@ impl QuillApp {
                 selection: color::TEXT_SELECTION,
                 caret: color::ACCENT,
                 show_caret: has_keyboard,
+                underline: symbol.word.clone(),
             },
         );
         // Drawn last, at the position the frame settled on rather than the one it opened with, or

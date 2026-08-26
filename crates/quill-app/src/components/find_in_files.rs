@@ -96,7 +96,11 @@ impl FindInFiles {
     /// Called by the window each frame before the modal is drawn, because the project's file list
     /// belongs to the window.
     pub fn pump(&mut self, files: &[std::path::PathBuf]) {
-        let wanted = Query { needle: self.query.trim().to_owned(), match_case: self.match_case };
+        let wanted = Query {
+            needle: self.query.trim().to_owned(),
+            match_case: self.match_case,
+            words: false,
+        };
         if self.asked.as_ref() != Some(&wanted) {
             self.searcher.send(files.to_vec(), wanted.clone());
             self.asked = Some(wanted);

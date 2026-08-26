@@ -14,6 +14,38 @@ pub const PADDING: f32 = 16.0;
 /// Width of the caret.
 const CARET_WIDTH: f32 = 2.0;
 
+/// What the window worked out about the symbol under the pointer, before any click.
+///
+/// The component resolves nothing: it has no index, no project and no idea what a definition is.
+/// The window asks those questions once a frame while the modifier is held — cached, so a pointer
+/// resting still costs nothing — and hands the answer down, which is the same "components report,
+/// the window decides" rule every component in Quill follows.
+///
+/// **Resolve before the click.** Only a word that really has somewhere to go is underlined, so the
+/// promise the underline makes is one the click can keep. A word the index knows nothing about gets
+/// no affordance and a modifier-click on it places the caret like any other click.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SymbolPointer {
+    /// The word under the pointer, when the modifier is held and it resolves to somewhere.
+    pub word: Option<std::ops::Range<usize>>,
+}
+
+impl SymbolPointer {
+    /// True when there is something to underline and something a click would do.
+    pub fn resolved(&self) -> bool {
+        self.word.is_some()
+    }
+}
+
+/// What a click or a drag in the editing area came to.
+#[derive(Debug, Default, PartialEq)]
+pub struct PointerOutcome {
+    /// The document changed — the caret moved, or a selection was made.
+    pub changed: bool,
+    /// The modifier was held over a word that resolves, so this is a jump rather than a caret.
+    pub jump: Option<usize>,
+}
+
 /// What the editing surface wants the application to do after handling input.
 #[derive(Debug, Default)]
 pub struct ViewOutcome {
@@ -29,11 +61,19 @@ pub struct ViewOutcome {
 ///
 /// The events are read rather than the key state, because the order matters: typing a letter and then
 /// pressing an arrow key must happen in that order.
+///
+/// `formatting` is whether bold, italic and the rest apply to this file at all, and it decides one
+/// thing: whether the command key and `B` mean bold. On a source file that key is `Go to
+/// Definition`, which is a menu entry — and the two can never both apply, because
+/// `services::file_kind` answers them from the same file: formatting is for prose, and a definition
+/// needs a language that says what one looks like. Without this the two would both fire on one
+/// press, which is exactly the fault the `Tab` guard below records.
 pub fn handle_input(
     ui: &egui::Ui,
     document: &mut Document,
     layout: &Layout,
     has_focus: bool,
+    formatting: bool,
 ) -> ViewOutcome {
     let mut outcome = ViewOutcome::default();
     if !has_focus {
@@ -86,7 +126,14 @@ pub fn handle_input(
                 // egui reports for a shortcut on either platform.
                 let shortcut = modifiers.command;
                 let word = modifiers.alt || (modifiers.ctrl && !modifiers.mac_cmd);
+                // The modifier and alt together with an arrow is `Navigate Back` and
+                // `Navigate Forward`, which are menu entries. The menu's keyboard watcher does not
+                // consume the press — nothing in Quill does — so without this guard one press of
+                // `Ctrl+Alt+Left` went back **and** moved a word, which is the same shape of fault
+                // as the `Tab` one below.
+                let navigating = shortcut && modifiers.alt;
                 let handled = match key {
+                    egui::Key::ArrowLeft | egui::Key::ArrowRight if navigating => false,
                     egui::Key::ArrowLeft if word => {
                         document.apply(Command::MoveWordLeft { extend: shift })
                     }
@@ -130,7 +177,7 @@ pub fn handle_input(
                     // their shortcuts. On macOS the menu bar takes those key presses before the window sees
                     // them, so handling them here as well would do the work twice on one platform and once
                     // on the other. The formatting shortcuts below are in no menu, so they are handled here.
-                    egui::Key::B if shortcut => document.apply(Command::ToggleBold),
+                    egui::Key::B if shortcut && formatting => document.apply(Command::ToggleBold),
                     egui::Key::I if shortcut => document.apply(Command::ToggleItalic),
                     egui::Key::U if shortcut => document.apply(Command::ToggleUnderline),
                     egui::Key::X if shortcut && modifiers.shift => {
@@ -153,19 +200,32 @@ pub fn handle_input(
     outcome
 }
 
-/// Turn a click or a drag into a caret position or a selection.
+/// Turn a click or a drag into a caret position, a selection, or a jump.
+///
+/// The jump is the one thing here that is not an edit: with the modifier held over a word the
+/// window has already resolved, the click is reported rather than acted on, and the window decides
+/// what opening that definition means. A modifier-click on anything else is an ordinary click.
 pub fn handle_pointer(
     response: &egui::Response,
     document: &mut Document,
     layout: &Layout,
     text_origin: Pos2,
-) -> bool {
+    symbol: &SymbolPointer,
+) -> PointerOutcome {
+    let mut outcome = PointerOutcome::default();
     let mut changed = false;
     let position = response
         .interact_pointer_pos()
         .or_else(|| response.hover_pos())
         .map(|p| p - text_origin);
     if let Some(local) = position {
+        if response.clicked() && !response.dragged() && symbol.resolved() {
+            // The word was resolved from where the pointer was, so the click is about that word
+            // whatever the click's own arithmetic makes of the point.
+            let word = symbol.word.clone().unwrap_or_default();
+            outcome.jump = Some(word.start);
+            return outcome;
+        }
         if response.drag_started() || (response.clicked() && !response.dragged()) {
             let offset = layout.offset_at(local.x, local.y);
             let extend = response.ctx.input(|input| input.modifiers.shift);
@@ -181,7 +241,8 @@ pub fn handle_pointer(
             changed |= document.apply(Command::MoveWordRight { extend: true });
         }
     }
-    changed
+    outcome.changed = changed;
+    outcome
 }
 
 /// Paint the document.
@@ -189,8 +250,9 @@ pub fn handle_pointer(
 /// The order matters: the selection goes behind the text, the text next, the underline and
 /// strikethrough rules over the text so they are visible against it, and the caret last so it is never
 /// hidden by a glyph.
-/// How the editing surface is painted: the two colours it needs, and whether the caret is shown.
-#[derive(Debug, Clone, Copy)]
+/// How the editing surface is painted: the two colours it needs, whether the caret is shown, and
+/// the word the modifier is hovering over.
+#[derive(Debug, Clone, Default)]
 pub struct PaintStyle {
     /// Behind selected text.
     pub selection: Color32,
@@ -198,6 +260,12 @@ pub struct PaintStyle {
     pub caret: Color32,
     /// False when the editing area does not have the keyboard, so no caret is drawn.
     pub show_caret: bool,
+    /// The word to underline, which is the affordance for `Ctrl/Cmd+Click`.
+    ///
+    /// Drawn by the painter under the word's own glyphs rather than by a widget of its own: it
+    /// appears and goes on a modifier being held, and a widget that came and went sixty times a
+    /// second would be a widget egui had to lay out sixty times a second.
+    pub underline: Option<std::ops::Range<usize>>,
 }
 
 pub fn paint(
@@ -208,7 +276,8 @@ pub fn paint(
     text_origin: Pos2,
     style: PaintStyle,
 ) {
-    let PaintStyle { selection: selection_color, caret: caret_color, show_caret } = style;
+    let PaintStyle { selection: selection_color, caret: caret_color, show_caret, underline } =
+        style;
     let painter = ui.painter();
     let to_screen = |x: f32, y: f32| Pos2::new(text_origin.x + x, text_origin.y + y);
     let visible = visible_lines(ui, layout, text_origin);
@@ -223,6 +292,22 @@ pub fn paint(
 
     paint_highlights(ui, document, layout, text_origin, visible.clone());
     paint_text(ui, renderer, layout, text_origin);
+
+    // Under the word, over the text: a rule a point tall at the bottom of the word's own box, in
+    // the accent colour, which is what a link looks like everywhere and is what says the click
+    // would go somewhere.
+    if let Some(word) = underline {
+        for rect in layout.selection_rects_in(visible.clone(), word) {
+            painter.rect_filled(
+                Rect::from_min_size(
+                    to_screen(rect.x, rect.y + rect.height - 1.0),
+                    Vec2::new(rect.width, 1.0),
+                ),
+                0.0,
+                caret_color,
+            );
+        }
+    }
 
     if show_caret {
         let caret = layout.caret_at(document.selection().head);

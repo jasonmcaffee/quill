@@ -32,7 +32,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 
+use quill_core::symbols::{self, Role};
+
 use crate::services::file_kind;
+use crate::services::plugins::Grammars;
 
 /// The most matches that are collected before the search gives up and says how many it found.
 pub const LIMIT: usize = 500;
@@ -49,6 +52,17 @@ pub struct Query {
     /// False when `readme` should find `README`, which is what a search box does unless told
     /// otherwise.
     pub match_case: bool,
+    /// True when only whole words count and each match is labelled with the role of the token it
+    /// fell inside.
+    ///
+    /// This is the whole of what `Find References` adds to `Find in Files`, which is why it is a
+    /// mode of this searcher rather than a second one: the thread, the generation counter, the
+    /// batching, the caps and the line shortening are all the same machinery, and a second copy of
+    /// them would be a second place for a cancellation to be got wrong. `task-1675` §3.4 records why
+    /// the answer is a search at all rather than a stored index of every occurrence — the search
+    /// reads what is on the disk now, and an index would have to be told when a build, a branch
+    /// switch or another editor moved it.
+    pub words: bool,
 }
 
 impl Query {
@@ -72,6 +86,9 @@ pub struct Hit {
     /// Where in the whole file the match sits, in bytes, which is what the editor selects when the
     /// result is opened.
     pub offset: Range<usize>,
+    /// What the match was found inside. Always [`Role::Code`] for a plain text search, which has no
+    /// grammar behind it and makes no claim about the file's own reading of itself.
+    pub role: Role,
 }
 
 /// Everything one search found, or as much of it as has arrived.
@@ -102,6 +119,15 @@ struct Request {
     generation: u64,
     files: Vec<PathBuf>,
     query: Query,
+    /// How each file's language reads itself, for the whole-word mode. Empty otherwise.
+    grammars: Arc<Grammars>,
+    /// The text of the files that are open, which is searched instead of what is on the disk.
+    ///
+    /// The ownership rule this whole feature follows: **a file that is open is owned by its
+    /// `Document`**. A reference in a file with unsaved edits is the edits' truth, not the disk's,
+    /// and the alternative — searching the disk and then quietly being wrong about one file — is
+    /// the sort of answer that sends somebody to the wrong line.
+    open: Arc<Vec<(PathBuf, String)>>,
 }
 
 impl Searcher {
@@ -125,9 +151,29 @@ impl Searcher {
 
     /// Ask a new question, which abandons whatever was being answered.
     pub fn send(&mut self, files: Vec<PathBuf>, query: Query) -> u64 {
+        self.ask(files, query, Arc::new(Grammars::default()), Arc::new(Vec::new()))
+    }
+
+    /// The same, told how each language reads itself and what the open files really hold.
+    ///
+    /// What `Find References` asks. Both are `Arc`s because the same two are sent again on every
+    /// question and neither belongs to the thread.
+    pub fn ask(
+        &mut self,
+        files: Vec<PathBuf>,
+        query: Query,
+        grammars: Arc<Grammars>,
+        open: Arc<Vec<(PathBuf, String)>>,
+    ) -> u64 {
         self.generation += 1;
         self.newest.store(self.generation, Ordering::Relaxed);
-        let _ = self.requests.send(Request { generation: self.generation, files, query });
+        let _ = self.requests.send(Request {
+            generation: self.generation,
+            files,
+            query,
+            grammars,
+            open,
+        });
         self.generation
     }
 
@@ -156,7 +202,7 @@ fn run(
     outgoing: &Sender<Reply>,
     wake: &Arc<dyn Fn() + Send + Sync>,
 ) {
-    let Request { generation, files, query } = request;
+    let Request { generation, files, query, grammars, open } = request;
     if query.is_empty() {
         let _ = outgoing.send(Reply { generation, done: true, ..Reply::default() });
         wake();
@@ -172,11 +218,28 @@ fn run(
         if newest.load(Ordering::Relaxed) != generation {
             return;
         }
-        let Some(text) = read_text(path) else {
-            continue;
+        // A file that is open is searched as it stands in its tab rather than as it stands on the
+        // disk, which is the ownership rule this whole feature follows.
+        let opened = open.iter().find(|(known, _)| known == path).map(|(_, text)| text.clone());
+        let text = match opened {
+            Some(text) => text,
+            None => match read_text(path) {
+                Some(text) => text,
+                None => continue,
+            },
         };
+        // The whole-word mode reads the file's own language, and a file no plugin claims cannot
+        // hold a reference in code — every match in it would be an unclassifiable textual one.
+        let grammar = grammars.for_path(path);
+        if query.words && grammar.is_none() {
+            continue;
+        }
         read += 1;
-        let hits = hits_in(path, &text, &query, PER_FILE.min(LIMIT - collected));
+        let limit = PER_FILE.min(LIMIT - collected);
+        let hits = match grammar.filter(|_| query.words) {
+            Some(grammar) => references_in(path, &text, &query.needle, grammar, limit),
+            None => hits_in(path, &text, &query, limit),
+        };
         collected += hits.len();
         batch.extend(hits);
         // Sent in batches rather than one file at a time, so a project of ten thousand files does
@@ -240,6 +303,7 @@ pub fn hits_in(path: &Path, text: &str, query: &Query, limit: usize) -> Vec<Hit>
                 text,
                 range,
                 offset: (start_of_line + begin)..(start_of_line + end),
+                role: Role::Code,
             });
             if hits.len() >= limit {
                 return hits;
@@ -251,6 +315,64 @@ pub fn hits_in(path: &Path, text: &str, query: &Query, limit: usize) -> Vec<Hit>
         }
         // The line break itself is one byte, because the buffer holds line feeds only.
         start_of_line += line.len() + 1;
+    }
+    hits
+}
+
+/// Every whole-word occurrence of `name` in one file's text, up to `limit` of them.
+///
+/// The reference half of the searcher. `quill_core::symbols::occurrences` decides what a whole word
+/// is and what each one was found inside — the same function `quill_core` tests with no window —
+/// and everything here is the turning of a byte range into the row a person reads: which line it is
+/// on, that line shortened if it is a minified megabyte, and where in what is left the match sits.
+///
+/// A plain substring test comes first, because most files do not hold the word at all and
+/// tokenising one that does not would be the cost of the whole search.
+pub fn references_in(
+    path: &Path,
+    text: &str,
+    name: &str,
+    grammar: &quill_core::Grammar,
+    limit: usize,
+) -> Vec<Hit> {
+    if name.is_empty() || limit == 0 || !text.contains(name) {
+        return Vec::new();
+    }
+    // Where each line starts, so a byte offset becomes a line number by binary search rather than
+    // by counting from the top of the file once a match.
+    let mut starts: Vec<usize> = vec![0];
+    starts.extend(text.match_indices('\n').map(|(at, _)| at + 1));
+    let mut hits = Vec::new();
+    for occurrence in symbols::occurrences(text, name, grammar) {
+        let index = match starts.binary_search(&occurrence.range.start) {
+            Ok(exact) => exact,
+            Err(after) => after - 1,
+        };
+        let start_of_line = starts[index];
+        let line = text[start_of_line..]
+            .split('\n')
+            .next()
+            .unwrap_or_default()
+            .trim_end_matches('\r');
+        let begin = occurrence.range.start - start_of_line;
+        let end = begin + name.len();
+        // A match beyond the end of its own line means the name held a line break, which no
+        // identifier does; it is dropped rather than trusted.
+        if end > line.len() {
+            continue;
+        }
+        let (shortened, range) = shorten(line, begin..end);
+        hits.push(Hit {
+            path: path.to_path_buf(),
+            line: index + 1,
+            text: shortened,
+            range,
+            offset: occurrence.range,
+            role: occurrence.role,
+        });
+        if hits.len() >= limit {
+            break;
+        }
     }
     hits
 }
@@ -288,7 +410,7 @@ mod tests {
     use super::*;
 
     fn query(needle: &str) -> Query {
-        Query { needle: needle.to_owned(), match_case: false }
+        Query { needle: needle.to_owned(), match_case: false, words: false }
     }
 
     #[test]
@@ -319,7 +441,7 @@ mod tests {
     fn case_is_ignored_unless_it_is_asked_about() {
         let text = "The README file";
         assert_eq!(hits_in(Path::new("a.txt"), text, &query("readme"), 10).len(), 1);
-        let exact = Query { needle: "readme".to_owned(), match_case: true };
+        let exact = Query { needle: "readme".to_owned(), match_case: true, words: false };
         assert!(hits_in(Path::new("a.txt"), text, &exact, 10).is_empty());
     }
 
@@ -358,6 +480,85 @@ mod tests {
         line.push_str("needle");
         let hits = hits_in(Path::new("a.txt"), &line, &query("needle"), 10);
         assert_eq!(&hits[0].text[hits[0].range.clone()], "needle");
+    }
+
+    /// The Rust grammar as the bundled plugin describes it, which is what the reference mode reads.
+    fn rust() -> quill_core::Grammar {
+        crate::services::plugins::Plugins::load(None)
+            .0
+            .grammars()
+            .for_path(Path::new("a.rs"))
+            .expect("the rust plugin claims .rs")
+            .clone()
+    }
+
+    fn references(text: &str, name: &str) -> Vec<Hit> {
+        references_in(Path::new("a.rs"), text, name, &rust(), 100)
+    }
+
+    #[test]
+    fn a_reference_is_a_whole_word_and_says_which_line_it_is_on() {
+        // Scenario 23 through the app's own half of it: the same rule `quill_core` tests, turned
+        // into the rows a person reads.
+        let text = "let count = 1;\nlet counter = count + 1;\n";
+        let found = references(text, "count");
+        assert_eq!(found.len(), 2, "`counter` is not a `count`: {found:?}");
+        assert_eq!(found[0].line, 1);
+        assert_eq!(found[1].line, 2);
+        assert_eq!(&text[found[1].offset.clone()], "count");
+        assert_eq!(&found[1].text[found[1].range.clone()], "count", "and the row picks it out");
+    }
+
+    #[test]
+    fn a_reference_carries_the_role_of_what_it_was_found_inside() {
+        // Scenario 24. Shown, because a rename that must update a doc comment needs to find it;
+        // told apart, because they are textual matches and the modal does not pretend otherwise.
+        let text = "// draw the thing\nfn draw() {}\nlet s = \"draw\";\n";
+        let roles: Vec<Role> = references(text, "draw").iter().map(|hit| hit.role).collect();
+        assert_eq!(roles, vec![Role::Comment, Role::Code, Role::String]);
+        // A plain text search makes no claim about any of that, because it has no grammar behind it.
+        let plain = hits_in(Path::new("a.rs"), text, &query("draw"), 100);
+        assert!(plain.iter().all(|hit| hit.role == Role::Code));
+    }
+
+    #[test]
+    fn a_file_that_does_not_hold_the_word_at_all_is_not_read_into_tokens() {
+        // The plain substring test that comes first: most files do not hold the word, and
+        // tokenising one that does not would be the cost of the whole search.
+        assert!(references("nothing of the sort here\n", "draw").is_empty());
+        assert!(references("", "draw").is_empty());
+        assert!(references("draw", "").is_empty());
+    }
+
+    #[test]
+    fn one_file_cannot_fill_the_reference_list_either() {
+        // Scenario 25 at this end: the cap is the same one `Find in Files` already has.
+        let text = "draw();\n".repeat(100);
+        assert_eq!(references_in(Path::new("a.rs"), &text, "draw", &rust(), 5).len(), 5);
+    }
+
+    #[test]
+    fn a_minified_line_is_shortened_with_the_reference_still_inside_it() {
+        // Scenario 29: one line a megabyte long, and the row shows a line of it.
+        let mut line = "let x = 1; ".repeat(600);
+        line.push_str("draw();\n");
+        let found = references(&line, "draw");
+        assert_eq!(found.len(), 1);
+        assert!(found[0].text.len() <= LINE_LIMIT + 4, "kept short: {}", found[0].text.len());
+        assert_eq!(&found[0].text[found[0].range.clone()], "draw", "and the match is still in it");
+        assert_eq!(&line[found[0].offset.clone()], "draw", "the file position is untouched");
+    }
+
+    #[test]
+    fn a_reference_on_a_line_with_a_carriage_return_lands_on_the_right_bytes() {
+        // A file written on Windows: the line the row shows has no carriage return in it, and the
+        // offset the editor selects is still the one in the file.
+        let text = "let value = 1;\r\nlet other = value;\r\n";
+        let found = references(text, "value");
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[1].line, 2);
+        assert!(!found[1].text.contains('\r'));
+        assert_eq!(&text[found[1].offset.clone()], "value");
     }
 
     #[test]

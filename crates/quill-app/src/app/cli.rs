@@ -46,8 +46,11 @@ use quill_cli::protocol::{code, Reply, Request};
 
 use crate::app::actions::{Action, GitAction, HighlightColor};
 use crate::app::{QuillApp, ViewMode};
+use quill_core::symbols::Role;
+
 use crate::components::find_in_files::FindInFiles;
 use crate::components::go_to_file::GoToFile;
+use crate::components::references::{self, References};
 use crate::components::modal;
 use crate::components::status_bar;
 use crate::components::prompt_dialog::{Prompt, Purpose};
@@ -94,8 +97,26 @@ pub enum Waiting {
     TerminalText { needle: String, lines: Option<usize>, until: Instant },
     /// A search that is still running.
     ModalResults { limit: usize, until: Instant },
+    /// The references search, which runs on the same kind of thread.
+    ///
+    /// It carries what is to be done with the answer, because `editor references` and
+    /// `editor rename` are the same search asked for two reasons and a second waiting variant
+    /// would be a second place to get the cancellation right.
+    References { until: Instant, code_only: bool, rename: Option<CliRename> },
     /// Git, which is on a thread of its own.
     Git { until: Instant },
+}
+
+/// A rename a command asked for, waiting for the search that will find what it changes.
+pub struct CliRename {
+    to: String,
+    /// `Some(true)` for this file, `Some(false)` for the project, `None` for whatever the name
+    /// resolves to — which is the modal's own default.
+    scope: Option<bool>,
+    /// `comments`, `strings`, or neither, which is the default: they are textual matches.
+    include: Vec<String>,
+    /// False when the change set is only to be printed.
+    apply: bool,
 }
 
 impl Waiting {
@@ -104,6 +125,7 @@ impl Waiting {
             Waiting::Screenshot { until, .. }
             | Waiting::TerminalText { until, .. }
             | Waiting::ModalResults { until, .. }
+            | Waiting::References { until, .. }
             | Waiting::Git { until } => *until,
         }
     }
@@ -235,6 +257,10 @@ impl QuillApp {
                 let find = self.find_in_files.as_ref()?;
                 (!find.is_searching()).then(|| self.modal_results_reply(request, *limit))
             }
+            Waiting::References { .. } => {
+                let modal = self.references.as_ref()?;
+                (!modal.is_searching()).then(|| self.references_reply(request, waiting))
+            }
             Waiting::Git { .. } => {
                 let git = self.git.as_ref()?;
                 (git.running().is_none()).then(|| self.git_status_reply(request))
@@ -268,6 +294,11 @@ impl QuillApp {
             Waiting::ModalResults { .. } => {
                 ("modal.results", "The search was still running when the time ran out.".to_owned())
             }
+            Waiting::References { rename, .. } => (
+                if rename.is_some() { "editor.rename" } else { "editor.references" },
+                "The search was still running when the time ran out, so nothing was changed."
+                    .to_owned(),
+            ),
             Waiting::Git { .. } => {
                 ("git.action", "Git was still running when the time ran out.".to_owned())
             }
@@ -1454,7 +1485,35 @@ impl QuillApp {
             "view" => self.cli_editor_view(request, ctx),
             "scroll" => self.cli_editor_scroll(request),
             "preview" => self.cli_editor_preview(request, ctx),
+            "definition" => self.cli_editor_definition(request),
+            "references" => self.cli_editor_references(request),
+            "rename" => self.cli_editor_rename(request),
+            "navigate-back" => self.cli_navigate(request, true),
+            "navigate-forward" => self.cli_navigate(request, false),
             _ => unknown(request),
+        }
+    }
+
+    /// `quill-cli editor navigate-back` and its mirror, through the same stack the menu walks.
+    fn cli_navigate(&mut self, request: &Request, back: bool) -> Outcome {
+        self.message = None;
+        self.navigate(back);
+        match self.message.clone() {
+            // `navigate` says so in the status bar when there is nowhere to go, and a command that
+            // did nothing should say so rather than report success.
+            Some(problem) if problem.starts_with("There is nowhere") => {
+                no(request, code::NOT_APPLICABLE, problem)
+            }
+            _ => ok(
+                request,
+                format!("{} \u{00B7} {}", self.files.active().name(), self.caret_position().line),
+                json!({
+                    "path": self.files.active().path().map(|path| path.to_string_lossy()),
+                    "offset": self.caret_offset(),
+                    "back": self.back.len(),
+                    "forward": self.forward.len(),
+                }),
+            ),
         }
     }
 
@@ -1792,6 +1851,349 @@ impl QuillApp {
             ),
         }
     }
+    /// `quill-cli editor definition` — where the word at the caret is defined.
+    ///
+    /// Through the same functions the menu entry goes through, so a definition found from the
+    /// command line and one found by clicking are the same answer. `--open` is the jump itself, and
+    /// it goes through `go_to_definition` rather than opening a file directly, so the pivot to the
+    /// references on the definition and the back stack both work from a script.
+    fn cli_editor_definition(&mut self, request: &Request) -> Outcome {
+        if !self.definitions_apply_here() {
+            return no(
+                request,
+                code::NOT_APPLICABLE,
+                "This file's language has not said what a definition looks like, so there is none to go to.",
+            );
+        }
+        let offset = match self.cli_offset(request) {
+            Ok(offset) => offset,
+            Err(problem) => return no(request, code::USAGE, problem),
+        };
+        let Some(name) = self.symbol_at(offset) else {
+            return no(request, code::NOT_APPLICABLE, "There is no symbol at that position.");
+        };
+        let path = self.files.active().path().map(Path::to_path_buf);
+        let candidates = self.candidates_for(&name, path.as_deref(), offset);
+        let rows: Vec<Value> = candidates
+            .iter()
+            .map(|candidate| {
+                json!({
+                    "path": candidate.path.to_string_lossy(),
+                    "offset": candidate.name_range.start,
+                    "end": candidate.name_range.end,
+                    "kind": candidate.kind.name(),
+                    "confidence": match candidate.confidence {
+                        quill_core::symbols::Confidence::Sure => "sure",
+                        quill_core::symbols::Confidence::Likely => "likely",
+                    },
+                    "open": candidate.open,
+                })
+            })
+            .collect();
+        if request.switch("open") {
+            self.go_to_definition(offset);
+            let sentence = self
+                .message
+                .clone()
+                .unwrap_or_else(|| format!("Went to '{name}'"));
+            return ok(request, sentence, json!({ "name": name, "candidates": rows }));
+        }
+        let sentence = match rows.len() {
+            0 => format!("No definition found for '{name}'"),
+            1 => format!("'{name}' is defined once"),
+            many => format!("'{name}' has {many} candidate definitions"),
+        };
+        ok(request, sentence, json!({ "name": name, "candidates": rows }))
+    }
+
+    /// `quill-cli editor references` — every place a name is used.
+    ///
+    /// The modal is opened and waited for rather than a second search being run beside it: the
+    /// modal *is* the search, so what a script reads is exactly what a person would be looking at.
+    fn cli_editor_references(&mut self, request: &Request) -> Outcome {
+        let name = match request.text("name").as_deref() {
+            Some(name) if !name.trim().is_empty() => name.trim().to_owned(),
+            _ => {
+                if !self.symbols_apply_here() {
+                    return no(
+                        request,
+                        code::NOT_APPLICABLE,
+                        "No plugin claims this file, so Quill cannot tell one of its words from another.",
+                    );
+                }
+                let offset = self.caret_offset();
+                match self.symbol_at(offset) {
+                    Some(name) => name,
+                    None => {
+                        return no(
+                            request,
+                            code::NOT_APPLICABLE,
+                            "There is no symbol at the caret, so name what to look for.",
+                        )
+                    }
+                }
+            }
+        };
+        self.tree.reload();
+        let waker = self.thread_waker();
+        self.references =
+            Some(References::open(references::Purpose::References, &name, waker));
+        Outcome::Hold(Waiting::References {
+            until: Instant::now() + self.cli_timeout(request),
+            code_only: request.switch("code-only"),
+            rename: None,
+        })
+    }
+
+    /// `quill-cli editor rename` — the change set, and applying it.
+    ///
+    /// The scope and the roles are the modal's own default-tick rules as flags, which is what makes
+    /// twenty renames across a project scriptable the way `highlight apply` already is. Without
+    /// `--apply` nothing is edited and the change set is printed, because a rename is exactly the
+    /// sort of thing a script should be able to look at before it leaps.
+    fn cli_editor_rename(&mut self, request: &Request) -> Outcome {
+        let Some(to) = request.text("new-name") else {
+            return no(request, code::USAGE, "Say what to call it.");
+        };
+        if !self.symbols_apply_here() {
+            return no(
+                request,
+                code::NOT_APPLICABLE,
+                "No plugin claims this file, so Quill cannot tell one of its words from another.",
+            );
+        }
+        let offset = self.caret_offset();
+        let from = match request.text("name") {
+            Some(name) if !name.trim().is_empty() => name.trim().to_owned(),
+            _ => match self.symbol_at(offset) {
+                Some(name) => name,
+                None => {
+                    return no(
+                        request,
+                        code::NOT_APPLICABLE,
+                        "There is no symbol at the caret, so name what to rename.",
+                    )
+                }
+            },
+        };
+        let grammar = self.grammar_for(self.files.active().path()).cloned().unwrap_or_default();
+        if let Err(reason) = quill_core::symbols::check_name(to.trim(), &grammar) {
+            return no(request, code::USAGE, reason);
+        }
+        let scope = match request.text("scope").as_deref() {
+            None => None,
+            Some("file") => Some(true),
+            Some("project") => Some(false),
+            Some(other) => {
+                return no(
+                    request,
+                    code::USAGE,
+                    format!("`{other}` is not a scope. It is `file` or `project`."),
+                )
+            }
+        };
+        let include: Vec<String> = request
+            .text("include")
+            .unwrap_or_default()
+            .split(',')
+            .map(|part| part.trim().to_lowercase())
+            .filter(|part| !part.is_empty())
+            .collect();
+        for named in &include {
+            if named != "comments" && named != "strings" {
+                return no(
+                    request,
+                    code::USAGE,
+                    format!("`{named}` is not something to include. It is `comments` or `strings`."),
+                );
+            }
+        }
+        // The same resolution the modal does, so the default scope is the same one a person sees.
+        let path = self.files.active().path().map(Path::to_path_buf);
+        let candidates = self.candidates_for(&from, path.as_deref(), offset);
+        self.rename_kind = candidates.first().map(|candidate| candidate.kind);
+        self.rename_here = path;
+        self.rename_ticked_up_to = 0;
+        self.tree.reload();
+        let waker = self.thread_waker();
+        self.references = Some(References::open(references::Purpose::Rename, &from, waker));
+        if let Some(modal) = self.references.as_mut() {
+            modal.new_name = to.trim().to_owned();
+        }
+        Outcome::Hold(Waiting::References {
+            until: Instant::now() + self.cli_timeout(request),
+            code_only: false,
+            rename: Some(CliRename { to: to.trim().to_owned(), scope, include, apply: request.switch("apply") }),
+        })
+    }
+
+    /// The position a symbol command is about: the caret, an offset, or a line and column.
+    ///
+    /// A line and a column go through the same `offset_at` `editor caret` and `editor select`
+    /// already use, so all three mean the same thing by line 42 column 9 — including in a file whose
+    /// letters are wider than one byte.
+    fn cli_offset(&mut self, request: &Request) -> Result<usize, String> {
+        if let Some(offset) = request.whole("offset") {
+            let length = self.document().text().len_bytes();
+            if offset > length {
+                return Err(format!(
+                    "This file is {length} bytes long, so there is no byte {offset}."
+                ));
+            }
+            return Ok(offset);
+        }
+        let Some(line) = request.whole("line") else {
+            return Ok(self.caret_offset());
+        };
+        let text = self.document().text();
+        if line == 0 || line > text.len_lines() {
+            return Err(format!(
+                "This file has {} lines, so there is no line {line}.",
+                text.len_lines()
+            ));
+        }
+        Ok(offset_at(text, line, request.whole("column").unwrap_or(1)))
+    }
+
+    /// How long a symbol command waits for its search.
+    fn cli_timeout(&self, request: &Request) -> Duration {
+        request
+            .whole("timeout")
+            .map(|milliseconds| Duration::from_millis(milliseconds as u64))
+            .unwrap_or(DEFAULT_WAIT)
+    }
+
+    /// The word at an offset in the tab that is showing.
+    fn symbol_at(&mut self, offset: usize) -> Option<String> {
+        let index = self.files.active_index();
+        let word = self.tab_symbols(index).read.identifier_at(offset)?;
+        Some(self.files.at(index).document.text().byte_slice(word))
+    }
+
+    /// What `editor references` and `editor rename` answer once the search has finished.
+    fn references_reply(&mut self, request: &Request, waiting: &Waiting) -> Reply {
+        let Waiting::References { code_only, rename, .. } = waiting else {
+            return Reply::failed(&request.command, code::NOT_APPLICABLE, "Nothing was waiting.");
+        };
+        let Some(modal) = self.references.as_ref() else {
+            return Reply::failed(
+                &request.command,
+                code::NOT_APPLICABLE,
+                "The modal was shut before the search finished.",
+            );
+        };
+        let name = modal.name.clone();
+        let capped = modal.is_capped();
+        let rows: Vec<Value> = modal
+            .hits()
+            .iter()
+            .filter(|hit| !*code_only || hit.role == Role::Code)
+            .map(|hit| {
+                json!({
+                    "path": hit.path.to_string_lossy(),
+                    "line": hit.line,
+                    "column": hit.range.start + 1,
+                    "offset": hit.offset.start,
+                    "role": hit.role.name(),
+                    "text": hit.text,
+                })
+            })
+            .collect();
+        let Some(rename) = rename else {
+            let sentence = match rows.len() {
+                0 => format!("Nothing in this project uses '{name}'"),
+                1 => format!("'{name}' is used once"),
+                many => format!("'{name}' is used in {many} places"),
+            };
+            self.references = None;
+            return Reply::done(
+                &request.command,
+                sentence,
+                json!({ "name": name, "references": rows, "capped": capped }),
+            );
+        };
+        self.tick_for_the_command_line(rename);
+        let Some(modal) = self.references.as_ref() else {
+            return Reply::failed(&request.command, code::NOT_APPLICABLE, "The modal was shut.");
+        };
+        let change = crate::app::symbols::RenameChange {
+            from: name.clone(),
+            to: rename.to.clone(),
+            by_file: modal.change(),
+        };
+        let listed: Vec<Value> = change
+            .by_file
+            .iter()
+            .map(|(path, ranges)| {
+                json!({ "path": path.to_string_lossy(), "places": ranges.len() })
+            })
+            .collect();
+        if !rename.apply {
+            self.references = None;
+            return Reply::done(
+                &request.command,
+                format!(
+                    "{} places in {} files would be renamed from '{name}' to '{}'",
+                    change.count(),
+                    change.by_file.len(),
+                    rename.to
+                ),
+                json!({ "from": name, "to": rename.to, "files": listed, "references": rows }),
+            );
+        }
+        let report = self.apply_rename(&change);
+        self.references = None;
+        let sentence = report.sentence(&rename.to);
+        self.message = Some(sentence.clone());
+        Reply::done(
+            &request.command,
+            sentence,
+            json!({
+                "from": name,
+                "to": rename.to,
+                "changed": report.changed,
+                "files": listed,
+                "openTabs": report.open.iter().map(|path| path.to_string_lossy()).collect::<Vec<_>>(),
+                "skipped": report
+                    .skipped
+                    .iter()
+                    .map(|(path, reason)| json!({ "path": path.to_string_lossy(), "reason": reason }))
+                    .collect::<Vec<_>>(),
+            }),
+        )
+    }
+
+    /// Tick the rows a command line rename asks for: the same default rules, with the flags on top.
+    fn tick_for_the_command_line(&mut self, rename: &CliRename) {
+        let kind = self.rename_kind;
+        let here = self.rename_here.clone();
+        let Some(modal) = self.references.as_mut() else {
+            return;
+        };
+        let ticks: Vec<bool> = modal
+            .hits()
+            .iter()
+            .map(|hit| {
+                let same_file = here.as_deref() == Some(hit.path.as_path());
+                let by_role = match hit.role {
+                    Role::Code => true,
+                    Role::Comment => rename.include.iter().any(|part| part == "comments"),
+                    Role::String => rename.include.iter().any(|part| part == "strings"),
+                };
+                if !by_role {
+                    return false;
+                }
+                match rename.scope {
+                    Some(true) => same_file,
+                    Some(false) => true,
+                    None => crate::app::symbols::ticked_by_default(hit.role, kind, same_file)
+                        || (hit.role != Role::Code && by_role),
+                }
+            })
+            .collect();
+        modal.set_ticks(ticks);
+    }
+
 
     fn cli_editor_preview(&mut self, request: &Request, ctx: &egui::Context) -> Outcome {
         if !file_kind::preview_applies(self.document().path()) {

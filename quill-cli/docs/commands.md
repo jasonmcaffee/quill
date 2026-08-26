@@ -187,6 +187,40 @@ quill-cli window screenshot _agent_output/marked.png --json
 what to use when the marks are the current state of a piece of work rather than something to add to.
 A row that cannot be applied is reported against its number and the rest of the list still goes in.
 
+**Find where a name is defined, and everywhere it is used.** Quill reads a project's definitions
+from the same tokeniser that colours it, so the answer is instant and it is honest about what it
+does not know: where two files define the same name, both are listed and neither is guessed at.
+A file whose language has not said what a definition looks like has none — `.txt`, Markdown and
+CSS among them — and the commands say so rather than answering emptily.
+
+```sh
+quill-cli editor caret --line 42 --column 9 --json
+quill-cli editor definition --json
+quill-cli editor definition --open --json
+quill-cli editor references --json
+quill-cli editor navigate-back --json
+```
+
+Each reference says whether it is code or a word inside a comment or a string. `--code-only` leaves
+the textual ones out, which is usually what a script wants.
+
+**Rename a name everywhere it is used.** Print the change set first; `--apply` makes it. An open tab
+is edited as a document — one undo step, and it is left with unsaved changes rather than being
+written behind your back — and a closed file is checked to still hold the old name before it is
+rewritten. A file that changed since the search is skipped whole and reported by name.
+
+```sh
+quill-cli editor caret --line 42 --column 9 --json
+quill-cli editor rename open_the_result --json
+quill-cli editor rename open_the_result --apply --json
+quill-cli tab save --json
+```
+
+The default scope follows what the name resolves to: a variable, a parameter or a name with no known
+definition changes in **this file**, and a function, type, constant or module changes across the
+**project**. `--scope file` and `--scope project` say so outright, and `--include comments,strings`
+adds the textual matches, which are left alone by default.
+
 **Do something with no command of its own.** Every menu entry has a name:
 
 ```sh
@@ -194,6 +228,8 @@ quill-cli action list --json
 quill-cli action run toggle-line-numbers --json
 quill-cli action run highlight-yellow --json
 quill-cli action run clear-highlight --json
+quill-cli action run go-to-definition --json
+quill-cli action run find-references --json
 ```
 
 ## Two things the CLI will not do
@@ -810,6 +846,88 @@ Read the preview of the tab that is showing: a Markdown page as plain text with 
 
 ```sh
 quill-cli editor preview --json
+```
+
+### editor definition
+
+```
+quill-cli editor definition [--offset <bytes>] [--line <number>] [--column <number>] [--open]
+```
+
+Where the word at the caret is defined. Prints every candidate the project holds, best first, and --open goes to the best one. A file whose language has not said what a definition looks like has none, which is stated rather than guessed at.
+
+- `--offset <bytes>` — Ask about this position in the file rather than about the caret.
+- `--line <number>` — Ask about this line, counting from 1.
+- `--column <number>` — The column on that line. 1 when it is left out.
+- `--open` — Go to the best candidate, opening its file as a tab.
+
+```sh
+quill-cli editor definition --json
+quill-cli editor definition --line 42 --column 9 --open
+```
+
+### editor references
+
+```
+quill-cli editor references [name] [--timeout <milliseconds>] [--code-only]
+```
+
+Every place a name is used across the project: the file, the line, the column and whether it is code or a word inside a comment or a string. Reads the open tabs as they stand and everything else from the disk.
+
+- `name` (optional) — The name to look for. The word at the caret when it is left out.
+
+- `--timeout <milliseconds>` — How long to wait for the search. 10000 by default.
+- `--code-only` — Leave out the matches inside comments and strings.
+
+```sh
+quill-cli editor references --json
+quill-cli editor references open_the_match --json
+```
+
+### editor rename
+
+```
+quill-cli editor rename <new-name> [--name <text>] [--scope <file|project>] [--include <comments,strings>] [--timeout <milliseconds>] [--apply]
+```
+
+Rename the word at the caret everywhere it is used. Prints the change set without --apply, so a script can look before it leaps; --apply edits the open tabs as documents, one undo step each, and rewrites the closed files on the disk.
+
+- `new-name` — What to call it. It has to be a word of this language and not one of its keywords.
+
+- `--name <text>` — Rename this name rather than the word at the caret.
+- `--scope <file|project>` — Which files to change. The default follows what the name resolves to: a variable or a name with no known definition is this file, and a function, type, constant or module is the project.
+- `--include <comments,strings>` — Also change the matches inside comments or strings, which are left alone by default.
+- `--timeout <milliseconds>` — How long to wait for the search that finds them. 10000 by default.
+- `--apply` — Make the change. Without it the change set is printed and nothing is edited.
+
+```sh
+quill-cli editor rename open_the_result --json
+quill-cli editor rename open_the_result --apply
+quill-cli editor rename total --scope project --include comments --apply
+```
+
+### editor navigate-back
+
+```
+quill-cli editor navigate-back
+```
+
+Go back to where the caret was before the last jump, reopening the file if its tab was closed.
+
+```sh
+quill-cli editor navigate-back
+```
+
+### editor navigate-forward
+
+```
+quill-cli editor navigate-forward
+```
+
+Undo a navigate-back. Cleared by any new jump, exactly as a browser's forward button is.
+
+```sh
+quill-cli editor navigate-forward
 ```
 
 ## highlight — the passages marked in the project's files

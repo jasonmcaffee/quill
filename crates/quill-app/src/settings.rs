@@ -230,6 +230,10 @@ pub struct Panes {
     /// file under them. A pane inside a modal is still a pane, so where its divider was left is
     /// remembered like every other one.
     pub find_split: f32,
+    /// The same for the references, candidates and rename modal, which has the same two panes and
+    /// is very often wanted at a different size: a change set is read as a list, and a reference is
+    /// read in the file round it.
+    pub references_split: f32,
 }
 
 impl Panes {
@@ -239,6 +243,7 @@ impl Panes {
             terminal_height: TERMINAL_HEIGHT,
             preview_fraction: 0.5,
             find_split: crate::components::find_in_files::SPLIT,
+            references_split: crate::components::references::SPLIT,
         }
     }
 
@@ -259,6 +264,12 @@ impl Panes {
                 crate::components::find_in_files::SPLIT_MAX,
             );
         }
+        if let Some(fraction) = values.number("panes.references.split") {
+            panes.references_split = fraction.clamp(
+                crate::components::references::SPLIT_MIN,
+                crate::components::references::SPLIT_MAX,
+            );
+        }
         panes
     }
 
@@ -267,6 +278,7 @@ impl Panes {
         values.set("panes.terminal.height", format!("{:.0}", self.terminal_height));
         values.set("panes.preview.fraction", format!("{:.3}", self.preview_fraction));
         values.set("panes.find.split", format!("{:.3}", self.find_split));
+        values.set("panes.references.split", format!("{:.3}", self.references_split));
     }
 }
 
@@ -364,6 +376,7 @@ mod tests {
             terminal_height: 400.0,
             preview_fraction: 0.3,
             find_split: 0.6,
+            references_split: 0.4,
         };
         let mut values = Values::new();
         panes.write_into(&mut values);

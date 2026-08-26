@@ -161,6 +161,77 @@ images rest on. `sample-diagrams/` holds one file per type, and it is what both 
 and a person read; `cargo run --example mermaid_check` lays every one of them out and says what came
 of it, which is the quickest way to see that a layout change has broken nothing.
 
+## Where a name is defined is read from the tokeniser, and nothing is executed to find out
+
+`Ctrl/Cmd+Click` goes to a definition, `Alt+F7` lists every reference, and `Shift+F6` renames one
+everywhere it is used. `task-1675` weighed the three mechanisms every editor sits on and chose the
+third: a **syntactic index**, built from the token stream `quill_core::syntax` already produces.
+A language server client would be the true answer and would die on most machines — a separate
+program per language, found on `PATH`, holding gigabytes, and nothing about it could be a screenshot
+test because when it answers depends on the machine. Tree-sitter is code where Quill's plugins are
+data. This is the tier Sublime Text's goto-definition and GitHub's shipped code navigation are, and
+it is what makes the answer instant, deterministic and testable with no window.
+
+**What a definition is comes from the plugin, not from a list of languages in Quill.** Two manifest
+keys, both off unless a language asks for them, which is the rule `word_characters`, `types` and
+`hex_colors` already follow: `language.definers` is a comma list of `keyword=kind` — `fn=function,
+struct=type, let=variable` — and `language.brace_definitions` turns on the one heuristic, for the
+definition Rust never hides but JavaScript and TypeScript do: a class method has no keyword in front
+of its name. CSS deliberately names neither. `--brand-hue: 280` defines a custom property by
+*position*, and a rule that read `:` as a definer would call every property a definition; find all
+references and rename still work there, because neither needs a definition.
+
+**Honesty is the whole of the design.** Where the mechanism cannot tell two same-named things apart
+it shows both rather than guessing one, a definition found by the brace heuristic is marked
+`Confidence::Likely` and stays marked all the way to the screen, and an occurrence inside a comment
+or a string carries the `Role` that says which — listed second, in the quiet colour, and never
+ticked by default in a rename.
+
+**One pass, read once and asked many times.** `quill_core::syntax::scan` is the seam: it reports
+every token including the plain words, and `highlight` is that with the plain words dropped, so
+colouring a file and reading its definitions are one reading of the rules rather than two that
+would drift. `symbols::FileSymbols::read` turns one file into two sorted lists — its words and its
+comments and strings — and the window keeps one per open tab keyed on `Document::text_revision()`,
+the same key `colour_the_file` is keyed on. That is what makes the hover query, which runs while the
+pointer moves with the modifier held, a binary search rather than a re-read: measured on this
+repository, reading the largest file costs 1.8 ms and a hover costs nothing measurable.
+
+**Definitions are indexed and occurrences are not.** `services::symbol_index` holds `name -> where
+it is defined` for the project, built on a worker thread arranged exactly as `services::text_search`
+is — a generation `AtomicU64`, a waker, and a build that stops where it is when it is overtaken.
+Find all references is a **search** instead, in a new whole-word, role-classified mode of the same
+searcher: an index of every occurrence would buy nothing at this size and would cost the one thing a
+search never pays, which is invalidation — a build, a branch switch or another editor moving a file
+would all have to be noticed. `examples/symbol_cost.rs` measures the lot: 155 files indexed in 38 ms,
+11,497 definitions, a reference search over 176 files in 42 ms.
+
+**One rule settles every awkward case, and it is the highlights' rule**: *a file that is open is
+owned by its `Document`, and every other file is owned by the index.* An open tab's definitions come
+from its live text, the index's copy of an open file is never offered beside it, and a reference
+search is handed the text of the tabs rather than the bytes under them. The disk-owned side is
+**re-checked at the moment of use** rather than watched: before jumping into a closed file its text
+is read again and the name confirmed to still be there, re-found if it moved, which is what
+`open_the_match` already does for a search hit.
+
+**The rename modal is the preview, and the tick boxes are the change set.** What is applied is
+exactly the ticked rows. An open file is edited as a document — one `Command::ReplaceMany`, which is
+one undo step by construction because undo restores a snapshot — and is left with unsaved changes
+rather than being written, because a rename must never silently write a buffer somebody was editing.
+A closed file is read, **every ticked range is checked to still hold the old name**, and only then is
+it written once; a file that changed since the search is skipped whole and reported by name rather
+than patched on faith. Bytes outside the ranges are untouched, so encodings and line endings survive,
+and `services::file_marks` shifts that file's stored marks by the same edits — a rename is the one
+new place a closed file's bytes move. A collision is a **warning**, not a refusal: the mechanism
+cannot know whether it shadows, so it says what it does know.
+
+**The three entries are absent when the file's language cannot answer them**, which is Quill's rule
+for a control that can never apply — the `F` button is not drawn for a `.rs` file either.
+`file_kind::definitions_apply` and `file_kind::symbols_apply` are the two questions, and the Edit
+menu, the editing area's right click menu and the command line all ask them, so none of the three can
+disagree. That absence is also what lets the command key and `B` mean bold in prose and `Go to
+Definition` in code: `formatting_applies` and `definitions_apply` are true of opposite files, so the
+two can never both fire on one press.
+
 ## A frame costs what is on the screen, not what is in the file
 
 `task-1666` reported that selecting text, scrolling and dragging the window were jagged on Windows
@@ -897,6 +968,8 @@ trade that away to be a shade nearer a screenshot.
   three mechanisms that were weighed (a language server client, tree-sitter and stack graphs, a
   syntactic index) and why the index was chosen, the two grammar keys a language adds, the
   references and rename modals, and the fifty-scenario battery the implementation is held to.
+  `task-1676` is the implementation of it; `cargo run --release -p quill-app --example symbol_cost`
+  is how its budgets are measured again.
 - `tasks/quill-mermaid-plugin-tdd.md` — Mermaid: the four ways of drawing it that were weighed and why
   Quill writes its own, what each of the twenty types becomes on the screen, which ten are named
   rather than drawn, and what `language.renders` buys.

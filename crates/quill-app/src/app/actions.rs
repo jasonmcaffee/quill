@@ -34,6 +34,22 @@ pub enum Action {
     GoToFile,
     /// Open the `Find in Files` modal: search every file in the project for some text.
     FindInFiles,
+    /// Go to where the word at the caret is defined.
+    ///
+    /// One candidate is a jump; several open the modal listing them, ranked; none says so in the
+    /// status bar. Asked from the caret on the menu and the keyboard, and from the pointer by
+    /// `Ctrl/Cmd+Click`, which is the same thing with a different offset. On the definition itself
+    /// it pivots to the references — IntelliJ calls the whole command "Go to Declaration or
+    /// Usages", and going to a definition from the definition has no other meaning.
+    GoToDefinition,
+    /// Open the references modal on the word at the caret: every place that name is used.
+    FindReferences,
+    /// Open the rename modal on the word at the caret.
+    RenameSymbol,
+    /// Go back to where the caret was before the last jump, reopening the tab if it was closed.
+    NavigateBack,
+    /// The mirror of it, pushed by [`Action::NavigateBack`] and cleared by any new jump.
+    NavigateForward,
     /// Open a project that has been open before, in a window of its own.
     OpenRecent(PathBuf),
     /// Forget the recent projects.
@@ -503,6 +519,16 @@ pub struct MenuState {
     pub highlights: usize,
     /// True when the caret is inside a marked passage, so there is one to clear.
     pub on_a_highlight: bool,
+    /// True when the open file's language has said what a definition looks like, which is what puts
+    /// `Go to Definition` on the menu. **Absent** rather than dimmed when it is false: a control
+    /// that can never apply to this kind of file is not a control that is unavailable just now.
+    pub definitions_apply: bool,
+    /// True when the open file has a language at all, which is what `Find References` and
+    /// `Rename Symbol` need — neither needs a definition, so a stylesheet keeps both.
+    pub symbols_apply: bool,
+    /// Whether there is anywhere to go back to, and forward to.
+    pub can_go_back: bool,
+    pub can_go_forward: bool,
 }
 
 /// The whole menu bar: `Quill`, `File`, `Edit` and `View`, in that order.
@@ -695,38 +721,108 @@ fn recent_entries(state: &MenuState) -> Vec<Entry> {
     entries
 }
 
-fn edit_menu(state: &MenuState) -> Menu {
-    Menu {
-        name: "Edit".to_owned(),
-        entries: vec![
-            Entry::with_shortcut("Undo", Action::Undo, Shortcut::command(egui::Key::Z))
-                .enabled(state.can_undo),
-            Entry::with_shortcut("Redo", Action::Redo, Shortcut::command_shift(egui::Key::Z))
-                .enabled(state.can_redo),
-            Entry::Separator,
-            Entry::with_shortcut("Cut", Action::Cut, Shortcut::command(egui::Key::X))
-                .enabled(state.has_selection)
-                .not_from_the_keyboard(),
-            Entry::with_shortcut("Copy", Action::Copy, Shortcut::command(egui::Key::C))
-                .enabled(state.has_selection)
-                .not_from_the_keyboard(),
-            Entry::with_shortcut("Paste", Action::Paste, Shortcut::command(egui::Key::V))
-                .not_from_the_keyboard(),
-            Entry::with_shortcut("Select All", Action::SelectAll, Shortcut::command(egui::Key::A)),
-            Entry::Separator,
-            Entry::Submenu { name: "Highlight".to_owned(), entries: highlight_menu(state) },
-            Entry::Separator,
-            // IntelliJ keeps this under `Edit -> Find`, one level further down. Quill's Edit menu is
-            // eight entries long and a submenu holding one thing is a step for nothing.
-            Entry::with_shortcut(
-                "Find in Files...",
-                Action::FindInFiles,
-                Shortcut::command_shift(egui::Key::F),
-            ),
-            Entry::Separator,
-            Entry::with_shortcut("Settings", Action::Settings, Shortcut::command(egui::Key::Comma)),
-        ],
+/// The three symbol entries and the two that walk the history, in the order the Edit menu holds
+/// them.
+///
+/// Built here rather than written into the menu twice, because `components::text_menu` — the
+/// editing area's own right click menu — holds the same three above its highlight section, and two
+/// lists that agree today are two lists that will not agree next month.
+///
+/// They are **absent** when the file's language cannot answer them, which is Quill's rule for a
+/// control that can never apply: the `F` button is not drawn for a `.rs` file either. Dimming means
+/// something different and is still right where it was, for a control that could be used in a
+/// moment.
+pub fn symbol_entries(state: &MenuState) -> Vec<Entry> {
+    let mut entries = Vec::new();
+    if state.definitions_apply {
+        // IntelliJ's key. The command key and B is bold everywhere else in Quill, and the two can
+        // never collide: `services::file_kind` says formatting is for prose and a definition needs
+        // a language that has said what one looks like, and no file is both.
+        entries.push(Entry::with_shortcut(
+            "Go to Definition",
+            Action::GoToDefinition,
+            Shortcut::command(egui::Key::B),
+        ));
     }
+    if state.symbols_apply {
+        entries.push(Entry::with_shortcut(
+            "Find References",
+            Action::FindReferences,
+            Shortcut { key: egui::Key::F7, command: false, shift: false, alt: true, ctrl: false },
+        ));
+        entries.push(Entry::with_shortcut(
+            "Rename Symbol...",
+            Action::RenameSymbol,
+            Shortcut { key: egui::Key::F6, command: false, shift: true, alt: false, ctrl: false },
+        ));
+    }
+    entries
+}
+
+/// The two entries that walk the places a jump has been from.
+///
+/// Always there, dimmed when there is nowhere to go: they are about the window's own history rather
+/// than about the file, so they do not change shape depending on what is open.
+pub fn navigation_entries(state: &MenuState) -> Vec<Entry> {
+    vec![
+        Entry::with_shortcut(
+            "Navigate Back",
+            Action::NavigateBack,
+            Shortcut { alt: true, ..Shortcut::command(egui::Key::ArrowLeft) },
+        )
+        .enabled(state.can_go_back),
+        Entry::with_shortcut(
+            "Navigate Forward",
+            Action::NavigateForward,
+            Shortcut { alt: true, ..Shortcut::command(egui::Key::ArrowRight) },
+        )
+        .enabled(state.can_go_forward),
+    ]
+}
+
+fn edit_menu(state: &MenuState) -> Menu {
+    let mut entries = vec![
+        Entry::with_shortcut("Undo", Action::Undo, Shortcut::command(egui::Key::Z))
+            .enabled(state.can_undo),
+        Entry::with_shortcut("Redo", Action::Redo, Shortcut::command_shift(egui::Key::Z))
+            .enabled(state.can_redo),
+        Entry::Separator,
+        Entry::with_shortcut("Cut", Action::Cut, Shortcut::command(egui::Key::X))
+            .enabled(state.has_selection)
+            .not_from_the_keyboard(),
+        Entry::with_shortcut("Copy", Action::Copy, Shortcut::command(egui::Key::C))
+            .enabled(state.has_selection)
+            .not_from_the_keyboard(),
+        Entry::with_shortcut("Paste", Action::Paste, Shortcut::command(egui::Key::V))
+            .not_from_the_keyboard(),
+        Entry::with_shortcut("Select All", Action::SelectAll, Shortcut::command(egui::Key::A)),
+        Entry::Separator,
+        Entry::Submenu { name: "Highlight".to_owned(), entries: highlight_menu(state) },
+        Entry::Separator,
+        // IntelliJ keeps this under `Edit -> Find`, one level further down. Quill's Edit menu is
+        // eight entries long and a submenu holding one thing is a step for nothing.
+        Entry::with_shortcut(
+            "Find in Files...",
+            Action::FindInFiles,
+            Shortcut::command_shift(egui::Key::F),
+        ),
+    ];
+    // The symbol entries under `Find in Files`, because that is what they are: two more ways of
+    // asking where something is, and one of changing it everywhere it was found.
+    let symbols = symbol_entries(state);
+    if !symbols.is_empty() {
+        entries.push(Entry::Separator);
+        entries.extend(symbols);
+    }
+    entries.push(Entry::Separator);
+    entries.extend(navigation_entries(state));
+    entries.push(Entry::Separator);
+    entries.push(Entry::with_shortcut(
+        "Settings",
+        Action::Settings,
+        Shortcut::command(egui::Key::Comma),
+    ));
+    Menu { name: "Edit".to_owned(), entries }
 }
 
 fn view_menu(state: &MenuState) -> Menu {
@@ -949,14 +1045,23 @@ pub fn clear_highlight_menu(state: &MenuState) -> Vec<Entry> {
 /// reaches for when they have just selected something. They are the same [`Action`]s the Edit menu
 /// uses, so there is one arm in `run_action` for each rather than two.
 pub fn text_menu(state: &MenuState) -> Vec<Entry> {
-    vec![
+    let mut entries = vec![
         Entry::with_shortcut("Cut", Action::Cut, Shortcut::command(egui::Key::X))
             .enabled(state.has_selection),
         Entry::with_shortcut("Copy", Action::Copy, Shortcut::command(egui::Key::C))
             .enabled(state.has_selection),
         Entry::with_shortcut("Paste", Action::Paste, Shortcut::command(egui::Key::V)),
         Entry::with_shortcut("Select All", Action::SelectAll, Shortcut::command(egui::Key::A)),
-    ]
+    ];
+    // The same three the Edit menu holds, above the highlight section, from the same function — so
+    // a right click and the menu bar cannot come to different answers about whether a file has a
+    // definition in it. They are absent here for exactly the files they are absent there for.
+    let symbols = symbol_entries(state);
+    if !symbols.is_empty() {
+        entries.push(Entry::Separator);
+        entries.extend(symbols);
+    }
+    entries
 }
 
 /// What the gutter's own right click menu holds.

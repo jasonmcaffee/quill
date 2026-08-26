@@ -25,6 +25,8 @@
 
 use std::path::Path;
 
+use crate::services::plugins::Grammars;
+
 /// How much of a file is read to decide whether it is text.
 const SNIFF: usize = 4096;
 
@@ -241,6 +243,32 @@ pub fn preview_applies(path: Option<&Path>) -> bool {
     path.is_none() || is_markdown(path) || is_mermaid(path)
 }
 
+/// True when `Go to Definition` can apply to this file.
+///
+/// A definition needs a language that has said what one looks like — `language.definers`, or the
+/// brace rule — so this is false for a `.txt` file, for a picture, for Markdown, and deliberately
+/// for CSS: `--brand-hue: 280` defines a custom property by position rather than by keyword, and a
+/// rule that read `:` as a definer would call every property a definition.
+///
+/// The third question of the same shape as [`formatting_applies`] and [`preview_applies`], and it
+/// exists for the same reason they do: the menu, the editing area's right click menu and the
+/// command line all ask this one function, so they cannot come to different answers about the same
+/// file. A control that can never apply to a file is **absent**, not dimmed.
+pub fn definitions_apply(path: Option<&Path>, grammars: &Grammars) -> bool {
+    path.is_some_and(|path| !is_image(path) && grammars.defines_symbols(path))
+}
+
+/// True when `Find References` and `Rename Symbol` can apply to this file.
+///
+/// A wider question than [`definitions_apply`], because neither needs a definition: finding every
+/// whole-word occurrence of a name and replacing the ones somebody ticked needs only a language
+/// that says what a word is and what a comment and a string are. That is why a stylesheet keeps
+/// both while losing go to definition — renaming `--brand-hue` across a project is exactly what a
+/// person wants from a stylesheet, and the mechanism can do it honestly.
+pub fn symbols_apply(path: Option<&Path>, grammars: &Grammars) -> bool {
+    path.is_some_and(|path| !is_image(path) && grammars.for_path(path).is_some())
+}
+
 /// True for the files the Markdown preview is meant for.
 pub fn is_markdown(path: Option<&Path>) -> bool {
     matches!(
@@ -443,6 +471,39 @@ mod tests {
         let path = Path::new("diagram.mmd");
         assert!(!formatting_applies(Some(path)));
         assert!(preview_applies(Some(path)));
+    }
+
+    #[test]
+    fn the_symbol_entries_apply_to_the_files_a_language_can_read() {
+        // The gate `task-1675` added, answered from the plugins that are switched on so the menu,
+        // the right click menu and the command line cannot disagree.
+        let grammars = crate::services::plugins::Plugins::load(None).0.grammars();
+        for code in ["main.rs", "app.js", "index.ts"] {
+            let path = Path::new(code);
+            assert!(definitions_apply(Some(path), &grammars), "{code} has definitions");
+            assert!(symbols_apply(Some(path), &grammars), "and references and rename");
+        }
+        // A stylesheet keeps references and rename and loses go to definition, because a custom
+        // property is defined by position rather than by a keyword.
+        let css = Path::new("site.css");
+        assert!(!definitions_apply(Some(css), &grammars));
+        assert!(symbols_apply(Some(css), &grammars));
+        // Prose, a picture and a document that has never been saved have none of the three.
+        for other in ["notes.md", "notes.txt", "photo.png", "Cargo.toml"] {
+            let path = Path::new(other);
+            assert!(!definitions_apply(Some(path), &grammars), "{other}");
+            assert!(!symbols_apply(Some(path), &grammars), "{other}");
+        }
+        assert!(!definitions_apply(None, &grammars), "an unsaved document has no language");
+        assert!(!symbols_apply(None, &grammars));
+        // And the two are the opposite way round from formatting, which is what lets the command
+        // key and B mean bold in prose and `Go to Definition` in code without either being dimmed.
+        for code in ["main.rs", "app.js"] {
+            assert!(!formatting_applies(Some(Path::new(code))));
+        }
+        for prose in ["notes.md", "notes.txt"] {
+            assert!(formatting_applies(Some(Path::new(prose))));
+        }
     }
 
     #[test]

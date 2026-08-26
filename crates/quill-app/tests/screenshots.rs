@@ -5485,3 +5485,432 @@ fn a_split_project_opens_split_again() {
     assert_eq!(second.state().files.tabs_in(1).len(), 1);
     std::fs::remove_dir_all(&folder).ok();
 }
+
+// ---------------------------------------------------------------------------------------------
+// Go to definition, find references and rename (`task-1675`).
+//
+// The pictures are what say the modal is grouped by file, that a textual match is second-class
+// rather than hidden, and that the underline appears under the word the modifier is over. The
+// behaviour underneath them is tested with no window in `quill_core::symbols`, `app::symbols` and
+// `components::references`; what is here is what only a real window can show.
+
+/// A small project written in a language that says what a definition is.
+///
+/// Built once behind a `OnceLock` for the reason `sample_folder` is: several tests want it, they run
+/// at the same time, and a fixture rewritten under a test that is reading it is a failure that looks
+/// like a fault in the code.
+fn code_folder() -> std::path::PathBuf {
+    static FOLDER: OnceLock<std::path::PathBuf> = OnceLock::new();
+    FOLDER
+        .get_or_init(|| {
+            let root = std::env::temp_dir().join("quill-screenshot-code");
+            std::fs::create_dir_all(&root).expect("make the code folder");
+            std::fs::write(
+                root.join("layout.rs"),
+                "//! Laying a document out.\n\npub struct Layout;\n\nimpl Layout {\n    pub fn new() -> Self {\n        Layout\n    }\n\n    /// Draw the whole of it.\n    pub fn draw(&self) {\n        let label = \"draw\";\n        let _ = label;\n    }\n}\n",
+            )
+            .expect("write layout.rs");
+            std::fs::write(
+                root.join("caret.rs"),
+                "//! The caret, and how it is drawn.\n\npub struct Caret;\n\nimpl Caret {\n    pub fn new() -> Self {\n        Caret\n    }\n\n    // draw the caret over the text\n    pub fn paint(&self, layout: &Layout) {\n        layout.draw();\n        layout.draw();\n    }\n}\n",
+            )
+            .expect("write caret.rs");
+            std::fs::write(
+                root.join("panel.rs"),
+                "pub struct Panel;\n\nimpl Panel {\n    pub fn show(&self, layout: &Layout) {\n        layout.draw();\n    }\n}\n",
+            )
+            .expect("write panel.rs");
+            std::fs::write(root.join("notes.md"), "# Notes\n\nA note that mentions draw.\n")
+                .expect("write notes.md");
+            root
+        })
+        .clone()
+}
+
+/// A window on the code folder, with its definitions index built and the named file open.
+fn code_harness(open: &str) -> Harness<'static, QuillApp> {
+    let folder = code_folder();
+    let mut harness = harness_in(&folder);
+    let path = folder.join(open);
+    harness.state_mut().open_path_permanently(&path);
+    // The index is read on a thread, exactly as git and the text search are, so the harness is run
+    // until the answer arrives. Each run is a frame; nothing here waits on a clock.
+    for _ in 0..600 {
+        pump(&mut harness);
+        let ready = harness
+            .state()
+            .symbols_indexer()
+            .is_some_and(|indexer| !indexer.is_building() && !indexer.index().is_empty());
+        if ready {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    harness.run();
+    harness
+}
+
+/// Put the caret on the first `needle` in the file that is showing, a little way into the word.
+fn caret_on(harness: &mut Harness<'static, QuillApp>, needle: &str, into: usize) -> usize {
+    let text = harness.state().document().text().to_string();
+    let at = text.find(needle).unwrap_or_else(|| panic!("{needle} is not in this file")) + into;
+    harness.state_mut().command(Command::PlaceCaret { offset: at, extend: false });
+    harness.run();
+    at
+}
+
+/// Wait for the references modal's own search to finish.
+fn settle_the_references(harness: &mut Harness<'static, QuillApp>) {
+    for _ in 0..400 {
+        let searching =
+            harness.state().references.as_ref().is_some_and(quill_app::components::references::References::is_searching);
+        if !searching {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        harness.step();
+    }
+    harness.run();
+}
+
+/// What the references modal found, as `name:line · role` for each row.
+fn references(harness: &Harness<'static, QuillApp>) -> Vec<String> {
+    harness
+        .state()
+        .references
+        .as_ref()
+        .expect("the modal should be open")
+        .hits()
+        .iter()
+        .map(|hit| {
+            format!(
+                "{}:{}{}",
+                hit.path.file_name().unwrap().to_string_lossy(),
+                hit.line,
+                match hit.role {
+                    quill_core::symbols::Role::Code => String::new(),
+                    other => format!(" \u{00B7} {}", other.suffix()),
+                }
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn go_to_definition_jumps_to_the_definition_and_selects_its_name() {
+    // Scenario 1, through the real window: the caret is on a call, and the definition is what ends
+    // up selected.
+    let mut harness = code_harness("caret.rs");
+    let ctx = harness.ctx.clone();
+    caret_on(&mut harness, "layout.draw()", "layout.".len() + 1);
+    harness.state_mut().run_action(Action::GoToDefinition, &ctx);
+    harness.run();
+    assert_eq!(harness.state().files.active().name(), "layout.rs");
+    assert_eq!(harness.state().document().selected_text(), "draw");
+}
+
+#[test]
+fn the_modifier_underlines_the_word_it_would_go_to_and_nothing_else() {
+    // Scenario 7. The affordance is resolution-driven: only a word that really has somewhere to go
+    // is underlined, so the promise it makes is one the click can keep.
+    let mut harness = code_harness("caret.rs");
+    let text = harness.state().document().text().to_string();
+    let call = text.find("layout.draw()").expect("the call") + "layout.".len() + 1;
+    // A word nothing defines: `layout` is a parameter, and a parameter has no definer keyword in
+    // front of it, so the mechanism honestly knows nothing about where it comes from.
+    let unknown = text.find("layout.draw()").expect("the call") + 1;
+
+    assert!(
+        harness.state_mut().resolve_under_the_pointer(call).is_some(),
+        "`draw` is defined in layout.rs, so it resolves"
+    );
+    harness.state_mut().forget_the_hover();
+    assert!(
+        harness.state_mut().resolve_under_the_pointer(unknown).is_none(),
+        "`layout` is a parameter, so nothing is underlined and a click places the caret"
+    );
+    // A definition of its own still resolves, because the click there means something: it pivots
+    // to the references, which is scenario 8.
+    harness.state_mut().forget_the_hover();
+    let definition = text.find("fn paint").expect("paint") + 4;
+    let hover = harness
+        .state_mut()
+        .resolve_under_the_pointer(definition)
+        .expect("its own definition resolves");
+    assert!(hover.at_definition, "and the window knows it is standing on it");
+    // And a keyword is not a question about a symbol at all.
+    harness.state_mut().forget_the_hover();
+    let keyword = text.find("-> Self").expect("Self") + 4;
+    assert!(harness.state_mut().resolve_under_the_pointer(keyword).is_none());
+}
+
+#[test]
+fn asking_from_the_definition_opens_the_references_instead() {
+    // Scenario 8, and the picture of the modal the ticket describes: the results grouped by file
+    // with a count on each heading, and the file the chosen reference is in shown underneath,
+    // scrolled to it with the reference picked out.
+    let mut harness = code_harness("layout.rs");
+    let ctx = harness.ctx.clone();
+    caret_on(&mut harness, "fn draw", 4);
+    harness.state_mut().run_action(Action::GoToDefinition, &ctx);
+    settle_the_references(&mut harness);
+    let found = references(&harness);
+    assert!(found.contains(&"layout.rs:11".to_owned()), "the definition itself: {found:?}");
+    assert!(found.contains(&"caret.rs:12".to_owned()), "and the calls: {found:?}");
+    assert!(
+        found.iter().any(|row| row.ends_with("comment")),
+        "the mention in a comment is listed, second-class: {found:?}"
+    );
+    assert!(
+        found.iter().any(|row| row.ends_with("string")),
+        "and so is the one inside a string: {found:?}"
+    );
+    // The headings and one row of each kind name themselves, which is how a test finds them.
+    harness.get_by_label("References in quill-screenshot-code\\layout.rs");
+    harness.get_by_label("Reference layout.rs:11");
+    harness.snapshot(shot("references"));
+}
+
+#[test]
+fn choosing_a_file_heading_shows_that_files_first_reference() {
+    // Scenario 21, which is the ticket's own sentence: *a modal that has the file path, then under
+    // that scrolled to the first reference in that file*.
+    let mut harness = code_harness("layout.rs");
+    let ctx = harness.ctx.clone();
+    caret_on(&mut harness, "fn draw", 4);
+    harness.state_mut().run_action(Action::FindReferences, &ctx);
+    settle_the_references(&mut harness);
+    harness.get_by_label("References in quill-screenshot-code\\caret.rs").click();
+    harness.run();
+    harness.run();
+    let (path, line) = harness
+        .state()
+        .references
+        .as_ref()
+        .expect("the modal")
+        .scrolled_to()
+        .expect("somewhere");
+    assert_eq!(path.file_name().unwrap(), "caret.rs");
+    // The first reference *in the list*, which within a file is the first code one: the textual
+    // matches are listed after them, so a heading previews the answer rather than a mention of it.
+    assert_eq!(line, 12, "the call on line 12, not the comment above it on line 10");
+}
+
+#[test]
+fn opening_a_reference_selects_it_in_the_document() {
+    // Scenario 30. The same contract `Find in Files` has: enter or a double click opens it and the
+    // modal closes.
+    let mut harness = code_harness("layout.rs");
+    let ctx = harness.ctx.clone();
+    caret_on(&mut harness, "fn draw", 4);
+    harness.state_mut().run_action(Action::FindReferences, &ctx);
+    settle_the_references(&mut harness);
+    double_click(&mut harness, "Reference caret.rs:12");
+    assert!(harness.state().references.is_none(), "opening a reference shuts the modal");
+    assert_eq!(harness.state().files.active().name(), "caret.rs");
+    assert_eq!(harness.state().document().selected_text(), "draw");
+}
+
+#[test]
+fn the_rename_modal_is_the_preview_and_the_ticks_are_the_change_set() {
+    // Scenarios 34, 38 and 39 in one picture: the field pre-filled, a tick on every row, the
+    // project-wide default for a function, and the footer saying what is wrong with a bad name.
+    let mut harness = code_harness("layout.rs");
+    let ctx = harness.ctx.clone();
+    caret_on(&mut harness, "fn draw", 4);
+    harness.state_mut().run_action(Action::RenameSymbol, &ctx);
+    settle_the_references(&mut harness);
+    let modal = harness.state().references.as_ref().expect("the rename modal");
+    assert_eq!(modal.new_name, "draw", "the field starts as the name it is about");
+    let ticked: Vec<bool> = modal.ticks().to_vec();
+    let roles: Vec<quill_core::symbols::Role> =
+        modal.hits().iter().map(|hit| hit.role).collect();
+    for (ticked, role) in ticked.iter().zip(&roles) {
+        match role {
+            quill_core::symbols::Role::Code => {
+                assert!(ticked, "a function is renamed across the project by default")
+            }
+            _ => assert!(!ticked, "a comment or a string is never ticked by default"),
+        }
+    }
+    harness.get_by_label("New name");
+    harness.snapshot(shot("rename_symbol"));
+
+    // A name this language could not hold is refused, with the reason in the footer.
+    harness.state_mut().references.as_mut().expect("the modal").new_name = "match".to_owned();
+    harness.run();
+    let refusal = harness
+        .state()
+        .references
+        .as_ref()
+        .expect("the modal")
+        .refusal
+        .clone()
+        .expect("a refusal");
+    assert!(refusal.contains("keyword"), "{refusal}");
+
+    // And a collision is a warning rather than a refusal, because the mechanism cannot know whether
+    // it shadows — that is semantic — so it says what it does know.
+    harness.state_mut().references.as_mut().expect("the modal").new_name = "new".to_owned();
+    harness.run();
+    let modal = harness.state().references.as_ref().expect("the modal");
+    assert!(modal.refusal.is_none(), "a collision does not stop it");
+    assert!(
+        modal.warning.as_deref().is_some_and(|said| said.contains("already defined")),
+        "{:?}",
+        modal.warning
+    );
+}
+
+#[test]
+fn a_file_whose_language_says_nothing_has_none_of_the_three_entries() {
+    // Scenario 17 through the menu the window really builds, and the reason a control that can
+    // never apply is absent rather than dimmed.
+    let harness = code_harness("notes.md");
+    let names: Vec<String> = quill_app::app::actions::menus(&harness.state().menu_state())
+        .iter()
+        .find(|menu| menu.name == "Edit")
+        .expect("the Edit menu")
+        .entries
+        .iter()
+        .filter_map(|entry| match entry {
+            quill_app::app::actions::Entry::Item { name, .. } => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+    for absent in ["Go to Definition", "Find References", "Rename Symbol..."] {
+        assert!(!names.contains(&absent.to_owned()), "{absent} should be absent: {names:?}");
+    }
+    assert!(names.contains(&"Navigate Back".to_owned()), "the history is about the window");
+    // And a source file has all three.
+    let mut harness = code_harness("layout.rs");
+    let state = harness.state().menu_state();
+    assert!(state.definitions_apply && state.symbols_apply);
+    harness.run();
+}
+
+/// Where on the screen a byte of the file that is showing is drawn.
+///
+/// The same arithmetic `show_editor` does: the editing area's own rectangle — which is what is left
+/// after the gutter has taken its column — plus the padding, less how far the file is scrolled.
+fn point_of(harness: &Harness<'static, QuillApp>, offset: usize) -> egui::Pos2 {
+    let area = harness.state().editor_area();
+    let caret = harness.state().layout().caret_at(offset);
+    let scroll = harness.state().files.active().scroll;
+    egui::pos2(
+        area.left() + quill_app::components::editor_view::PADDING + caret.x + 1.0,
+        area.top() + quill_app::theme::size::EDITOR_PADDING_Y - scroll + caret.y
+            + caret.height / 2.0,
+    )
+}
+
+/// Move the pointer over a byte of the file, with the platform's modifier held or not.
+///
+/// `Event::ModifiersChanged` is how the modifier is said to be held: egui carries the state of the
+/// modifier keys on that event rather than on the pointer's, which is what a real window sends when
+/// the key goes down with the pointer already where it is — and that, rather than a click, is the
+/// whole gesture up to the moment of the click.
+fn hover_over(harness: &mut Harness<'static, QuillApp>, offset: usize, modifier: bool) {
+    let at = point_of(harness, offset);
+    let held = if modifier { Modifiers::COMMAND } else { Modifiers::NONE };
+    harness.input_mut().events.push(egui::Event::ModifiersChanged(held));
+    harness.input_mut().events.push(egui::Event::PointerMoved(at));
+    harness.run();
+}
+
+#[test]
+fn the_underline_appears_under_the_word_the_modifier_is_over_and_goes_with_it() {
+    // Scenario 7 as a picture. The affordance is what the whole gesture rests on: a word that is
+    // underlined is a word the click will take you somewhere from, and one that is not is a word an
+    // ordinary click will put the caret in.
+    let mut harness = code_harness("caret.rs");
+    let text = harness.state().document().text().to_string();
+    let call = text.find("layout.draw()").expect("the call") + "layout.".len() + 1;
+
+    // The pointer over the word with nothing held: no underline, and the ordinary writing bar.
+    hover_over(&mut harness, call, false);
+    let plain = harness.render().expect("render the window");
+
+    // The same point with the modifier held: the word is underlined.
+    hover_over(&mut harness, call, true);
+    let underlined = harness.render().expect("render the window");
+    assert_ne!(
+        plain.as_raw(),
+        underlined.as_raw(),
+        "holding the modifier over a word that resolves has to change what is drawn"
+    );
+    harness.snapshot(shot("go_to_definition_underline"));
+
+    // Letting go of it takes the underline away again, which is what stops an affordance outliving
+    // the gesture that asked for it.
+    hover_over(&mut harness, call, false);
+    let released = harness.render().expect("render the window");
+    assert_eq!(
+        plain.as_raw(),
+        released.as_raw(),
+        "letting go of the modifier puts the window back exactly as it was"
+    );
+}
+
+/// Press and release the primary button where the pointer is, with the modifier held.
+fn modifier_click(harness: &mut Harness<'static, QuillApp>, offset: usize) {
+    let at = point_of(harness, offset);
+    harness.input_mut().events.push(egui::Event::ModifiersChanged(Modifiers::COMMAND));
+    harness.input_mut().events.push(egui::Event::PointerMoved(at));
+    harness.run();
+    for pressed in [true, false] {
+        harness.input_mut().events.push(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::COMMAND,
+        });
+    }
+    harness.run();
+}
+
+#[test]
+fn a_modifier_click_on_a_word_goes_to_its_definition_and_an_ordinary_one_places_the_caret() {
+    // Scenario 1's click half, and scenario 5's: the gesture is what a person really does, and the
+    // same click without the modifier has to keep meaning what it always meant.
+    let mut harness = code_harness("caret.rs");
+    let text = harness.state().document().text().to_string();
+    let call = text.find("layout.draw()").expect("the call") + "layout.".len() + 1;
+
+    // Without the modifier it is an ordinary click: the caret lands in the word and nothing opens.
+    hover_over(&mut harness, call, false);
+    let at = point_of(&harness, call);
+    for pressed in [true, false] {
+        harness.input_mut().events.push(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    }
+    harness.run();
+    assert_eq!(harness.state().files.active().name(), "caret.rs", "nothing was opened");
+    assert!(
+        harness.state().document().selection().is_empty(),
+        "and a click places a caret rather than selecting anything"
+    );
+
+    // With it held, the same click goes to the definition and selects the name it landed on.
+    modifier_click(&mut harness, call);
+    assert_eq!(harness.state().files.active().name(), "layout.rs");
+    assert_eq!(harness.state().document().selected_text(), "draw");
+}
+
+#[test]
+fn a_modifier_click_on_the_definition_itself_opens_the_references() {
+    // Scenario 8 through the gesture rather than through the menu: one gesture serves both
+    // directions of the question, which is what IntelliJ calls "Go to Declaration or Usages".
+    let mut harness = code_harness("layout.rs");
+    let text = harness.state().document().text().to_string();
+    let definition = text.find("fn draw").expect("the definition") + 4;
+    modifier_click(&mut harness, definition);
+    settle_the_references(&mut harness);
+    let modal = harness.state().references.as_ref().expect("the references opened");
+    assert_eq!(modal.name, "draw");
+    assert!(!modal.hits().is_empty());
+}

@@ -18,6 +18,7 @@ pub mod metrics;
 pub mod rope;
 pub mod scroll_sync;
 pub mod style;
+pub mod symbols;
 pub mod syntax;
 
 pub use cursor::Selection;
@@ -32,4 +33,5 @@ pub use markdown::{Preview, PreviewColors, PreviewDiagram, PreviewImage};
 pub use rope::Rope;
 pub use scroll_sync::{preview_y_for_source_y, source_y_for_preview_y};
 pub use style::{Align, CharStyle, Color, ParagraphStyle, ParagraphStyles, StyleChange, StyleSpans};
+pub use symbols::{Confidence, Definition, Occurrence, Role, SymbolKind};
 pub use syntax::{highlight, Grammar, Token};

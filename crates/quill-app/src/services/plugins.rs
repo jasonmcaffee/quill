@@ -49,6 +49,7 @@
 
 use std::path::{Path, PathBuf};
 
+use quill_core::symbols::SymbolKind;
 use quill_core::syntax::{Grammar, Token};
 use quill_core::Color;
 
@@ -269,6 +270,63 @@ impl Plugins {
     pub fn folder(store: &Store, id: &str) -> PathBuf {
         store.folder().join(FOLDER).join(id)
     }
+
+    /// The grammars of the plugins that are switched on, in a form a worker thread can hold.
+    ///
+    /// Taken as a snapshot rather than borrowed, because the two threads that read a project —
+    /// `services::symbol_index` and the reference mode of `services::text_search` — outlive the
+    /// frame that started them, and a plugin switched off while one is running must not change what
+    /// it is half way through answering.
+    pub fn grammars(&self) -> Grammars {
+        let mut by_extension: Vec<(String, Grammar)> = Vec::new();
+        for plugin in self.installed.iter().filter(|plugin| plugin.enabled) {
+            for extension in &plugin.extensions {
+                if by_extension.iter().any(|(known, _)| known == extension) {
+                    continue; // the first plugin that claims an extension is the one `for_path` gives
+                }
+                by_extension.push((extension.clone(), plugin.grammar.clone()));
+            }
+        }
+        Grammars { by_extension }
+    }
+}
+
+/// Which grammar reads which extension, taken from the plugins that are switched on.
+///
+/// A list rather than a map: five plugins claim a dozen extensions between them, and a linear walk
+/// over a dozen short strings costs less than hashing one. It is `Clone` and holds nothing borrowed,
+/// so a copy can be sent to a thread.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Grammars {
+    by_extension: Vec<(String, Grammar)>,
+}
+
+impl Grammars {
+    /// The grammar that reads this file, if a plugin that is switched on claims it.
+    pub fn for_path(&self, path: &Path) -> Option<&Grammar> {
+        let extension = path.extension().and_then(|name| name.to_str())?.to_lowercase();
+        self.by_extension
+            .iter()
+            .find(|(known, _)| *known == extension)
+            .map(|(_, grammar)| grammar)
+    }
+
+    /// True when this file's language has said enough for a definition to be found in it.
+    ///
+    /// What the index reads a file at all for, and — through `services::file_kind` — what decides
+    /// whether the three symbol entries are on the menu for it.
+    pub fn defines_symbols(&self, path: &Path) -> bool {
+        self.for_path(path).is_some_and(Grammar::defines_symbols)
+    }
+
+    /// How many extensions are claimed, for a test and for `symbol cost`.
+    pub fn len(&self) -> usize {
+        self.by_extension.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.by_extension.is_empty()
+    }
 }
 
 /// Read one plugin folder.
@@ -337,6 +395,11 @@ pub fn parse(values: &Values, bundled: bool) -> Result<Plugin, String> {
             .filter_map(|character| character.trim().chars().next())
             .collect(),
         hex_colors: values.flag("language.hex_colors").unwrap_or(false),
+        // The two `task-1675` added, both off unless a language asks for them, which is the rule
+        // every key added since `task-1671` has followed and which
+        // `the_older_plugins_ask_for_none_of_what_the_symbols_added` keeps.
+        definers: definers(values)?,
+        brace_definitions: values.flag("language.brace_definitions").unwrap_or(false),
     };
     let colours: Vec<(Token, Color)> = Token::ALL
         .into_iter()
@@ -364,6 +427,36 @@ pub fn parse(values: &Values, bundled: bool) -> Result<Plugin, String> {
         bundled,
         enabled: true,
     })
+}
+
+/// `language.definers`: a comma list of `keyword=kind` saying which keyword makes the word after
+/// it a definition, and of what.
+///
+/// The kind is checked against what `quill_core::symbols` actually has, for the same reason
+/// `plugin.kind` and `language.renders` are checked: a manifest asking for something this version
+/// does not know should say so plainly rather than load as a language whose declarations are
+/// quietly never found. An entry that is not a pair is refused for the same reason — silently
+/// dropping it would leave a language half able to answer.
+fn definers(values: &Values) -> Result<Vec<(String, SymbolKind)>, String> {
+    let mut found = Vec::new();
+    for entry in list(values, "language.definers") {
+        let Some((keyword, kind)) = entry.split_once('=') else {
+            return Err(format!("language.definers holds `{entry}`, which is not `keyword=kind`"));
+        };
+        let Some(parsed) = SymbolKind::parse(kind) else {
+            let known: Vec<&str> = SymbolKind::ALL.iter().map(|kind| kind.name()).collect();
+            return Err(format!(
+                "language.definers says `{entry}`, and a definition in Quill is one of {}",
+                known.join(", ")
+            ));
+        };
+        let keyword = keyword.trim();
+        if keyword.is_empty() {
+            return Err(format!("language.definers holds `{entry}`, which names no keyword"));
+        }
+        found.push((keyword.to_owned(), parsed));
+    }
+    Ok(found)
 }
 
 /// A comma separated value as a list, with the spaces trimmed and the empty entries dropped.
@@ -568,6 +661,88 @@ mod tests {
             assert!(!plugin.grammar.hex_colors, "{}", plugin.id);
             assert!(plugin.grammar.types.is_empty(), "{}", plugin.id);
         }
+    }
+
+    #[test]
+    fn the_older_plugins_ask_for_none_of_what_the_symbols_added() {
+        // The same rule for the two keys `task-1675` added: a language that does not name them is a
+        // language nothing about it changed for. CSS and Mermaid are deliberately among them —
+        // `--brand-hue: 280` defines a custom property by position rather than by keyword, and a
+        // rule that read `:` as a definer would call every property a definition.
+        let (plugins, _) = Plugins::load(None);
+        for id in ["css", "mermaid"] {
+            let plugin = plugins.get(id).expect(id);
+            assert!(plugin.grammar.definers.is_empty(), "{id} names no definers");
+            assert!(!plugin.grammar.brace_definitions, "{id} asks for no brace rule");
+            assert!(!plugin.grammar.defines_symbols(), "so the entries are absent for {id}");
+        }
+    }
+
+    #[test]
+    fn the_three_code_plugins_say_which_keyword_defines_what() {
+        let (plugins, problems) = Plugins::load(None);
+        assert!(problems.is_empty(), "{problems:?}");
+        let rust = plugins.get("rust").expect("rust");
+        assert_eq!(rust.grammar.definer("fn"), Some(SymbolKind::Function));
+        assert_eq!(rust.grammar.definer("struct"), Some(SymbolKind::Type));
+        assert_eq!(rust.grammar.definer("let"), Some(SymbolKind::Variable));
+        assert_eq!(rust.grammar.definer("mod"), Some(SymbolKind::Module));
+        assert_eq!(rust.grammar.definer("const"), Some(SymbolKind::Constant));
+        assert_eq!(rust.grammar.definer("impl"), None, "an impl block declares no name");
+        assert!(!rust.grammar.brace_definitions, "Rust never hides a definition behind a brace");
+
+        // JavaScript and TypeScript do, which is the whole reason the second key exists.
+        for id in ["javascript", "typescript"] {
+            let plugin = plugins.get(id).expect(id);
+            assert_eq!(plugin.grammar.definer("function"), Some(SymbolKind::Function), "{id}");
+            assert_eq!(plugin.grammar.definer("class"), Some(SymbolKind::Type), "{id}");
+            assert_eq!(plugin.grammar.definer("const"), Some(SymbolKind::Variable), "{id}");
+            assert!(plugin.grammar.brace_definitions, "{id} has methods with no keyword");
+            assert!(plugin.grammar.defines_symbols());
+        }
+        // TypeScript adds the four words it has of its own.
+        let typescript = plugins.get("typescript").expect("typescript");
+        assert_eq!(typescript.grammar.definer("interface"), Some(SymbolKind::Type));
+        assert_eq!(typescript.grammar.definer("enum"), Some(SymbolKind::Type));
+        assert_eq!(typescript.grammar.definer("type"), Some(SymbolKind::Type));
+        assert_eq!(typescript.grammar.definer("namespace"), Some(SymbolKind::Module));
+        assert_eq!(plugins.get("javascript").expect("js").grammar.definer("interface"), None);
+    }
+
+    #[test]
+    fn what_the_definers_add_up_to_read_through_the_reader_the_window_uses() {
+        // The keys are data, so what proves they reached the grammar is what a file becomes.
+        let (plugins, _) = Plugins::load(None);
+        let rust = plugins.get("rust").expect("rust");
+        let source = "pub fn draw(area: Rect) {}\npub struct Layout;\nconst LIMIT: usize = 4;\n";
+        let found: Vec<(&str, SymbolKind)> =
+            quill_core::symbols::file_definitions(source, &rust.grammar)
+                .into_iter()
+                .map(|definition| (&source[definition.name_range], definition.kind))
+                .collect();
+        assert!(found.contains(&("draw", SymbolKind::Function)), "{found:?}");
+        assert!(found.contains(&("Layout", SymbolKind::Type)), "{found:?}");
+        assert!(found.contains(&("LIMIT", SymbolKind::Constant)), "{found:?}");
+
+        let typescript = plugins.get("typescript").expect("typescript");
+        let source = "class Panel {\n  render(area: Rect) {\n    return area;\n  }\n}\n";
+        let found: Vec<&str> = quill_core::symbols::file_definitions(source, &typescript.grammar)
+            .into_iter()
+            .map(|definition| &source[definition.name_range])
+            .collect();
+        assert_eq!(found, vec!["Panel", "render"], "the method has no keyword in front of it");
+    }
+
+    #[test]
+    fn a_definers_entry_that_is_not_a_pair_or_names_an_unknown_kind_is_refused() {
+        // The rule `plugin.kind` and `language.renders` already keep: a manifest asking for
+        // something this version does not know says so rather than half loading.
+        let text = "plugin.id = a\nlanguage.extensions = .a\nlanguage.definers = fn";
+        let problem = parse(&Values::parse(text), false).expect_err("`fn` is not a pair");
+        assert!(problem.contains("keyword=kind"), "{problem}");
+        let text = "plugin.id = a\nlanguage.extensions = .a\nlanguage.definers = fn=gadget";
+        let problem = parse(&Values::parse(text), false).expect_err("there is no gadget kind");
+        assert!(problem.contains("gadget") && problem.contains("function"), "{problem}");
     }
 
     #[test]

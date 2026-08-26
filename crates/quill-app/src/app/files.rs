@@ -67,6 +67,14 @@ pub struct Cached {
     pub preview_pictures: Vec<PlacedPicture>,
     /// The diagrams in the preview, in the order they appear.
     pub preview_diagrams: Vec<PlacedDiagram>,
+    /// What this file's live text defines and where its words are, worked out from it and kept
+    /// until the text changes.
+    ///
+    /// The ownership rule `task-1675` follows: **a file that is open is owned by its `Document`**,
+    /// so the project's index deliberately holds nothing for it and this is the answer instead.
+    /// Keyed on `text_revision`, the same key `colour_the_file` is keyed on, so a caret move
+    /// recomputes nothing.
+    pub symbols: Option<crate::app::symbols::TabSymbols>,
 }
 
 impl Cached {
