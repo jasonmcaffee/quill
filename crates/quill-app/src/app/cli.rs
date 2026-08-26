@@ -54,6 +54,7 @@ use crate::components::prompt_dialog::{Prompt, Purpose};
 use crate::services::control::Pending;
 use crate::services::file_kind;
 use crate::settings;
+use crate::theme::size;
 
 /// How long a command waits when it was not told.
 const DEFAULT_WAIT: Duration = Duration::from_millis(10_000);
@@ -619,11 +620,54 @@ impl QuillApp {
                 self.forget_layout();
                 done(request, format!("Showing {}", self.files.active().name()))
             }
+            "move" => self.cli_tab_move(request),
             "save" => self.cli_tab_save(request),
             "save-as" => self.cli_tab_save_as(request),
             "reload" => self.cli_tab_reload(request),
             _ => unknown(request),
         }
+    }
+
+    /// `quill-cli tab move <position> [--tab] [--pane]` — what dragging a tab does.
+    ///
+    /// It goes through `OpenFiles::drag_tab`, which is the same call the drag makes, so a
+    /// rearrangement made from a script and one made with the pointer are the same rearrangement —
+    /// including what `position` counts, which is the target pane's tabs as they are on the screen.
+    fn cli_tab_move(&mut self, request: &Request) -> Outcome {
+        let Some(position) = request.whole("position") else {
+            return no(request, code::USAGE, "Say where it goes, counting from 0.");
+        };
+        let index = if request.has("tab") {
+            match self.cli_find_tab(request, "tab") {
+                Ok(index) => index,
+                Err(outcome) => return outcome,
+            }
+        } else {
+            self.files.active_index()
+        };
+        let pane = request.whole("pane").unwrap_or_else(|| self.files.pane_of(index));
+        if pane >= self.files.pane_count() {
+            return no(
+                request,
+                code::NOT_FOUND,
+                format!("There is no pane {pane}; there are {}.", self.files.pane_count()),
+            );
+        }
+        let name = self.files.at(index).name();
+        if !self.files.drag_tab(index, pane, position) {
+            return no(request, code::NOT_APPLICABLE, format!("{name} could not be moved there."));
+        }
+        self.forget_layout();
+        let landed = self.files.active_index();
+        ok(
+            request,
+            format!(
+                "{name} is tab {} of pane {}",
+                self.files.tabs_in(self.files.pane_of(landed)).iter().position(|at| *at == landed).unwrap_or(0),
+                self.files.pane_of(landed)
+            ),
+            self.panes_value(),
+        )
     }
 
     // ---------------------------------------------------------------- the panes
@@ -1408,9 +1452,74 @@ impl QuillApp {
             "undo" => self.cli_editor_history(request, true),
             "redo" => self.cli_editor_history(request, false),
             "view" => self.cli_editor_view(request, ctx),
+            "scroll" => self.cli_editor_scroll(request),
             "preview" => self.cli_editor_preview(request, ctx),
             _ => unknown(request),
         }
+    }
+
+    /// `quill-cli editor scroll` — how far through the file the view is, and moving it.
+    ///
+    /// The page it measures against is the one the window laid out on the last frame it drew, which
+    /// is the same page the wheel and the scrollbar move. In side by side the other half follows,
+    /// through the same `follow_the_other_half` a wheel goes through — the frame's own rule cannot
+    /// notice this one, because a command is applied before the frame draws anything and so there is
+    /// nothing for its before-and-after comparison to see.
+    fn cli_editor_scroll(&mut self, request: &Request) -> Outcome {
+        if self.files.active().is_picture() {
+            return no(request, code::NOT_APPLICABLE, "This tab holds a picture, which is panned rather than scrolled.");
+        }
+        let preview = request.switch("preview");
+        let room = (self.editor_area.height() - size::EDITOR_PADDING_Y * 2.0).max(0.0);
+        let page = if preview { self.preview_layout() } else { self.layout() };
+        let height = page.height;
+        let overflow = (height - room).max(0.0);
+        let wanted = if request.switch("top") {
+            Some(0.0)
+        } else if request.switch("bottom") {
+            Some(overflow)
+        } else if let Some(line) = request.whole("line") {
+            // Counting from one, as the status bar and `editor caret` do.
+            let paragraph = line.max(1) - 1;
+            Some(page.paragraph_band(paragraph).map(|(top, _)| top).unwrap_or(overflow))
+        } else {
+            request.number("to").map(|points| points as f32)
+        };
+        if let Some(to) = wanted {
+            let to = to.clamp(0.0, overflow);
+            let file = self.files.active_mut();
+            if preview {
+                file.preview_scroll = to;
+            } else {
+                file.scroll = to;
+            }
+            if self.view_mode() == ViewMode::SideBySide {
+                self.follow_the_other_half(!preview, room);
+            }
+        }
+        let file = self.files.active();
+        ok(
+            request,
+            format!(
+                "{} \u{00B7} source {:.0} of {:.0} \u{00B7} preview {:.0} of {:.0}",
+                file.name(),
+                file.scroll,
+                file.cached.layout.height,
+                file.preview_scroll,
+                file.cached.preview_layout.height,
+            ),
+            json!({
+                "tab": self.files.active_index(),
+                "name": file.name(),
+                "view": room,
+                "source": { "scroll": file.scroll, "height": file.cached.layout.height },
+                "preview": {
+                    "scroll": file.preview_scroll,
+                    "height": file.cached.preview_layout.height,
+                },
+                "viewMode": view_mode_name(self.view_mode()),
+            }),
+        )
     }
 
     fn editor_sentence(&self) -> String {

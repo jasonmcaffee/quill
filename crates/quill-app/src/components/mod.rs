@@ -24,6 +24,7 @@ pub mod picture_view;
 pub mod plugins_page;
 pub mod prompt_dialog;
 pub mod resize_edges;
+pub mod scrollbar;
 pub mod settings_dialog;
 pub mod splitter;
 pub mod status_bar;

@@ -215,6 +215,23 @@ its size to `settings::Panes`, with a smallest and a largest, clamped both when 
 when dragging — and the divider is added to the `Ui` **after** the panes either side of it, or the
 pane's own drag area sits on top of it and it never gets the drag.
 
+**A scrollbar.** `components::scrollbar`, on anything that scrolls like a page. A 14 point strip
+takes the pointer, inset 6 points from the right of the pane it belongs to — the same 6 the rail's
+buttons are inset by and exactly what `components::resize_edges` takes, so the bar, a pane divider
+and the window's own grip never want the same point. It lands inside `EDITOR_PADDING_X`, so no letter
+is ever drawn underneath it. **Quiet, the thumb is a 5 point mark in `CONTROL`; used, an 8 point mark
+in `TEXT_DIM` with the track behind it in `DIVIDER`**, and it settles back over 0.45 seconds after
+0.9 seconds of nothing happening. It is never taken away altogether: a bar that disappears stops
+answering "how far through this am I", which is half of what it is for. Its corner radius is 4, its
+length says how much of the page is showing, and it is never shorter than 28 points. Nothing is drawn
+at all when the page fits.
+
+It is **two calls rather than one**, which is the one place a component in Quill is: `grab` takes the
+pointer where the pane takes its own, so the bar wins the point over the text under it, and `paint`
+draws at the end of the frame, once the wheel and the caret have had their say — a thumb drawn from
+the scroll position the frame opened with is a frame behind the writing, which on a fast scroll can
+be seen.
+
 ## Type
 
 There is one type scale, and a new number is not invented.

@@ -785,6 +785,43 @@ impl Layout {
         index.min(self.lines.len() - 1)
     }
 
+    /// How many paragraphs this layout covers.
+    pub fn paragraph_count(&self) -> usize {
+        self.starts.len().saturating_sub(1)
+    }
+
+    /// Where one paragraph sits on the page: the top of its first line, and how tall all of its
+    /// lines are together.
+    ///
+    /// A paragraph rather than a line, because a paragraph is the thing two layouts of the same
+    /// document can agree about. One source line is one paragraph and may wrap to five lines at one
+    /// width and to two at another, so a line number means nothing across a re-layout while a
+    /// paragraph number means the same thing in both. `None` past the end.
+    pub fn paragraph_band(&self, paragraph: usize) -> Option<(f32, f32)> {
+        let start = *self.starts.get(paragraph)?;
+        let end = *self.starts.get(paragraph + 1)?;
+        let first = self.lines.get(start)?;
+        let last = self.lines.get(end.saturating_sub(1))?;
+        Some((first.y, (last.bottom() - first.y).max(0.0)))
+    }
+
+    /// Which paragraph a vertical position falls in, and how far down it the point sits — 0 at its
+    /// top edge and 1 at its bottom.
+    ///
+    /// The pair [`Self::paragraph_band`] takes back. Clamped to the first and last paragraphs, so a
+    /// point above or below the text has an answer rather than none.
+    pub fn paragraph_at_y(&self, y: f32) -> (usize, f32) {
+        let Some(line) = self.lines.get(self.line_at_y(y)) else {
+            return (0, 0.0);
+        };
+        let paragraph = line.paragraph;
+        let Some((top, height)) = self.paragraph_band(paragraph) else {
+            return (paragraph, 0.0);
+        };
+        let fraction = if height > 0.0 { ((y - top) / height).clamp(0.0, 1.0) } else { 0.0 };
+        (paragraph, fraction)
+    }
+
     /// The bytes of every line between two vertical positions, which is what is on the screen.
     ///
     /// A binary search at each end rather than a walk, because this is asked once a frame while

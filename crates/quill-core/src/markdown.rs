@@ -110,6 +110,19 @@ pub struct Preview {
     pub text: Rope,
     pub chars: StyleSpans,
     pub paragraphs: ParagraphStyles,
+    /// Which line of the source each line of the preview came from, one entry a line.
+    ///
+    /// This is what lets the source and its preview be scrolled together. A scroll position is a
+    /// number of points down a page, and the two pages are nothing like the same height — a heading
+    /// is one line of source and three times the height on the page — so the only honest way across
+    /// is the text itself. It never goes backwards, because the source is read from the top down,
+    /// which is what makes finding a line a binary search.
+    ///
+    /// It is not one to one in either direction. The backticks of a fence produce no preview line at
+    /// all, and a whole Mermaid fence produces a single one — named after the line the fence
+    /// **opened** on rather than the one it closed on, because that is the line a reader scrolling
+    /// to the diagram is looking for.
+    pub source_lines: Vec<usize>,
     /// The pictures, in the order they appear.
     pub images: Vec<PreviewImage>,
     /// The diagrams, in the order they appear.
@@ -123,6 +136,7 @@ impl Preview {
             text: Rope::new(),
             chars: StyleSpans::new(0, base.clone()),
             paragraphs: ParagraphStyles::new(1),
+            source_lines: vec![0],
             images: Vec::new(),
             diagrams: Vec::new(),
         }
@@ -136,6 +150,11 @@ struct Builder {
     runs: Vec<(usize, CharStyle)>,
     /// One entry per line of `out`.
     paragraphs: Vec<ParagraphStyle>,
+    /// Which line of the source the line being built came from. [`render`] sets it as it walks, so
+    /// that [`Builder::end_line`] can record it without all nine branches of the walk passing it in.
+    source_line: usize,
+    /// One entry per line of `out`, taken from `source_line` as each line is ended.
+    source_lines: Vec<usize>,
     base: CharStyle,
     colors: PreviewColors,
     /// The family to set code in, if this system has a monospaced one.
@@ -152,6 +171,8 @@ impl Builder {
             out: String::new(),
             runs: Vec::new(),
             paragraphs: Vec::new(),
+            source_line: 0,
+            source_lines: Vec::new(),
             base,
             colors,
             mono,
@@ -176,6 +197,7 @@ impl Builder {
     /// End the current line, recording how that whole line is placed.
     fn end_line(&mut self, paragraph: ParagraphStyle) {
         self.paragraphs.push(paragraph);
+        self.source_lines.push(self.source_line);
         self.out.push('\n');
         // The line break itself carries the style of whatever came before it.
         let style = self.runs.last().map(|(_, s)| s.clone()).unwrap_or_else(|| self.base.clone());
@@ -223,6 +245,7 @@ impl Builder {
         }
         if self.paragraphs.is_empty() {
             self.paragraphs.push(ParagraphStyle::default());
+            self.source_lines.push(0);
         }
         let mut chars = StyleSpans::new(0, self.base.clone());
         let mut at = 0;
@@ -235,6 +258,7 @@ impl Builder {
             text: Rope::from_str(&self.out),
             chars,
             paragraphs: ParagraphStyles::from_styles(self.paragraphs),
+            source_lines: self.source_lines,
             images: self.images,
             diagrams: self.diagrams,
         }
@@ -373,15 +397,22 @@ pub fn render(
     let mut in_code_block = false;
     // The lines of a mermaid fence, collected while one is open, and `None` while one is not.
     let mut diagram: Option<Vec<&str>> = None;
+    // Which line the open Mermaid fence started on, so that the single paragraph the whole diagram
+    // becomes is named after the fence rather than after the backticks that closed it.
+    let mut diagram_from = 0;
 
-    for raw in source.split('\n') {
+    for (number, raw) in source.split('\n').enumerate() {
         let line = classify(raw);
+        // Every line ended from here on came from this line of the source. Set once rather than
+        // passed into all nine branches below. See `Preview::source_lines`.
+        builder.source_line = number;
 
         // A mermaid fence is gathered whole rather than shown a line at a time, and becomes one
         // empty paragraph for the application to draw the diagram into.
         if let Some(collected) = &mut diagram {
             if matches!(line, Line::Fence(_)) {
                 builder.diagram(&collected.join("\n"));
+                builder.source_line = diagram_from;
                 builder.end_line(ParagraphStyle::default());
                 diagram = None;
                 continue;
@@ -405,6 +436,7 @@ pub fn render(
         match line {
             Line::Fence(language) if is_mermaid(language) => {
                 diagram = Some(Vec::new());
+                diagram_from = number;
             }
             Line::Fence(_) => {
                 in_code_block = true;
@@ -498,6 +530,7 @@ pub fn render(
     // until the closing backticks arrive.
     if let Some(collected) = diagram {
         builder.diagram(&collected.join("\n"));
+        builder.source_line = diagram_from;
         builder.end_line(ParagraphStyle::default());
     }
     builder.finish()
@@ -905,6 +938,24 @@ mod tests {
                 preview.paragraphs.len(),
                 preview.text.len_lines(),
                 "paragraph count does not match the line count for {source:?}"
+            );
+            // The source line map is the fourth structure and has to keep in step with the other
+            // three, or scrolling the source moves the preview to a paragraph that is not there.
+            assert_eq!(
+                preview.source_lines.len(),
+                preview.text.len_lines(),
+                "the source line map does not match the line count for {source:?}"
+            );
+            assert!(
+                preview.source_lines.windows(2).all(|pair| pair[0] <= pair[1]),
+                "the source line map goes backwards for {source:?}: {:?}",
+                preview.source_lines
+            );
+            let last = source.split('\n').count().saturating_sub(1);
+            assert!(
+                preview.source_lines.iter().all(|line| *line <= last),
+                "the source line map names a line past the end of {source:?}: {:?}",
+                preview.source_lines
             );
             // Laying it out must not panic on any of these.
             let _ = crate::layout::layout(

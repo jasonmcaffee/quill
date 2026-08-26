@@ -2043,6 +2043,220 @@ fn the_split_between_the_source_and_the_preview_can_be_dragged() {
     harness.snapshot(shot("preview_split_dragged"));
 }
 
+// The scrollbar, the two halves scrolling together, and dragging a tab — `task-1673`.
+
+/// A long enough file that both halves of the side by side view have somewhere to scroll to.
+fn a_long_markdown() -> String {
+    let mut source = String::from("# The top of the file\n\n");
+    for section in 0..40 {
+        source.push_str(&format!("## Section {section}\n\nA paragraph of prose in section {section}, long enough that it is worth reading and takes a line or two of the page to say.\n\n"));
+    }
+    source
+}
+
+#[test]
+fn a_document_taller_than_its_pane_has_a_scrollbar_that_can_be_dragged() {
+    let mut harness = harness(&a_long_markdown());
+    assert_eq!(harness.state().files.active().scroll, 0.0, "it starts at the top");
+    let track = harness.get_by_label("Scroll untitled").rect();
+    // From the thumb at the top of the track to a good way down it.
+    let from = egui::pos2(track.center().x, track.top() + 10.0);
+    drag(&mut harness, from, egui::pos2(track.center().x, track.center().y));
+    let scrolled = harness.state().files.active().scroll;
+    assert!(scrolled > 100.0, "dragging the thumb should have scrolled the file, it is at {scrolled}");
+    // And it stops where the page stops rather than running off the end.
+    drag(&mut harness, egui::pos2(track.center().x, track.center().y), egui::pos2(track.center().x, track.bottom() + 400.0));
+    let bottom = harness.state().files.active().scroll;
+    let overflow = harness.state().layout().height - harness.state().editor_area().height()
+        + quill_app::theme::size::EDITOR_PADDING_Y * 2.0;
+    assert!(bottom <= overflow + 1.0, "{bottom} is past the {overflow} there is to scroll");
+    harness.snapshot(shot("scrollbar_dragged"));
+}
+
+#[test]
+fn a_document_that_fits_its_pane_has_no_scrollbar() {
+    let mut harness = harness("one line");
+    harness.run();
+    assert!(
+        harness.query_by_label("Scroll untitled").is_none(),
+        "nothing to scroll, so there is nothing to draw"
+    );
+}
+
+#[test]
+fn scrolling_the_source_scrolls_the_preview_with_it() {
+    let mut harness = harness(&a_long_markdown());
+    harness.get_by_label("Side by side").click();
+    harness.run();
+    assert_eq!(harness.state().files.active().preview_scroll, 0.0);
+    // The wheel over the source, which is what a person does.
+    let over_the_source = harness.state().editor_area().center();
+    harness.input_mut().events.push(egui::Event::PointerMoved(over_the_source));
+    harness.run();
+    harness.input_mut().events.push(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: vec2(0.0, -600.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: Modifiers::default(),
+    });
+    harness.run();
+    harness.run();
+    let source = harness.state().files.active().scroll;
+    let preview = harness.state().files.active().preview_scroll;
+    assert!(source > 100.0, "the source should have scrolled, it is at {source}");
+    assert!(preview > 100.0, "and the preview should have followed it, it is at {preview}");
+    // And they are showing the same part of the file, rather than the same number of points down two
+    // pages of different heights.
+    let paragraph = harness.state().layout().paragraph_at_y(source).0;
+    let map = harness.state().preview_source_lines();
+    let line = map.get(harness.state().preview_layout().paragraph_at_y(preview).0).copied().unwrap_or(0);
+    assert!(
+        line.abs_diff(paragraph) <= 1,
+        "the source is at line {paragraph} and the preview is showing line {line}"
+    );
+    harness.snapshot(shot("side_by_side_scrolled_together"));
+}
+
+#[test]
+fn scrolling_the_preview_scrolls_the_source_with_it() {
+    let mut harness = harness(&a_long_markdown());
+    harness.get_by_label("Side by side").click();
+    harness.run();
+    // The wheel over the preview, which is the right hand half of the editing area.
+    let source_area = harness.state().editor_area();
+    let over_the_preview = egui::pos2(source_area.right() + source_area.width() / 2.0, source_area.center().y);
+    harness.input_mut().events.push(egui::Event::PointerMoved(over_the_preview));
+    harness.run();
+    harness.input_mut().events.push(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: vec2(0.0, -600.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: Modifiers::default(),
+    });
+    harness.run();
+    harness.run();
+    assert!(harness.state().files.active().preview_scroll > 100.0);
+    assert!(
+        harness.state().files.active().scroll > 100.0,
+        "the source should have followed the preview, it is at {}",
+        harness.state().files.active().scroll
+    );
+}
+
+/// **The two halves settle rather than chasing each other.** The crossing snaps to a paragraph, so a
+/// rule that moved both halves every frame would creep down the file on its own for as long as the
+/// window was left open. Nothing is touched, and both stay where they were.
+#[test]
+fn the_two_halves_do_not_chase_each_other_when_nothing_is_touched() {
+    let mut harness = harness(&a_long_markdown());
+    harness.get_by_label("Side by side").click();
+    harness.run();
+    harness.state_mut().files.active_mut().scroll = 900.0;
+    harness.run();
+    harness.run();
+    let settled = (
+        harness.state().files.active().scroll,
+        harness.state().files.active().preview_scroll,
+    );
+    for _ in 0..30 {
+        harness.run();
+    }
+    let after = (
+        harness.state().files.active().scroll,
+        harness.state().files.active().preview_scroll,
+    );
+    assert!(
+        (settled.0 - after.0).abs() < 0.5 && (settled.1 - after.1).abs() < 0.5,
+        "left alone for thirty frames the view moved from {settled:?} to {after:?}"
+    );
+}
+
+#[test]
+fn a_tab_can_be_dragged_along_the_strip_to_rearrange_it() {
+    let mut harness = harness("");
+    let folder = sample_folder();
+    for name in ["notes.txt", "readme.md", "program.rs"] {
+        harness.state_mut().open_path_permanently(&folder.join(name));
+        harness.run();
+    }
+    let names = |harness: &Harness<'static, QuillApp>| -> Vec<String> {
+        harness.state().files.iter().map(|file| file.name()).collect()
+    };
+    assert_eq!(names(&harness), vec!["notes.txt", "readme.md", "program.rs"]);
+    let first = harness.get_by_label("Tab: notes.txt").rect();
+    let last = harness.get_by_label("Tab: program.rs").rect();
+    drag(&mut harness, first.center(), egui::pos2(last.right() - 4.0, last.center().y));
+    assert_eq!(
+        names(&harness),
+        vec!["readme.md", "program.rs", "notes.txt"],
+        "the tab should have been carried to the end of the strip"
+    );
+    assert_eq!(harness.state().files.active().name(), "notes.txt", "and be showing where it landed");
+    harness.snapshot(shot("tab_dragged_along_the_strip"));
+}
+
+#[test]
+fn a_tab_can_be_dragged_from_one_pane_into_the_other() {
+    let mut harness = harness("");
+    let folder = sample_folder();
+    for name in ["notes.txt", "readme.md"] {
+        harness.state_mut().open_path_permanently(&folder.join(name));
+        harness.run();
+    }
+    let ctx = harness.ctx.clone();
+    harness.state_mut().run_action(Action::SplitRight, &ctx);
+    harness.run();
+    assert_eq!(harness.state().files.pane_count(), 2);
+    assert_eq!(harness.state().files.pane_of(0), 0, "notes.txt stays on the left");
+    assert_eq!(harness.state().files.pane_of(1), 1, "readme.md went into the new pane");
+    // Carry notes.txt out of the pane on the left and into the pane on the right.
+    let tab = harness.get_by_label("Tab: notes.txt").rect();
+    let target = harness.get_by_label("Tab: readme.md").rect();
+    drag(&mut harness, tab.center(), egui::pos2(target.right() - 4.0, target.center().y));
+    assert_eq!(
+        harness.state().files.pane_count(),
+        1,
+        "the pane it was carried out of held nothing else, so it went with it"
+    );
+    let names: Vec<String> = harness.state().files.iter().map(|file| file.name()).collect();
+    assert_eq!(names, vec!["readme.md", "notes.txt"]);
+}
+
+#[test]
+fn right_clicking_the_project_name_opens_the_same_menu_a_folder_does() {
+    let mut harness = harness("");
+    let heading = harness.get_by_label(&sample_folder().file_name().unwrap().to_string_lossy()).rect();
+    harness.input_mut().events.push(egui::Event::PointerButton {
+        pos: heading.center(),
+        button: egui::PointerButton::Secondary,
+        pressed: true,
+        modifiers: Modifiers::default(),
+    });
+    harness.run();
+    harness.input_mut().events.push(egui::Event::PointerButton {
+        pos: heading.center(),
+        button: egui::PointerButton::Secondary,
+        pressed: false,
+        modifiers: Modifiers::default(),
+    });
+    harness.run();
+    let opened = harness.state().explorer_menu.clone();
+    let (_, path, directory) = opened.expect("the project's name should open the explorer's menu");
+    assert_eq!(path, sample_folder(), "the menu is about the project folder");
+    assert!(directory, "and it is a folder, so `New -> File` makes a file inside it");
+    harness.run();
+    harness.snapshot(shot("project_name_menu"));
+}
+
+/// The plus beside the project's name is gone. It never made a file — it asked the window to save —
+/// and `task-1673` asks for it to go.
+#[test]
+fn there_is_no_new_file_button_beside_the_project_name() {
+    let harness = harness("");
+    assert!(harness.query_by_label("New file").is_none());
+    assert!(harness.query_by_label("Hide the explorer").is_some(), "the other button stays");
+}
+
 // The terminal.
 
 /// A window with a terminal open that has no shell behind it, so that what it draws is the same on every

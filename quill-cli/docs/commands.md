@@ -486,6 +486,24 @@ Show the previous tab.
 quill-cli tab previous
 ```
 
+### tab move
+
+```
+quill-cli tab move <position> [--tab <tab>] [--pane <number>]
+```
+
+Move a tab along its strip, or into another pane, which is what dragging it does. The position counts the tabs of the pane it is going to, as they are on the screen now.
+
+- `position` — Where it goes, counting from 0. Past the end means the end.
+
+- `--tab <tab>` — Which tab to move: its number, name or path. The tab that is showing when it is left out.
+- `--pane <number>` — Which pane to move it into, counting from 0. The pane it is already in when it is left out.
+
+```sh
+quill-cli tab move 0
+quill-cli tab move 0 --tab notes.md --pane 1
+```
+
 ### tab save
 
 ```
@@ -760,6 +778,26 @@ Choose how a file with a preview is shown: the source, the source and the previe
 ```sh
 quill-cli editor view preview
 quill-cli editor view side
+```
+
+### editor scroll
+
+```
+quill-cli editor scroll [--line <number>] [--to <points>] [--top] [--bottom] [--preview]
+```
+
+Read how far the tab that is showing is scrolled, or scroll it. With no flags it reports both halves of the side by side view. In side by side the other half follows, exactly as it does when you scroll with the wheel.
+
+- `--line <number>` — Scroll so this line is at the top, counting from 1.
+- `--to <points>` — Scroll to this many points down the page.
+- `--top` — Scroll to the top.
+- `--bottom` — Scroll to the bottom.
+- `--preview` — Scroll the Markdown preview rather than the source.
+
+```sh
+quill-cli editor scroll --json
+quill-cli editor scroll --line 120
+quill-cli editor scroll --preview --top
 ```
 
 ### editor preview

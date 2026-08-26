@@ -52,6 +52,7 @@ use crate::components::gutter::{self, Gutter};
 use crate::components::picture_view;
 use crate::components::prompt_dialog::{self, Prompt, Purpose};
 use crate::components::resize_edges;
+use crate::components::scrollbar;
 use crate::components::settings_dialog::{self, SettingsWindow};
 use crate::components::splitter;
 use crate::components::status_bar;
@@ -243,6 +244,24 @@ pub enum Focus {
     Terminal,
 }
 
+/// A tab being carried by the pointer.
+///
+/// `task-1673` asks for IntelliJ's two: rearranging the tabs in a pane, and dragging a tab from one
+/// pane into another. Both are one gesture, and where it ends is not a question a strip of tabs can
+/// answer — each pane draws its own strip and has never heard of the others, while the pointer
+/// wanders freely between them. So the strip reports **that** a tab is being carried and where the
+/// pointer is, and `QuillApp::settle_the_tab_drag` decides where it landed once every pane has said
+/// where its own tabs are.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct TabDrag {
+    /// Which open file is in the air, as an index into `files`.
+    file: usize,
+    /// Where the pointer is now.
+    at: Pos2,
+    /// It was let go on this frame.
+    dropped: bool,
+}
+
 /// True when one of the window's text boxes has the keyboard: the explorer's filter, the commit
 /// message, the rename prompt, the plugin search or the settings search.
 ///
@@ -404,6 +423,13 @@ pub struct QuillApp {
     /// menu shows the tab it was opened on first. The editing area's own menu already sets that
     /// precedent: a right click outside the selection puts the caret there before opening.
     pub tab_menu: Option<(Pos2, usize)>,
+    /// The tab being carried by the pointer, while one is. Frame local: the strip reports the drag
+    /// every frame it is held and the window settles it once every pane has drawn, because a tab
+    /// picked up in one pane is very often dropped on another and no one strip can see them all.
+    tab_drag: Option<TabDrag>,
+    /// Where each pane's strip of tabs drew itself and its tabs, in pane order. Frame local, and
+    /// rebuilt by the pane loop, which is the only thing that can know it.
+    tab_strips: Vec<file_tabs::Strip>,
     /// The editing area's own menu, when it is open. Held here for the same reason the gutter's is,
     /// and it carries the colour wheel with it.
     pub text_menu: Option<text_menu::TextMenu>,
@@ -479,6 +505,8 @@ impl QuillApp {
             gutter_menu: None,
             text_menu: None,
             tab_menu: None,
+            tab_drag: None,
+            tab_strips: Vec::new(),
             last_highlight: theme::color::HIGHLIGHT_YELLOW,
             marks: FileMarks::new(),
             control: None,
@@ -2034,6 +2062,19 @@ impl QuillApp {
         self.files.active().cached.preview.as_ref().map(|p| p.text.to_string()).unwrap_or_default()
     }
 
+    /// Which line of the source each line of the preview came from, for a test. See
+    /// `quill_core::Preview::source_lines`, which is what the two halves of the side by side view
+    /// are scrolled together through.
+    pub fn preview_source_lines(&self) -> Vec<usize> {
+        self.files
+            .active()
+            .cached
+            .preview
+            .as_ref()
+            .map(|preview| preview.source_lines.clone())
+            .unwrap_or_default()
+    }
+
     /// The pictures the preview is drawing, for a test.
     pub fn preview_pictures(&self) -> &[PlacedPicture] {
         &self.files.active().cached.preview_pictures
@@ -2560,9 +2601,6 @@ impl QuillApp {
             if explorer_outcome.hide {
                 self.explorer_visible = false;
             }
-            if explorer_outcome.add {
-                self.save();
-            }
             if let Some((at, path, directory)) = explorer_outcome.context_menu {
                 self.explorer_menu = Some((at, path, directory));
             }
@@ -2580,6 +2618,8 @@ impl QuillApp {
         let pane_rects = self.pane_rects(editing_area);
         let had_the_keyboard = self.files.focused_pane();
         let mut keyboard = had_the_keyboard;
+        self.tab_strips.clear();
+        self.tab_drag = None;
         // A close can remove a pane and renumber the ones after it, so it is done once the loop has
         // finished rather than underneath itself.
         let mut close: Option<usize> = None;
@@ -2593,6 +2633,9 @@ impl QuillApp {
         if let Some(index) = close {
             self.close_tab(index);
         }
+        // Where a tab being carried would land, and where it did. After the loop, because a tab
+        // picked up in one pane is dropped on another as often as not.
+        self.settle_the_tab_drag(ui, &pane_rects);
         // A gesture nobody was pointing at belongs to the pane being typed into. Here rather than
         // in the loop, because a pane earlier in the row must not take a gesture aimed at one
         // later in it, and which pane the pointer is over is not known until they are all drawn.
@@ -3224,6 +3267,14 @@ impl QuillApp {
             file_tabs::show(&mut tabs_ui, tabs_rect, &tabs, active, pane, focused, opacity)
         };
         let at = |within: usize| indices.get(within).copied();
+        // Where this strip drew itself, for the drag to be settled against once every pane has been
+        // drawn. Pushed in pane order, because the loop walks the panes left to right.
+        self.tab_strips.push(outcome.strip);
+        if let Some((within, pointer)) = outcome.dragging {
+            if let Some(file) = at(within) {
+                self.tab_drag = Some(TabDrag { file, at: pointer, dropped: outcome.dropped });
+            }
+        }
         if let Some(index) = outcome.show.and_then(at) {
             self.show_tab(index);
             self.focus = Focus::Editor;
@@ -3252,6 +3303,38 @@ impl QuillApp {
         // The editing area: the picture, the source, the preview, or both side by side.
         took_the_keyboard |= self.show_editing_area(ui, editor_rect, focused);
         took_the_keyboard
+    }
+
+    /// Work out where the tab being carried would land, draw the mark that says so, and move it when
+    /// it is let go.
+    ///
+    /// Called once the whole row of panes has been drawn, which is the earliest moment anything
+    /// knows where every strip is. A tab may be dropped **anywhere in a pane** rather than on its
+    /// strip alone, which is what IntelliJ does and is what a person dragging a file into the pane
+    /// beside them is aiming at; where along the strip it goes is read from the pointer's x.
+    ///
+    /// Dropped outside every pane — over the explorer, the terminal, the status bar — nothing
+    /// happens and no mark is drawn, so a drag can be thought better of.
+    fn settle_the_tab_drag(&mut self, ui: &mut egui::Ui, pane_rects: &[Rect]) {
+        let Some(drag) = self.tab_drag else {
+            return;
+        };
+        let Some(pane) = pane_rects.iter().position(|rect| rect.contains(drag.at)) else {
+            return;
+        };
+        let Some(strip) = self.tab_strips.get(pane) else {
+            return;
+        };
+        let position = strip.position_at(drag.at.x);
+        if drag.dropped {
+            self.files.drag_tab(drag.file, pane, position);
+            self.focus = Focus::Editor;
+            return;
+        }
+        // The mark goes over the strip it is about, so it is drawn into the window's own painter
+        // rather than the pane's: the pane was drawn already and a mark added to it would be under
+        // the strip it is meant to be over.
+        file_tabs::insertion_mark(ui.painter(), strip, position);
     }
 
     /// Keep the explorer's selection on the file that is showing.
@@ -3314,8 +3397,10 @@ impl QuillApp {
                     Pos2::new(area.left() + split, area.top()),
                     area.max,
                 );
+                let before = self.where_both_halves_are();
                 let took = self.show_editor(ui, left, focused);
                 self.show_preview(ui, right);
+                self.scroll_the_two_halves_together(before, area);
                 // The split between the source and the preview is a pane like any other, so it is dragged.
                 let edge = Rect::from_min_size(
                     Pos2::new(right.left(), right.top()),
@@ -3335,6 +3420,75 @@ impl QuillApp {
             }
         }
         false
+    }
+
+    /// How far each half of the side by side view is scrolled, taken before either is drawn.
+    fn where_both_halves_are(&self) -> (f32, f32) {
+        let file = self.files.active();
+        (file.scroll, file.preview_scroll)
+    }
+
+    /// Scroll the half that was not moved to show what the half that was moved is showing.
+    ///
+    /// `task-1673` asks that the source and the preview scroll together. The two pages are nothing
+    /// like the same height — a heading is one line of source and three times a line on the page,
+    /// and a fence's backticks are two lines of source and nothing at all — so the crossing is done
+    /// through the text rather than through a proportion of the height. `quill_core::scroll_sync`
+    /// is the arithmetic, and `Preview::source_lines` is what makes it possible.
+    ///
+    /// **Which half drives is decided by which one moved**, compared against where they both were
+    /// before the frame drew anything. That is what stops the two of them chasing each other: the
+    /// crossing snaps to a paragraph, so a position taken across and back is not quite the position
+    /// it started at, and a rule that moved both halves every frame would creep down the file on its
+    /// own. Only one half is written to, and only when the other actually moved.
+    ///
+    /// The follower is settled after both halves are drawn, so it lands on the next frame. egui
+    /// paints continuously while a wheel is turning or a thumb is being dragged, so that frame is
+    /// sixteen milliseconds later and nobody can see it.
+    fn scroll_the_two_halves_together(&mut self, before: (f32, f32), area: Rect) {
+        let (was_source, was_preview) = before;
+        let file = self.files.active();
+        let (source_moved, preview_moved) =
+            ((file.scroll - was_source).abs() > 0.01, (file.preview_scroll - was_preview).abs() > 0.01);
+        if source_moved == preview_moved {
+            // Neither moved, or a change of font size moved both. Nothing to follow either way.
+            return;
+        }
+        self.follow_the_other_half(source_moved, (area.height() - size::EDITOR_PADDING_Y * 2.0).max(0.0));
+    }
+
+    /// Move the half of the side by side view that was not scrolled so that it shows what the other
+    /// half is showing. `source_drives` says which way round; `room` is how tall each half is, which
+    /// is the same for both because they stand side by side.
+    ///
+    /// Split from [`Self::scroll_the_two_halves_together`] so the command line can ask for it: a
+    /// scroll set by `quill-cli editor scroll` is applied before the frame draws anything, so the
+    /// frame's own before-and-after comparison would see nothing move and the other half would sit
+    /// where it was.
+    pub fn follow_the_other_half(&mut self, source_drives: bool, room: f32) {
+        let file = self.files.active();
+        let Some(preview) = file.cached.preview.as_ref() else {
+            return;
+        };
+        let source_page = &file.cached.layout;
+        let preview_page = &file.cached.preview_layout;
+        let map = &preview.source_lines;
+        let (scroll, preview_scroll) = if source_drives {
+            let to =
+                quill_core::preview_y_for_source_y(source_page, preview_page, map, file.scroll);
+            (file.scroll, to.clamp(0.0, (preview_page.height - room).max(0.0)))
+        } else {
+            let to = quill_core::source_y_for_preview_y(
+                source_page,
+                preview_page,
+                map,
+                file.preview_scroll,
+            );
+            (to.clamp(0.0, (source_page.height - room).max(0.0)), file.preview_scroll)
+        };
+        let file = self.files.active_mut();
+        file.scroll = scroll;
+        file.preview_scroll = preview_scroll;
     }
 
     /// Draw the picture the open tab holds, and take the gestures that move and zoom it.
@@ -3401,15 +3555,31 @@ impl QuillApp {
         let text_width = (area.width() - size::EDITOR_PADDING_X * 2.0).max(50.0);
         let ctx = ui.ctx().clone();
         self.refresh_preview(&ctx, text_width);
-        self.keep_the_previews_place_through_a_zoom(area.height() - size::EDITOR_PADDING_Y * 2.0);
+        let view_height = area.height() - size::EDITOR_PADDING_Y * 2.0;
+        self.keep_the_previews_place_through_a_zoom(view_height);
+
+        let was = self.files.active().preview_scroll;
+        // The bar down the right, taken hold of before the wheel is read so that it wins the pointer
+        // over the page underneath it. See `components::scrollbar`.
+        let bar_name = format!("{} preview", self.files.active().name());
+        let bar = scrollbar::Bar::new(area, was, self.preview_layout().height, view_height);
+        let grab = match &bar {
+            Some(bar) => scrollbar::grab(ui, bar, &bar_name),
+            None => scrollbar::Grab::default(),
+        };
+        if let Some(to) = grab.scroll {
+            self.files.active_mut().preview_scroll = to;
+        }
 
         // The preview scrolls on its own, so reading the rendered page does not move the caret.
         let wheel = ui.input(|input| input.smooth_scroll_delta.y);
-        if wheel != 0.0 && response.hovered() {
+        // `contains_pointer` rather than `hovered`, because the scrollbar is a widget over this one
+        // and takes the hover from it: a wheel turned with the pointer resting on the bar is still
+        // plainly about the page the bar belongs to.
+        if wheel != 0.0 && response.contains_pointer() {
             self.files.active_mut().preview_scroll -= wheel;
         }
-        let overflow =
-            (self.preview_layout().height - (area.height() - size::EDITOR_PADDING_Y * 2.0)).max(0.0);
+        let overflow = (self.preview_layout().height - view_height).max(0.0);
         let scroll = self.files.active().preview_scroll.clamp(0.0, overflow);
         self.files.active_mut().preview_scroll = scroll;
 
@@ -3422,6 +3592,10 @@ impl QuillApp {
         editor_view::paint_text(&painter_ui, &self.renderer, self.preview_layout(), origin);
         self.paint_the_pictures(&painter_ui, origin);
         self.paint_the_diagrams(&painter_ui, origin, text_width);
+        // Drawn last, at the position the frame settled on rather than the one it opened with.
+        if let Some(bar) = scrollbar::Bar::new(area, scroll, self.preview_layout().height, view_height) {
+            scrollbar::paint(ui, &bar, &bar_name, grab.active || (scroll - was).abs() > 0.01);
+        }
     }
 
     /// Draw the pictures into the room their paragraphs were given.
@@ -3544,9 +3718,29 @@ impl QuillApp {
         let has_keyboard = self.focus == Focus::Editor && focused;
         let text_width = (area.width() - padding - size::EDITOR_PADDING_X).max(50.0);
         self.refresh_layout(text_width);
+        let view_height = area.height() - size::EDITOR_PADDING_Y * 2.0;
         // Straight after the layout, so the rest of the frame — the wheel, the caret, the painter
         // — sees the scroll position the zoom asked for rather than the one it was left at.
-        self.keep_the_place_through_a_zoom(area.height() - size::EDITOR_PADDING_Y * 2.0);
+        self.keep_the_place_through_a_zoom(view_height);
+
+        // The bar down the right hand edge, taken hold of here rather than at the end of the frame:
+        // the editing area asks for drags over the whole of its rectangle and egui hands a point to
+        // the last widget that asked for it, so a bar added after the text is a bar that can be
+        // dragged. It is drawn at the end, once the wheel and the caret have had their say. See
+        // `components::scrollbar`.
+        let was = self.files.active().scroll;
+        // Named after the file rather than after the half, because two panes each have one and two
+        // controls must not share a name — the same reason the gutter's blame cells and a diagram
+        // carry the file's name. Two panes cannot be showing one file, so the name is unique.
+        let bar_name = self.files.active().name();
+        let bar = scrollbar::Bar::new(area, was, self.layout().height, view_height);
+        let grab = match &bar {
+            Some(bar) => scrollbar::grab(ui, bar, &bar_name),
+            None => scrollbar::Grab::default(),
+        };
+        if let Some(to) = grab.scroll {
+            self.files.active_mut().scroll = to;
+        }
 
         let scroll = self.files.active().scroll;
         let origin = Pos2::new(area.left() + padding, area.top() + size::EDITOR_PADDING_Y - scroll);
@@ -3622,12 +3816,14 @@ impl QuillApp {
 
         let wheel = ui.input(|input| input.smooth_scroll_delta.y);
         let mut scroll = self.files.active().scroll;
-        if wheel != 0.0 && response.hovered() {
+        // `contains_pointer` rather than `hovered`: the scrollbar is a widget over this one and
+        // takes the hover from it, and a wheel turned with the pointer resting on the bar is still
+        // about the page the bar belongs to.
+        if wheel != 0.0 && response.contains_pointer() {
             scroll -= wheel;
         }
         if outcome.scroll_to_caret || (self.reveal_caret && focused) {
             let caret = self.layout().caret_at(self.document().selection().head);
-            let view_height = area.height() - size::EDITOR_PADDING_Y * 2.0;
             if caret.y < scroll {
                 scroll = caret.y;
             } else if caret.y + caret.height > scroll + view_height {
@@ -3637,8 +3833,7 @@ impl QuillApp {
         if focused {
             self.reveal_caret = false;
         }
-        let overflow =
-            (self.layout().height - (area.height() - size::EDITOR_PADDING_Y * 2.0)).max(0.0);
+        let overflow = (self.layout().height - view_height).max(0.0);
         let scroll = scroll.clamp(0.0, overflow);
         self.files.active_mut().scroll = scroll;
 
@@ -3674,6 +3869,11 @@ impl QuillApp {
                 show_caret: has_keyboard,
             },
         );
+        // Drawn last, at the position the frame settled on rather than the one it opened with, or
+        // the thumb is a frame behind the writing — which on a fast scroll can be seen.
+        if let Some(bar) = scrollbar::Bar::new(area, scroll, self.layout().height, view_height) {
+            scrollbar::paint(ui, &bar, &bar_name, grab.active || (scroll - was).abs() > 0.01);
+        }
         took_the_keyboard
     }
 }

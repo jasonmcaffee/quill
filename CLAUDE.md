@@ -327,6 +327,10 @@ number as its **id salt**, because egui identifies a widget by its id and two gu
 previews, would otherwise be one widget. The dividers are added after every pane, for the reason
 `components::splitter` already records.
 
+The explorer's heading is the project folder's row. It has no row of its own in the tree, so a right
+click on the name opens the same menu a folder row opens — `task-1673`, which also took away the plus
+beside it: it was labelled `New file` and it called `save`, which is why it never made one.
+
 ## The explorer follows the tab
 
 The file showing in the pane with the keyboard is selected in the explorer, the folders above it are
@@ -499,6 +503,91 @@ a pane earlier in the row must not claim a gesture aimed at one later in it.
 The correction lands on the frame **after** the size changed, since `set_font_size` only marks the
 layout stale. An idle window draws nothing, so `set_the_font_everywhere` asks for a repaint —
 without it the last notch of a gesture sits uncorrected until something else wakes the window.
+
+## The source and its preview scroll together, through the text rather than the height
+
+`task-1673` asks that scrolling either half of the side by side view scroll the other. The obvious
+answer — the same fraction of each half's scrollable height — is wrong, and gets worse the further
+down a document you go: a heading is one line of source and half again as tall on the page, a fence's
+backticks are two lines of source and nothing at all, and a picture is one line of source and four
+hundred points of page. Measured on a plain sixty section document with none of that in it, the two
+pages already differ by thirteen per cent.
+
+**What both halves agree about is the text**, so `quill_core::markdown::Preview` carries a fourth
+structure beside its text, spans and paragraph styles: `source_lines`, which line of the source each
+line of the preview came from. `render` sets `builder.source_line` once at the top of its walk and
+`end_line` records it, so none of the nine branches has to remember. It never goes backwards, which
+makes finding a line a binary search, and it is exactly as long as the preview has lines — the test
+that already checked the other three structures agree checks the fourth too, because one that drifted
+would be a scroll to a paragraph that is not there.
+
+`quill_core::scroll_sync` is the crossing, two pure functions and no state: which **paragraph** is at
+this height and how far down it the point sits, which line of the other page that is, and where that
+line ended up at the same fraction. A paragraph rather than a line, because one source line wraps to
+five lines at one width and two at another while its paragraph number means the same in both — which
+is what `Layout::paragraph_band` and `paragraph_at_y` are for. The fraction is what makes it smooth
+rather than stepped a paragraph at a time.
+
+**Which half drives is decided by which one moved**, compared against where both were before the
+frame drew anything. That is not decoration: the crossing snaps to a paragraph, so a position taken
+across and back is not quite where it started, and a rule that wrote to both halves every frame would
+creep down the file on its own for as long as the window was left open. Both moving means a change of
+font size, which `task-1672`'s anchors have already corrected, so that does nothing either. The
+follower lands on the next frame, sixteen milliseconds later, which nobody can see.
+
+`follow_the_other_half` is split out because **the command line needed it**: `quill-cli editor scroll`
+is applied at the top of a frame, before anything is drawn, so the frame's own before-and-after
+comparison would see nothing move.
+
+## A tab is dragged, and where it lands is the window's decision
+
+Rearranging tabs in one strip would be the strip's own business. Dragging one into **another pane** is
+not, because each pane draws its strip inside a `Ui` of its own and has never heard of the others,
+while the pointer wanders freely between them.
+
+So the strip does what every component in Quill does — it reports what happened and decides nothing.
+It says that a tab is being carried and where the pointer is, and it reports `file_tabs::Strip`: where
+it drew itself and each of its tabs. The window collects one a pane in the loop it already runs, and
+`settle_the_tab_drag` runs once afterwards, which is the earliest moment anything knows where every
+strip is.
+
+Three rules it settles by. **A tab may be dropped anywhere in a pane**, not on its strip alone, which
+is what IntelliJ does and what a person dragging a file into the pane beside them is aiming at. **It
+goes after every tab whose middle the pointer has passed**, which is what makes it follow the pointer
+rather than jump when it crosses an edge. And **dropped outside every pane nothing happens**, so a
+drag can be thought better of.
+
+`OpenFiles::drag_tab` does the move and is what `quill-cli tab move` calls too. Its one subtlety:
+`position` counts the target pane's tabs **as they are on the screen now**, including the tab being
+carried when it is already in that pane, so a move further along its own strip has one subtracted
+from it there rather than at every call.
+
+## A document has a thin bar down its right hand edge
+
+`components::scrollbar`, on the editing area and on the Markdown preview. Three things about it are
+worth knowing before touching it.
+
+**Where it can go is decided by what else wants that point.** Six points in from the right of its
+pane: exactly what `components::resize_edges` takes from the window's edge and what the activity bar's
+buttons are inset by, which leaves two points clear of a pane divider's grab area. It lands inside
+`EDITOR_PADDING_X`, so no letter is ever drawn under it.
+
+**It is two calls rather than one**, which is the only place a component in Quill is. `grab` takes the
+pointer where the pane takes its own, because egui hands a drag to the last widget that asked for the
+point and the editing area asks for all of it — a bar interacted with first cannot be dragged. `paint`
+draws at the end, once the wheel and the caret have had their say, because a thumb drawn from the
+scroll position the frame opened with is a frame behind the writing.
+
+**The fade is between two palette colours, not down one colour's alpha.** At the alpha that reads as
+subtle against `EDITOR`, the idle thumb was nine values a channel from the background and was not
+honestly a scrollbar. Quiet it is a five point mark in `CONTROL`; used, eight points in `TEXT_DIM`
+with the track behind it. It is never taken away altogether, because a bar that disappears stops
+answering "how far through this am I".
+
+One thing it forced: the wheel is gated on `contains_pointer()` rather than `hovered()`. A widget over
+the editing area takes its hover, so with a bar there a wheel turned with the pointer on the bar
+scrolled nothing. `contains_pointer` asks whether another **layer** is covering the rectangle, so a
+bar in the same layer no longer takes the wheel away and a popup over the editing area still does.
 
 ## Every pane is resized by dragging its edge
 
@@ -784,6 +873,10 @@ trade that away to be a shade nearer a screenshot.
 - `tasks/task-1664-split-view-tdd.md` — the explorer following the tab, and the editing area split
   into panes: why a tab moves rather than being copied, why a pane is a number on the tab, why the
   layout caches had to move onto it, and what a tree of splitters would have cost.
+- `tasks/task-1673-split-view-tdd.md` — the source and its preview scrolling together: why a
+  proportion of the height is the wrong crossing and what the fourth structure in a `Preview` is,
+  dragging a tab within a strip and into another pane, and the scrollbar — where it can go, why it is
+  two calls, and what "more subtle" was made to mean.
 - `tasks/task-1663-highlights-tdd.md` — highlighting a passage: where the ranges live so they move
   with the text, the file beside the project that remembers them, the right click menu and the drawn
   colour wheel, and the bulk commands.

@@ -501,6 +501,56 @@ impl OpenFiles {
         true
     }
 
+    /// Put the tab at `index` into `pane`, `position` tabs along it. This is what dragging a tab
+    /// does, and what `quill-cli tab move` asks for.
+    ///
+    /// `position` counts the tabs of the target pane **as they are on the screen now**, including
+    /// the tab being moved when it is already in that pane — because that is what a person dragging
+    /// one is looking at. Taking it out first shifts everything after it up by one, so a move within
+    /// a pane to a place further along has one subtracted from it here rather than at every call.
+    ///
+    /// A position past the end means the end, so dropping a tab anywhere to the right of the last
+    /// one puts it last. Dropping it into a pane with nothing in it works for the same reason.
+    ///
+    /// The tab is **shown** where it lands and the keyboard follows it, which is what dragging
+    /// something somewhere means; and the pane it left is folded away by [`Self::tidy`] if it was
+    /// its last tab, exactly as [`Self::move_tab`] already leaves it.
+    pub fn drag_tab(&mut self, index: usize, pane: usize, position: usize) -> bool {
+        if index >= self.files.len() || pane >= self.panes {
+            return false;
+        }
+        let from = self.files[index].pane;
+        let within = self.tabs_in(from).iter().position(|at| *at == index).unwrap_or(0);
+        let mut position = position;
+        if from == pane {
+            if within < position {
+                position -= 1;
+            }
+            if within == position {
+                // Dropped where it already is. Showing it is still right — a person who picked a tab
+                // up and put it back plainly means to be looking at it — but nothing moves.
+                self.focus = pane;
+                self.stamp(index);
+                return true;
+            }
+        }
+        let mut file = self.files.remove(index);
+        file.pane = pane;
+        // Where in the vector: at the tab that is to come after it, or after the last one when it is
+        // going on the end. Worked out after the removal, so the indices are the ones being inserted
+        // into rather than the ones that were there a moment ago.
+        let targets = self.tabs_in(pane);
+        let at = match targets.get(position) {
+            Some(index) => *index,
+            None => targets.last().map(|index| index + 1).unwrap_or(self.files.len()),
+        };
+        self.files.insert(at, file);
+        self.focus = pane;
+        self.stamp(at);
+        self.tidy();
+        true
+    }
+
     /// Fold the pane that has the keyboard into the one beside it: the pane on its left where there
     /// is one, otherwise the pane on its right. IntelliJ's `Unsplit`.
     pub fn unsplit(&mut self) -> bool {
@@ -1065,6 +1115,97 @@ mod tests {
         assert!((widths[0] - 0.25).abs() < 0.001, "{widths:?}");
         assert!((widths[1] - 0.25).abs() < 0.001, "{widths:?}");
         assert!((widths[2] - 0.5).abs() < 0.001, "{widths:?}");
+        invariants(&files);
+    }
+
+    /// Three files in one pane, which is what a rearrangement is done to.
+    fn three_open() -> OpenFiles {
+        let mut files = OpenFiles::new(Document::new());
+        for name in ["one.md", "two.md", "three.md"] {
+            files.open(document(name), true);
+        }
+        files
+    }
+
+    /// **A tab dragged along its own strip lands where the pointer left it.**
+    #[test]
+    fn a_tab_dragged_to_the_front_of_its_pane_goes_there() {
+        let mut files = three_open();
+        assert!(files.drag_tab(2, 0, 0));
+        assert_eq!(names(&files), vec!["three.md", "one.md", "two.md"]);
+        assert_eq!(files.active().name(), "three.md", "a tab dragged somewhere is shown there");
+        invariants(&files);
+    }
+
+    /// **Dragging one to the right counts the tabs as they are on the screen.** Moving the first tab
+    /// to position two means "past the second", which leaves it in the middle — not on the end,
+    /// which is where a position not corrected for its own removal would put it.
+    #[test]
+    fn a_tab_dragged_along_its_own_strip_counts_the_tabs_it_passed() {
+        let mut files = three_open();
+        assert!(files.drag_tab(0, 0, 2));
+        assert_eq!(names(&files), vec!["two.md", "one.md", "three.md"]);
+        invariants(&files);
+    }
+
+    /// Past the end means the end.
+    #[test]
+    fn a_tab_dragged_past_the_last_one_goes_last() {
+        let mut files = three_open();
+        assert!(files.drag_tab(0, 0, 99));
+        assert_eq!(names(&files), vec!["two.md", "three.md", "one.md"]);
+        invariants(&files);
+    }
+
+    /// Dropped where it already was, nothing moves — but it is still shown, because a person who
+    /// picked a tab up and put it back plainly means to be looking at it.
+    #[test]
+    fn a_tab_dropped_where_it_already_was_does_not_move() {
+        let mut files = three_open();
+        files.show(0);
+        assert!(files.drag_tab(1, 0, 1));
+        assert_eq!(names(&files), vec!["one.md", "two.md", "three.md"]);
+        assert_eq!(files.active().name(), "two.md");
+        invariants(&files);
+    }
+
+    /// **A tab dragged into another pane lands in it**, is shown there, and the keyboard follows.
+    #[test]
+    fn a_tab_dragged_into_another_pane_lands_in_it() {
+        let mut files = three_open();
+        files.split_right();
+        assert_eq!(names_in(&files, 0), vec!["one.md", "two.md"]);
+        assert_eq!(names_in(&files, 1), vec!["three.md"]);
+        // one.md, which is tab zero, into the pane on the right, in front of three.md.
+        assert!(files.drag_tab(0, 1, 0));
+        assert_eq!(names_in(&files, 0), vec!["two.md"]);
+        assert_eq!(names_in(&files, 1), vec!["one.md", "three.md"]);
+        assert_eq!(files.focused_pane(), 1);
+        assert_eq!(files.active().name(), "one.md");
+        invariants(&files);
+    }
+
+    /// Dragging the last tab out of a pane takes the pane with it, exactly as `move_tab` does.
+    #[test]
+    fn dragging_the_last_tab_out_of_a_pane_takes_the_pane_with_it() {
+        let mut files = two_open();
+        files.split_right();
+        assert_eq!(files.pane_count(), 2);
+        assert!(files.drag_tab(1, 0, 0));
+        assert_eq!(files.pane_count(), 1, "an emptied pane is removed");
+        assert_eq!(names_in(&files, 0), vec!["two.md", "one.md"]);
+        invariants(&files);
+    }
+
+    /// A tab that is not there, or a pane that is not there, is refused rather than clamped — the
+    /// same rule `focus_pane` follows, so a command line that names a pane that is not there is told
+    /// so instead of quietly doing something else.
+    #[test]
+    fn dragging_to_somewhere_that_is_not_there_is_refused() {
+        let mut files = three_open();
+        assert!(!files.drag_tab(9, 0, 0));
+        assert!(!files.drag_tab(0, 4, 0));
+        assert_eq!(names(&files), vec!["one.md", "two.md", "three.md"]);
         invariants(&files);
     }
 

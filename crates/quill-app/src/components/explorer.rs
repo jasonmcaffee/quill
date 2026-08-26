@@ -1,9 +1,13 @@
 //! The file explorer down the left of the window.
 //!
-//! The tree itself lives in `file_tree.rs`; this draws it. The design gives it a heading with an add
-//! button and a button that hides the panel, a box that filters the file list, a small coloured square in
-//! front of each file saying what kind it is, the open file shown as a filled pill with an amber dot when
-//! it has unsaved changes, and a footer counting the files.
+//! The tree itself lives in `file_tree.rs`; this draws it. It has a heading naming the project, a
+//! button that hides the panel, a box that filters the file list, a small coloured square in front of
+//! each file saying what kind it is, the open file shown as a filled pill with an amber dot when it
+//! has unsaved changes, and a footer counting the files.
+//!
+//! The heading is the project folder's row: it has no row of its own in the tree, so a right click
+//! on the name opens the same menu a folder row does. That is `task-1673`, which also asked for the
+//! plus button beside it to go — it meant `New file` and asked the window to save.
 //!
 //! ## Following the tab
 //!
@@ -53,8 +57,6 @@ pub struct ExplorerOutcome {
     pub context_menu: Option<(Pos2, PathBuf, bool)>,
     /// The button that hides the panel was pressed.
     pub hide: bool,
-    /// The add button was pressed.
-    pub add: bool,
 }
 
 /// Draw the explorer into `area`.
@@ -77,7 +79,7 @@ pub fn show(
     let painter = ui.painter_at(area);
     painter.rect_filled(area, CornerRadius::ZERO, crate::theme::faded(color::EXPLORER, opacity));
 
-    // The heading: the folder's name in small letter spaced capitals, then the two small buttons.
+    // The heading: the folder's name in small letter spaced capitals, then the button that hides the panel.
     let heading_y = area.top() + 22.0;
     let name = tree
         .root()
@@ -87,9 +89,9 @@ pub fn show(
     // Letters are spaced out by hand, because egui has no letter spacing setting.
     let spaced: String = name.chars().flat_map(|c| [c, ' ']).collect();
     let font = egui::FontId::proportional(10.5);
-    // The heading has to stop before the two buttons on the right. A long folder name is cut short with an
-    // ellipsis rather than run underneath them.
-    let available = area.width() - 16.0 - 66.0;
+    // The heading has to stop before the button on the right. A long folder name is cut short with an
+    // ellipsis rather than run underneath it.
+    let available = area.width() - 16.0 - 46.0;
     let mut heading = spaced.trim_end().to_owned();
     let mut galley = painter.layout_no_wrap(heading.clone(), font.clone(), color::TEXT_DIM);
     while galley.size().x > available && heading.chars().count() > 1 {
@@ -108,29 +110,48 @@ pub fn show(
         color::TEXT_DIM,
     );
 
-    for (index, (name, draw)) in [
-        ("New file", icon::plus as fn(&egui::Painter, Pos2, egui::Color32)),
-        ("Hide the explorer", icon::collapse as fn(&egui::Painter, Pos2, egui::Color32)),
-    ]
-    .into_iter()
-    .enumerate()
+    // The project's name is a row like any other row in the tree, so it takes a right click and
+    // opens the same menu a folder does — `task-1673` asks for that, and the project folder is the
+    // one folder in the tree that has no row of its own to right click. It takes no left click:
+    // there is nothing to open or close about the root, which is always shown.
+    let heading_hit = Rect::from_min_max(
+        Pos2::new(area.left(), area.top() + 8.0),
+        Pos2::new(area.right() - 34.0, area.top() + 36.0),
+    );
+    let heading_response =
+        ui.interact(heading_hit, ui.id().with("explorer-heading"), Sense::click());
+    if heading_response.secondary_clicked() {
+        if let Some(at) = heading_response.interact_pointer_pos().or_else(|| heading_response.hover_pos()) {
+            outcome.context_menu = Some((at, tree.root().to_path_buf(), true));
+        }
+    }
+    let project = tree
+        .root()
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| tree.root().display().to_string());
+    heading_response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Label, ui.is_enabled(), &project)
+    });
+
+    // The one button: hiding the panel. There used to be a plus beside it that meant `New file`,
+    // which never opened anything — it asked the window to save — and `task-1673` asks for it to go.
+    // Making a file is on the right click menu, which the project's name now opens too.
     {
-        let centre = Pos2::new(area.right() - 46.0 + index as f32 * 28.0, heading_y);
+        let name = "Hide the explorer";
+        let centre = Pos2::new(area.right() - 18.0, heading_y);
         let hit = Rect::from_center_size(centre, Vec2::splat(22.0));
         let response =
             ui.interact(hit, ui.id().with(("explorer-button", name)), Sense::click()).on_hover_text(name);
         if response.hovered() {
             painter.rect_filled(hit, CornerRadius::same(4), color::CONTROL);
         }
-        draw(&painter, centre, color::TEXT_DIM);
+        icon::collapse(&painter, centre, color::TEXT_DIM);
         response.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), name)
         });
         if response.clicked() {
-            match index {
-                0 => outcome.add = true,
-                _ => outcome.hide = true,
-            }
+            outcome.hide = true;
         }
     }
 

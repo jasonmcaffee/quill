@@ -323,6 +323,18 @@ pub const COMMANDS: &[Command] = &[
     },
     Command {
         area: "tab",
+        verb: "move",
+        summary: "Move a tab along its strip, or into another pane, which is what dragging it does. The position counts the tabs of the pane it is going to, as they are on the screen now.",
+        arguments: &[argument("position", true, "Where it goes, counting from 0. Past the end means the end.")],
+        flags: &[
+            option("tab", "tab", "Which tab to move: its number, name or path. The tab that is showing when it is left out."),
+            option("pane", "number", "Which pane to move it into, counting from 0. The pane it is already in when it is left out."),
+        ],
+        examples: &["quill-cli tab move 0", "quill-cli tab move 0 --tab notes.md --pane 1"],
+        local: false,
+    },
+    Command {
+        area: "tab",
         verb: "save",
         summary: "Write the tab that is showing back to its file.",
         arguments: NO_ARGUMENTS,
@@ -508,6 +520,25 @@ pub const COMMANDS: &[Command] = &[
         arguments: &[argument("mode", true, "raw, side or preview.")],
         flags: NO_FLAGS,
         examples: &["quill-cli editor view preview", "quill-cli editor view side"],
+        local: false,
+    },
+    Command {
+        area: "editor",
+        verb: "scroll",
+        summary: "Read how far the tab that is showing is scrolled, or scroll it. With no flags it reports both halves of the side by side view. In side by side the other half follows, exactly as it does when you scroll with the wheel.",
+        arguments: NO_ARGUMENTS,
+        flags: &[
+            option("line", "number", "Scroll so this line is at the top, counting from 1."),
+            option("to", "points", "Scroll to this many points down the page."),
+            switch("top", "Scroll to the top."),
+            switch("bottom", "Scroll to the bottom."),
+            switch("preview", "Scroll the Markdown preview rather than the source."),
+        ],
+        examples: &[
+            "quill-cli editor scroll --json",
+            "quill-cli editor scroll --line 120",
+            "quill-cli editor scroll --preview --top",
+        ],
         local: false,
     },
     Command {

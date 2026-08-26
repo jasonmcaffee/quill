@@ -69,6 +69,52 @@ pub struct TabsOutcome {
     pub keep: Option<usize>,
     /// A tab was right clicked: which one, and where the pointer was.
     pub menu: Option<(usize, Pos2)>,
+    /// A tab is being dragged: which one, and where the pointer is now.
+    ///
+    /// Reported every frame the drag is held, and again with [`Self::dropped`] set on the frame it
+    /// is let go. Where it lands is not the strip's business: the pointer may be over a strip
+    /// belonging to another pane, which this one has never heard of, so the window works it out once
+    /// every pane has said where its own tabs are. See [`Strip`].
+    pub dragging: Option<(usize, Pos2)>,
+    /// The drag ended on this frame.
+    pub dropped: bool,
+    /// Where this strip drew itself and each of its tabs, so the window can say which strip a
+    /// pointer is over and where between two tabs it fell.
+    pub strip: Strip,
+}
+
+/// Where a strip and its tabs ended up on the screen.
+///
+/// A component draws and does not decide, so this is what the strip reports rather than a conclusion
+/// about it. It is the only way a tab can be dragged from one pane into another: each pane draws its
+/// own strip and knows nothing of the others, and a drag started in one of them carries a pointer
+/// that ends up over a different one.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Strip {
+    /// The whole strip.
+    pub area: Rect,
+    /// One rectangle a tab, in the order they are drawn — including the ones scrolled off the end,
+    /// so dropping a tab past the visible ones still lands somewhere sensible.
+    pub tabs: Vec<Rect>,
+}
+
+impl Default for Strip {
+    /// A strip that has not been drawn: nowhere, holding nothing. `Rect` has no `Default` of its
+    /// own, deliberately, because there is no obvious empty rectangle; `NOTHING` is the one egui
+    /// offers for a rectangle that has not been decided yet.
+    fn default() -> Self {
+        Self { area: Rect::NOTHING, tabs: Vec::new() }
+    }
+}
+
+impl Strip {
+    /// Where in this strip a tab dropped at `x` belongs: how many tabs it goes after.
+    ///
+    /// A tab goes after every tab whose middle the pointer has passed, which is what makes a
+    /// rearrangement follow the pointer rather than jump when it crosses an edge.
+    pub fn position_at(&self, x: f32) -> usize {
+        self.tabs.iter().filter(|rect| rect.center().x < x).count()
+    }
 }
 
 /// How wide one tab is. Measured rather than guessed, because a name can be any length.
@@ -110,10 +156,12 @@ pub fn show(
     let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(area));
     inner.set_clip_rect(ui.painter().clip_rect().intersect(area));
 
+    outcome.strip.area = area;
     let mut pen = area.left() - offset;
     for (index, tab) in tabs.iter().enumerate() {
         let rect = Rect::from_min_size(Pos2::new(pen, area.top()), Vec2::new(widths[index], area.height()));
         pen += widths[index] + GAP;
+        outcome.strip.tabs.push(rect);
         if rect.right() < area.left() || rect.left() > area.right() {
             continue;
         }
@@ -158,9 +206,18 @@ fn draw_tab(
 ) {
     let index = at.index;
     let name = format!("Tab: {}", tab.name);
+    // A tab senses a drag as well as a click, which is how it is rearranged. egui only calls a press
+    // a drag once the pointer has moved far enough, so a click is still a click.
     let response = ui
-        .interact(rect, ui.id().with(("file-tab", at.pane, index)), Sense::click())
+        .interact(rect, ui.id().with(("file-tab", at.pane, index)), Sense::click_and_drag())
         .on_hover_text(&name);
+    if response.dragged() || response.drag_stopped() {
+        if let Some(pointer) = response.interact_pointer_pos() {
+            outcome.dragging = Some((index, pointer));
+            outcome.dropped = response.drag_stopped();
+        }
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+    }
     let painter = ui.painter();
     if active {
         painter.rect_filled(rect, CornerRadius::ZERO, color::SELECTED_ROW);
@@ -177,6 +234,18 @@ fn draw_tab(
         );
     } else if response.hovered() {
         painter.rect_filled(rect, CornerRadius::ZERO, color::CONTROL);
+    }
+    // A tab being carried is outlined, so it is clear which one is in the air. The insertion mark
+    // that says where it would land is drawn by the window, because only the window knows which
+    // strip the pointer has ended up over.
+    if response.dragged() {
+        painter.rect_filled(rect, CornerRadius::ZERO, color::CONTROL);
+        painter.rect_stroke(
+            rect.shrink(1.0),
+            CornerRadius::same(3),
+            Stroke::new(1.0, color::ACCENT),
+            egui::StrokeKind::Inside,
+        );
     }
 
     match &tab.icon {
@@ -250,9 +319,68 @@ fn draw_tab(
     }
 }
 
+/// Draw the mark that says where a dragged tab would land: a two point accent line down the gap
+/// between two tabs.
+///
+/// Drawn by the window after every pane, rather than by the strip, for the reason
+/// `components::splitter` records about dividers — and because the strip a tab is dropped on is
+/// often not the strip it was picked up from, so no one strip can decide where the mark goes.
+pub fn insertion_mark(painter: &egui::Painter, strip: &Strip, position: usize) {
+    let x = match (strip.tabs.get(position.wrapping_sub(1)), strip.tabs.get(position)) {
+        // Between two tabs: in the gap.
+        (Some(before), Some(_)) => before.right() + GAP / 2.0,
+        // After the last tab.
+        (Some(before), None) => before.right() + GAP / 2.0,
+        // Before the first, or an empty strip.
+        (None, Some(after)) => after.left() - GAP / 2.0,
+        (None, None) => strip.area.left() + 2.0,
+    };
+    let x = x.clamp(strip.area.left() + 1.0, strip.area.right() - 2.0);
+    painter.rect_filled(
+        Rect::from_min_size(Pos2::new(x - 1.0, strip.area.top() + 3.0), Vec2::new(2.0, strip.area.height() - 6.0)),
+        CornerRadius::same(1),
+        color::ACCENT,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Three 100 point tabs starting at zero, which is what the strip lays out.
+    fn strip_of_three() -> Strip {
+        Strip {
+            area: Rect::from_min_size(Pos2::new(0.0, 0.0), Vec2::new(400.0, HEIGHT)),
+            tabs: (0..3)
+                .map(|index| {
+                    Rect::from_min_size(
+                        Pos2::new(index as f32 * 102.0, 0.0),
+                        Vec2::new(100.0, HEIGHT),
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    /// **A tab goes after every tab whose middle the pointer has passed.** That is what makes a
+    /// rearrangement follow the pointer instead of jumping when it crosses an edge.
+    #[test]
+    fn a_drop_lands_after_every_tab_it_has_passed_the_middle_of() {
+        let strip = strip_of_three();
+        assert_eq!(strip.position_at(0.0), 0, "before the first tab");
+        assert_eq!(strip.position_at(49.0), 0, "the left half of the first tab");
+        assert_eq!(strip.position_at(51.0), 1, "the right half of the first tab");
+        assert_eq!(strip.position_at(153.0), 2, "the right half of the second");
+        assert_eq!(strip.position_at(399.0), 3, "past the end of them all");
+    }
+
+    /// A strip with nothing in it takes a tab at position zero, which is what dropping into an empty
+    /// pane has to mean.
+    #[test]
+    fn an_empty_strip_takes_a_tab_at_the_start() {
+        let empty = Strip { area: strip_of_three().area, tabs: Vec::new() };
+        assert_eq!(empty.position_at(200.0), 0);
+    }
 
     #[test]
     fn tabs_that_fit_are_not_shifted() {
