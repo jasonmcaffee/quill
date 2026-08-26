@@ -220,6 +220,7 @@ pub fn paint(
         );
     }
 
+    paint_highlights(ui, document, layout, text_origin);
     paint_text(ui, renderer, layout, text_origin);
 
     if show_caret {
@@ -229,6 +230,39 @@ pub fn paint(
             0.0,
             caret_color,
         );
+    }
+}
+
+/// Paint the marked passages, over the selection and under the text.
+///
+/// The order is not arbitrary. A passage marked while it is still selected has to be visible at the
+/// moment it is marked, and the selection's own colour is opaque — so the mark goes over it, at
+/// whatever alpha was chosen, and the selection shows through. And it goes under the text, because a
+/// highlight is a background: the writing over it is painted at full alpha like every other glyph in
+/// Quill.
+///
+/// Only what is on the screen is asked for. `Highlights::overlapping` is a binary search and a walk,
+/// so a file with a thousand marks costs a frame the dozen that can be seen.
+fn paint_highlights(ui: &egui::Ui, document: &Document, layout: &Layout, text_origin: Pos2) {
+    if document.highlights().is_empty() {
+        return;
+    }
+    let painter = ui.painter();
+    let clip = painter.clip_rect();
+    let visible = layout
+        .visible_bytes(clip.top() - text_origin.y, clip.bottom() - text_origin.y);
+    for mark in document.highlights().overlapping(visible) {
+        let color = crate::theme::color32(mark.color);
+        for rect in layout.selection_rects(mark.range.clone()) {
+            painter.rect_filled(
+                Rect::from_min_size(
+                    Pos2::new(text_origin.x + rect.x, text_origin.y + rect.y),
+                    Vec2::new(rect.width, rect.height),
+                ),
+                2.0,
+                color,
+            );
+        }
     }
 }
 

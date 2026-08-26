@@ -91,9 +91,86 @@ pub enum Action {
     ReloadPath(PathBuf),
     /// Anything on the Git menu.
     Git(GitAction),
+    /// Mark the selected passage in one of the four colours the menu offers.
+    ///
+    /// The colour chosen in the wheel is not here, because an action is named and a name cannot
+    /// carry a colour and an opacity. Both go through `QuillApp::highlight_selection`, so there is
+    /// still one place a passage is marked.
+    Highlight(HighlightColor),
+    /// Take away the mark under the caret.
+    ClearHighlight,
+    /// Take away every mark in the file that is showing.
+    ClearHighlights,
     /// Quill's own about box, which is a line in the status bar rather than a window.
     About,
     Quit,
+}
+
+/// The four colours the editor's right click menu offers as blocks.
+///
+/// Four rather than a list, because a marker pen has a handful of colours and a person choosing
+/// between twenty has been given a job rather than a tool. Anything else is the colour wheel, which
+/// carries a value no menu entry could name and so is not an [`Action`] at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HighlightColor {
+    Yellow,
+    Green,
+    Blue,
+    Pink,
+}
+
+impl HighlightColor {
+    pub const ALL: [HighlightColor; 4] =
+        [HighlightColor::Yellow, HighlightColor::Green, HighlightColor::Blue, HighlightColor::Pink];
+
+    /// What the menu row says, and what the command line calls it once it is lower case.
+    pub fn label(&self) -> &'static str {
+        match self {
+            HighlightColor::Yellow => "Yellow",
+            HighlightColor::Green => "Green",
+            HighlightColor::Blue => "Blue",
+            HighlightColor::Pink => "Pink",
+        }
+    }
+
+    /// The colour itself, from the closed palette in `theme::color`.
+    pub fn rgba(&self) -> quill_core::Rgba {
+        use crate::theme::color;
+        match self {
+            HighlightColor::Yellow => color::HIGHLIGHT_YELLOW,
+            HighlightColor::Green => color::HIGHLIGHT_GREEN,
+            HighlightColor::Blue => color::HIGHLIGHT_BLUE,
+            HighlightColor::Pink => color::HIGHLIGHT_PINK,
+        }
+    }
+
+    /// The same colour as egui wants it, for the block the menu draws.
+    pub fn color(&self) -> egui::Color32 {
+        crate::theme::color32(self.rgba())
+    }
+
+    /// The colour of this name: one of the four, or `#rrggbb` / `#rrggbbaa`.
+    ///
+    /// The command line takes both, so `--color green` and `--color "#7FCA9866"` are both a colour
+    /// and neither needs the other explained.
+    pub fn parse(name: &str) -> Option<quill_core::Rgba> {
+        let name = name.trim();
+        for colour in Self::ALL {
+            if colour.label().eq_ignore_ascii_case(name) {
+                return Some(colour.rgba());
+            }
+        }
+        quill_core::Rgba::parse(name)
+    }
+
+    /// The four names a person can type, for a message that has to list them.
+    pub fn names() -> String {
+        Self::ALL
+            .iter()
+            .map(|colour| colour.label().to_ascii_lowercase())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
 }
 
 impl Action {
@@ -391,6 +468,11 @@ pub struct MenuState {
     pub unfinished: Option<&'static str>,
     /// How many files are open, which is what decides whether the tab entries can be used.
     pub open_files: usize,
+    /// How many passages are marked in the file that is showing, which is what decides whether
+    /// `Clear All Highlights` can be used.
+    pub highlights: usize,
+    /// True when the caret is inside a marked passage, so there is one to clear.
+    pub on_a_highlight: bool,
 }
 
 /// The whole menu bar: `Quill`, `File`, `Edit` and `View`, in that order.
@@ -602,6 +684,8 @@ fn edit_menu(state: &MenuState) -> Menu {
                 .not_from_the_keyboard(),
             Entry::with_shortcut("Select All", Action::SelectAll, Shortcut::command(egui::Key::A)),
             Entry::Separator,
+            Entry::Submenu { name: "Highlight".to_owned(), entries: highlight_menu(state) },
+            Entry::Separator,
             // IntelliJ keeps this under `Edit -> Find`, one level further down. Quill's Edit menu is
             // eight entries long and a submenu holding one thing is a step for nothing.
             Entry::with_shortcut(
@@ -755,6 +839,51 @@ pub fn explorer_menu_with_git(
     entries.push(Entry::Separator);
     entries.push(Entry::Submenu { name: "Git".to_owned(), entries: git_submenu(state, path) });
     entries
+}
+
+/// What `Edit -> Highlight` holds, and what the colour rows of the editor's own right click menu
+/// are built from.
+///
+/// It is on a menu at all so that every one of these has an [`Action`] with a name, which is what
+/// puts it on the command line the day it exists — `quill-cli action list` is built by walking the
+/// real menus. The four blocks drawn in the right click menu are these four entries wearing a
+/// different shape.
+pub fn highlight_menu(state: &MenuState) -> Vec<Entry> {
+    let mut entries: Vec<Entry> = HighlightColor::ALL
+        .iter()
+        .map(|colour| {
+            Entry::item(colour.label(), Action::Highlight(*colour)).enabled(state.has_selection)
+        })
+        .collect();
+    entries.push(Entry::Separator);
+    entries.extend(clear_highlight_menu(state));
+    entries
+}
+
+/// The two ways of taking a mark away, which the Edit menu and the editing area's own menu both
+/// hold. Split out because the right click menu draws the four colours as blocks rather than as
+/// rows, so it needs these two on their own.
+pub fn clear_highlight_menu(state: &MenuState) -> Vec<Entry> {
+    vec![
+        Entry::item("Clear Highlight", Action::ClearHighlight).enabled(state.on_a_highlight),
+        Entry::item("Clear All Highlights", Action::ClearHighlights).enabled(state.highlights > 0),
+    ]
+}
+
+/// The rows above the colours in the editing area's own right click menu.
+///
+/// The clipboard and Select All: what every editor's right click menu holds, and what a person
+/// reaches for when they have just selected something. They are the same [`Action`]s the Edit menu
+/// uses, so there is one arm in `run_action` for each rather than two.
+pub fn text_menu(state: &MenuState) -> Vec<Entry> {
+    vec![
+        Entry::with_shortcut("Cut", Action::Cut, Shortcut::command(egui::Key::X))
+            .enabled(state.has_selection),
+        Entry::with_shortcut("Copy", Action::Copy, Shortcut::command(egui::Key::C))
+            .enabled(state.has_selection),
+        Entry::with_shortcut("Paste", Action::Paste, Shortcut::command(egui::Key::V)),
+        Entry::with_shortcut("Select All", Action::SelectAll, Shortcut::command(egui::Key::A)),
+    ]
 }
 
 /// What the gutter's own right click menu holds.

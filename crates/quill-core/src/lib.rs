@@ -10,6 +10,7 @@
 
 pub mod cursor;
 pub mod document;
+pub mod highlights;
 pub mod layout;
 pub mod markdown;
 pub mod mermaid;
@@ -20,6 +21,7 @@ pub mod syntax;
 
 pub use cursor::Selection;
 pub use document::{Command, Document};
+pub use highlights::{Highlight, Highlights, Rgba};
 pub use layout::{layout, Caret, Layout, PlacedCluster, PlacedLine, PlacedRun, Rect};
 pub use metrics::{FixedMetrics, FontMetrics, LineMetrics, ScaledMetrics};
 pub use markdown::{Preview, PreviewColors, PreviewDiagram, PreviewImage};

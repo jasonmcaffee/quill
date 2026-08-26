@@ -3,6 +3,7 @@
 pub mod control;
 pub mod file_clipboard;
 pub mod file_kind;
+pub mod file_marks;
 pub mod file_search;
 pub mod file_tree;
 pub mod icons;

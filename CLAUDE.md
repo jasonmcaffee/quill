@@ -166,6 +166,55 @@ never make a network request. **And nothing is uploaded that the graphics card w
 *panics* when handed a bigger one and a four thousand pixel screenshot is an ordinary thing to put in
 a document. Both the picture tab and the preview go through it.
 
+## A highlight is a colour behind a passage, and it moves with the text
+
+Select some words, right click, choose one of four colours or open the colour wheel, and the
+background behind those words is that colour — in this file, next time it is opened, and until it is
+cleared. `task-1663` asks for it across as many files as you like, by hand or from the command line.
+
+**The ranges live in `quill_core::highlights`, inside the `Document`.** A sparse set, sorted by where
+each mark starts and never overlapping, which is what makes the one under the pointer a binary search
+and the handful on the screen a binary search and a walk. It is **not** `StyleSpans`: that covers the
+whole document with no gaps, so a document with two marked words would hold five spans; it carries no
+alpha, deliberately, because text in Quill is always fully opaque; and formatting is inherited by
+whatever is typed next, which a mark drawn over a passage must not be. Adding a mark **cuts away**
+whatever it lands on, because two translucent colours over one another give a third colour nobody
+chose and `Clear Highlight` under the pointer would have no single answer.
+
+It lives in the document so that `insert` and `remove_range` — the only two places in Quill that know
+a range of bytes moved — shift it in the same two lines that already shift `chars`. It rides the undo
+`Snapshot` for the same reason everything else does: undo restores a state. **Marking is not an
+edit**: it bumps the revision so the window repaints, and it does not set `modified` and does not push
+an undo step, which is the rule the editor's font already follows.
+
+**`services::file_marks` is the project's copy**, one `.quill/highlights.txt` for the whole project
+beside `open-files.txt` — `<start> <end> <#rrggbbaa> <path>`, the path last so a path with spaces
+needs no quoting, and relative so a project that moves keeps its marks. One file rather than one per
+source file, because six hundred source files would be six hundred files to open when a project
+opens. Read once and written only when something changed, and **only by the released binary**, exactly
+as the project state is.
+
+**One rule decides every awkward case: a file that is open is owned by its `Document`, and every other
+file is owned by `FileMarks`.** The window pushes an open document's marks into the store when that
+document's revision moves — an integer comparison a tab a frame — and pulls them out again when a file
+is opened. `QuillApp::change_highlights` is the one place that choice is made, so no command has to
+think about it.
+
+**The right click menu is `components::text_menu`**, the editing area's first. The colour wheel is
+drawn **inside the same popup** rather than in a second one over it, because egui keeps at most one
+popup open at a time — the same rule that turned the three line spacings into three buttons. A right
+click inside a selection leaves the selection alone; anywhere else it puts the caret there first,
+which is what makes `Clear Highlight` mean the one under the pointer.
+
+`components::color_wheel` is drawn rather than borrowed: egui's own picker is a square with two
+strips beside it, and the ask is a wheel. The four colours are in `theme::color` and are accents
+already sampled from the design; a colour chosen in the wheel is somebody's own mark on their own
+text, which is the exception `design/style-guide.md` records beside a syntax theme's token colours.
+
+`tasks/task-1663-highlights-tdd.md` records what was weighed. `quill-cli highlight` is the command
+line half — `list`, `add`, `clear` and `apply`, the last taking a JSON array so twenty passages across
+twenty files are one request and none of the files has to be opened.
+
 ## Git runs the `git` program, on a thread
 
 `quill-git` shells out to `git` rather than using a library, and the reason is what the machine's own
@@ -468,6 +517,9 @@ trade that away to be a shade nearer a screenshot.
   and pictures opening in a tab.
 - `tasks/task-1659-search-and-images-tdd.md` — `Go to File`, `Find in Files` and the thread it reads
   the project on, modals that can be dragged and resized, and pictures in the Markdown preview.
+- `tasks/task-1663-highlights-tdd.md` — highlighting a passage: where the ranges live so they move
+  with the text, the file beside the project that remembers them, the right click menu and the drawn
+  colour wheel, and the bulk commands.
 - `tasks/quill-mermaid-plugin-tdd.md` — Mermaid: the four ways of drawing it that were weighed and why
   Quill writes its own, what each of the twenty types becomes on the screen, which ten are named
   rather than drawn, and what `language.renders` buys.

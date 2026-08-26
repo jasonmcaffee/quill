@@ -235,14 +235,22 @@ fn serve(
 ) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
-    let Ok(mut writing) = stream.try_clone() else {
-        return;
-    };
+    // One handle for the whole conversation, read through a `BufReader` and then taken back out to
+    // write the answer through. It used to read through a `BufReader` built from the stream and
+    // write through a `try_clone` of it, which closed the reading handle the moment the request had
+    // been read — while the caller was still waiting for the answer. That is what
+    // `a_request_reaches_the_window_and_the_answer_comes_back` failed on, about one run in five of
+    // the whole library suite: the reply was written and flushed successfully and the caller's read
+    // came back `ConnectionReset` with nothing in it, which is what Windows does when a socket is
+    // torn down with anything still owing on it. One handle, closed once, after the answer has
+    // gone.
+    let mut reading = BufReader::new(stream);
     let mut line = String::new();
-    if BufReader::new(stream).read_line(&mut line).is_err() {
+    if reading.read_line(&mut line).is_err() {
         return;
     }
     let reply = read_and_queue(&line, &sender, &expected, &wake);
+    let mut writing = reading.into_inner();
     let _ = writeln!(writing, "{}", reply.to_json());
     let _ = writing.flush();
 }

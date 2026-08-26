@@ -157,11 +157,43 @@ quill-cli settings set appearance.background.opacity 0.6 --json
 quill-cli window screenshot _agent_output/quill.png --json
 ```
 
+**Mark the passages a piece of work is about.** A highlight is a colour behind a range of text. It
+stays until it is cleared, it comes back next time the project is opened, and it moves with the text
+as the file is edited. The file does not have to be open.
+
+```sh
+quill-cli highlight add src/main.rs --from-line 40 --to-line 58 --color blue --json
+quill-cli highlight add src/main.rs --text "unwrap()" --color pink --json
+quill-cli highlight list --all --json
+quill-cli highlight clear src/main.rs --json
+```
+
+**Mark many passages across many files in one call.** This is the shape to use when the places are
+already worked out — one request rather than twenty, and none of the files is opened.
+
+```sh
+cat > marks.json <<'JSON'
+[
+  { "path": "src/main.rs",     "fromLine": 40, "toLine": 58, "color": "blue" },
+  { "path": "src/parser.rs",   "fromLine": 12, "toLine": 19, "color": "yellow" },
+  { "path": "docs/design.md",  "fromLine": 3,  "toLine": 3,  "color": "green" }
+]
+JSON
+quill-cli highlight apply --from-file marks.json --replace --json
+quill-cli window screenshot _agent_output/marked.png --json
+```
+
+`--replace` clears every mark in the project first, so what is applied is all there is — which is
+what to use when the marks are the current state of a piece of work rather than something to add to.
+A row that cannot be applied is reported against its number and the rest of the list still goes in.
+
 **Do something with no command of its own.** Every menu entry has a name:
 
 ```sh
 quill-cli action list --json
 quill-cli action run toggle-line-numbers --json
+quill-cli action run highlight-yellow --json
+quill-cli action run clear-highlight --json
 ```
 
 ## Two things the CLI will not do
@@ -644,6 +676,87 @@ Read the preview of the tab that is showing: a Markdown page as plain text with 
 
 ```sh
 quill-cli editor preview --json
+```
+
+## highlight — the passages marked in the project's files
+
+A highlight is a colour behind a passage of text. It stays there until it is cleared, in this file and next time the project is opened, and it moves with the text as the file is edited. These work on a file whether it is open or not, so `highlight apply` can mark twenty passages across twenty files in one call.
+
+### highlight list
+
+```
+quill-cli highlight list [path] [--all]
+```
+
+What is marked, in one file or across the whole project: where each passage is, what colour it is in, and the text under it.
+
+- `path` (optional) — The file to list. The tab that is showing when it is left out.
+
+- `--all` — List every file in the project rather than one.
+
+```sh
+quill-cli highlight list --json
+quill-cli highlight list --all --json
+```
+
+### highlight add
+
+```
+quill-cli highlight add [path] [--from-line <number>] [--from-column <number>] [--to-line <number>] [--to-column <number>] [--text <words>] [--color <name>]
+```
+
+Mark a passage in a colour. Give it lines and columns, or --text to mark every occurrence of some words. The file need not be open.
+
+- `path` (optional) — The file to mark. The tab that is showing when it is left out.
+
+- `--from-line <number>` — The line the passage starts on, counting from 1.
+- `--from-column <number>` — The column it starts at. 1 when it is left out.
+- `--to-line <number>` — The line it ends on. The line it started on when it is left out.
+- `--to-column <number>` — The column it ends at. The end of the line when it is left out.
+- `--text <words>` — Mark every occurrence of these words in the file instead of a range.
+- `--color <name>` — yellow, green, blue, pink, or a colour of your own as #rrggbb or #rrggbbaa. Yellow when it is left out.
+
+```sh
+quill-cli highlight add --from-line 12 --to-line 18
+quill-cli highlight add src/main.rs --from-line 40 --to-line 44 --color blue
+quill-cli highlight add src/main.rs --text "unwrap()" --color pink
+```
+
+### highlight clear
+
+```
+quill-cli highlight clear [path] [--from-line <number>] [--to-line <number>] [--all]
+```
+
+Take marks away: a range of lines, a whole file, or every file in the project.
+
+- `path` (optional) — The file to clear. The tab that is showing when it is left out.
+
+- `--from-line <number>` — The first line to clear, counting from 1. The whole file when it is left out.
+- `--to-line <number>` — The last line to clear. The line it started on when it is left out.
+- `--all` — Clear every file in the project.
+
+```sh
+quill-cli highlight clear
+quill-cli highlight clear src/main.rs --from-line 40 --to-line 44
+quill-cli highlight clear --all
+```
+
+### highlight apply
+
+```
+quill-cli highlight apply [--from-file <path>] [--json-text <json>] [--replace]
+```
+
+Mark many passages across many files in one go, from a JSON array of {path, fromLine, toLine, fromColumn, toColumn, color} objects.
+
+- `--from-file <path>` — Read the JSON array from this file.
+- `--json-text <json>` — The JSON array itself, for a short list. Quote it.
+- `--replace` — Clear every mark in the project first, so what is applied is all there is.
+
+```sh
+quill-cli highlight apply --from-file marks.json
+quill-cli highlight apply --json-text '[{"path":"src/main.rs","fromLine":1,"toLine":3}]'
 ```
 
 ## terminal — the shells along the bottom

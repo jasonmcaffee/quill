@@ -342,3 +342,38 @@ pub fn line_spacing(painter: &egui::Painter, centre: Pos2, color: Color32) {
         );
     }
 }
+
+/// A colour wheel: a ring of six wedges in the six named hues, with a hole in the middle.
+///
+/// The one icon in Quill drawn in colours of its own rather than in the tint it is given. An icon
+/// whose whole meaning is "any colour you like" cannot be one colour, and `color` is used for the
+/// line round it so it still sits in the palette. The six are the corners of the hue ring the wheel
+/// itself draws, so the button and what it opens are recognisably the same thing.
+pub fn color_wheel(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    let outer = 8.0;
+    let inner = 3.4;
+    let wedges = [
+        Color32::from_rgb(0xFF, 0x00, 0x00),
+        Color32::from_rgb(0xFF, 0xFF, 0x00),
+        Color32::from_rgb(0x00, 0xFF, 0x00),
+        Color32::from_rgb(0x00, 0xFF, 0xFF),
+        Color32::from_rgb(0x00, 0x00, 0xFF),
+        Color32::from_rgb(0xFF, 0x00, 0xFF),
+    ];
+    for (index, wedge) in wedges.iter().enumerate() {
+        let from = index as f32 / wedges.len() as f32 * std::f32::consts::TAU;
+        let to = (index + 1) as f32 / wedges.len() as f32 * std::f32::consts::TAU;
+        // Four points rather than an arc: at this size the flat edge is a fraction of a pixel out
+        // and a polygon is one shape where an arc is a mesh.
+        let at = |angle: f32, radius: f32| {
+            Pos2::new(centre.x + angle.cos() * radius, centre.y + angle.sin() * radius)
+        };
+        painter.add(egui::Shape::convex_polygon(
+            vec![at(from, inner), at(from, outer), at(to, outer), at(to, inner)],
+            *wedge,
+            Stroke::NONE,
+        ));
+    }
+    painter.circle_stroke(centre, outer, Stroke::new(1.0, color));
+    painter.circle_filled(centre, inner, Color32::from_rgb(0x26, 0x2C, 0x36));
+}

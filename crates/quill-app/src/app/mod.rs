@@ -35,7 +35,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use egui::{Color32, CornerRadius, Pos2, Rect, Vec2};
-use quill_core::{layout, Command, Document, Layout};
+use quill_core::{layout, Command, Document, Highlights, Layout, Rgba};
 
 use crate::components::activity_bar;
 use crate::components::context_menu;
@@ -55,9 +55,11 @@ use crate::components::settings_dialog::{self, SettingsWindow};
 use crate::components::splitter;
 use crate::components::status_bar;
 use crate::components::terminal_panel::{self, TerminalPanel};
+use crate::components::text_menu;
 use crate::components::text_tools;
 use crate::components::title_bar::{self, MenuPlacement};
 use crate::services::file_kind;
+use crate::services::file_marks::FileMarks;
 use crate::services::file_tree::FileTree;
 use crate::services::file_clipboard::FileClipboard;
 use crate::services::launcher;
@@ -373,6 +375,17 @@ pub struct QuillApp {
     /// Where the gutter's own menu is open, when it is. Held here rather than in egui's memory so
     /// that a test can open it: a screenshot test cannot press the right mouse button.
     pub gutter_menu: Option<Pos2>,
+    /// The editing area's own menu, when it is open. Held here for the same reason the gutter's is,
+    /// and it carries the colour wheel with it.
+    pub text_menu: Option<text_menu::TextMenu>,
+    /// The colour the wheel was last left on, so opening it again starts where it was left rather
+    /// than back at the first block. In memory only: it is a habit within one sitting rather than a
+    /// setting, and the four blocks are what a lasting preference looks like.
+    pub last_highlight: Rgba,
+    /// The passages marked in every file of this project. The authority for every file that is not
+    /// open; a file that **is** open is owned by its document and pushed in here whenever it
+    /// changes. See `services::file_marks`.
+    pub marks: FileMarks,
     /// The command channel, once it has been opened. `None` in every window a test builds, and in a
     /// released Quill started with `--control off`: a window with no channel is an ordinary window.
     pub(crate) control: Option<control::Server>,
@@ -441,6 +454,9 @@ impl QuillApp {
             find_in_files: None,
             reveal_caret: false,
             gutter_menu: None,
+            text_menu: None,
+            last_highlight: theme::color::HIGHLIGHT_YELLOW,
+            marks: FileMarks::new(),
             control: None,
             cli_waiting: Vec::new(),
         }
@@ -545,6 +561,9 @@ impl QuillApp {
     /// The files are opened permanently rather than transiently, because a tab that was there when the
     /// window closed is not a file somebody is glancing at.
     pub fn restore_project(&mut self) {
+        // Read before the files are opened, so each tab comes up with its passages already marked
+        // rather than having them appear a frame later.
+        self.marks = FileMarks::load(self.tree.root());
         let state = project_state::load(self.tree.root());
         for folder in &state.expanded_folders {
             self.tree.expand(folder);
@@ -663,6 +682,125 @@ impl QuillApp {
         theme::faded(color::EDITOR, self.settings.opacity)
     }
 
+    // ------------------------------------------------------------------- the marked passages
+
+    /// Mark the selected passage in the file that is showing.
+    ///
+    /// The one place a passage is marked by hand: the four blocks, the four menu entries and the
+    /// colour wheel all come here, so a colour chosen one way and the same colour chosen another
+    /// are the same change. Nothing happens when there is no selection, and the status bar says so
+    /// rather than leaving a click looking as though it did nothing.
+    pub fn highlight_selection(&mut self, color: Rgba) -> bool {
+        let range = self.document().selection().range();
+        if range.is_empty() {
+            self.message = Some("Select some text to highlight it.".to_owned());
+            return false;
+        }
+        self.last_highlight = color;
+        let marked = self.document_mut().highlight(range, color);
+        if marked {
+            self.message = None;
+        }
+        marked
+    }
+
+    /// True when there is a mark the selection touches, or one under the caret when nothing is
+    /// selected. What decides whether `Clear Highlight` can be used, and what it will act on.
+    pub fn marks_under_the_caret(&self) -> bool {
+        let selection = self.document().selection();
+        if selection.is_empty() {
+            self.document().highlights().at(selection.head).is_some()
+        } else {
+            !self.document().highlights().overlapping(selection.range()).is_empty()
+        }
+    }
+
+    /// Take away the marks the selection touches, or the one under the caret when nothing is
+    /// selected.
+    ///
+    /// One rule rather than two, so that `Clear Highlight` means the same thing on the Edit menu, on
+    /// the right click menu and from the command line. A right click outside a selection puts the
+    /// caret where it was clicked before the menu opens, which is what makes "the one under the
+    /// caret" the one under the pointer.
+    pub fn clear_highlight_here(&mut self) -> bool {
+        let selection = self.document().selection();
+        if selection.is_empty() {
+            self.document_mut().clear_highlight_at(selection.head)
+        } else {
+            self.document_mut().clear_highlight(selection.range())
+        }
+    }
+
+    /// Take away every mark in the file that is showing.
+    pub fn clear_highlights_here(&mut self) -> bool {
+        self.document_mut().clear_highlights()
+    }
+
+    /// Change what is marked in any file of this project, whether it is open or not.
+    ///
+    /// The one place that choice is made, so no caller has to think about it: a file that is open is
+    /// owned by its document, and every other file is owned by `services::file_marks`. Anything
+    /// changed in a document is pushed into the store by [`Self::remember_the_marks`] on the same
+    /// frame, so the two cannot come to disagree.
+    pub fn change_highlights(
+        &mut self,
+        path: &Path,
+        change: impl FnOnce(&mut Highlights),
+    ) -> bool {
+        if let Some(index) = self.files.index_of(path) {
+            let mut marks = self.files.at(index).document.highlights().clone();
+            let before = marks.clone();
+            change(&mut marks);
+            if before == marks {
+                return false;
+            }
+            self.files.at_mut(index).document.set_highlights(marks);
+            return true;
+        }
+        self.marks.change(path, change)
+    }
+
+    /// What is marked in one file, whether it is open or not.
+    pub fn highlights_of(&self, path: &Path) -> Highlights {
+        if let Some(index) = self.files.index_of(path) {
+            return self.files.at(index).document.highlights().clone();
+        }
+        self.marks.highlights(path).cloned().unwrap_or_default()
+    }
+
+    /// Push what every open document holds into the store, and write the store if it changed.
+    ///
+    /// Called every frame and does almost nothing: an integer comparison for each open tab, because
+    /// a document that has not changed since it was last pushed cannot have new marks in it. Writing
+    /// is on the same terms as the project state — only when something changed, and only once the
+    /// pointer is up, so dragging a selection never writes.
+    fn remember_the_marks(&mut self, settled: bool) {
+        for index in 0..self.files.len() {
+            let Some(path) = self.files.at(index).path().map(Path::to_path_buf) else {
+                continue;
+            };
+            let revision = self.files.at(index).document.revision();
+            if self.files.at(index).marked_revision == Some(revision) {
+                continue;
+            }
+            let marks = self.files.at(index).document.highlights().clone();
+            self.marks.set(&path, marks);
+            self.files.at_mut(index).marked_revision = Some(revision);
+        }
+        if self.remembers_this_project() && settled {
+            let root = self.tree.root().to_path_buf();
+            self.marks.save(&root);
+        }
+    }
+
+    /// True when this window is the one allowed to read and write the project's own `.quill` folder.
+    ///
+    /// Which is the released binary and nothing else: `restore_project` is what turns it on, and a
+    /// test neither reads nor writes a person's files.
+    fn remembers_this_project(&self) -> bool {
+        self.written_project.is_some()
+    }
+
     /// What the menus need to know about the window.
     pub fn menu_state(&self) -> MenuState {
         MenuState {
@@ -682,6 +820,8 @@ impl QuillApp {
             has_file: self.document().path().is_some(),
             annotated: self.files.active().blame.is_some(),
             unfinished: self.git.as_ref().and_then(|git| git.snapshot.in_progress),
+            highlights: self.document().highlights().len(),
+            on_a_highlight: self.marks_under_the_caret(),
         }
     }
 
@@ -918,6 +1058,23 @@ impl QuillApp {
                 self.reload_from_disk(&path, false);
             }
             Action::Git(what) => self.run_git(what),
+            Action::Highlight(colour) => {
+                self.highlight_selection(colour.rgba());
+            }
+            Action::ClearHighlight => {
+                if !self.clear_highlight_here() {
+                    self.message = Some("There is no highlight at the caret.".to_owned());
+                }
+            }
+            Action::ClearHighlights => {
+                let cleared = self.document().highlights().len();
+                if self.clear_highlights_here() {
+                    self.message = Some(format!(
+                        "Cleared {cleared} highlight{}",
+                        if cleared == 1 { "" } else { "s" }
+                    ));
+                }
+            }
             Action::About => {
                 self.message = Some(format!(
                     "Quill {} \u{00B7} a text editor written in Rust",
@@ -1041,6 +1198,14 @@ impl QuillApp {
                 self.files.open(document, permanent);
                 let change = self.settings.as_style_change();
                 self.document_mut().set_base_style(change);
+                // Whatever was marked in this file last time. The document clamps the ranges to the
+                // text it has just read, so a file that changed on the disk since is a mark in the
+                // wrong place rather than a range past the end of the rope.
+                if let Some(marks) = self.marks.highlights(path).cloned() {
+                    self.document_mut().set_highlights(marks);
+                }
+                let revision = self.document().revision();
+                self.files.active_mut().marked_revision = Some(revision);
                 self.message = None;
                 // A file that is not Markdown has nothing to preview, so the raw source is shown.
                 if !file_kind::is_markdown(Some(path)) {
@@ -2379,6 +2544,34 @@ impl QuillApp {
             }
         }
 
+        // The editing area's own menu, which is where a passage is marked. Drawn after the editing
+        // area for the same reason the other two are: it has to sit over what it was opened on.
+        if let Some(menu) = self.text_menu.clone() {
+            let state = self.menu_state();
+            let above = actions::text_menu(&state);
+            let below = actions::clear_highlight_menu(&state);
+            let last = self.last_highlight;
+            let outcome =
+                text_menu::show(ui, &menu, &above, &below, state.has_selection, last);
+            if let Some(chosen) = outcome.chosen {
+                action = Some(chosen);
+            }
+            if let Some(color) = outcome.highlight {
+                self.highlight_selection(color);
+            }
+            if let Some(wheel) = outcome.wheel {
+                if let Some(menu) = self.text_menu.as_mut() {
+                    menu.wheel = wheel;
+                }
+                if let Some(color) = wheel {
+                    self.last_highlight = color;
+                }
+            }
+            if outcome.close {
+                self.text_menu = None;
+            }
+        }
+
         // The terminal.
         if self.terminal.visible {
             let panel_outcome = {
@@ -2602,6 +2795,9 @@ impl QuillApp {
         // What is open in this project is written down for next time, on the same terms as the
         // settings: once the pointer is up, and only when something has actually changed.
         self.remember_the_project();
+        // And what is marked in its files, on exactly the same terms.
+        let settled = !ui.input(|input| input.pointer.any_down());
+        self.remember_the_marks(settled);
 
         // Settings are written once the pointer is up, so that dragging a divider or a slider writes the
         // file once at the end rather than on every frame of the drag.
@@ -2963,6 +3159,23 @@ impl QuillApp {
         }
         if outcome.changed || pointer_changed {
             self.refresh_layout(text_width);
+        }
+
+        // A right click opens the editing area's own menu. Inside a selection it leaves the
+        // selection alone — a menu that opened with nothing selected would be a menu with nothing
+        // to mark in it, which is the whole point of it — and anywhere else it puts the caret there
+        // first, which is what every editor does.
+        if response.secondary_clicked() {
+            if let Some(at) = response.interact_pointer_pos() {
+                let local = at - origin;
+                let offset = self.layout.offset_at(local.x, local.y);
+                let selection = self.document().selection().range();
+                if !selection.contains(&offset) {
+                    self.document_mut().apply(Command::PlaceCaret { offset, extend: false });
+                }
+                self.text_menu = Some(text_menu::TextMenu::new(at, offset));
+                self.focus = Focus::Editor;
+            }
         }
 
         // A pinch, or the wheel with the zoom modifier held, changes the size of the text that is

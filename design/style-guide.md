@@ -51,6 +51,7 @@ different greys, and it must not happen.
 | `SELECTED_ROW` | Behind the chosen row in any list. |
 | `UNSAVED` | The amber dot meaning there are changes that have not been written. |
 | `TEXT_STRONG` → `TEXT` → `TEXT_CONTROL` → `TEXT_DIM` → `TEXT_FAINT` | Five weights, brightest to faintest. A heading, body text, a control's label, a heading in the explorer, and placeholder text. |
+| `HIGHLIGHT_YELLOW`, `HIGHLIGHT_GREEN`, `HIGHLIGHT_BLUE`, `HIGHLIGHT_PINK` | The four colours a passage can be marked in. Held as `quill_core::Rgba` rather than `Color32`, because a mark is written to a file and sent over the command line as well as painted; `theme::color32` is the one place the two spellings meet. |
 
 A **diagram** is drawn in this palette too, and it has to be said out loud because a diagram is the
 one thing in the window whose source could plausibly have opinions about colour. Mermaid's own
@@ -60,7 +61,18 @@ and eight series colours for the charts, taken from the accents this table alrea
 does not choose the window's colours, for the same reason a colour scheme does not: an author who
 picked black on white would be unreadable here.
 
-There is one exception, and it is deliberate: **a syntax theme's token colours**. Those come from a
+There are two exceptions, and both are deliberate.
+
+The first is **a highlight's colour**. The four blocks are in the table above and are accents already
+sampled from the design — the unsaved amber, the accent blue, git's added green and blame's newest
+pink — each at `HIGHLIGHT_ALPHA`, which is low enough that the writing over them stays readable at
+every window opacity. The colour wheel then offers **any colour at all**, and that is the exception: a
+highlight is somebody's own mark on their own text rather than a part of the window, in the same way
+that a token's colour is a property of the colour scheme rather than of Quill. What it must not do is
+what a colour scheme must not do either — a mark is a background behind a passage and never repaints
+the editing area.
+
+The second is **a syntax theme's token colours**. Those come from a
 plugin, not from `theme::color`, because they are a property of the colour scheme rather than of
 Quill. A syntax theme colours the tokens and nothing else — never the editing area's background,
 because the window letting the desktop show through is what Quill is, and an opaque scheme takes it
@@ -182,6 +194,21 @@ Four edges 6 points wide and four corners 16 points square, each setting the poi
 it moves. **They are added to the `Ui` last**, after every pane, for the reason a divider is added
 after the panes either side of it.
 
+**A colour block.** `components::text_menu`. A 34 point square, corner radius 6, filled first with
+`EDITOR` and then with the highlight colour over it — so what is drawn is what the passage will look
+like rather than the colour at full strength. A one point `CONTROL_BORDER` outline, `TEXT_STRONG`
+while the pointer is over it, and the colour at 35 per cent of its strength when there is nothing
+selected to mark. Four of them in a row 8 points apart, with the colour wheel's icon at the right hand
+end of the row and apart from them, because it is not a fifth colour: it is the way to any colour.
+
+**A colour wheel.** `components::color_wheel`: a hue ring built as one mesh a pair of vertices every
+six degrees, a saturation and value square inside it subdivided into a grid so the corners interpolate
+without a seam, and an opacity bar under them drawn over a checkerboard so what sixty per cent looks
+like can be seen rather than read. Then the colour as `#RRGGBBAA` and one button. **It is drawn inside
+the menu that opened it**, never in a popup of its own, for the reason a flyout must not hold one.
+egui's `color_picker_color32` is not used: it is a square with two strips beside it, and it brings
+egui's own sliders into a window that paints everything at measured positions.
+
 **A divider between panes.** `components::splitter`, always. It decides the grab width, the highlight
 under the pointer, the pointer shape and the double click that puts the pane back. A new pane adds
 its size to `settings::Panes`, with a smallest and a largest, clamped both when reading the file and
@@ -226,6 +253,12 @@ sitting there, `TEXT_STRONG` when what it opens is open. Nor can a picture be dr
 without resampling it. `task-1657` offered to have an image generated for this one, and this is why
 it was refused. Setting it as text is no better: the text options panel's `B` is real text, and it
 needs `theme::BOLD_FAMILY` bound before the first frame to look like anything.
+
+**One icon is drawn in colours of its own**, and it is `theme::icon::color_wheel` — the button that
+opens the colour wheel. It is a ring of six wedges in the six named hues, with the tint it is given
+used for the line round it. An icon whose whole meaning is "any colour you like" cannot be one colour,
+and the six are the corners of the ring the wheel itself draws, so the button and what it opens are
+recognisably the same thing. Nothing else may do this without a reason written down here.
 
 `task-1658` asked the same question again for the three icons in the activity bar and the answer is
 the same, for a reason its own rail makes plain: each of those three is drawn in `TEXT_DIM` sitting

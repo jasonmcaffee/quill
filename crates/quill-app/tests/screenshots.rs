@@ -23,7 +23,7 @@ use egui_kittest::wgpu::WgpuTestRenderer;
 use egui_kittest::{Harness, SnapshotResults};
 use quill_app::QuillApp;
 use quill_app::app::ViewMode;
-use quill_app::app::actions::Action;
+use quill_app::app::actions::{Action, HighlightColor};
 use quill_app::components::title_bar::MenuPlacement;
 use quill_app::settings;
 use quill_core::{Align, Color, Command, StyleChange};
@@ -3950,6 +3950,316 @@ fn every_command_in_the_catalogue_is_one_the_window_knows() {
             );
         }
         harness.run();
+    }
+}
+
+// Highlighting a passage (`task-1663`).
+//
+// The four colour blocks, the drawn colour wheel and the command line that marks passages across as
+// many files as you like. The set itself is tested in `quill-core` with no window, and the file
+// beside the project in `services::file_marks`; these are for what only the real window can show —
+// that the colour is behind the words, that the writing over it is still readable, and that the menu
+// looks like the rest of Quill.
+
+/// A passage to mark, and enough text round it that a screenshot shows the mark against the page.
+const MARKABLE: &str = "The quick brown fox jumps over the lazy dog.\n\
+                        Sphinx of black quartz, judge my vow.\n\
+                        Pack my box with five dozen liquor jugs.\n\
+                        How vexingly quick daft zebras jump.\n";
+
+/// Open the editing area's own menu where the gutter's menu tests open theirs: by setting the
+/// window's state, because the harness cannot press the right mouse button.
+fn open_text_menu(harness: &mut Harness<'static, QuillApp>, offset: usize) {
+    let at = harness.state().editor_area().left_top() + vec2(120.0, 60.0);
+    harness.state_mut().text_menu =
+        Some(quill_app::components::text_menu::TextMenu::new(at, offset));
+    harness.run();
+}
+
+#[test]
+fn the_editing_areas_own_menu_holds_four_colours_and_the_wheels_icon() {
+    let mut harness = harness(MARKABLE);
+    select_phrase(&mut harness, "quick brown fox", &[]);
+    open_text_menu(&mut harness, 4);
+    for name in ["Highlight yellow", "Highlight green", "Highlight blue", "Highlight pink"] {
+        harness.get_by_label(name);
+    }
+    harness.get_by_label("Choose a colour");
+    harness.get_by_label("Copy");
+    harness.snapshot(shot("text_menu"));
+}
+
+#[test]
+fn the_colour_wheel_opens_inside_the_menu_rather_than_in_a_second_popup() {
+    // egui keeps one popup open at a time, so the wheel has to be part of this one. What that means
+    // for a test is that the menu's own rows are still there while the wheel is showing.
+    let mut harness = harness(MARKABLE);
+    select_phrase(&mut harness, "quick brown fox", &[]);
+    open_text_menu(&mut harness, 4);
+    harness.get_by_label("Choose a colour").click();
+    harness.run();
+    for name in ["Highlight hue", "Highlight shade", "Highlight opacity", "Apply highlight"] {
+        harness.get_by_label(name);
+    }
+    harness.get_by_label("Highlight yellow");
+    harness.snapshot(shot("text_menu_wheel"));
+}
+
+#[test]
+fn choosing_a_colour_marks_the_selection_and_shuts_the_menu() {
+    let mut harness = harness(MARKABLE);
+    select_phrase(&mut harness, "quick brown fox", &[]);
+    open_text_menu(&mut harness, 4);
+    harness.get_by_label("Highlight blue").click();
+    harness.run();
+    assert!(harness.state().text_menu.is_none(), "choosing a colour puts the menu away");
+    let marks = harness.state().document().highlights();
+    assert_eq!(marks.len(), 1);
+    assert_eq!(marks.iter().next().unwrap().color, quill_core::Rgba::new(0x48, 0x9F, 0xF8, 0x59));
+}
+
+#[test]
+fn three_passages_in_three_colours_are_drawn_behind_the_writing() {
+    let mut harness = harness(MARKABLE);
+    let ctx = harness.ctx.clone();
+    for (phrase, action) in [
+        ("quick brown fox", Action::Highlight(HighlightColor::Yellow)),
+        ("black quartz", Action::Highlight(HighlightColor::Green)),
+        ("five dozen liquor jugs", Action::Highlight(HighlightColor::Pink)),
+    ] {
+        select_phrase(&mut harness, phrase, &[]);
+        harness.state_mut().run_action(action, &ctx);
+        harness.run();
+    }
+    collapse(&mut harness);
+    let colours: Vec<String> = harness
+        .state()
+        .document()
+        .highlights()
+        .iter()
+        .map(|mark| mark.color.to_hex())
+        .collect();
+    assert_eq!(colours, vec!["#FEBC2E59", "#7FCA9859", "#B4588C59"], "in the order they appear");
+    harness.snapshot(shot("highlights"));
+}
+
+#[test]
+fn clearing_takes_the_one_under_the_caret_and_leaves_the_others_drawn() {
+    let mut harness = harness(MARKABLE);
+    let ctx = harness.ctx.clone();
+    for phrase in ["quick brown fox", "black quartz", "five dozen liquor jugs"] {
+        select_phrase(&mut harness, phrase, &[]);
+        harness
+            .state_mut()
+            .run_action(Action::Highlight(HighlightColor::Yellow), &ctx);
+        harness.run();
+    }
+    // The caret inside the second one, as a right click on it would leave it.
+    let text = harness.state().document().text().to_string();
+    let at = text.find("black quartz").expect("the phrase") + 3;
+    harness.state_mut().command(Command::PlaceCaret { offset: at, extend: false });
+    harness.state_mut().run_action(Action::ClearHighlight, &ctx);
+    harness.run();
+    assert_eq!(harness.state().document().highlights().len(), 2);
+    harness.snapshot(shot("highlight_cleared"));
+}
+
+#[test]
+fn a_mark_moves_with_the_text_it_is_on() {
+    let mut harness = harness(MARKABLE);
+    let ctx = harness.ctx.clone();
+    select_phrase(&mut harness, "black quartz", &[]);
+    harness.state_mut().run_action(Action::Highlight(HighlightColor::Green), &ctx);
+    let before = harness.state().document().highlights().iter().next().unwrap().range.clone();
+
+    // Type a whole line above it.
+    harness.state_mut().command(Command::MoveDocumentStart { extend: false });
+    harness.state_mut().command(Command::Insert("a new first line\n".to_owned()));
+    harness.run();
+    let after = harness.state().document().highlights().iter().next().unwrap().range.clone();
+    assert_eq!(after.start, before.start + "a new first line\n".len());
+    let marked = harness.state().document().text().byte_slice(after.clone());
+    assert_eq!(marked, "black quartz", "the mark is still on the words it was put on");
+
+    // And undo puts it back where it was.
+    harness.state_mut().command(Command::Undo);
+    harness.run();
+    assert_eq!(harness.state().document().highlights().iter().next().unwrap().range, before);
+}
+
+/// Press the right mouse button at a point in the window.
+///
+/// The one interaction in Quill that has to be sent as raw events: `kittest` can click a control it
+/// can find by name, and the editing area is not a named control — it is the whole surface, and
+/// which *point* was pressed is the whole question.
+fn right_click_at(harness: &mut Harness<'static, QuillApp>, at: egui::Pos2) {
+    harness.event(egui::Event::PointerMoved(at));
+    for pressed in [true, false] {
+        harness.event(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: Modifiers::default(),
+        });
+    }
+    harness.run();
+}
+
+#[test]
+fn a_right_click_in_the_writing_opens_the_menu_where_it_was_pressed() {
+    let mut harness = harness(MARKABLE);
+    collapse(&mut harness);
+    // Over the second line, which is where the caret should end up.
+    let at = harness.state().editor_area().left_top() + vec2(120.0, 60.0);
+    right_click_at(&mut harness, at);
+    let menu = harness.state().text_menu.clone().expect("the right click should open the menu");
+    assert_eq!(menu.at, at, "the menu opens where the pointer was");
+    assert_eq!(
+        harness.state().document().selection().head,
+        menu.offset,
+        "and a right click outside a selection puts the caret where it was pressed"
+    );
+    assert!(menu.offset > 0, "the pointer was over the writing, not before it");
+    harness.get_by_label("Highlight yellow");
+}
+
+#[test]
+fn a_right_click_inside_a_selection_leaves_the_selection_alone() {
+    // Otherwise the menu would open with nothing to mark, which is the whole point of it.
+    let mut harness = harness(MARKABLE);
+    select_phrase(&mut harness, "The quick brown fox jumps over the lazy dog", &[]);
+    let before = harness.state().document().selection();
+    let at = harness.state().editor_area().left_top() + vec2(120.0, 20.0);
+    right_click_at(&mut harness, at);
+    assert!(harness.state().text_menu.is_some());
+    assert_eq!(harness.state().document().selection(), before, "the selection is untouched");
+    harness.get_by_label("Highlight blue").click();
+    harness.run();
+    assert_eq!(harness.state().document().highlights().len(), 1);
+}
+
+#[test]
+fn the_edit_menu_holds_the_four_colours_under_a_highlight_heading() {
+    // The four colours are on a menu so that each has an `Action` with a name, which is what puts
+    // them on the command line. Inside the window a submenu is drawn as a heading with its rows
+    // indented under it, which is what Recent Projects and the explorer's Git submenu already do.
+    let mut harness = harness(MARKABLE);
+    harness.state_mut().menu_placement = MenuPlacement::InWindow;
+    select_phrase(&mut harness, "quick brown fox", &[]);
+    harness.get_by_label("Edit").click();
+    harness.run();
+    for entry in ["Yellow", "Green", "Blue", "Pink", "Clear Highlight", "Clear All Highlights"] {
+        harness.get_by_label(entry);
+    }
+    harness.snapshot(shot("edit_menu"));
+}
+
+#[test]
+fn the_command_line_marks_a_passage_and_lists_it() {
+    let mut harness = harness_in(&sample_folder());
+    did(&mut harness, "tab open readme.md --permanent");
+    let marked = did(&mut harness, "highlight add --from-line 1 --to-line 1 --color blue");
+    assert_eq!(marked["marked"], 1);
+    assert_eq!(marked["color"], "#489FF859");
+
+    let listed = did(&mut harness, "highlight list");
+    let rows = listed["highlights"].as_array().expect("a list");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["fromLine"], 1);
+    assert_eq!(rows[0]["text"], "# Quill");
+    assert_eq!(harness.state().document().highlights().len(), 1);
+}
+
+#[test]
+fn the_command_line_marks_every_occurrence_of_some_words() {
+    let folder = copy_out_of_the_repository(&sample_folder(), "quill-highlight-occurrences");
+    std::fs::write(folder.join("repeated.txt"), "one two one two one\n").expect("write it");
+    let mut harness = harness_in(&folder);
+    let marked = did(&mut harness, "highlight add repeated.txt --text one --color pink");
+    assert_eq!(marked["marked"], 3, "every occurrence, not the first");
+    let listed = did(&mut harness, "highlight list repeated.txt");
+    assert_eq!(listed["highlights"].as_array().unwrap().len(), 3);
+    assert!(
+        harness.state().files.index_of(&folder.join("repeated.txt")).is_none(),
+        "the file was never opened, which is the point of naming it"
+    );
+}
+
+#[test]
+fn a_bulk_request_marks_passages_across_several_files_in_one_call() {
+    let folder = copy_out_of_the_repository(&sample_folder(), "quill-highlight-bulk");
+    let mut harness = harness_in(&folder);
+    // Two hashes on the raw string, because a colour of its own is written `"#FF00FF80"` and `"#`
+    // would otherwise end the literal in the middle of the request.
+    let request = r##"[
+        {"path":"readme.md","fromLine":1,"toLine":1,"color":"yellow"},
+        {"path":"notes.txt","fromLine":1,"toLine":1,"color":"green"},
+        {"path":"chapters/one.md","fromLine":1,"toLine":1,"color":"#FF00FF80"},
+        {"path":"nowhere.md","fromLine":1,"toLine":1}
+    ]"##
+    .split_whitespace()
+    .collect::<String>();
+    // In single quotes, as it would be typed at a shell: the window splits a command line the same
+    // way, so the double quotes inside the JSON survive.
+    let result = did(&mut harness, &format!("highlight apply --json-text '{request}'"));
+    assert_eq!(result["marked"], 3);
+    assert_eq!(result["files"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        result["refused"].as_array().unwrap().len(),
+        1,
+        "the file that is not there is refused by number and the rest still go in"
+    );
+
+    let everywhere = did(&mut harness, "highlight list --all");
+    assert_eq!(everywhere["highlights"].as_array().unwrap().len(), 3);
+
+    // Opening one of them shows the mark that was made while it was closed.
+    did(&mut harness, "tab open chapters/one.md");
+    let marks = harness.state().document().highlights();
+    assert_eq!(marks.len(), 1);
+    assert_eq!(marks.iter().next().unwrap().color, quill_core::Rgba::new(0xFF, 0x00, 0xFF, 0x80));
+
+    // And clearing everything really does clear the open file as well as the closed ones.
+    let cleared = did(&mut harness, "highlight clear --all");
+    assert_eq!(cleared["cleared"], 3);
+    assert!(harness.state().document().highlights().is_empty());
+    assert_eq!(did(&mut harness, "highlight list --all")["highlights"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn a_colour_that_is_not_a_colour_is_refused_with_the_names_that_are() {
+    let mut harness = harness_in(&sample_folder());
+    did(&mut harness, "tab open readme.md --permanent");
+    let reply = run(&mut harness, "highlight add --from-line 1 --color puce");
+    assert!(!reply.ok);
+    assert!(reply.message.contains("yellow"), "the refusal should name the colours: {}", reply.message);
+    assert_eq!(refused(&mut harness, "highlight add --from-line 9 --to-line 2"), "usage");
+}
+
+#[test]
+fn the_four_colours_and_the_two_ways_of_clearing_are_menu_entries_with_names() {
+    let mut harness = harness_in(&sample_folder());
+    did(&mut harness, "tab open readme.md --permanent");
+    did(&mut harness, "editor select --all");
+    for name in ["highlight-yellow", "highlight-green", "highlight-blue", "highlight-pink"] {
+        did(&mut harness, &format!("action run {name}"));
+    }
+    assert_eq!(
+        harness.state().document().highlights().len(),
+        1,
+        "each colour replaces the last over the same passage"
+    );
+    did(&mut harness, "action run clear-highlights");
+    assert!(harness.state().document().highlights().is_empty());
+    let listed = did(&mut harness, "action list");
+    let names: Vec<String> = listed["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["name"].as_str().unwrap_or_default().to_owned())
+        .collect();
+    for name in ["highlight-yellow", "clear-highlight", "clear-highlights"] {
+        assert!(names.contains(&name.to_owned()), "`action list` should offer {name}");
     }
 }
 

@@ -18,7 +18,7 @@
 
 use std::path::PathBuf;
 
-use crate::app::actions::{Action, GitAction};
+use crate::app::actions::{Action, GitAction, HighlightColor};
 use crate::app::ViewMode;
 
 impl Action {
@@ -65,6 +65,11 @@ impl Action {
             Action::RevealPath(_) => "reveal-path".to_owned(),
             Action::ReloadPath(_) => "reload-path".to_owned(),
             Action::Git(what) => format!("git-{}", what.name()),
+            Action::Highlight(colour) => {
+                format!("highlight-{}", colour.label().to_ascii_lowercase())
+            }
+            Action::ClearHighlight => "clear-highlight".to_owned(),
+            Action::ClearHighlights => "clear-highlights".to_owned(),
             Action::About => "about".to_owned(),
             Action::Quit => "quit".to_owned(),
         }
@@ -78,6 +83,12 @@ impl Action {
     pub fn from_name(name: &str, path: Option<PathBuf>) -> Option<Action> {
         if let Some(rest) = name.strip_prefix("git-") {
             return GitAction::from_name(rest, path).map(Action::Git);
+        }
+        if let Some(rest) = name.strip_prefix("highlight-") {
+            return HighlightColor::ALL
+                .iter()
+                .find(|colour| colour.label().eq_ignore_ascii_case(rest))
+                .map(|colour| Action::Highlight(*colour));
         }
         let with_path = || path.clone().unwrap_or_default();
         Some(match name {
@@ -120,6 +131,8 @@ impl Action {
             "rename-path" => Action::RenamePath(with_path()),
             "reveal-path" => Action::RevealPath(with_path()),
             "reload-path" => Action::ReloadPath(with_path()),
+            "clear-highlight" => Action::ClearHighlight,
+            "clear-highlights" => Action::ClearHighlights,
             "about" => Action::About,
             "quit" => Action::Quit,
             _ => return None,

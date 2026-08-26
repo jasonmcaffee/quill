@@ -365,6 +365,28 @@ impl Layout {
         self.lines.len() - 1
     }
 
+    /// The bytes of every line between two vertical positions, which is what is on the screen.
+    ///
+    /// A binary search at each end rather than a walk, because this is asked once a frame while
+    /// painting and a long file has a great many lines above the window. The lines are laid out top
+    /// to bottom, so their tops are sorted and `partition_point` can be used on them directly.
+    ///
+    /// An empty range when nothing is between the two, which is what a layout with nothing in it
+    /// gives and what a caller should treat as "there is nothing to draw".
+    pub fn visible_bytes(&self, top: f32, bottom: f32) -> Range<usize> {
+        if self.lines.is_empty() || bottom <= top {
+            return 0..0;
+        }
+        // The first line whose bottom edge is still above `top` cannot be seen, so the first that
+        // can is the one after the last of those.
+        let first = self.lines.partition_point(|line| line.bottom() <= top);
+        let last = self.lines.partition_point(|line| line.y < bottom);
+        if first >= last {
+            return 0..0;
+        }
+        self.lines[first].bytes.start..self.lines[last - 1].bytes.end
+    }
+
     /// The document offset closest to a point, which is what a mouse click needs.
     ///
     /// Clicking in the right half of a character puts the caret after it, which is what every editor
@@ -865,4 +887,31 @@ mod tests {
         assert_eq!(asked, natural, "it is a floor, never a ceiling");
     }
 
+    #[test]
+    fn only_the_lines_between_two_heights_are_reported_as_visible() {
+        // Ten lines of three letters, each 20 tall by FixedMetrics, so line n covers y 20n to 20n+20
+        // and holds bytes 4n to 4n+3 with the line break after it.
+        let (rope, spans, paragraphs) = fixture("abc
+".repeat(10).trim_end());
+        let result = layout(&rope, &spans, &paragraphs, &FixedMetrics::default(), 1000.0);
+        assert_eq!(result.lines.len(), 10);
+
+        let whole = result.visible_bytes(0.0, 200.0);
+        assert_eq!(whole, 0..rope.len_bytes(), "the whole document is on the screen");
+
+        let middle = result.visible_bytes(40.0, 80.0);
+        assert_eq!(middle, 8..15, "the third and fourth lines and nothing else");
+
+        // A window scrolled past the end, and one above the start.
+        assert_eq!(result.visible_bytes(400.0, 600.0), 0..0);
+        assert_eq!(result.visible_bytes(-100.0, -50.0), 0..0);
+        assert_eq!(result.visible_bytes(100.0, 100.0), 0..0, "no height is nothing to draw");
+    }
+
+    #[test]
+    fn nothing_laid_out_is_nothing_visible() {
+        let (rope, spans, paragraphs) = fixture("");
+        let result = layout(&rope, &spans, &paragraphs, &FixedMetrics::default(), 1000.0);
+        assert_eq!(result.visible_bytes(0.0, 100.0).len(), 0);
+    }
 }

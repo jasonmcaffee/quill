@@ -51,6 +51,12 @@ pub struct OpenFile {
     pub git_asked: bool,
     /// The picture, when this tab holds one rather than text.
     pub picture: Option<Picture>,
+    /// The revision this file's marked passages were last pushed into `services::file_marks` at.
+    ///
+    /// A document that has not changed since it was last pushed cannot have gained a mark, so this
+    /// makes keeping the store up to date one integer comparison a tab a frame rather than a
+    /// comparison of two lists.
+    pub marked_revision: Option<u64>,
     /// Where the diagram has been moved and scaled to, for a tab holding a Mermaid file.
     ///
     /// Beside `preview_scroll` rather than instead of it, because they are two different ways of
@@ -71,6 +77,7 @@ impl OpenFile {
             transient: false,
             git_asked: false,
             picture: None,
+            marked_revision: None,
             diagram: crate::components::diagram_view::View::default(),
         }
     }
@@ -161,6 +168,16 @@ impl OpenFiles {
     /// Which tab holds `path`, if any.
     pub fn index_of(&self, path: &Path) -> Option<usize> {
         self.files.iter().position(|file| file.path() == Some(path))
+    }
+
+    /// The tab at `index`. Panics past the end, as `active` does: an index here always came from
+    /// [`Self::index_of`] or from a walk of the tabs.
+    pub fn at(&self, index: usize) -> &OpenFile {
+        &self.files[index]
+    }
+
+    pub fn at_mut(&mut self, index: usize) -> &mut OpenFile {
+        &mut self.files[index]
     }
 
     /// Show the tab at `index`, if there is one there.

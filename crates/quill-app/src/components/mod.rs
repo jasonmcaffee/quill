@@ -5,6 +5,7 @@
 //! the state changes in one place, `app`, and two components cannot disagree about what happened.
 
 pub mod activity_bar;
+pub mod color_wheel;
 pub mod context_menu;
 pub mod diagram_view;
 pub mod controls;
@@ -26,5 +27,6 @@ pub mod settings_dialog;
 pub mod splitter;
 pub mod status_bar;
 pub mod terminal_panel;
+pub mod text_menu;
 pub mod text_tools;
 pub mod title_bar;

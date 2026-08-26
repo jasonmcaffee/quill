@@ -11,7 +11,8 @@ against them. Change one of these when the design changes; accept one of those w
 Each was captured from the real window through `crates/quill-app/tests/screenshots.rs`, on Windows,
 at 1180 x 740. They were all retaken for `task-1658`, which moved the text options into the title
 bar, added the rail down the far left and gave the window its own resize grips: every one of them
-shows a different window from the one it showed before.
+shows a different window from the one it showed before. The last three were added by `task-1663` and
+were captured the same way.
 
 | Image | What it is the baseline for |
 |---|---|
@@ -33,5 +34,8 @@ shows a different window from the one it showed before.
 | `code_no_toolbar.png` | A source file, which has no text tools at all. The right hand end of the title bar is simply empty, and nothing below it moves. |
 | `activity_bar.png` | The rail of pane buttons down the far left: the pill under a pane that is open, and the terminal's button at the bottom. |
 | `picture.png` | A picture in a tab, scaled to fit the editing area, with its size and scale in the status bar. |
+| `text_menu.png` | The editing area's own right click menu: the clipboard rows, the four colour blocks and the colour wheel's icon at the end of the row. |
+| `color_wheel.png` | The same menu with the wheel open inside it: the hue ring, the saturation and value square, the opacity bar over its checkerboard, the colour written out and the one button. |
+| `highlights.png` | Three passages marked in three colours, which is what the whole thing is for: the colour is behind the words and the writing over it is still readable. |
 
 `design/style-guide.md` says what these are made of.

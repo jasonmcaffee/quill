@@ -8,6 +8,7 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use crate::cursor::{self, Selection};
+use crate::highlights::{Highlights, Rgba};
 use crate::layout::Layout;
 use crate::rope::Rope;
 use crate::style::{Align, CharStyle, Color, ParagraphStyle, ParagraphStyles, StyleChange, StyleSpans};
@@ -69,6 +70,10 @@ struct Snapshot {
     chars: StyleSpans,
     paragraphs: ParagraphStyles,
     selection: Selection,
+    /// The marked passages, which ride the snapshot for the same reason everything else here does:
+    /// undo restores a state, and the marks are part of the state the text was in. Undoing back past
+    /// the moment a passage was marked therefore unmarks it, and redoing marks it again.
+    highlights: Highlights,
 }
 
 const UNDO_LIMIT: usize = 256;
@@ -79,6 +84,9 @@ pub struct Document {
     text: Rope,
     chars: StyleSpans,
     paragraphs: ParagraphStyles,
+    /// The passages somebody has marked with a colour. Sparse, unlike `chars`, and shifted by the
+    /// same two places that shift `chars`: see `insert` and `remove_range`.
+    highlights: Highlights,
     selection: Selection,
     /// Formatting chosen while nothing was selected, applied to the next text typed.
     pending: StyleChange,
@@ -108,6 +116,7 @@ impl Document {
             text: Rope::new(),
             chars: StyleSpans::new(0, CharStyle::default()),
             paragraphs: ParagraphStyles::new(1),
+            highlights: Highlights::new(),
             selection: Selection::caret(0),
             pending: StyleChange::default(),
             desired_x: None,
@@ -282,6 +291,76 @@ impl Document {
         self.revision += 1;
     }
 
+    // --------------------------------------------------------------------- the marked passages
+
+    /// Every passage somebody has marked with a colour.
+    pub fn highlights(&self) -> &Highlights {
+        &self.highlights
+    }
+
+    /// Put a whole set back, which is what opening a file that has been marked before does.
+    ///
+    /// The ranges are clamped to the text, because they were written against the bytes the file had
+    /// when it was closed and something outside Quill may have rewritten it since. A mark in the
+    /// wrong place is a wrong colour; a range past the end of the rope is a panic in the layout
+    /// engine.
+    pub fn set_highlights(&mut self, mut highlights: Highlights) {
+        highlights.clamp(self.text.len_bytes());
+        if highlights == self.highlights {
+            return;
+        }
+        self.highlights = highlights;
+        self.revision += 1;
+    }
+
+    /// Mark `range` in `color`. True when anything changed.
+    ///
+    /// **Not an edit**, which is the rule the editor's font already follows: nothing goes onto the
+    /// undo history and the file is not marked as having unsaved changes, because what Quill saves
+    /// is plain text and a mark is not in it. The revision is bumped, because it has to be drawn.
+    pub fn highlight(&mut self, range: Range<usize>, color: Rgba) -> bool {
+        let end = self.text.len_bytes();
+        let start = range.start.min(end);
+        let stop = range.end.min(end);
+        if start >= stop {
+            return false;
+        }
+        let before = self.highlights.clone();
+        self.highlights.add(start..stop, color);
+        if before == self.highlights {
+            return false;
+        }
+        self.revision += 1;
+        true
+    }
+
+    /// Take away the mark covering `offset`, which is what a right click on one offers.
+    pub fn clear_highlight_at(&mut self, offset: usize) -> bool {
+        let cleared = self.highlights.clear_at(offset);
+        if cleared {
+            self.revision += 1;
+        }
+        cleared
+    }
+
+    /// Take away the marks `range` touches.
+    pub fn clear_highlight(&mut self, range: Range<usize>) -> bool {
+        let cleared = self.highlights.clear(range);
+        if cleared {
+            self.revision += 1;
+        }
+        cleared
+    }
+
+    /// Take away every mark in this file.
+    pub fn clear_highlights(&mut self) -> bool {
+        let cleared = self.highlights.clear_all();
+        if cleared {
+            self.revision += 1;
+        }
+        cleared
+    }
+
     /// The paragraph formatting of the paragraph the caret is in.
     pub fn active_paragraph_style(&self) -> ParagraphStyle {
         self.paragraphs.get(self.text.byte_to_line(self.selection.head))
@@ -447,6 +526,7 @@ impl Document {
             chars: self.chars.clone(),
             paragraphs: self.paragraphs.clone(),
             selection: self.selection,
+            highlights: self.highlights.clone(),
         });
         if self.undo.len() > UNDO_LIMIT {
             self.undo.remove(0);
@@ -460,6 +540,7 @@ impl Document {
             chars: self.chars.clone(),
             paragraphs: self.paragraphs.clone(),
             selection: self.selection,
+            highlights: self.highlights.clone(),
         }
     }
 
@@ -468,6 +549,7 @@ impl Document {
         self.chars = snapshot.chars;
         self.paragraphs = snapshot.paragraphs;
         self.selection = snapshot.selection;
+        self.highlights = snapshot.highlights;
     }
 
     fn undo(&mut self) {
@@ -514,6 +596,8 @@ impl Document {
 
         self.text.insert(at, text);
         self.chars.insert(at, text.len());
+        // The marked passages move with the text, in the one place that knows the text moved.
+        self.highlights.insert(at, text.len());
         self.chars.set(at..at + text.len(), &style_as_change(&style));
         self.paragraphs.split(paragraph, line_breaks);
 
@@ -532,6 +616,7 @@ impl Document {
         let last = self.text.byte_to_line(range.end);
         self.text.remove(range.clone());
         self.chars.remove(range.clone());
+        self.highlights.remove(range.clone());
         self.paragraphs.join(first, last);
         self.selection.set_caret(range.start);
     }
@@ -1285,5 +1370,81 @@ mod tests {
             // Laying out must not panic on any of these states.
             let _ = lay_out(&document, 120.0);
         }
+    }
+
+    // --------------------------------------------------------------------- the marked passages
+
+    const MARK: Rgba = Rgba::new(0xE8, 0xC0, 0x4A, 0x59);
+
+    #[test]
+    fn marking_a_passage_is_not_an_edit() {
+        let mut document = Document::from_text("one two three");
+        let revision = document.revision();
+        assert!(document.highlight(4..7, MARK));
+        assert!(!document.is_modified(), "a mark is not written to the file, so nothing is unsaved");
+        assert!(!document.can_undo(), "and nothing goes onto the undo history");
+        assert!(document.revision() > revision, "but it does have to be drawn again");
+    }
+
+    #[test]
+    fn marking_the_same_passage_twice_says_nothing_changed_the_second_time() {
+        let mut document = Document::from_text("one two three");
+        assert!(document.highlight(4..7, MARK));
+        assert!(!document.highlight(4..7, MARK));
+    }
+
+    #[test]
+    fn a_mark_moves_by_exactly_what_was_typed_above_it() {
+        let mut document = Document::from_text("one two three");
+        document.highlight(8..13, MARK);
+        document.apply(Command::PlaceCaret { offset: 0, extend: false });
+        document.apply(Command::Insert("zero ".to_owned()));
+        assert_eq!(document.highlights().at(13).map(|mark| mark.range.clone()), Some(13..18));
+    }
+
+    #[test]
+    fn deleting_the_text_under_a_mark_takes_the_mark_away() {
+        let mut document = Document::from_text("one two three");
+        document.highlight(4..7, MARK);
+        document.apply(Command::PlaceCaret { offset: 3, extend: false });
+        document.apply(Command::PlaceCaret { offset: 8, extend: true });
+        document.apply(Command::DeleteBackward);
+        assert!(document.highlights().is_empty());
+    }
+
+    #[test]
+    fn undo_puts_a_mark_back_where_the_text_it_was_on_went() {
+        let mut document = Document::from_text("one two three");
+        document.highlight(4..7, MARK);
+        document.apply(Command::PlaceCaret { offset: 3, extend: false });
+        document.apply(Command::PlaceCaret { offset: 8, extend: true });
+        document.apply(Command::DeleteBackward);
+        assert!(document.highlights().is_empty());
+        document.apply(Command::Undo);
+        assert_eq!(document.text().to_string(), "one two three");
+        assert_eq!(document.highlights().at(5).map(|mark| mark.range.clone()), Some(4..7));
+    }
+
+    #[test]
+    fn a_set_that_is_restored_is_brought_inside_a_file_that_has_since_shrunk() {
+        let mut document = Document::from_text("short");
+        let mut marks = Highlights::new();
+        marks.add(0..3, MARK);
+        marks.add(100..200, MARK);
+        document.set_highlights(marks);
+        assert_eq!(document.highlights().len(), 1, "the mark past the end of the file is dropped");
+        assert!(document.highlights().check());
+    }
+
+    #[test]
+    fn clearing_takes_the_one_under_the_caret_and_leaves_the_others() {
+        let mut document = Document::from_text("one two three");
+        document.highlight(0..3, MARK);
+        document.highlight(8..13, MARK);
+        assert!(document.clear_highlight_at(9));
+        assert_eq!(document.highlights().len(), 1);
+        assert!(document.clear_highlights());
+        assert!(document.highlights().is_empty());
+        assert!(!document.clear_highlights(), "there is nothing left to clear");
     }
 }

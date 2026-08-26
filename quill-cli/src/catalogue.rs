@@ -452,6 +452,69 @@ pub const COMMANDS: &[Command] = &[
         examples: &["quill-cli editor preview --json"],
         local: false,
     },
+    // ------------------------------------------------------------------ the marked passages
+    Command {
+        area: "highlight",
+        verb: "list",
+        summary: "What is marked, in one file or across the whole project: where each passage is, what colour it is in, and the text under it.",
+        arguments: &[argument("path", false, "The file to list. The tab that is showing when it is left out.")],
+        flags: &[switch("all", "List every file in the project rather than one.")],
+        examples: &["quill-cli highlight list --json", "quill-cli highlight list --all --json"],
+        local: false,
+    },
+    Command {
+        area: "highlight",
+        verb: "add",
+        summary: "Mark a passage in a colour. Give it lines and columns, or --text to mark every occurrence of some words. The file need not be open.",
+        arguments: &[argument("path", false, "The file to mark. The tab that is showing when it is left out.")],
+        flags: &[
+            option("from-line", "number", "The line the passage starts on, counting from 1."),
+            option("from-column", "number", "The column it starts at. 1 when it is left out."),
+            option("to-line", "number", "The line it ends on. The line it started on when it is left out."),
+            option("to-column", "number", "The column it ends at. The end of the line when it is left out."),
+            option("text", "words", "Mark every occurrence of these words in the file instead of a range."),
+            option("color", "name", "yellow, green, blue, pink, or a colour of your own as #rrggbb or #rrggbbaa. Yellow when it is left out."),
+        ],
+        examples: &[
+            "quill-cli highlight add --from-line 12 --to-line 18",
+            "quill-cli highlight add src/main.rs --from-line 40 --to-line 44 --color blue",
+            "quill-cli highlight add src/main.rs --text \"unwrap()\" --color pink",
+        ],
+        local: false,
+    },
+    Command {
+        area: "highlight",
+        verb: "clear",
+        summary: "Take marks away: a range of lines, a whole file, or every file in the project.",
+        arguments: &[argument("path", false, "The file to clear. The tab that is showing when it is left out.")],
+        flags: &[
+            option("from-line", "number", "The first line to clear, counting from 1. The whole file when it is left out."),
+            option("to-line", "number", "The last line to clear. The line it started on when it is left out."),
+            switch("all", "Clear every file in the project."),
+        ],
+        examples: &[
+            "quill-cli highlight clear",
+            "quill-cli highlight clear src/main.rs --from-line 40 --to-line 44",
+            "quill-cli highlight clear --all",
+        ],
+        local: false,
+    },
+    Command {
+        area: "highlight",
+        verb: "apply",
+        summary: "Mark many passages across many files in one go, from a JSON array of {path, fromLine, toLine, fromColumn, toColumn, color} objects.",
+        arguments: NO_ARGUMENTS,
+        flags: &[
+            option("from-file", "path", "Read the JSON array from this file."),
+            option("json-text", "json", "The JSON array itself, for a short list. Quote it."),
+            switch("replace", "Clear every mark in the project first, so what is applied is all there is."),
+        ],
+        examples: &[
+            "quill-cli highlight apply --from-file marks.json",
+            "quill-cli highlight apply --json-text '[{\"path\":\"src/main.rs\",\"fromLine\":1,\"toLine\":3}]'",
+        ],
+        local: false,
+    },
     // ----------------------------------------------------------------------------- the terminal
     Command {
         area: "terminal",

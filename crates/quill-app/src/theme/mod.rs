@@ -10,6 +10,7 @@ use egui::{Color32, CornerRadius, Stroke, Vec2};
 /// Colours taken from the design.
 pub mod color {
     use egui::Color32;
+    use quill_core::Rgba;
 
     /// Behind the text. The window's alpha is applied to this by the opacity setting.
     pub const EDITOR: Color32 = Color32::from_rgb(0x1A, 0x1F, 0x26);
@@ -77,6 +78,23 @@ pub mod color {
     /// A file git is not tracking at all.
     pub const GIT_UNTRACKED: Color32 = Color32::from_rgb(0x9A, 0x8C, 0x5A);
 
+    /// The four colours a passage can be marked in, on the editor's right click menu.
+    ///
+    /// The palette is closed and these do not open it: they are the accents already sampled from the
+    /// design — the unsaved amber, the accent blue, git's added green and blame's newest pink — each
+    /// at the same alpha, which is low enough that the writing over them stays readable at every
+    /// window opacity. A colour chosen in the wheel is somebody's own mark on their own text, which
+    /// is the exception the style guide records beside a syntax theme's token colours.
+    /// They are `quill_core::Rgba` rather than `Color32` because a highlight is a value that is
+    /// written to a file and sent over the command line's wire as well as painted, and because
+    /// egui's own alpha is premultiplied while a colour a person chose is not. [`super::color32`]
+    /// is the one place the two meet.
+    pub const HIGHLIGHT_ALPHA: u8 = 0x59;
+    pub const HIGHLIGHT_YELLOW: Rgba = Rgba::new(0xFE, 0xBC, 0x2E, HIGHLIGHT_ALPHA);
+    pub const HIGHLIGHT_GREEN: Rgba = Rgba::new(0x7F, 0xCA, 0x98, HIGHLIGHT_ALPHA);
+    pub const HIGHLIGHT_BLUE: Rgba = Rgba::new(0x48, 0x9F, 0xF8, HIGHLIGHT_ALPHA);
+    pub const HIGHLIGHT_PINK: Rgba = Rgba::new(0xB4, 0x58, 0x8C, HIGHLIGHT_ALPHA);
+
     /// The three window buttons.
     pub const CLOSE: Color32 = Color32::from_rgb(0xFF, 0x5F, 0x57);
     pub const MINIMISE: Color32 = Color32::from_rgb(0xFE, 0xBC, 0x2E);
@@ -112,6 +130,16 @@ pub mod size {
     pub const WINDOW_CORNER: u8 = 12;
     /// A control's rounded corner.
     pub const CONTROL_CORNER: u8 = 6;
+}
+
+/// A highlight's colour as egui wants it.
+///
+/// The one place the two spellings of a colour meet. `quill_core::Rgba` is what a mark is stored,
+/// written and sent as — four plain bytes with the alpha kept separate — and egui's `Color32` keeps
+/// its alpha premultiplied. Converting in one function is what stops a highlight coming out too
+/// bright in one place and right in another.
+pub fn color32(color: quill_core::Rgba) -> Color32 {
+    Color32::from_rgba_unmultiplied(color.r, color.g, color.b, color.a)
 }
 
 /// Set up egui so that the ordinary controls come out looking like the design, rather than restyling each
