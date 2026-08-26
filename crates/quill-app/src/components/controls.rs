@@ -206,6 +206,59 @@ pub fn flyout<T>(
         .map(|inner| inner.inner)
 }
 
+/// A flyout whose button carries a word and a chevron rather than an icon.
+///
+/// The run widget's name is the only one — see [`flyout`] for what a flyout is and why it is not a
+/// [`dropdown`]. It is here rather than in the widget for the reason everything else in this file
+/// is: a second control that almost agreed with `flyout` about how a popup opens and closes would
+/// be a second chance to get it wrong.
+///
+/// `label` is what is drawn and `name` is what the control is called, because the label is a
+/// configuration's name and changes, and a control whose accessible name changed with its value
+/// could not be asked for by a test.
+pub fn labelled_flyout<T>(
+    ui: &mut egui::Ui,
+    area: Rect,
+    name: &str,
+    label: &str,
+    width: f32,
+    contents: impl FnOnce(&mut egui::Ui) -> T,
+) -> Option<T> {
+    let response = ui
+        .interact(area, ui.id().with(("labelled-flyout", name)), Sense::click())
+        .on_hover_text(name);
+    // What the panel will be by the time it is drawn: the click this frame is what toggles it.
+    let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&response))
+        != response.clicked();
+    let painter = ui.painter();
+    if open {
+        painter.rect_filled(area, CornerRadius::same(size::CONTROL_CORNER), color::CONTROL);
+    } else if response.hovered() {
+        painter.rect_filled(area, CornerRadius::same(size::CONTROL_CORNER), color::CONTROL);
+    }
+    let tint = if open { color::TEXT_STRONG } else { color::TEXT_CONTROL };
+    let galley = painter.layout_no_wrap(label.to_owned(), egui::FontId::proportional(12.5), tint);
+    painter.galley(
+        Pos2::new(area.left() + 9.0, area.center().y - galley.size().y / 2.0),
+        galley,
+        tint,
+    );
+    icon::chevron_down(painter, Pos2::new(area.right() - 10.0, area.center().y), color::TEXT_DIM);
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), open, name)
+    });
+    egui::Popup::from_toggle_button_response(&response)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .frame(
+            egui::Frame::popup(ui.style())
+                .fill(color::MENU)
+                .stroke(Stroke::new(1.0, color::CONTROL_BORDER)),
+        )
+        .width(width)
+        .show(contents)
+        .map(|inner| inner.inner)
+}
+
 /// A button carrying a word rather than a picture, filled when what it stands for is switched on.
 ///
 /// The three line spacings are the only ones. They were a dropdown when they sat in the toolbar and

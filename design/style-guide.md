@@ -52,6 +52,8 @@ different greys, and it must not happen.
 | `UNSAVED` | The amber dot meaning there are changes that have not been written. |
 | `TEXT_STRONG` → `TEXT` → `TEXT_CONTROL` → `TEXT_DIM` → `TEXT_FAINT` | Five weights, brightest to faintest. A heading, body text, a control's label, a heading in the explorer, and placeholder text. |
 | `HIGHLIGHT_YELLOW`, `HIGHLIGHT_GREEN`, `HIGHLIGHT_BLUE`, `HIGHLIGHT_PINK` | The four colours a passage can be marked in. Held as `quill_core::Rgba` rather than `Color32`, because a mark is written to a file and sent over the command line as well as painted; `theme::color32` is the one place the two spellings meet. |
+| `GIT_ADDED`, `GIT_MODIFIED`, `GIT_UNTRACKED` | What git says about a file, on its row in the explorer. `GIT_ADDED` is **also the green that means "this starts something"**: the run widget's play button, the play beside a row of its flyout, and the dot on a run that is going. A second green would have been a second green. |
+| `CLOSE`, `MINIMISE`, `MAXIMISE` | The three window buttons. `CLOSE` is **also the red that means "this went wrong"**: a removed line in a diff, and `exit code 101` on a run's tab. |
 
 A **diagram** is drawn in this palette too, and it has to be said out loud because a diagram is the
 one thing in the window whose source could plausibly have opinions about colour. Mermaid's own
@@ -321,6 +323,20 @@ there, `TEXT_STRONG` when its pane is open and `TEXT_FAINT` when it cannot be us
 carry one of those three, and only at the size it was made. If a drawn icon is not liked, the answer
 is to draw it better.
 
+**Running has five**, added by `task-1683`: `run` and `run_scaled` — a filled triangle, nudged right
+by a third of its width because a triangle looks off-centre when its bounding box is centred and the
+eye reads the middle of the mass — `stop`, a filled square; `rerun`, three quarters of a circle with
+a head on the end, drawn as a polyline because egui has no arc and a dozen points is
+indistinguishable from one at this size; `clear`, three lines of output with a stroke through them;
+and `state_dot`, a small filled circle.
+
+**A play icon at the right hand end of a menu row is green.** A small grey triangle there is what
+every menu in the world draws to mean "this opens a submenu", and the one in the run widget's flyout
+means the opposite — it is a button that runs the row it is on. It is drawn in `GIT_ADDED`, with a
+pill of its own when the pointer is over it, and that is what tells the two apart at eleven points.
+The first version of it was grey and read as a submenu arrow, which is what the first accepted
+screenshot caught.
+
 ## Every control has a name
 
 `response.widget_info` with plain wording: `Save`, `Bold`, `Resize explorer`, `Terminal tab: claude`,
@@ -334,6 +350,12 @@ is to draw it better.
 3. **A control with no name cannot be tested**, because the screenshot tests find controls by name
    rather than by position. That is also what stops a control moving by a few points from breaking a
    test.
+
+Rule 2 is what named most of running: the menu bar has a `Run` menu, so the widget's play button is
+`Run the selected configuration`, the rail's button is `Run tile` — beside `Terminal tile`, which
+`task-1658` named for the same collision — and the tile's own three are `Rerun`, `Stop the run` and
+`Clear the run output`. Each row of the widget's flyout is named after its configuration and its
+play is `Run <name>`, which is what lets a test press one row's button rather than another's.
 
 ## What a component is
 

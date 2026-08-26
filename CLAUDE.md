@@ -729,6 +729,63 @@ modal layer rather than a list of Quill's dialogs, so a modal added later is cov
 added anywhere, and it is the layer as it stood at the **end of the last frame** — which is the
 honest answer at the point those three read the keyboard, before anything this frame has drawn.
 
+## A run configuration is a named command, and a run is a terminal with a program in it
+
+`task-1683` asks for IntelliJ's run configurations and `task-1684` is the implementation. A
+configuration is a **named command line**, a folder and some environment variables — one kind, not a
+template per language, because the surveyed templates all compose into one command line wearing six
+boxes. Pressing play spawns a `quill_terminal::Session` with the program in place of the shell, so
+the output is a real terminal and stopping is killing a process Quill owns.
+
+**No shell runs the command line.** `run_configurations::split_command` splits it the way a shell
+splits a double-quoted word and the parts are handed to the process as arguments, so nothing
+expands, nothing globs, and `&&` is one program with a strange argument rather than two programs.
+A backslash is a backslash unless it is in front of a quote, because half the paths on Windows have
+one in them. Somebody who wants a shell writes `pwsh -Command ...` and has said so where it can be
+seen.
+
+**They live in `.quill/run-configurations.conf`**, numbered `run.N.*` the way `files.panes` numbers
+a list, written by the released binary only. What is per-person goes in `workspace.conf` beside the
+terminal's flags: `run.selected` and `run.visible`. A **temporary** — what running a file or a
+suggestion makes — is capped at five and deliberately **never written down**, because a file the
+project shares should hold what somebody chose to keep; `Save` in the dialog promotes one. A
+remembered `run.selected` is only adopted if something still answers to it, which is usually not
+true of a temporary.
+
+**The run tile is the terminal tile's sibling**, not a second tile that resembles it: the same
+header, the same padding, the same splitter, and the grid itself is `terminal_panel::grid`, shared
+rather than copied. **The bottom of the window holds one of the two** — two grids stacked take the
+editing area below the fold — so every path that shows either goes through
+`show_the_run_tile` or `show_the_terminal_tile`. That pair exists because leaving it to each caller
+did not survive first contact: `quill-cli terminal show` set its own flag, left the run tile up, and
+drew both grids into the same rectangle.
+
+**A run records what it ended with rather than re-reading it.** `Session::exit_code` is the source
+and `Run::ended` is where the answer is kept the moment it arrives: a program Quill killed has no
+code to be asked for afterwards, and a tab that says `exit code 101` has to go on saying it. The
+code goes in the tab's **strip**, never into the grid — IntelliJ prints its epilogue into the
+console, and a line pretending to be program output is the confusion a separate strip avoids.
+
+**Stopping is soft then hard.** The first press is the interrupt byte down the pty, which the
+program can catch; a program still alive two seconds later, or a second press, is killed through
+`Session::kill`, which shuts the reader loop down and drops the pseudoterminal — the same path
+closing a terminal tab already takes, without dropping the session, so the grid survives the
+program. The window is woken **once** when the grace runs out rather than kept drawing for the whole
+two seconds.
+
+**Plugins contribute data, not types.** The answer to "should running node mean a Node plugin" is
+no: node is how JavaScript runs, and the JavaScript manifest says so itself with `run.file = node
+{file}`. `run.project` names a detector **built into Quill**, checked against
+`plugins::PROJECT_RUNNERS` exactly as `language.renders` is checked against `RENDERERS`; `cargo`
+reads `Cargo.toml` and `npm` reads a `package.json`'s scripts, both in Quill's own code, so the most
+a third-party manifest can do is suggest text, visibly. Rust names a detector and **no** file
+runner, because running one file of a Cargo project is not a thing cargo does — so `Run Current
+File` is absent for a `.rs` file rather than offered and wrong.
+
+`quill-cli run` is the whole feature from the command line, and `run output` is the one to notice:
+it reads the run's `Screen`, so an agent can start a dev server, read its port out of the log,
+exercise it and stop it with nobody watching.
+
 ## A terminal opens in the project, running the shell the person actually uses
 
 `task-1670` reported a terminal that opened in `C:\Windows` and could not find the machine's own
@@ -1355,7 +1412,8 @@ trade that away to be a shade nearer a screenshot.
   and Run tool window each are, why a configuration in Quill is one named command rather than a
   template per language, the run tile built on the terminal stack, the two manifest keys and the
   built-in detectors that answer "should node be a plugin", and what a debugger would need that
-  this deliberately leaves visible. `task-1684` is the implementation of it.
+  this deliberately leaves visible. `task-1684` is the implementation of it, and the section above
+  on running is what it left behind.
 - `tasks/quill-mermaid-plugin-tdd.md` — Mermaid: the four ways of drawing it that were weighed and why
   Quill writes its own, what each of the twenty types becomes on the screen, which ten are named
   rather than drawn, and what `language.renders` buys.

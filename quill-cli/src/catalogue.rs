@@ -12,9 +12,9 @@
 //! `dotnet tool install` are, which is the more common of the two orders and the one the .NET
 //! guidance asks for: a command holding subcommands is a **grouping**, and the verb underneath it
 //! is the action. Areas are what the window is made of, so somebody who can see Quill can guess the
-//! area: `tab`, `pane`, `editor`, `terminal`, `explorer`, `modal`, `settings`, `plugins`, `git`,
-//! `window`, `project`, `action`. Six commands have no area, because they are about the CLI or about a whole
-//! Quill: `status`, `instances`, `launch`, `quit`, `commands` and `version`.
+//! area: `tab`, `pane`, `editor`, `terminal`, `run`, `explorer`, `modal`, `settings`, `plugins`,
+//! `git`, `window`, `project`, `action`. Six commands have no area, because they are about the CLI
+//! or about a whole Quill: `status`, `instances`, `launch`, `quit`, `commands` and `version`.
 //!
 //! Names are lower case and hyphenated — `save-as`, `go-to-file`, `find-in-files` — and never
 //! abbreviated to something a reader would have to learn.
@@ -157,6 +157,7 @@ pub fn area_title(area: &'static str) -> &'static str {
         "editor" => "editor — the text in the tab that is showing",
         "highlight" => "highlight — the passages marked in the project's files",
         "terminal" => "terminal — the shells along the bottom",
+        "run" => "run — the named commands the project is started with",
         "explorer" => "explorer — the file tree down the left",
         "modal" => "modal — every dialog, driven the same way",
         "settings" => "settings — Edit -> Settings, by the names in the settings file",
@@ -180,6 +181,7 @@ pub fn area_note(area: &'static str) -> &'static str {
         "editor" => "These are about the tab that is showing. Lines and columns count from 1, which is what the status bar shows.",
         "highlight" => "A highlight is a colour behind a passage of text. It stays there until it is cleared, in this file and next time the project is opened, and it moves with the text as the file is edited. These work on a file whether it is open or not, so `highlight apply` can mark twenty passages across twenty files in one call.",
         "terminal" => "`terminal send` types into the shell and presses Enter; `terminal read --wait-for` is how to wait for what it did.",
+        "run" => "A run configuration is a named command line, a folder and some environment variables, kept in the project. Starting one runs the program in a pseudoterminal, so `run output` is what it would have printed to a terminal — which is how to start a dev server, read the port out of its log, use it, and stop it, with nobody watching.",
         "explorer" => "`explorer files` is the list Quill searches, which leaves out `target`, `node_modules` and `__pycache__`.",
         "modal" => "One set of commands drives all of them: open it, type in it, read its results, choose a row, accept or cancel. A modal added to Quill later is driven with these same commands.",
         "settings" => "The names are the ones in Quill's own `settings.conf`, so there is one vocabulary rather than two. A change takes effect at once, in every tab, and is written to the file.",
@@ -884,6 +886,105 @@ pub const COMMANDS: &[Command] = &[
         arguments: &[argument("points", false, "How tall to make it. Read it when this is left out.")],
         flags: NO_FLAGS,
         examples: &["quill-cli terminal height 400"],
+        local: false,
+    },
+    // ---------------------------------------------------------------------- the run configurations
+    Command {
+        area: "run",
+        verb: "list",
+        summary: "The project's run configurations: the name, the command, the folder and the environment of each, whether it is permanent, temporary or a suggestion, and what its run is doing.",
+        arguments: NO_ARGUMENTS,
+        flags: NO_FLAGS,
+        examples: &["quill-cli run list --json"],
+        local: false,
+    },
+    Command {
+        area: "run",
+        verb: "add",
+        summary: "Keep a new run configuration in the project. The command is one line: the first word is the program and the rest are its arguments, and no shell runs it, so nothing is expanded and && is an argument.",
+        arguments: &[
+            argument("name", true, "What to call it, which is what the widget and the Run menu show."),
+            rest("command", true, "The command line. Everything after the name is taken as the command, so it needs no quotes."),
+        ],
+        flags: &[
+            option("directory", "path", "The folder it runs in, relative to the project. The project itself when it is left out."),
+            option("env", "pairs", "NAME=value pairs separated by semicolons."),
+        ],
+        examples: &[
+            "quill-cli run add \"Dev server\" node server.js --port 3000",
+            "quill-cli run add build cargo build --release --directory crates/quill-app",
+            "quill-cli run add serve npm run dev --env \"PORT=3000; DEBUG=app:*\"",
+        ],
+        local: false,
+    },
+    Command {
+        area: "run",
+        verb: "remove",
+        summary: "Take a run configuration away. One whose program is still running is stopped first.",
+        arguments: &[argument("name", true, "The configuration, as `run list` gives it.")],
+        flags: NO_FLAGS,
+        examples: &["quill-cli run remove \"Dev server\""],
+        local: false,
+    },
+    Command {
+        area: "run",
+        verb: "start",
+        summary: "Run a configuration, showing the run tile. Starting one that is already running stops it and starts it again rather than making a second copy. A detector's suggestion started this way is kept as a temporary configuration.",
+        arguments: &[argument("name", false, "The configuration. The chosen one when it is left out.")],
+        flags: NO_FLAGS,
+        examples: &["quill-cli run start", "quill-cli run start \"Dev server\""],
+        local: false,
+    },
+    Command {
+        area: "run",
+        verb: "stop",
+        summary: "Stop a run: the interrupt a program can catch, and a hard kill two seconds later or on a second stop. The tab stays, holding what the program wrote.",
+        arguments: &[argument("name", false, "The configuration. The chosen one when it is left out.")],
+        flags: NO_FLAGS,
+        examples: &["quill-cli run stop", "quill-cli run stop \"Dev server\""],
+        local: false,
+    },
+    Command {
+        area: "run",
+        verb: "rerun",
+        summary: "Stop a run and start it again, whatever state it was in.",
+        arguments: &[argument("name", false, "The configuration. The chosen one when it is left out.")],
+        flags: NO_FLAGS,
+        examples: &["quill-cli run rerun"],
+        local: false,
+    },
+    Command {
+        area: "run",
+        verb: "select",
+        summary: "Choose which configuration the widget's play button, the Run menu and `run start` with no name all mean.",
+        arguments: &[argument("name", true, "The configuration.")],
+        flags: NO_FLAGS,
+        examples: &["quill-cli run select \"Dev server\""],
+        local: false,
+    },
+    Command {
+        area: "run",
+        verb: "output",
+        summary: "What a run has written, as text. It ran in a pseudoterminal, so this is what it would have printed to a terminal — colours and progress bars included, with the escape sequences already read.",
+        arguments: &[argument("name", false, "The configuration. The run that is showing when it is left out.")],
+        flags: &[
+            option("tail", "number", "Only the last so many lines."),
+            option("wait-for", "text", "Wait until this text has been written before answering, which is how to wait for a server to say it is listening."),
+            option("timeout", "milliseconds", "How long to wait for --wait-for. 10000 by default."),
+        ],
+        examples: &[
+            "quill-cli run output --tail 20",
+            "quill-cli run output \"Dev server\" --wait-for \"Listening on\" --timeout 30000",
+        ],
+        local: false,
+    },
+    Command {
+        area: "run",
+        verb: "status",
+        summary: "Whether a run is going, and what it ended with: running, finished, stopped, or the exit code it chose.",
+        arguments: &[argument("name", false, "The configuration. The chosen one when it is left out.")],
+        flags: NO_FLAGS,
+        examples: &["quill-cli run status --json", "quill-cli run status \"Dev server\" --json"],
         local: false,
     },
     // ----------------------------------------------------------------------------- the explorer

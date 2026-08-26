@@ -29,8 +29,12 @@ use crate::theme::{color, icon};
 /// How tall the strip holding the tabs is.
 pub const HEADER: f32 = 32.0;
 /// Space between the grid and the edge of the tile.
-const PADDING_X: f32 = 10.0;
-const PADDING_Y: f32 = 6.0;
+///
+/// `pub(crate)` because the run tile is the terminal tile's sibling and is drawn from the same
+/// measurements — `task-1683` §6.1. Two tiles that almost agreed about their padding would be two
+/// grids that did not line up when the bottom of the window was switched between them.
+pub(crate) const PADDING_X: f32 = 10.0;
+pub(crate) const PADDING_Y: f32 = 6.0;
 
 /// The terminal tile's own state.
 pub struct TerminalPanel {
@@ -50,7 +54,7 @@ impl TerminalPanel {
         Self {
             visible: false,
             focused: false,
-            tabs: Tabs::new(SessionSettings { shell: None, args: Vec::new(), working_directory }),
+            tabs: Tabs::new(SessionSettings { working_directory, ..SessionSettings::default() }),
             selecting: false,
             grid_area: Rect::ZERO,
         }
@@ -322,7 +326,7 @@ fn draw_tab(
     tab
 }
 
-/// The grid: work out its size, tell the session, draw what it reports, and take the input.
+/// The terminal tile's grid: the tab that is showing, or the reason there is not one.
 fn show_grid(
     ui: &mut egui::Ui,
     area: Rect,
@@ -332,34 +336,89 @@ fn show_grid(
     opacity: f32,
     outcome: &mut PanelOutcome,
 ) {
+    // No tab open: say so rather than leaving an empty tile, and say why if a shell would not start.
+    let empty = panel
+        .tabs
+        .last_error
+        .clone()
+        .unwrap_or_else(|| "No terminal. Press the plus to open one.".to_owned());
+    let focused = panel.focused;
+    let mut selecting = panel.selecting;
+    let grid_outcome = grid(
+        ui,
+        area,
+        panel.tabs.active_mut(),
+        &mut selecting,
+        focused,
+        "terminal-grid",
+        &empty,
+        renderer,
+        font_size,
+        opacity,
+    );
+    panel.selecting = selecting;
+    outcome.take_focus |= grid_outcome.take_focus;
+    if let Some(text) = grid_outcome.copy {
+        outcome.copy = Some(text);
+    }
+}
+
+/// What a grid produced this frame.
+///
+/// Two things, because they are the only two a grid decides: everything else it does is to the
+/// session it was handed.
+#[derive(Debug, Default)]
+pub(crate) struct GridOutcome {
+    /// The grid was clicked, so whichever tile it belongs to should have the keyboard.
+    pub take_focus: bool,
+    /// Text to put on the clipboard, from a copy or from a program asking.
+    pub copy: Option<String>,
+}
+
+/// One session's grid: work out its size, tell the session, draw what it reports, and take the
+/// input.
+///
+/// This is the whole of what the terminal tile and the run tile share, and it is shared rather than
+/// copied because a run **is** a terminal as far as the person watching it is concerned: the same
+/// emulator, the same colours, the same selection, the same clipboard rules, and keyboard into the
+/// program because `node` asking a question deserves an answer. `task-1683` §6.1.
+///
+/// `id` keeps the two tiles' widgets apart — egui identifies a widget by its id, and two grids
+/// sharing one would be one widget drawn twice. `empty` is what to say when there is no session,
+/// which is the one thing the two tiles really do differ about.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn grid(
+    ui: &mut egui::Ui,
+    area: Rect,
+    session: Option<&mut quill_terminal::Session>,
+    selecting: &mut bool,
+    focused: bool,
+    id: &str,
+    empty: &str,
+    renderer: &TextRenderer,
+    font_size: f32,
+    opacity: f32,
+) -> GridOutcome {
+    let mut outcome = GridOutcome::default();
     let cell = renderer.cell_metrics(font_size);
     let columns = ((area.width() - PADDING_X * 2.0) / cell.width).floor().max(1.0) as usize;
     let rows = ((area.height() - PADDING_Y * 2.0) / cell.height).floor().max(1.0) as usize;
     let wanted = Size::new(rows, columns).with_cell(cell.width, cell.height);
 
     // Everything below the tabs takes clicks, so a click anywhere in the grid moves the keyboard to the
-    // terminal.
-    let response = ui.interact(area, ui.id().with("terminal-grid"), Sense::click_and_drag());
+    // tile.
+    let response = ui.interact(area, ui.id().with(id), Sense::click_and_drag());
 
-    let Some(session) = panel.tabs.active_mut() else {
-        // No tab open: say so rather than leaving an empty tile, and say why if a shell would not start.
-        let message = panel
-            .tabs
-            .last_error
-            .clone()
-            .unwrap_or_else(|| "No terminal. Press the plus to open one.".to_owned());
+    let Some(session) = session else {
         let painter = ui.painter_at(area);
-        let galley = painter.layout_no_wrap(
-            message,
-            egui::FontId::proportional(12.0),
-            color::TEXT_FAINT,
-        );
+        let galley =
+            painter.layout_no_wrap(empty.to_owned(), egui::FontId::proportional(12.0), color::TEXT_FAINT);
         painter.galley(
             Pos2::new(area.left() + PADDING_X + 4.0, area.top() + PADDING_Y + 6.0),
             galley,
             color::TEXT_FAINT,
         );
-        return;
+        return outcome;
     };
 
     // Told once, and told to both the emulator and the program on the far side.
@@ -378,11 +437,17 @@ fn show_grid(
     let origin = Pos2::new(area.left() + PADDING_X, area.top() + PADDING_Y);
     let mut painter_ui = ui.new_child(egui::UiBuilder::new().max_rect(area));
     painter_ui.set_clip_rect(ui.painter().clip_rect().intersect(area));
-    paint(&painter_ui, renderer, &screen, origin, cell, font_size, panel.focused, opacity);
+    paint(&painter_ui, renderer, &screen, origin, cell, font_size, focused, opacity);
 
     // Input, once the drawing is decided, so that a key press is acted on with the size the program already
     // knows about.
-    handle_input(ui, panel, &response, &screen, origin, cell, outcome);
+    handle_input(ui, session, selecting, focused, &response, &screen, origin, cell, &mut outcome);
+
+    // Anything the program asked to be put on the clipboard, which OSC 52 is how a program does.
+    if let Some(text) = session.take_clipboard() {
+        outcome.copy = Some(text);
+    }
+    outcome
 }
 
 /// Draw one screen.
@@ -597,15 +662,18 @@ fn paint(
     }
 }
 
-/// The keyboard and the mouse.
+/// The keyboard and the mouse, into one session.
+#[allow(clippy::too_many_arguments)]
 fn handle_input(
     ui: &mut egui::Ui,
-    panel: &mut TerminalPanel,
+    session: &mut quill_terminal::Session,
+    selecting: &mut bool,
+    focused: bool,
     response: &egui::Response,
     screen: &Screen,
     origin: Pos2,
     cell: crate::services::text_renderer::CellMetrics,
-    outcome: &mut PanelOutcome,
+    outcome: &mut GridOutcome,
 ) {
     let modifiers = ui.input(|input| input.modifiers);
     let cell_at = |position: Pos2| -> (usize, usize) {
@@ -616,7 +684,7 @@ fn handle_input(
 
     // The mouse. A program that asked to be told about clicks is told; otherwise a drag selects text, and
     // holding shift always selects, which is the only way to copy out of such a program.
-    let mouse_mode = panel.tabs.active().map(|session| session.mouse_mode()).unwrap_or_default();
+    let mouse_mode = session.mouse_mode();
     let report_to_program = mouse_mode.reports_clicks() && !modifiers.shift;
 
     if response.clicked() || response.drag_started() {
@@ -637,17 +705,10 @@ fn handle_input(
             } else {
                 mouse::Kind::Release
             };
-            if let Some(bytes) = mouse::report(
-                mouse_mode,
-                kind,
-                mouse::Button::Left,
-                row,
-                column,
-                terminal_modifiers,
-            ) {
-                if let Some(session) = panel.tabs.active() {
-                    session.send(bytes);
-                }
+            if let Some(bytes) =
+                mouse::report(mouse_mode, kind, mouse::Button::Left, row, column, terminal_modifiers)
+            {
+                session.send(bytes);
             }
             if response.drag_stopped() || response.clicked() {
                 if let Some(bytes) = mouse::report(
@@ -658,24 +719,20 @@ fn handle_input(
                     column,
                     terminal_modifiers,
                 ) {
-                    if let Some(session) = panel.tabs.active() {
-                        session.send(bytes);
-                    }
+                    session.send(bytes);
                 }
             }
-        } else if let Some(session) = panel.tabs.active_mut() {
-            if response.double_clicked() {
-                session.begin_selection(row, column, SelectionKind::Word);
-                panel.selecting = false;
-            } else if response.drag_started() || (response.clicked() && !panel.selecting) {
-                session.begin_selection(row, column, SelectionKind::Simple);
-                panel.selecting = true;
-            } else if response.dragged() {
-                session.extend_selection(row, column);
-            }
-            if response.drag_stopped() {
-                panel.selecting = false;
-            }
+        } else if response.double_clicked() {
+            session.begin_selection(row, column, SelectionKind::Word);
+            *selecting = false;
+        } else if response.drag_started() || (response.clicked() && !*selecting) {
+            session.begin_selection(row, column, SelectionKind::Simple);
+            *selecting = true;
+        } else if response.dragged() {
+            session.extend_selection(row, column);
+        }
+        if !report_to_program && response.drag_stopped() {
+            *selecting = false;
         }
     }
 
@@ -686,43 +743,35 @@ fn handle_input(
     if wheel.abs() > 0.5 && response.hovered() {
         let lines = (wheel / cell.height).round() as i32;
         let lines = if lines == 0 { wheel.signum() as i32 } else { lines };
-        if let Some(session) = panel.tabs.active_mut() {
-            if mouse_mode.reports_clicks() && !modifiers.shift {
-                let button =
-                    if lines > 0 { mouse::Button::WheelUp } else { mouse::Button::WheelDown };
-                let (row, column) = response
-                    .hover_pos()
-                    .map(cell_at)
-                    .unwrap_or((0, 0));
-                for _ in 0..lines.abs().min(5) {
-                    if let Some(bytes) = mouse::report(
-                        mouse_mode,
-                        mouse::Kind::Press,
-                        button,
-                        row,
-                        column,
-                        mouse::Modifiers::default(),
-                    ) {
-                        session.send(bytes);
-                    }
+        if mouse_mode.reports_clicks() && !modifiers.shift {
+            let button = if lines > 0 { mouse::Button::WheelUp } else { mouse::Button::WheelDown };
+            let (row, column) = response.hover_pos().map(cell_at).unwrap_or((0, 0));
+            for _ in 0..lines.abs().min(5) {
+                if let Some(bytes) = mouse::report(
+                    mouse_mode,
+                    mouse::Kind::Press,
+                    button,
+                    row,
+                    column,
+                    mouse::Modifiers::default(),
+                ) {
+                    session.send(bytes);
                 }
-            } else if session.alternate_scroll() {
-                let key = if lines > 0 { keys::Key::Up } else { keys::Key::Down };
-                let mode = session.mode();
-                for _ in 0..lines.abs().min(5) {
-                    if let Some(bytes) =
-                        keys::encode(KeyPress::plain(key), mode)
-                    {
-                        session.send(bytes);
-                    }
-                }
-            } else {
-                session.scroll(lines);
             }
+        } else if session.alternate_scroll() {
+            let key = if lines > 0 { keys::Key::Up } else { keys::Key::Down };
+            let mode = session.mode();
+            for _ in 0..lines.abs().min(5) {
+                if let Some(bytes) = keys::encode(KeyPress::plain(key), mode) {
+                    session.send(bytes);
+                }
+            }
+        } else {
+            session.scroll(lines);
         }
     }
 
-    if !panel.focused {
+    if !focused {
         return;
     }
     // A box that takes typing, such as the explorer's filter, has been clicked into. It keeps the keyboard
@@ -747,7 +796,7 @@ fn handle_input(
     // consumed the key press that made them — so this is the only way to tell `Ctrl+C` from
     // `Ctrl+Shift+C`, and the control key from the Apple one.
     let held = ui.input(|input| input.modifiers);
-    let mode = panel.tabs.active().map(|session| session.mode()).unwrap_or_default();
+    let mode = session.mode();
     let mut to_send: Vec<Vec<u8>> = Vec::new();
     let mut copy = None;
     let mut clear_selection = false;
@@ -755,8 +804,7 @@ fn handle_input(
         match event {
             egui::Event::Copy | egui::Event::Cut => {
                 let cut = matches!(event, egui::Event::Cut);
-                let selected = panel.tabs.active().and_then(|session| session.selected_text());
-                match clipboard_key(cut, selected, &held, mode) {
+                match clipboard_key(cut, session.selected_text(), &held, mode) {
                     Clipboard::Copy(text) => {
                         copy = Some(text);
                         clear_selection = true;
@@ -788,21 +836,17 @@ fn handle_input(
     if let Some(text) = copy {
         outcome.copy = Some(text);
     }
-    if clear_selection || !to_send.is_empty() {
-        if let Some(session) = panel.tabs.active_mut() {
-            // The selection goes as soon as it has been copied. Left behind, it would swallow the
-            // next Ctrl+C as well, and the one after that, so dragging the mouse once would make a
-            // program impossible to stop.
-            if clear_selection {
-                session.clear_selection();
-            }
-            if !to_send.is_empty() {
-                // Typing puts the view back at the newest output, which is what every terminal does.
-                session.scroll_to_bottom();
-                for bytes in to_send {
-                    session.send(bytes);
-                }
-            }
+    // The selection goes as soon as it has been copied. Left behind, it would swallow the next
+    // Ctrl+C as well, and the one after that, so dragging the mouse once would make a program
+    // impossible to stop.
+    if clear_selection {
+        session.clear_selection();
+    }
+    if !to_send.is_empty() {
+        // Typing puts the view back at the newest output, which is what every terminal does.
+        session.scroll_to_bottom();
+        for bytes in to_send {
+            session.send(bytes);
         }
     }
 }

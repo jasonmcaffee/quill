@@ -222,8 +222,10 @@ fn main() -> eframe::Result {
                 app.install_native_menu();
             }
             if arguments.terminal {
-                app.terminal.visible = true;
-                app.new_terminal_tab();
+                // Through the one function that shows a tile, as everything else does. Nothing is
+                // running yet at this point, so it changes nothing here — but a path that set the
+                // flag by hand would be the next one to forget the other tile.
+                app.show_the_terminal_tile(true);
             }
             // Last, so that a command arriving at once finds the window as the switches left it.
             if arguments.control {

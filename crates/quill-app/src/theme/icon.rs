@@ -445,3 +445,92 @@ pub fn symbol_kind(painter: &egui::Painter, centre: Pos2, kind: quill_core::Symb
         }
     }
 }
+
+/// A filled triangle pointing right: run.
+///
+/// `task-1683`'s widget and the run tile both use it, and so does each row of the flyout at a
+/// smaller size, which is what `scale` is for. Filled rather than outlined because it is the one
+/// control on the title bar that starts something, and green wherever it means "start this",
+/// which is IntelliJ's own colour for the same button.
+pub fn run(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    run_scaled(painter, centre, color, 1.0);
+}
+
+/// The same triangle at a fraction of its usual size.
+pub fn run_scaled(painter: &egui::Painter, centre: Pos2, color: Color32, scale: f32) {
+    let width = 4.6 * scale;
+    let height = 5.2 * scale;
+    // Nudged right by a fraction of the width, because a triangle looks off-centre when its
+    // bounding box is centred: the eye reads the middle of the mass, not of the box.
+    let x = centre.x - width / 3.0;
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            Pos2::new(x, centre.y - height),
+            Pos2::new(x, centre.y + height),
+            Pos2::new(x + width * 1.7, centre.y),
+        ],
+        color,
+        Stroke::NONE,
+    ));
+}
+
+/// A filled square: stop.
+pub fn stop(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    painter.rect_filled(Rect::from_center_size(centre, egui::Vec2::splat(9.0)), CornerRadius::same(1), color);
+}
+
+/// An arrow going round in a circle: rerun.
+///
+/// Three quarters of a circle with a head on the end, drawn as line segments rather than as an arc
+/// shape, which is how `color_wheel` already draws a ring: egui has no arc primitive and a
+/// polyline of a dozen points is indistinguishable from one at this size.
+pub fn rerun(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    let radius = 5.2;
+    let stroke = Stroke::new(1.4, color);
+    let mut points: Vec<Pos2> = Vec::new();
+    // From just past the top, clockwise, stopping short of where it started so the gap the head
+    // sits in is visible.
+    for step in 0..=18 {
+        let angle = -std::f32::consts::FRAC_PI_2 + 0.35
+            + step as f32 / 18.0 * (std::f32::consts::TAU - 1.1);
+        points.push(Pos2::new(centre.x + radius * angle.cos(), centre.y + radius * angle.sin()));
+    }
+    painter.add(egui::Shape::line(points, stroke));
+    // The head, on the end that stopped short, pointing the way the arrow was going.
+    let head = Pos2::new(centre.x + radius * 0.35_f32.cos(), centre.y - radius * 0.9);
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            Pos2::new(head.x - 3.2, head.y - 1.0),
+            Pos2::new(head.x + 1.4, head.y - 3.0),
+            Pos2::new(head.x + 1.0, head.y + 2.0),
+        ],
+        color,
+        Stroke::NONE,
+    ));
+}
+
+/// Three lines of output with a stroke through them: clear.
+///
+/// Drawn rather than lettered, for the reason the tick is: the characters that would say this are
+/// not in the fonts Quill hands egui, and one that is missing renders as an empty box.
+pub fn clear(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    let stroke = Stroke::new(1.3, color);
+    for (row, width) in [(-4.0, 5.0), (0.0, 6.5), (4.0, 3.5)] {
+        painter.line_segment(
+            [
+                Pos2::new(centre.x - 5.5, centre.y + row),
+                Pos2::new(centre.x - 5.5 + width, centre.y + row),
+            ],
+            stroke,
+        );
+    }
+    painter.line_segment(
+        [Pos2::new(centre.x + 6.0, centre.y - 5.5), Pos2::new(centre.x - 1.0, centre.y + 5.5)],
+        Stroke::new(1.5, color),
+    );
+}
+
+/// A small filled circle, which is what says a run is going.
+pub fn state_dot(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    painter.circle_filled(centre, 3.2, color);
+}

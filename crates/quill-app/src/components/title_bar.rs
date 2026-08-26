@@ -20,9 +20,13 @@
 //! the dot is on the tab as well, and the folder was the project, which is what the bar now says once
 //! rather than repeating on every file.
 //!
-//! **The text tools sit at the right hand end**, in front of the window buttons. The bar does not draw
-//! them — `components::text_tools` does — but it decides where they go, through [`tools_rect`], so that
-//! nothing it draws itself and nothing that is dragged to move the window ever runs underneath one.
+//! **The text tools sit at the right hand end**, in front of the window buttons, and the **run
+//! widget** sits in front of *them*, between the project's name and the tools — which is what
+//! `task-1683` asks for. The bar draws neither — `components::text_tools` and
+//! `components::run_widget` do — but it decides where both go, through [`tools_rect`] and
+//! [`run_rect`], so that nothing it draws itself and nothing that is dragged to move the window
+//! ever runs underneath one. **Neither ever changes the bar's height**, which is the whole reason
+//! the tools were moved here in the first place.
 
 use egui::{Color32, CornerRadius, Pos2, Rect, Sense, Stroke, Vec2};
 
@@ -92,10 +96,26 @@ pub fn tools_rect(area: Rect, placement: MenuPlacement, width: f32) -> Rect {
     )
 }
 
+/// The rectangle the run widget is drawn into, `run_width` points wide.
+///
+/// In front of the text tools, so the bar reads project, run, tools, window buttons — the run
+/// controls beside the file's, and both clear of the buttons. With no tools it takes the room they
+/// would have had, which is what a source file's title bar looks like.
+pub fn run_rect(area: Rect, placement: MenuPlacement, tools_width: f32, run_width: f32) -> Rect {
+    let tools = tools_rect(area, placement, tools_width);
+    let right = if tools_width > 0.0 { tools.left() - 12.0 } else { tools.right() };
+    Rect::from_min_max(
+        Pos2::new(right - run_width, area.top()),
+        Pos2::new(right, area.bottom()),
+    )
+}
+
 /// Draw the title bar into `area`.
 ///
-/// `project` is the name of the folder that is open, and `tools_width` is how much room to leave clear
-/// at the right for the text tools the window draws over the top afterwards.
+/// `project` is the name of the folder that is open; `tools_width` and `run_width` are how much
+/// room to leave clear at the right for the text tools and the run widget, which the window draws
+/// over the top afterwards.
+#[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut egui::Ui,
     area: Rect,
@@ -104,6 +124,7 @@ pub fn show(
     placement: MenuPlacement,
     menus: &[Menu],
     tools_width: f32,
+    run_width: f32,
 ) -> TitleBarOutcome {
     let mut outcome = TitleBarOutcome::default();
     let painter = ui.painter_at(area);
@@ -163,9 +184,21 @@ pub fn show(
         MenuPlacement::Native => {}
     }
 
-    // The project's name, cut short with an ellipsis rather than run underneath the tools.
+    // The project's name, cut short with an ellipsis rather than run underneath the run widget or
+    // the tools. Whichever of the two is furthest left is where it has to stop.
     let tools = tools_rect(area, placement, tools_width);
-    let name_to = if tools_width > 0.0 { tools.left() - 12.0 } else { drag_to };
+    let run = run_rect(area, placement, tools_width, run_width);
+    let claimed = if run_width > 0.0 {
+        Some(run.left())
+    } else if tools_width > 0.0 {
+        Some(tools.left())
+    } else {
+        None
+    };
+    let name_to = match claimed {
+        Some(left) => left - 12.0,
+        None => drag_to,
+    };
     if let Some(project) = project {
         let galley = painter.layout(
             project.to_owned(),
@@ -184,8 +217,9 @@ pub fn show(
     }
 
     // Dragging anywhere else on the bar moves the window, which is what a title bar is for. It stops
-    // short of the tools, so pressing the `F` never begins a drag of the window behind it.
-    let drag_to = drag_to.min(if tools_width > 0.0 { tools.left() - 4.0 } else { drag_to });
+    // short of whichever control reaches furthest left, so pressing the `F` or the play button
+    // never begins a drag of the window behind it.
+    let drag_to = drag_to.min(claimed.map(|left| left - 4.0).unwrap_or(drag_to));
     let drag_from = name_from + 8.0;
     if drag_to > drag_from {
         let drag_area =
@@ -240,5 +274,24 @@ mod tests {
     fn a_file_with_no_tools_leaves_an_empty_rectangle_rather_than_a_gap() {
         let tools = tools_rect(bar(), MenuPlacement::InWindow, 0.0);
         assert_eq!(tools.width(), 0.0);
+    }
+
+    #[test]
+    fn the_run_widget_sits_in_front_of_the_text_tools() {
+        // The bar reads project, run, tools, window buttons.
+        let area = bar();
+        let tools = tools_rect(area, MenuPlacement::InWindow, 124.0);
+        let run = run_rect(area, MenuPlacement::InWindow, 124.0, 120.0);
+        assert!(run.right() < tools.left(), "run finishes at {} and tools start at {}", run.right(), tools.left());
+        assert_eq!(run.width(), 120.0);
+    }
+
+    #[test]
+    fn with_no_text_tools_the_run_widget_takes_the_room_they_would_have_had() {
+        let area = bar();
+        let tools = tools_rect(area, MenuPlacement::InWindow, 0.0);
+        let run = run_rect(area, MenuPlacement::InWindow, 0.0, 120.0);
+        assert_eq!(run.right(), tools.right(), "a source file's title bar");
+        assert!(run.left() < first_button(area, MenuPlacement::InWindow).x);
     }
 }

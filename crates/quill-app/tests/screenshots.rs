@@ -23,7 +23,7 @@ use egui_kittest::wgpu::WgpuTestRenderer;
 use egui_kittest::{Harness, SnapshotResults};
 use quill_app::QuillApp;
 use quill_app::app::ViewMode;
-use quill_app::app::actions::{Action, HighlightColor};
+use quill_app::app::actions::{Action, HighlightColor, RunAction};
 use quill_app::components::about_dialog::About;
 use quill_app::components::title_bar::MenuPlacement;
 use quill_app::settings;
@@ -4453,6 +4453,398 @@ fn the_preview_under_the_results_follows_the_one_that_is_chosen() {
 }
 
 // ============================================================================================
+// Running: the tile, the widget, the flyout and the dialog.
+//
+// `task-1683`. Every one of these is drawn from a **detached** session — one with no program behind
+// it, fed fixed bytes — which is the trick the terminal's own pictures already use: when a real
+// program answers is not something a test can know, and a picture that depended on it would differ
+// between runs. What is being looked at is the drawing, and the drawing is the same either way.
+
+
+use quill_app::services::run_configurations::{Configuration, RunConfigurations};
+
+/// A configuration, spelled out.
+fn configuration(name: &str, command: &str) -> Configuration {
+    Configuration::new(name, command)
+}
+
+/// A window with a run going that has no program behind it.
+fn with_run(name: &str, command: &str, rows: usize) -> Harness<'static, QuillApp> {
+    let mut harness = harness("A document above the run tile.");
+    harness.state_mut().new_detached_run(configuration(name, command), rows, 96);
+    harness.run();
+    harness
+}
+
+/// Feed bytes to the run that is showing, as a program writing them would.
+fn feed_run(harness: &mut Harness<'static, QuillApp>, bytes: &[u8]) {
+    harness
+        .state_mut()
+        .run
+        .active_mut()
+        .expect("a run")
+        .session
+        .feed(bytes);
+    harness.run();
+}
+
+#[test]
+fn the_run_tile_shows_a_program_running_along_the_bottom() {
+    let mut harness = with_run("Dev server", "node server.js --port 3000", 12);
+    assert!(harness.state().run.visible);
+    assert!(!harness.state().terminal.visible, "the bottom of the window holds one tile");
+    feed_run(
+        &mut harness,
+        b"> dev-server@1.0.0 start\r\n> node server.js --port 3000\r\n\r\n\x1b[32mListening on http://localhost:3000\x1b[0m\r\n  GET /            200  4ms\r\n  GET /style.css   200  1ms\r\n",
+    );
+    let screen = harness.state().run.active().expect("a run").session.snapshot();
+    assert!(screen.contains("Listening on"), "the output should be on the screen");
+    // The strip says it is going, and the three buttons that act on it are there.
+    harness.get_by_label("Run: Dev server");
+    harness.get_by_label("Rerun");
+    harness.get_by_label("Stop the run");
+    harness.get_by_label("Clear the run output");
+    harness.snapshot(shot("run_tile"));
+}
+
+#[test]
+fn a_run_that_ended_keeps_its_tab_and_the_strip_says_what_it_ended_with() {
+    // IntelliJ prints its epilogue into the console; Quill puts it in the strip, because a line
+    // pretending to be program output is exactly the confusion a separate strip avoids.
+    let mut harness = with_run("cargo test", "cargo test", 10);
+    feed_run(
+        &mut harness,
+        b"running 12 tests\r\n\x1b[31mtest the_thing ... FAILED\x1b[0m\r\n\r\ntest result: FAILED. 11 passed; 1 failed\r\n",
+    );
+    // A second run, so the picture holds a finished tab and a running one side by side.
+    harness
+        .state_mut()
+        .new_detached_run(configuration("Dev server", "node server.js"), 10, 96);
+    harness.run();
+    feed_run(&mut harness, b"Listening on http://localhost:3000\r\n");
+    let at = harness.state().run.index_of("cargo test").expect("the first run");
+    harness.state_mut().run.end_detached(at, Some(101));
+    harness.run();
+    assert_eq!(
+        harness.state().run.at(at).expect("a run").state().label(),
+        "exit code 101",
+        "the tab stays, holding what the program wrote"
+    );
+    harness.snapshot(shot("run_tile_finished"));
+}
+
+#[test]
+fn the_run_tile_and_the_terminal_tile_take_the_same_place_and_never_both() {
+    // Two grids stacked take the editing area below the fold of anything, so pressing either
+    // button shows one and puts the other away.
+    let mut harness = with_run("Dev server", "node server.js", 8);
+    assert!(harness.state().run.visible && !harness.state().terminal.visible);
+    let bottom = harness.state().run.grid_area();
+    choose(&mut harness, Action::ToggleTerminal);
+    assert!(harness.state().terminal.visible && !harness.state().run.visible);
+    assert_eq!(
+        harness.state().terminal.grid_area().bottom(),
+        bottom.bottom(),
+        "the same place at the bottom of the window"
+    );
+    choose(&mut harness, Action::ToggleRunTile);
+    assert!(harness.state().run.visible && !harness.state().terminal.visible);
+    // And the rail has a button for each, the run one above the terminal one.
+    harness.get_by_label("Run tile");
+    harness.get_by_label("Terminal tile");
+
+    // Every path that shows either tile puts the other away, which is what the two functions on
+    // `QuillApp` are for. This is the fault they were written for: `terminal show` from the command
+    // line set its own flag and left the run tile up, so both grids were drawn into the same
+    // rectangle, one over the other — found in the real window rather than here.
+    did(&mut harness, "terminal show");
+    assert!(harness.state().terminal.visible && !harness.state().run.visible, "terminal show");
+    choose(&mut harness, Action::ToggleRunTile);
+    assert!(harness.state().run.visible && !harness.state().terminal.visible);
+    choose(&mut harness, Action::NewTerminalTab);
+    assert!(harness.state().terminal.visible && !harness.state().run.visible, "New Terminal Tab");
+    did(&mut harness, "terminal hide");
+    assert!(!harness.state().terminal.visible && !harness.state().run.visible, "and neither is up");
+}
+
+#[test]
+fn the_run_widget_draws_its_three_states_in_the_title_bar() {
+    let mut results = SnapshotResults::new();
+
+    // Idle: a configuration chosen, nothing running.
+    let mut harness = harness("");
+    harness.state_mut().run_configurations.add_permanent(configuration("Dev server", "node server.js --port 3000"));
+    harness.state_mut().run_selected = Some("Dev server".to_owned());
+    harness.run();
+    harness.get_by_label("Choose a run configuration");
+    harness.get_by_label("Run the selected configuration");
+    results.add(harness.try_snapshot(shot("run_widget_idle")));
+
+    // Running: the stop square appears beside the play button. A control absent when it cannot
+    // apply, drawn the moment it can.
+    let mut harness = with_run("Dev server", "node server.js --port 3000", 8);
+    feed_run(&mut harness, b"Listening on http://localhost:3000\r\n");
+    harness.get_by_label("Stop the selected configuration");
+    results.add(harness.try_snapshot(shot("run_widget_running")));
+
+    // Stopped with an error: the widget goes back to two buttons and the tile's strip carries the
+    // code, which is where the eye already is.
+    let at = harness.state().run.index_of("Dev server").expect("the run");
+    harness.state_mut().run.end_detached(at, Some(1));
+    harness.run();
+    assert!(
+        harness.query_by_label("Stop the selected configuration").is_none(),
+        "there is nothing left to stop"
+    );
+    results.add(harness.try_snapshot(shot("run_widget_stopped")));
+
+    report(results);
+}
+
+#[test]
+fn with_nothing_to_run_the_widget_is_the_play_button_that_opens_the_dialog() {
+    // Present, because the way to discover the feature has to be visible; small, because it is not
+    // yet in use. The sample folder holds neither a Cargo.toml nor a package.json, so no detector
+    // has anything to say about it.
+    let folder = sample_folder();
+    let mut harness = harness_in(&folder);
+    assert!(harness.state().run_rows().is_empty(), "nothing to suggest in the sample folder");
+    harness.get_by_label("Add a run configuration").click();
+    harness.run();
+    assert!(harness.state().run_dialog.open, "the play button opens the dialog when nothing is chosen");
+}
+
+#[test]
+fn the_widgets_play_button_starts_the_chosen_configuration() {
+    // The button is wired to the same `Action` the `Run` menu and the keyboard send, which is what
+    // `QuillApp::run_action` being the one place means. A program that is not there is what is run
+    // on purpose: what is being proved is that the press reaches the starting, and a test that
+    // spawned a real one would be a test that waited for it.
+    let mut harness = harness("");
+    harness
+        .state_mut()
+        .run_configurations
+        .add_permanent(configuration("Nothing", "quill-no-such-program-at-all"));
+    harness.state_mut().run_selected = Some("Nothing".to_owned());
+    harness.run();
+    harness.get_by_label("Run the selected configuration").click();
+    harness.run();
+    let said = harness.state().message.clone().expect("the status bar says what happened");
+    assert!(
+        said.contains("quill-no-such-program-at-all"),
+        "the press should have reached the starting, and the bar says {said:?}"
+    );
+    assert!(harness.state().run.is_empty(), "nothing was started");
+}
+
+#[test]
+fn the_flyout_lists_the_permanents_the_temporaries_and_the_suggestions() {
+    // A project with a `package.json` in it, so the npm detector has something to say — which is
+    // what makes the third kind of row appear at all.
+    let folder = std::env::temp_dir().join("quill-run-suggestions");
+    std::fs::create_dir_all(&folder).expect("make the project");
+    std::fs::write(
+        folder.join("package.json"),
+        "{\n  \"name\": \"site\",\n  \"scripts\": { \"dev\": \"vite\", \"build\": \"vite build\" }\n}\n",
+    )
+    .expect("write the package");
+    std::fs::write(folder.join("server.js"), "// a server\n").expect("write a file");
+
+    let mut harness = harness_in(&folder);
+    harness
+        .state_mut()
+        .run_configurations
+        .add_permanent(configuration("Dev server", "node server.js --port 3000"));
+    harness.state_mut().run_configurations.add_temporary(configuration("server.js", "node server.js"));
+    harness.state_mut().run_selected = Some("Dev server".to_owned());
+    harness.run();
+
+    let rows: Vec<String> = harness.state().run_rows().into_iter().map(|row| row.name).collect();
+    assert_eq!(
+        rows,
+        vec!["Dev server", "server.js", "npm run build", "npm run dev"],
+        "permanents, then temporaries, then what the detectors suggest, in name order"
+    );
+
+    harness.get_by_label("Choose a run configuration").click();
+    harness.run();
+    harness.get_by_label("npm run dev");
+    harness.get_by_label("Edit Configurations...");
+    harness.snapshot(shot("run_flyout"));
+}
+
+#[test]
+fn running_a_suggestion_keeps_it_as_a_temporary_so_it_can_be_run_again() {
+    let folder = std::env::temp_dir().join("quill-run-suggestion-kept");
+    std::fs::create_dir_all(&folder).expect("make the project");
+    std::fs::write(folder.join("Cargo.toml"), "[package]\nname = \"thing\"\n").expect("write it");
+    let mut harness = harness_in(&folder);
+    assert_eq!(
+        harness.state().run_rows().into_iter().map(|row| row.name).collect::<Vec<_>>(),
+        vec!["cargo run"],
+        "the detector offers it"
+    );
+    assert!(harness.state().run_configurations.is_empty(), "and nothing is held yet");
+    // Running it makes a temporary. The program itself may or may not start on this machine, which
+    // is not what is being tested: what is, is that the thing that was run is now in the list.
+    choose(&mut harness, Action::Run(RunAction::Start(Some("cargo run".to_owned()))));
+    assert_eq!(harness.state().run_configurations.temporary().len(), 1);
+    assert_eq!(harness.state().run_selected.as_deref(), Some("cargo run"));
+    // And it is no longer offered as a suggestion as well, so it is one row rather than two.
+    assert_eq!(harness.state().run_rows().len(), 1);
+    harness.state_mut().run.kill_everything();
+}
+
+#[test]
+fn run_current_file_is_offered_for_a_javascript_file_and_not_for_a_rust_one() {
+    // The plugin's own `run.file`, asked at the moment of use — so switching the JavaScript plugin
+    // off withdraws it in the same frame.
+    let folder = std::env::temp_dir().join("quill-run-current-file");
+    std::fs::create_dir_all(&folder).expect("make the project");
+    std::fs::write(folder.join("server.js"), "console.log('hello')\n").expect("write it");
+    std::fs::write(folder.join("main.rs"), "fn main() {}\n").expect("write it");
+    let mut harness = harness_in(&folder);
+
+    harness.state_mut().open_path_permanently(&folder.join("server.js"));
+    harness.run();
+    assert_eq!(harness.state().run_file_template().as_deref(), Some("node {file}"));
+
+    harness.state_mut().open_path_permanently(&folder.join("main.rs"));
+    harness.run();
+    assert_eq!(
+        harness.state().run_file_template(),
+        None,
+        "running one file of a Cargo project is not a thing cargo does"
+    );
+
+    harness.state_mut().open_path_permanently(&folder.join("server.js"));
+    harness.run();
+    harness.state_mut().set_plugin_enabled("javascript", false);
+    harness.run();
+    assert_eq!(harness.state().run_file_template(), None, "and the plugin is the switch");
+}
+
+#[test]
+fn the_run_configurations_dialog_lists_them_on_the_left_and_edits_one_on_the_right() {
+    let mut harness = harness("");
+    harness
+        .state_mut()
+        .run_configurations
+        .add_permanent(Configuration {
+            name: "Dev server".to_owned(),
+            command: "node server.js --port 3000".to_owned(),
+            directory: "backend".to_owned(),
+            env: "PORT=3000; DEBUG=app:*".to_owned(),
+        });
+    harness.state_mut().run_configurations.add_permanent(configuration("cargo run", "cargo run"));
+    harness.state_mut().run_selected = Some("Dev server".to_owned());
+    choose(&mut harness, Action::Run(RunAction::Edit));
+    assert!(harness.state().run_dialog.open);
+    harness.get_by_label("Run configuration name");
+    harness.get_by_label("Run configuration command");
+    harness.get_by_label("Run configuration directory");
+    harness.get_by_label("Run configuration environment");
+    harness.get_by_label("Add");
+    harness.get_by_label("Remove");
+    harness.get_by_label("Done");
+    harness.snapshot(shot("run_dialog"));
+
+    // Add makes one with a name nothing else has, and chooses it.
+    harness.get_by_label("Add").click();
+    harness.run();
+    assert_eq!(harness.state().run_dialog.chosen.as_deref(), Some("Unnamed"));
+    assert_eq!(harness.state().run_configurations.permanent().len(), 3);
+
+    // Done shuts it.
+    harness.get_by_label("Done").click();
+    harness.run();
+    assert!(!harness.state().run_dialog.open);
+}
+
+#[test]
+fn the_dialog_asks_before_removing_a_configuration_whose_program_is_still_running() {
+    // Silently killing a server somebody is watching is worse than one extra click.
+    let mut harness = with_run("Dev server", "node server.js", 8);
+    choose(&mut harness, Action::Run(RunAction::Edit));
+    harness.get_by_label("Remove").click();
+    harness.run();
+    let question = harness.state().confirmation.clone().expect("a question is asked");
+    assert!(question.note.contains("Dev server"), "and it says what is about to be stopped");
+    assert_eq!(harness.state().run_configurations.len(), 1, "nothing has gone yet");
+
+    harness.state_mut().answer_the_question(question.answer);
+    harness.run();
+    assert!(harness.state().run_configurations.is_empty());
+    assert!(harness.state().run.is_empty(), "and its run went with it");
+}
+
+#[test]
+fn a_project_comes_back_with_its_configurations_and_the_choice_it_still_has() {
+    // What `.quill` remembers: the permanents in a file of their own, and which of them was chosen
+    // in `workspace.conf` beside the terminal's flags. A **temporary** is deliberately not written
+    // down, so a project that had one chosen comes back with nothing chosen rather than offering to
+    // run something that is not there.
+    let root = std::env::temp_dir().join("quill-run-remembered");
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::create_dir_all(&root).expect("make the project");
+    let mut configurations = RunConfigurations::new();
+    configurations.add_permanent(Configuration {
+        name: "Dev server".to_owned(),
+        command: "node server.js".to_owned(),
+        directory: "backend".to_owned(),
+        env: "PORT=3000".to_owned(),
+    });
+    quill_app::services::run_configurations::save(&root, &configurations);
+    let folder = quill_app::services::project_state::folder(&root);
+    std::fs::write(
+        folder.join("workspace.conf"),
+        "run.visible = true
+run.selected = Dev server
+",
+    )
+    .expect("write the workspace");
+
+    let mut harness = harness_in(&root);
+    harness.state_mut().restore_project();
+    harness.run();
+    assert_eq!(harness.state().run_configurations.permanent().len(), 1);
+    let held = harness.state().run_configurations.find("Dev server").expect("it came back").1.clone();
+    assert_eq!(held.command, "node server.js");
+    assert_eq!(held.directory, "backend");
+    assert_eq!(held.env, "PORT=3000");
+    assert_eq!(harness.state().run_selected.as_deref(), Some("Dev server"));
+    assert!(harness.state().run.visible, "and the tile was up");
+    assert!(harness.state().run.is_empty(), "with nothing in it: a run is not restarted");
+
+    // A remembered choice that nothing answers to any more is dropped rather than offered.
+    std::fs::write(folder.join("workspace.conf"), "run.selected = server.js
+")
+        .expect("write the workspace");
+    let mut harness = harness_in(&root);
+    harness.state_mut().restore_project();
+    harness.run();
+    assert_eq!(harness.state().run_selected, None);
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn a_temporary_has_a_save_button_that_keeps_it_and_a_permanent_does_not() {
+    let mut harness = harness("");
+    harness.state_mut().run_configurations.add_temporary(configuration("server.js", "node server.js"));
+    harness.state_mut().run_configurations.add_permanent(configuration("cargo run", "cargo run"));
+    harness.state_mut().run_dialog.open(Some("cargo run".to_owned()));
+    harness.run();
+    assert!(harness.query_by_label("Save").is_none(), "a permanent is already kept");
+
+    harness.state_mut().run_dialog.chosen = Some("server.js".to_owned());
+    harness.run();
+    harness.get_by_label("Save").click();
+    harness.run();
+    assert!(harness.state().run_configurations.temporary().is_empty());
+    assert_eq!(harness.state().run_configurations.permanent().len(), 2);
+}
+
+// ============================================================================================
 // The command line, driven through a real window.
 //
 // `task-1661`. These go through the whole of the command line path apart from the socket: the
@@ -4479,6 +4871,23 @@ fn run(harness: &mut Harness<'static, QuillApp>, line: &str) -> quill_cli::proto
 /// The same, insisting it worked.
 fn did(harness: &mut Harness<'static, QuillApp>, line: &str) -> serde_json::Value {
     let reply = run(harness, line);
+    assert!(reply.ok, "`{line}` was refused: {}", reply.message);
+    reply.result
+}
+
+/// The same, for a command that leaves the window asking to be drawn again later.
+///
+/// A polite stop asks for one frame two seconds hence, so the window has not gone quiet when the
+/// reply lands. `Harness::run` gives it four steps to settle and panics otherwise, which is right
+/// for a settled window and wrong here — the rule `task-1654` already wrote down about waiting
+/// loops, wearing a different hat.
+fn did_while_waiting(harness: &mut Harness<'static, QuillApp>, line: &str) -> serde_json::Value {
+    let ctx = harness.ctx.clone();
+    let reply = harness
+        .state_mut()
+        .run_command_line(line, &ctx)
+        .unwrap_or_else(|| panic!("`{line}` was not answered on the frame it was asked"));
+    harness.step();
     assert!(reply.ok, "`{line}` was refused: {}", reply.message);
     reply.result
 }
@@ -7041,4 +7450,146 @@ fn a_row_dropped_where_it_already_is_does_nothing_at_all() {
 fn row_middle(harness: &mut Harness<'static, QuillApp>, name: &str) -> egui::Pos2 {
     let node = harness.get_by_label_contains(name);
     node.rect().center()
+}
+
+// -------------------------------------------------------------------------------- run
+
+/// A window on a project that has something for the detectors to find.
+fn run_project(name: &str) -> Harness<'static, QuillApp> {
+    let folder = std::env::temp_dir().join(name);
+    std::fs::create_dir_all(&folder).expect("make the project");
+    std::fs::write(folder.join("Cargo.toml"), "[package]\nname = \"thing\"\n").expect("write it");
+    harness_in(&folder)
+}
+
+#[test]
+fn the_command_line_keeps_a_configuration_and_lists_it_with_the_suggestions() {
+    let mut harness = run_project("quill-cli-run-add");
+    let added = did(&mut harness, "run add \"Dev server\" node server.js --port 3000");
+    assert_eq!(added["selected"], "Dev server");
+    let configurations = added["configurations"].as_array().expect("a list").clone();
+    let first = &configurations[0];
+    assert_eq!(first["name"], "Dev server");
+    assert_eq!(first["command"], "node server.js --port 3000");
+    assert_eq!(first["origin"], "permanent");
+    assert_eq!(first["started"], false);
+    // The detector's suggestion is listed after it, and says which it is.
+    assert!(
+        configurations.iter().any(|row| row["name"] == "cargo run" && row["origin"] == "suggested"),
+        "{configurations:?}"
+    );
+    // The directory and the environment go in as flags, and a second one of the same name is
+    // refused rather than quietly replacing what was there.
+    did(&mut harness, "run add build cargo build --release --directory crates --env \"RUST_LOG=debug\"");
+    let held = harness.state().run_configurations.find("build").expect("build").1.clone();
+    assert_eq!(held.command, "cargo build --release");
+    assert_eq!(held.directory, "crates");
+    assert_eq!(held.environment(), vec![("RUST_LOG".to_owned(), "debug".to_owned())]);
+    assert_eq!(refused(&mut harness, "run add build cargo test"), "usage");
+}
+
+#[test]
+fn the_command_line_chooses_removes_and_refuses_a_name_nothing_holds() {
+    let mut harness = run_project("quill-cli-run-select");
+    did(&mut harness, "run add \"Dev server\" node server.js");
+    did(&mut harness, "run add build cargo build");
+    assert_eq!(did(&mut harness, "run select build")["selected"], "build");
+    assert_eq!(harness.state().run_selected.as_deref(), Some("build"));
+    assert_eq!(refused(&mut harness, "run select nothing"), "not-found");
+    assert_eq!(refused(&mut harness, "run start nothing"), "not-found");
+
+    did(&mut harness, "run remove build");
+    assert!(harness.state().run_configurations.find("build").is_none());
+    assert_eq!(refused(&mut harness, "run remove build"), "not-found");
+    // Removing the chosen one leaves nothing chosen, and `run start` says so rather than guessing.
+    did(&mut harness, "run select \"Dev server\"");
+    did(&mut harness, "run remove \"Dev server\"");
+    assert_eq!(harness.state().run_selected, None);
+    assert_eq!(refused(&mut harness, "run start"), "not-applicable");
+}
+
+#[test]
+fn the_command_line_reads_what_a_run_has_written() {
+    // A detached run, so what is being tested is the reading rather than a program's timing.
+    let mut harness = harness("");
+    harness
+        .state_mut()
+        .new_detached_run(configuration("Dev server", "node server.js"), 10, 60);
+    harness.run();
+    feed_run(&mut harness, b"Listening on http://localhost:3000\r\nGET / 200\r\nGET /a 200\r\n");
+
+    let output = did(&mut harness, "run output");
+    assert!(
+        output["text"].as_str().expect("text").contains("Listening on http://localhost:3000"),
+        "{output:?}"
+    );
+    // The tail is the last so many lines, which is what a long log wants.
+    let tail = did(&mut harness, "run output --tail 1");
+    assert_eq!(tail["text"], "GET /a 200");
+    // And --wait-for is answered at once when what it is waiting for is already there.
+    let found = did(&mut harness, "run output --wait-for Listening");
+    assert_eq!(found["found"], true);
+    // A configuration that has not been run has nothing to read.
+    assert_eq!(refused(&mut harness, "run output nothing"), "not-applicable");
+}
+
+#[test]
+fn the_command_line_says_whether_a_run_is_going_and_what_it_ended_with() {
+    let mut harness = harness("");
+    harness
+        .state_mut()
+        .new_detached_run(configuration("cargo test", "cargo test"), 8, 60);
+    harness.run();
+    let going = did(&mut harness, "run status");
+    assert_eq!(going["state"], "running");
+    assert_eq!(going["running"], true);
+
+    let at = harness.state().run.index_of("cargo test").expect("the run");
+    harness.state_mut().run.end_detached(at, Some(101));
+    harness.run();
+    let ended = did(&mut harness, "run status");
+    assert_eq!(ended["state"], "exit code 101");
+    assert_eq!(ended["exitCode"], 101);
+    assert_eq!(ended["running"], false);
+
+    // One that was never started says so rather than pretending.
+    harness.state_mut().run_configurations.add_permanent(configuration("build", "cargo build"));
+    let never = did(&mut harness, "run status build");
+    assert_eq!(never["started"], false);
+    assert_eq!(never["state"], "not started");
+}
+
+#[test]
+fn stopping_a_run_from_the_command_line_leaves_the_tab_and_what_it_wrote() {
+    let mut harness = harness("");
+    harness
+        .state_mut()
+        .new_detached_run(configuration("Dev server", "node server.js"), 8, 60);
+    harness.run();
+    feed_run(&mut harness, b"Listening on http://localhost:3000\r\n");
+    // The first stop is the polite one, so the run is still going.
+    did_while_waiting(&mut harness, "run stop");
+    assert!(harness.state().run.active().expect("a run").is_running());
+    assert!(harness.state().run.is_stopping(), "and the window is waiting out the grace");
+    // The second does not wait.
+    did_while_waiting(&mut harness, "run stop");
+    assert!(!harness.state().run.active().expect("a run").is_running());
+    assert_eq!(harness.state().run.count(), 1, "the tab stays");
+    let output = did(&mut harness, "run output");
+    assert!(output["text"].as_str().expect("text").contains("Listening on"), "{output:?}");
+}
+
+#[test]
+fn every_run_command_reaches_the_window() {
+    // The rule `task-1661` asks for, checked for this area: a command the catalogue accepts is a
+    // command the window knows, so none of them can answer "unknown command".
+    let mut harness = run_project("quill-cli-run-known");
+    for verb in ["list", "add", "remove", "start", "stop", "rerun", "select", "output", "status"] {
+        let reply = run(&mut harness, &format!("run {verb} x"));
+        assert_ne!(
+            reply.error.as_ref().map(|error| error.code.as_str()),
+            Some("unknown"),
+            "`run {verb}` is in the catalogue and the window does not know it"
+        );
+    }
 }

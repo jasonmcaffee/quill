@@ -97,6 +97,13 @@ pub struct SessionSettings {
     pub args: Vec<String>,
     /// The folder the program starts in, which is the project the window has open.
     pub working_directory: Option<std::path::PathBuf>,
+    /// Variables laid **over** the environment Quill itself started with, never replacing it.
+    ///
+    /// `task-1683` asks for it: a run configuration carries `NAME=value` pairs, and a dev server
+    /// started with `PORT=3000` has to see the rest of the machine's environment as well — a child
+    /// with no `PATH` is a bug nobody enjoys finding. The terminal's own shells leave it empty and
+    /// change by nothing.
+    pub env: Vec<(String, String)>,
 }
 
 /// Told when something happened that the window has to redraw for.
@@ -138,6 +145,12 @@ pub struct Session {
     clipboard: Option<String>,
     /// False once the shell has stopped.
     running: bool,
+    /// What the program exited with, once it has. `None` while it is still running, and `None`
+    /// after [`Session::kill`], because a program Quill killed did not choose a code.
+    ///
+    /// `Event::ChildExit` has always carried it and the terminal has always thrown it away; a run
+    /// panel is the first thing that has a use for it, which is `task-1683` §5.1.
+    exit_code: Option<i32>,
     /// How many times the program rang the bell, which a test can check.
     bells: usize,
     /// The name shown on the tab before the program sets a title of its own.
@@ -167,7 +180,9 @@ impl Session {
             // works, and is quietly in the wrong folder. That module says where such a path comes from.
             working_directory: settings.working_directory.as_deref().map(crate::paths::plain),
             drain_on_exit: false,
-            env: Default::default(),
+            // Laid over what this process already has rather than replacing it: `tty::new` starts
+            // the child from Quill's own environment and applies these on top.
+            env: settings.env.iter().cloned().collect(),
             #[cfg(target_os = "windows")]
             escape_args: true,
         };
@@ -195,6 +210,7 @@ impl Session {
             title: String::new(),
             clipboard: None,
             running: true,
+            exit_code: None,
             bells: 0,
             name,
             given: String::new(),
@@ -223,6 +239,7 @@ impl Session {
             title: String::new(),
             clipboard: None,
             running: true,
+            exit_code: None,
             bells: 0,
             name: "detached".to_owned(),
             given: String::new(),
@@ -279,6 +296,33 @@ impl Session {
         self.running
     }
 
+    /// What the program exited with, readable once [`Self::is_running`] is false.
+    ///
+    /// `None` while it is still running, and `None` for a program that was killed rather than one
+    /// that chose a code — a run tab says `stopped` there rather than inventing a number.
+    pub fn exit_code(&self) -> Option<i32> {
+        self.exit_code
+    }
+
+    /// Stop the program, hard, and keep everything it wrote.
+    ///
+    /// The polite stop is the interrupt byte down the pty, which is `send` and belongs to the
+    /// caller — `task-1683` §5.3 gives it a grace of two seconds. This is what comes after it.
+    ///
+    /// `alacritty_terminal` keeps the pseudoterminal inside its `EventLoop`, so there is no child
+    /// handle here to terminate; shutting the loop down drops the pty, which is a hangup on Unix
+    /// and `ClosePseudoConsole` on Windows. That is exactly the path [`Session::drop`] already
+    /// takes when a terminal tab is closed, so this is not a new way of stopping a program — it is
+    /// the same one, without dropping the session. The grid stays, because this `Session` holds its
+    /// own reference to it, which is what lets a run tab go on showing the output of a program that
+    /// is no longer there.
+    pub fn kill(&mut self) {
+        if let Some(notifier) = self.notifier.take() {
+            let _ = notifier.0.send(Msg::Shutdown);
+        }
+        self.running = false;
+    }
+
     pub fn bells(&self) -> usize {
         self.bells
     }
@@ -311,7 +355,14 @@ impl Session {
                 // the clipboard could read a password out of it, and nothing Quill runs needs to.
                 Event::ClipboardLoad(_, _) => {}
                 Event::Bell => self.bells += 1,
-                Event::ChildExit(_) | Event::Exit => self.running = false,
+                // The code the program chose, kept rather than discarded: it is what a run tab
+                // writes in its strip once the program has gone. `Exit` carries none, and neither
+                // does a status with no code — a program killed by a signal on Unix.
+                Event::ChildExit(status) => {
+                    self.exit_code = status.code();
+                    self.running = false;
+                }
+                Event::Exit => self.running = false,
                 Event::Wakeup | Event::MouseCursorDirty | Event::CursorBlinkingChange => {}
             }
         }
@@ -400,6 +451,38 @@ impl Session {
     /// Put the view back at the newest output, which typing does.
     pub fn scroll_to_bottom(&mut self) {
         self.term.lock().scroll_display(Scroll::Bottom);
+    }
+
+    /// Throw away everything on the screen and in the history, and put the cursor at the top left.
+    ///
+    /// The run tile's third button — `task-1683` §6.1 — and the one thing about a run that is not
+    /// about the program: a program that has finished cannot be asked to clear its own screen, and
+    /// one that is still going would take an escape sequence as *input* rather than as a command.
+    /// So the emulator is told directly, which is the same call the sequence would have made had a
+    /// program written it, rather than bytes being pushed at a shell that may not be listening.
+    pub fn clear(&mut self) {
+        use alacritty_terminal::vte::ansi::{ClearMode, Handler as _};
+        let mut term = self.term.lock();
+        term.clear_screen(ClearMode::All);
+        term.clear_screen(ClearMode::Saved);
+        term.goto(0, 0);
+        term.scroll_display(Scroll::Bottom);
+    }
+
+    /// Send the interrupt byte, which reaches the program as Ctrl+C.
+    ///
+    /// The polite half of `task-1683` §5.3, named here rather than written out at each of the
+    /// places that stop a run — the tile's button, the widget's, the menu and the command line —
+    /// because four copies of one byte is four chances to send a different one. The encoding is
+    /// `keys`', which has turned Ctrl+C into `0x03` since the terminal was written.
+    pub fn interrupt(&self) {
+        let press = crate::keys::KeyPress::new(
+            crate::keys::Key::Character('c'),
+            crate::keys::Modifiers::control(),
+        );
+        if let Some(bytes) = crate::keys::encode(press, self.mode()) {
+            self.send(bytes);
+        }
     }
 
     /// Start a selection at a cell. `line` is a row of the screen, counted from the top.
@@ -769,6 +852,27 @@ mod tests {
     }
 
     #[test]
+    fn clearing_by_hand_empties_the_screen_and_the_history_behind_it() {
+        // The run tile's `clear` button. It tells the emulator rather than writing bytes at the
+        // program, because a program that has finished cannot clear its own screen and one that is
+        // running would read the sequence as input.
+        let mut session = Session::detached(Size::new(4, 20));
+        for line in 0..20 {
+            session.feed(format!("line {line}\r\n").as_bytes());
+        }
+        assert!(session.snapshot().history > 0, "there is scrollback to clear");
+        session.clear();
+        let screen = session.snapshot();
+        assert_eq!(screen.text(), "", "nothing on the screen");
+        assert_eq!(screen.history, 0, "and nothing above it either");
+        assert_eq!(
+            screen.cursor.map(|cursor| (cursor.row, cursor.column)),
+            Some((0, 0)),
+            "with the cursor back at the top left, ready for the next run"
+        );
+    }
+
+    #[test]
     fn hiding_the_cursor_takes_it_off_the_screen_and_showing_it_brings_it_back() {
         let mut session = detached();
         session.feed(b"\x1b[?25l");
@@ -951,8 +1055,8 @@ mod tests {
         });
         let settings = SessionSettings {
             shell: Some(test_shell()),
-            args: Vec::new(),
             working_directory: Some(std::env::temp_dir()),
+            ..SessionSettings::default()
         };
         let mut session =
             Session::spawn(&settings, Size::new(12, 60), waker).expect("start a shell");
@@ -987,11 +1091,7 @@ mod tests {
     #[test]
     fn a_shell_that_is_told_to_leave_stops_running() {
         let waker: Waker = Arc::new(|| {});
-        let settings = SessionSettings {
-            shell: Some(test_shell()),
-            args: Vec::new(),
-            working_directory: None,
-        };
+        let settings = SessionSettings { shell: Some(test_shell()), ..SessionSettings::default() };
         let mut session = Session::spawn(&settings, Size::new(8, 40), waker).expect("start a shell");
         session.send(b"exit\r".to_vec());
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
@@ -1000,6 +1100,165 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "the shell did not stop in thirty seconds");
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
+    }
+
+    /// Run one short-lived program to the end, and say what it exited with.
+    ///
+    /// A real program in a real pseudoterminal, because what is being tested is that
+    /// `Event::ChildExit`'s code reaches [`Session::exit_code`] — which a detached session, having
+    /// no child, can say nothing about. It waits with a deadline and pumps, as the two tests above
+    /// it do, rather than assuming when a process ends.
+    fn run_to_the_end(settings: SessionSettings) -> Session {
+        let waker: Waker = Arc::new(|| {});
+        let mut session =
+            Session::spawn(&settings, Size::new(8, 60), waker).expect("start the program");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while session.is_running() {
+            session.pump();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the program did not finish in thirty seconds, the screen holds {:?}",
+                session.snapshot().text()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        // One more, because the exit arrives as an event and the loop above stops on the frame it
+        // was read: a code written by the same `pump` is already here, and this costs nothing.
+        session.pump();
+        session
+    }
+
+    /// A program that exits with a chosen code and nothing else, spelled for this platform.
+    fn exiting_with(code: i32) -> SessionSettings {
+        if cfg!(target_os = "windows") {
+            SessionSettings {
+                shell: Some(test_shell()),
+                args: vec!["/c".to_owned(), format!("exit {code}")],
+                ..SessionSettings::default()
+            }
+        } else {
+            SessionSettings {
+                shell: Some(test_shell()),
+                args: vec!["-c".to_owned(), format!("exit {code}")],
+                ..SessionSettings::default()
+            }
+        }
+    }
+
+    #[test]
+    fn a_program_that_ends_leaves_the_code_it_chose_behind_it() {
+        // `task-1683` §11.1. The code has always arrived on `Event::ChildExit` and has always been
+        // thrown away; a run tab is the first thing that has a use for it.
+        let session = run_to_the_end(exiting_with(3));
+        assert!(!session.is_running());
+        assert_eq!(session.exit_code(), Some(3), "the code the program chose");
+    }
+
+    #[test]
+    fn a_program_that_ends_cleanly_says_zero_rather_than_nothing() {
+        let session = run_to_the_end(exiting_with(0));
+        assert_eq!(session.exit_code(), Some(0));
+    }
+
+    #[test]
+    fn a_variable_in_the_settings_reaches_the_program() {
+        // The whole of what `SessionSettings::env` is for: a run configuration's `PORT=3000` has to
+        // be in the child's environment. Asked of the program itself rather than of Quill, by
+        // having it print the variable back.
+        let (shell_flag, command) = if cfg!(target_os = "windows") {
+            ("/c", "echo [%QUILL_RUN_TEST%]".to_owned())
+        } else {
+            ("-c", "echo \"[$QUILL_RUN_TEST]\"".to_owned())
+        };
+        let settings = SessionSettings {
+            shell: Some(test_shell()),
+            args: vec![shell_flag.to_owned(), command],
+            working_directory: None,
+            env: vec![("QUILL_RUN_TEST".to_owned(), "it-arrived".to_owned())],
+        };
+        let waker: Waker = Arc::new(|| {});
+        let mut session =
+            Session::spawn(&settings, Size::new(8, 60), waker).expect("start the program");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            session.pump();
+            if session.snapshot().contains("[it-arrived]") {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the variable did not reach the program, the screen holds {:?}",
+                session.snapshot().text()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+    }
+
+    #[test]
+    fn the_environment_quill_started_with_is_still_there_underneath() {
+        // Laid **over** the inherited environment rather than replacing it. A child with no `PATH`
+        // is a bug nobody enjoys finding, and it is the one thing this could get wrong silently:
+        // the program would still start, because Quill names it in full.
+        let name = if cfg!(target_os = "windows") { "windir" } else { "HOME" };
+        let (shell_flag, command) = if cfg!(target_os = "windows") {
+            ("/c", format!("if defined {name} echo [inherited]"))
+        } else {
+            ("-c", format!("[ -n \"${name}\" ] && echo \"[inherited]\""))
+        };
+        let settings = SessionSettings {
+            shell: Some(test_shell()),
+            args: vec![shell_flag.to_owned(), command],
+            working_directory: None,
+            env: vec![("QUILL_RUN_TEST".to_owned(), "one".to_owned())],
+        };
+        let waker: Waker = Arc::new(|| {});
+        let mut session =
+            Session::spawn(&settings, Size::new(8, 60), waker).expect("start the program");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            session.pump();
+            if session.snapshot().contains("[inherited]") {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the inherited environment should still be there, the screen holds {:?}",
+                session.snapshot().text()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+    }
+
+    #[test]
+    fn a_program_that_is_killed_stops_and_keeps_what_it_wrote() {
+        // The hard half of `task-1683` §5.3. What is being checked is that the grid survives: a run
+        // tab goes on showing the output of a program that is no longer there, which is what makes
+        // the evidence outlive the process.
+        let settings =
+            SessionSettings { shell: Some(test_shell()), ..SessionSettings::default() };
+        let waker: Waker = Arc::new(|| {});
+        let mut session =
+            Session::spawn(&settings, Size::new(8, 60), waker).expect("start a shell");
+        session.send(b"echo quill-run-kill-test\r".to_vec());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            session.pump();
+            if session.snapshot().contains("quill-run-kill-test") {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "the shell did not answer");
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        session.kill();
+        assert!(!session.is_running(), "killing it stops it at once rather than on a later pump");
+        assert_eq!(session.exit_code(), None, "a program Quill killed chose no code");
+        assert!(
+            session.snapshot().contains("quill-run-kill-test"),
+            "the output is still there after the program has gone"
+        );
+        // And killing twice is not a second shutdown down a channel that has gone.
+        session.kill();
+        assert!(!session.is_running());
     }
 
     #[test]
@@ -1033,8 +1292,8 @@ mod tests {
 
         let settings = SessionSettings {
             shell: Some(test_shell()),
-            args: Vec::new(),
             working_directory: Some(verbatim),
+            ..SessionSettings::default()
         };
         let waker: Waker = Arc::new(|| {});
         let mut session =

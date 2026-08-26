@@ -10,7 +10,9 @@
 //!
 //! Three files, all plain text, in the format `services::store` already uses:
 //!
-//! - `.quill/workspace.conf` — the flags and the numbers.
+//! - `.quill/workspace.conf` — the flags and the numbers, including the run widget's `run.selected`
+//!   and `run.visible`. The run **configurations** are a file of their own beside these, because
+//!   they belong to the project rather than to the person: `services::run_configurations`.
 //! - `.quill/open-files.txt` — one path a line, in tab order.
 //! - `.quill/expanded-folders.txt` — one path a line.
 //!
@@ -83,6 +85,19 @@ pub struct ProjectState {
     /// fresh shells in the project's own folder, which is what a person means by "my terminals were
     /// there".
     pub terminal_tabs: usize,
+    /// True when the run tile was the one showing at the bottom of the window.
+    ///
+    /// The runs themselves are deliberately not remembered, for the reason the terminals are not:
+    /// what a program was doing when the window closed is gone. Unlike the terminals, no fresh ones
+    /// are started either — a shell is a place to type and a run is something that was *started*,
+    /// and restarting somebody's dev server because they closed the window would be a surprise.
+    pub run_visible: bool,
+    /// The name of the configuration the run widget had chosen. Empty when none was.
+    ///
+    /// Per-person, so it is here rather than in `run-configurations.conf`: which of the project's
+    /// configurations you were last working with is a fact about you, and the file the project
+    /// shares holds what somebody chose to keep. `task-1683` §4.2.
+    pub run_selected: String,
 }
 
 impl ProjectState {
@@ -110,6 +125,12 @@ pub fn load(root: &Path) -> ProjectState {
     }
     if let Some(on) = values.flag("terminal.visible") {
         state.terminal_visible = on;
+    }
+    if let Some(on) = values.flag("run.visible") {
+        state.run_visible = on;
+    }
+    if let Some(name) = values.text("run.selected") {
+        state.run_selected = name.trim().to_owned();
     }
     if let Some(count) = values.number("terminal.tabs") {
         state.terminal_tabs = (count.max(0.0) as usize).min(16);
@@ -157,6 +178,12 @@ pub fn save(root: &Path, state: &ProjectState) {
     values.set("explorer.visible", flag(state.explorer_visible));
     values.set("terminal.visible", flag(state.terminal_visible));
     values.set("terminal.tabs", state.terminal_tabs.to_string());
+    values.set("run.visible", flag(state.run_visible));
+    // Written only once something has been chosen, so a project that has never run anything has no
+    // line saying it chose nothing — the rule `terminal.shell` already keeps in the settings file.
+    if !state.run_selected.is_empty() {
+        values.set("run.selected", state.run_selected.clone());
+    }
     values.set("files.active", state.active_file.to_string());
     values.set("files.panes", numbers_text(&state.file_panes));
     values.set("files.pane", state.active_pane.to_string());
@@ -302,6 +329,8 @@ mod tests {
             explorer_visible: false,
             terminal_visible: true,
             terminal_tabs: 2,
+            run_visible: false,
+            run_selected: "Dev server".to_owned(),
         };
         save(&root, &state);
         assert_eq!(load(&root), state);

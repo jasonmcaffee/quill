@@ -18,7 +18,7 @@
 
 use std::path::PathBuf;
 
-use crate::app::actions::{Action, GitAction, HighlightColor};
+use crate::app::actions::{Action, GitAction, HighlightColor, RunAction};
 use crate::app::ViewMode;
 
 impl Action {
@@ -57,6 +57,8 @@ impl Action {
             Action::ChangeFontSize { larger: false } => "decrease-font-size".to_owned(),
             Action::ResetFontSize => "reset-font-size".to_owned(),
             Action::ToggleTerminal => "toggle-terminal".to_owned(),
+            Action::ToggleRunTile => "toggle-run-tile".to_owned(),
+            Action::Run(what) => format!("run-{}", what.name()),
             Action::CloseTab => "close-tab".to_owned(),
             Action::NextTab => "next-tab".to_owned(),
             Action::PreviousTab => "previous-tab".to_owned(),
@@ -91,7 +93,8 @@ impl Action {
         }
     }
 
-    /// The action of this name, given a path for the ones that are about a file or a folder.
+    /// The action of this name, given what it is about: a file or folder for most of them, and the
+    /// name of a run configuration for the `run-` ones.
     ///
     /// `None` when there is no action by that name. An action that wants a path and is given none
     /// is a different failure, reported by [`Action::wants_a_path`], because "there is no such
@@ -99,6 +102,14 @@ impl Action {
     pub fn from_name(name: &str, path: Option<PathBuf>) -> Option<Action> {
         if let Some(rest) = name.strip_prefix("git-") {
             return GitAction::from_name(rest, path).map(Action::Git);
+        }
+        if let Some(rest) = name.strip_prefix("run-") {
+            // The argument names a **configuration** here rather than a file, which is the one
+            // place `argument` is not a path. `run start <name>` on the command line is what
+            // anybody would actually type; this is the escape hatch `action run` gives every menu
+            // entry, and it would be a worse escape hatch if it could not name the thing to run.
+            let named = path.as_ref().map(|named| named.to_string_lossy().to_string());
+            return RunAction::from_name(rest, named).map(Action::Run);
         }
         if let Some(rest) = name.strip_prefix("highlight-") {
             return HighlightColor::ALL
@@ -140,6 +151,7 @@ impl Action {
             "decrease-font-size" => Action::ChangeFontSize { larger: false },
             "reset-font-size" => Action::ResetFontSize,
             "toggle-terminal" => Action::ToggleTerminal,
+            "toggle-run-tile" => Action::ToggleRunTile,
             "close-tab" => Action::CloseTab,
             "next-tab" => Action::NextTab,
             "previous-tab" => Action::PreviousTab,
@@ -324,6 +336,12 @@ mod tests {
             definitions_apply: true,
             symbols_apply: true,
             completion_applies: true,
+            // The Run menu's entries the same way: `Run Current File` is absent for a file whose
+            // language names no command, and the per-configuration entries are absent when the
+            // project has none, so both are switched on here.
+            run_selected: Some("Dev server".to_owned()),
+            run_names: vec!["Dev server".to_owned()],
+            run_file_applies: true,
             ..MenuState::default()
         };
         let mut out = Vec::new();
@@ -361,6 +379,9 @@ mod tests {
                     | GitAction::ShowHistory(path)
                     | GitAction::Rollback(path),
                 ) => path.clone(),
+                // The one entry whose argument names a configuration rather than a file. It goes
+                // down the same channel, which is why `from_name` says what that channel now holds.
+                Action::Run(what) => what.configuration().map(PathBuf::from),
                 _ => None,
             };
             assert_eq!(
@@ -412,6 +433,27 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn every_entry_on_the_run_menu_reads_back_as_the_entry_it_names() {
+        // The round trip above already covers this, and this says the interesting half out loud:
+        // an entry that names a configuration reads back naming the same one, which is what makes
+        // `action run run-start --path "Dev server"` reach the right thing.
+        let started = Action::Run(RunAction::Start(Some("Dev server".to_owned())));
+        assert_eq!(started.name(), "run-start");
+        assert_eq!(
+            Action::from_name("run-start", Some(PathBuf::from("Dev server"))),
+            Some(started)
+        );
+        // And with nothing named it is the configuration the widget has chosen.
+        assert_eq!(
+            Action::from_name("run-start", None),
+            Some(Action::Run(RunAction::Start(None)))
+        );
+        assert_eq!(Action::from_name("run-edit", None), Some(Action::Run(RunAction::Edit)));
+        assert_eq!(Action::from_name("run-nonsense", None), None);
+        assert_eq!(Action::from_name("toggle-run-tile", None), Some(Action::ToggleRunTile));
     }
 
     #[test]

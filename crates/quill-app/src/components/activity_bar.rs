@@ -9,6 +9,10 @@
 //! explorer, then git. The terminal lives along the bottom of the window, so its button is at the bottom
 //! of the rail, which is where `task-1658`'s reference capture puts it.
 //!
+//! `task-1683` added a second button to the bottom group, `Run tile`, **above** `Terminal tile`. The
+//! bottom of the window shows one or the other and never both stacked, so pressing either one shows
+//! its own tile and puts the other away — which the window settles, not this file.
+//!
 //! A button that is on is the pill every list in Quill draws for its chosen row — `SELECTED_ROW`, the row
 //! inset and rounded — rather than a filled `ACCENT` square. Three bright blue squares in a rail that is
 //! nearly always in that state would be the loudest thing in the window, and the pane being open is a
@@ -43,6 +47,8 @@ pub struct RailState {
     /// the Git menu already follows.
     pub in_repository: bool,
     pub terminal_visible: bool,
+    /// True when the run tile is the one showing at the bottom of the window.
+    pub run_visible: bool,
 }
 
 /// Draw the rail into `area`, and report what was pressed.
@@ -87,13 +93,22 @@ pub fn show(ui: &mut egui::Ui, area: Rect, state: RailState, opacity: f32) -> Op
         }
     }
 
-    // The terminal lives along the bottom of the window, so its button is at the bottom of the rail.
-    // `Terminal tile` rather than `Terminal`, because `Edit -> Settings` has a page called `Terminal`
-    // and the `View` menu has an entry called `Terminal`, and no two controls in one window may share a
-    // name. `tile` is what the rest of Quill already calls the thing along the bottom.
-    let centre = Pos2::new(centre_x, area.bottom() - MARGIN - BUTTON / 2.0);
-    if rail_button(ui, centre, "Terminal tile", icon::terminal, state.terminal_visible, true) {
-        chosen = Some(Action::ToggleTerminal);
+    // The two tiles that live along the bottom of the window, so their buttons are at the bottom of
+    // the rail, counted **up** from it so the last one is always in the corner however many there
+    // are. `Terminal tile` rather than `Terminal`, because `Edit -> Settings` has a page called
+    // `Terminal` and the `View` menu has an entry called `Terminal`, and no two controls in one
+    // window may share a name; `Run tile` is named to match, and for the same reason — the `Run`
+    // menu is a control too.
+    let bottom: [(&str, fn(&egui::Painter, Pos2, egui::Color32), bool, Action); 2] = [
+        ("Terminal tile", icon::terminal, state.terminal_visible, Action::ToggleTerminal),
+        ("Run tile", icon::run, state.run_visible, Action::ToggleRunTile),
+    ];
+    for (index, (name, draw, on, action)) in bottom.into_iter().enumerate() {
+        let centre =
+            Pos2::new(centre_x, area.bottom() - MARGIN - BUTTON / 2.0 - index as f32 * STEP);
+        if rail_button(ui, centre, name, draw, on, true) {
+            chosen = Some(action);
+        }
     }
 
     chosen

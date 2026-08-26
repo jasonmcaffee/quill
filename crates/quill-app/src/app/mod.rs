@@ -57,6 +57,9 @@ use crate::components::gutter::{self, Gutter};
 use crate::components::picture_view;
 use crate::components::prompt_dialog::{self, Prompt, Purpose};
 use crate::components::resize_edges;
+use crate::components::run_dialog::{self, RunDialog};
+use crate::components::run_panel::{self, RunPanel};
+use crate::components::run_widget;
 use crate::components::scrollbar;
 use crate::components::settings_dialog::{self, SettingsWindow};
 use crate::components::splitter;
@@ -70,6 +73,7 @@ use crate::services::file_marks::FileMarks;
 use crate::services::file_move;
 use crate::services::imports;
 use crate::services::recycle;
+use crate::services::run_configurations::{self, Configuration, Origin, RunConfigurations};
 use crate::services::file_tree::FileTree;
 use crate::services::file_clipboard::FileClipboard;
 use crate::services::launcher;
@@ -86,7 +90,7 @@ use crate::services::text_renderer::TextRenderer;
 use crate::settings::{self, Panes, Settings};
 use crate::theme::{self, color, size};
 
-use actions::{Action, GitAction, MenuState};
+use actions::{Action, GitAction, MenuState, RunAction};
 use git::GitState;
 use files::OpenFiles;
 
@@ -139,6 +143,10 @@ pub enum Answer {
     Git(quill_git::worker::Request),
     /// Delete this path, wherever `services::recycle` puts a deleted file on this platform.
     Delete(PathBuf),
+    /// Stop this run configuration and take it away, which is what `Remove` in the run dialog does
+    /// to one that is still running. The question is asked because silently killing a server
+    /// somebody is watching is worse than one extra click.
+    RemoveRun(String),
 }
 
 /// Which of the three ways of looking at a Markdown file is showing.
@@ -343,6 +351,23 @@ pub struct QuillApp {
     pub settings_window: SettingsWindow,
     /// The terminal along the bottom.
     pub terminal: TerminalPanel,
+    /// The run tile along the bottom, which is the terminal tile's sibling: the window shows one of
+    /// the two and never both, because two grids stacked take the editing area below the fold.
+    pub run: RunPanel,
+    /// The project's run configurations, as `.quill/run-configurations.conf` holds them plus
+    /// whatever has been run without being kept. See `services::run_configurations`.
+    pub run_configurations: RunConfigurations,
+    /// The name the run widget has chosen, which is what `Run` with no name means everywhere.
+    ///
+    /// `None` until something is chosen or a project that remembered one is opened. It is
+    /// per-person, so it lives in `workspace.conf` beside the terminal's flags rather than in the
+    /// file the project shares.
+    pub run_selected: Option<String>,
+    /// The `Run Configurations` modal.
+    pub run_dialog: RunDialog,
+    /// Set when a configuration was added, edited or removed and the file has not been written yet.
+    /// Written on the same terms as the settings: once the pointer is up.
+    unsaved_run_configurations: bool,
     /// Where this window's menus are drawn.
     pub menu_placement: MenuPlacement,
     /// The projects that have been open, newest first.
@@ -569,6 +594,11 @@ impl QuillApp {
             explorer_visible: true,
             settings_window: SettingsWindow::default(),
             terminal: TerminalPanel::new(Some(folder)),
+            run: RunPanel::new(),
+            run_configurations: RunConfigurations::new(),
+            run_selected: None,
+            run_dialog: RunDialog::default(),
+            unsaved_run_configurations: false,
             menu_placement: MenuPlacement::for_this_platform(),
             recent: Vec::new(),
             focus: Focus::Editor,
@@ -757,10 +787,27 @@ impl QuillApp {
             }
         }
         self.explorer_visible = state.explorer_visible;
+        // The project's run configurations, and which of them the widget had chosen. **No run is
+        // started**: unlike a terminal, which is a place to type, a run is something that was
+        // started deliberately, and restarting somebody's dev server because they closed the window
+        // would be a surprise. The tile comes back up holding nothing, which is what it says.
+        self.run_configurations = run_configurations::load(self.tree.root());
+        self.run.visible = state.run_visible;
+        // The remembered choice is only adopted if something still answers to it. A temporary is
+        // not written down, so the commonest thing a project remembers having chosen is a name
+        // that has gone with the window — and a widget offering to run something that is not there
+        // is worse than one offering nothing. The detectors count, which is why this is asked
+        // after the plugins have been read.
+        if !state.run_selected.is_empty()
+            && self.configuration_named(Some(&state.run_selected)).is_some()
+        {
+            self.run_selected = Some(state.run_selected.clone());
+        }
         // The shells themselves cannot be brought back, so the same number of fresh ones are started in
         // the project's own folder, which is what a person means by "my terminals were there".
         if state.terminal_visible && state.terminal_tabs > 0 {
             self.terminal.visible = true;
+            self.run.visible = false;
             for _ in 0..state.terminal_tabs {
                 self.new_terminal_tab();
             }
@@ -784,6 +831,8 @@ impl QuillApp {
             explorer_visible: self.explorer_visible,
             terminal_visible: self.terminal.visible,
             terminal_tabs: self.terminal.tabs.count(),
+            run_visible: self.run.visible,
+            run_selected: self.run_selected.clone().unwrap_or_default(),
         }
     }
 
@@ -1013,6 +1062,16 @@ impl QuillApp {
             completion_applies: self.completion_applies_here(),
             can_go_back: !self.back.is_empty(),
             can_go_forward: !self.forward.is_empty(),
+            run_selected: self.run_selected.clone(),
+            run_names: self.run_rows().into_iter().map(|row| row.name).collect(),
+            run_active: self
+                .run_selected
+                .as_deref()
+                .and_then(|name| self.run.index_of(name))
+                .and_then(|at| self.run.at(at))
+                .is_some_and(run_panel::Run::is_running),
+            run_file_applies: self.run_file_template().is_some(),
+            run_tile_visible: self.run.visible,
         }
     }
 
@@ -1203,13 +1262,8 @@ impl QuillApp {
                 }
             },
             Action::ToggleTerminal => {
-                self.terminal.visible = !self.terminal.visible;
-                if self.terminal.visible {
-                    self.open_terminal_tab();
-                    self.focus = Focus::Terminal;
-                } else {
-                    self.focus = Focus::Editor;
-                }
+                let showing = !self.terminal.visible;
+                self.show_the_terminal_tile(showing);
             }
             Action::CloseTab => {
                 let index = self.files.active_index();
@@ -1259,9 +1313,8 @@ impl QuillApp {
             }
             Action::SelectOpenFile => self.select_the_open_file(),
             Action::NewTerminalTab => {
-                self.terminal.visible = true;
+                self.show_the_terminal_tile(true);
                 self.new_terminal_tab();
-                self.focus = Focus::Terminal;
             }
             Action::RenameTerminalTab => {
                 let index = self.terminal.tabs.active_index();
@@ -1278,6 +1331,11 @@ impl QuillApp {
                     None => self.message = Some("There is no terminal tab to rename.".to_owned()),
                 }
             }
+            Action::ToggleRunTile => {
+                let showing = !self.run.visible;
+                self.show_the_run_tile(showing);
+            }
+            Action::Run(what) => self.run_a_configuration(what),
             Action::CloseTerminalTab => {
                 let index = self.terminal.tabs.active_index();
                 self.terminal.tabs.close(index);
@@ -1351,6 +1409,225 @@ impl QuillApp {
         }
     }
 
+    // ------------------------------------------------------------------------ running
+
+    /// Do what the `Run` menu, the run widget, the keyboard or the command line asked for.
+    ///
+    /// Split out of [`Self::run_action`] rather than written into it, for the reason `run_git` is
+    /// split out: seven arms about one subject read better together, and the arm in `run_action`
+    /// stays one line. It is still the one place a run action turns into a change.
+    pub fn run_a_configuration(&mut self, what: RunAction) {
+        match what {
+            RunAction::Start(named) => match self.configuration_named(named.as_deref()) {
+                Some(configuration) => self.start_a_run(configuration),
+                None => self.no_such_configuration(named.as_deref()),
+            },
+            // Rerun and start are the same thing, because starting one that is already running
+            // stops it and starts it again — §5.2. Two entries because two words are what a person
+            // reaches for, one path because they mean the same.
+            RunAction::Rerun(named) => match self.configuration_named(named.as_deref()) {
+                Some(configuration) => self.start_a_run(configuration),
+                None => self.no_such_configuration(named.as_deref()),
+            },
+            RunAction::Stop(named) => {
+                let name = named.or_else(|| self.run_selected.clone());
+                match name.as_deref().and_then(|name| self.run.index_of(name)) {
+                    Some(at) => {
+                        let name = self.run.at(at).map(|run| run.name().to_owned()).unwrap_or_default();
+                        self.run.stop(at);
+                        self.message = Some(format!("Stopping {name}"));
+                    }
+                    None => {
+                        self.message = Some(match name {
+                            Some(name) => format!("{name} is not running."),
+                            None => "Nothing is running.".to_owned(),
+                        })
+                    }
+                }
+            }
+            RunAction::Select(name) => match self.configuration_named(Some(&name)) {
+                Some(_) => {
+                    self.run_selected = Some(name);
+                }
+                None => self.no_such_configuration(Some(&name)),
+            },
+            RunAction::CurrentFile => self.run_the_current_file(),
+            RunAction::Edit => {
+                self.close_every_modal();
+                let chosen = self.run_selected.clone();
+                self.run_dialog.open(chosen);
+            }
+        }
+    }
+
+    /// Say that a configuration of this name is not there, in the words that fit which question was
+    /// asked: naming one that is not there and having chosen nothing at all are two different
+    /// things to be told.
+    fn no_such_configuration(&mut self, named: Option<&str>) {
+        self.message = Some(match named {
+            Some(name) => format!("There is no run configuration called {name}."),
+            None => "No run configuration is chosen. Press the play button to make one.".to_owned(),
+        });
+    }
+
+    /// The configuration of this name, or the one the widget has chosen when no name is given.
+    ///
+    /// A **suggestion** counts: running one is how it becomes a temporary, which is what makes the
+    /// detectors worth having. Everything that runs something comes through here, so the widget,
+    /// the menu and the command line cannot come to different answers about what a name means.
+    pub fn configuration_named(&self, named: Option<&str>) -> Option<Configuration> {
+        let name = match named {
+            Some(name) => name.to_owned(),
+            None => self.run_selected.clone()?,
+        };
+        if let Some((_, configuration)) = self.run_configurations.find(&name) {
+            return Some(configuration.clone());
+        }
+        self.suggestions().into_iter().find(|configuration| configuration.name == name)
+    }
+
+    /// What the built-in detectors offer for this project, given the plugins that are switched on.
+    ///
+    /// Worked out at the moment of use rather than held, which is the rule `Plugins::renders`
+    /// keeps: switching the JavaScript plugin off withdraws the npm suggestions in the same frame.
+    pub fn suggestions(&self) -> Vec<Configuration> {
+        let runners = self.plugins.project_runners();
+        let offered = run_configurations::detect(self.tree.root(), &runners);
+        // A suggestion whose name is already a configuration is not offered twice: once somebody
+        // has kept `cargo run`, the detector has nothing left to say about it.
+        offered
+            .into_iter()
+            .filter(|configuration| self.run_configurations.find(&configuration.name).is_none())
+            .collect()
+    }
+
+    /// Every configuration the widget's flyout and the `Run` menu list, in that order.
+    pub fn run_rows(&self) -> Vec<run_widget::Row> {
+        let mut rows: Vec<run_widget::Row> = self
+            .run_configurations
+            .listed()
+            .into_iter()
+            .map(|(origin, configuration)| run_widget::Row {
+                name: configuration.name.clone(),
+                origin,
+                running: self
+                    .run
+                    .index_of(&configuration.name)
+                    .and_then(|at| self.run.at(at))
+                    .is_some_and(run_panel::Run::is_running),
+            })
+            .collect();
+        rows.extend(self.suggestions().into_iter().map(|configuration| run_widget::Row {
+            name: configuration.name,
+            origin: Origin::Suggested,
+            running: false,
+        }));
+        rows
+    }
+
+    /// Start a configuration, showing the tile and the run it made.
+    ///
+    /// Running a suggestion or a file makes a **temporary**, which is what puts it in the list so
+    /// it can be run again and kept. Running something that is already permanent adds nothing.
+    fn start_a_run(&mut self, configuration: Configuration) {
+        let root = self.tree.root().to_path_buf();
+        let size = self.run_grid_size();
+        let waker = self.waker();
+        let name = configuration.name.clone();
+        // Remembered before it is started, so a program that will not start still leaves the thing
+        // that was tried in the list rather than vanishing with the error message.
+        if self.run_configurations.find(&name).is_none() {
+            self.run_configurations.add_temporary(configuration.clone());
+        }
+        self.run_selected = Some(name.clone());
+        match self.run.start(configuration, &root, size, waker) {
+            Ok(_) => {
+                self.show_the_run_tile(true);
+                self.focus = Focus::Terminal;
+                self.message = Some(format!("Running {name}"));
+            }
+            Err(problem) => self.message = Some(problem),
+        }
+    }
+
+    /// `Run Current File`: the open file's language's own command, with `{file}` replaced.
+    fn run_the_current_file(&mut self) {
+        let Some(template) = self.run_file_template() else {
+            self.message =
+                Some("This file's language has not said how one file of it is run.".to_owned());
+            return;
+        };
+        let Some(path) = self.document().path().map(Path::to_path_buf) else {
+            // A document that has never been saved has no path, so there is nothing to run.
+            self.message = Some("Save the file first, so there is something to run.".to_owned());
+            return;
+        };
+        let root = self.tree.root().to_path_buf();
+        let configuration = run_configurations::for_file(&template, &root, &path);
+        self.start_a_run(configuration);
+    }
+
+    /// The open file's `run.file`, when a plugin that is switched on claims it and the file has
+    /// been saved somewhere.
+    ///
+    /// What decides whether `Run Current File` is on the menu and in the flyout at all — absent,
+    /// not dimmed, which is the rule the three code-navigation entries already follow.
+    pub fn run_file_template(&self) -> Option<String> {
+        let path = self.document().path()?;
+        self.plugins.run_file(path).map(str::to_owned)
+    }
+
+    /// Show the run tile, or put it away.
+    ///
+    /// **The bottom of the window holds one tile**, so showing this one puts the terminal tile
+    /// away — and [`Self::show_the_terminal_tile`] does the same in the other direction. Every path
+    /// that shows either tile goes through one of these two, which is what stops the pair from
+    /// drifting apart: `terminal show` from the command line used to leave both `visible`, and the
+    /// two grids were then drawn into the same rectangle, one over the other.
+    pub fn show_the_run_tile(&mut self, showing: bool) {
+        self.run.visible = showing;
+        if showing {
+            self.terminal.visible = false;
+            self.focus = Focus::Terminal;
+        } else if self.focus == Focus::Terminal {
+            self.focus = Focus::Editor;
+        }
+    }
+
+    /// Show the terminal tile, or put it away, opening a shell if there is not one already.
+    ///
+    /// The other half of [`Self::show_the_run_tile`]; see there for why there is a function at all.
+    pub fn show_the_terminal_tile(&mut self, showing: bool) {
+        self.terminal.visible = showing;
+        if showing {
+            self.run.visible = false;
+            self.open_terminal_tab();
+            self.focus = Focus::Terminal;
+        } else if self.focus == Focus::Terminal {
+            self.focus = Focus::Editor;
+        }
+    }
+
+    /// How large the run tile's grid is at its current height, so a program is told the right size
+    /// from its first line rather than being resized on the frame after it starts.
+    fn run_grid_size(&self) -> quill_terminal::session::Size {
+        let cell = self.renderer.cell_metrics(self.settings.terminal_font_size);
+        let width = self.editor_area.width().max(600.0);
+        run_panel::grid_size(Vec2::new(width, self.panes.run_height), cell)
+    }
+
+    /// Write the project's run configurations down, if this window is the one that may.
+    fn remember_the_run_configurations(&mut self) {
+        if !self.unsaved_run_configurations {
+            return;
+        }
+        self.unsaved_run_configurations = false;
+        if !self.remembers_this_project() {
+            return;
+        }
+        run_configurations::save(self.tree.root(), &self.run_configurations);
+    }
+
     /// Open a terminal tab if there is not one already, which is what showing the tile does.
     fn open_terminal_tab(&mut self) {
         if self.terminal.tabs.is_empty() {
@@ -1378,6 +1655,27 @@ impl QuillApp {
             quill_terminal::session::Size::new(rows, columns).with_cell(cell.width, cell.height);
         self.terminal.visible = true;
         self.terminal.tabs.open_detached(size);
+    }
+
+    /// A run with no program behind it, fed bytes directly.
+    ///
+    /// What the screenshot tests use, exactly as [`Self::new_detached_terminal_tab`] is what the
+    /// terminal's use and for the same reason: when a real program answers is not something a test
+    /// can know, so a picture of a run is taken of an emulator that was handed fixed bytes.
+    ///
+    /// The configuration is kept as a temporary as well, so the widget and the menu list it — which
+    /// is what a real run would have done.
+    pub fn new_detached_run(&mut self, configuration: Configuration, rows: usize, columns: usize) -> usize {
+        let cell = self.renderer.cell_metrics(self.settings.terminal_font_size);
+        let size =
+            quill_terminal::session::Size::new(rows, columns).with_cell(cell.width, cell.height);
+        if self.run_configurations.find(&configuration.name).is_none() {
+            self.run_configurations.add_temporary(configuration.clone());
+        }
+        self.run_selected = Some(configuration.name.clone());
+        self.terminal.visible = false;
+        self.run.visible = true;
+        self.run.start_detached(configuration, size)
     }
 
     /// How many rows the terminal tile holds at its current height.
@@ -2005,16 +2303,43 @@ impl QuillApp {
         );
         if outcome.confirmed {
             self.confirmation = None;
-            match question.answer {
-                Answer::Git(request) => {
-                    if let Some(git) = self.git.as_mut() {
-                        git.send(request);
-                    }
-                }
-                Answer::Delete(path) => self.delete_path(&path),
-            }
+            self.answer_the_question(question.answer);
         } else if outcome.cancelled {
             self.confirmation = None;
+        }
+    }
+
+    /// Do what confirming a question does, and say what was done.
+    ///
+    /// One place rather than two, because the dialog is not the only thing that answers one:
+    /// `quill-cli modal accept` presses the same button, and two arms that agreed today would be
+    /// two arms that did not agree the day a fourth question was added. The sentence it returns is
+    /// what the command line reports; the dialog throws it away, having already put anything worth
+    /// saying in the status bar.
+    pub fn answer_the_question(&mut self, answer: Answer) -> String {
+        match answer {
+            Answer::Git(request) => {
+                let label = request.label();
+                self.send_git(request);
+                label
+            }
+            Answer::Delete(path) => {
+                let name = path.display().to_string();
+                self.delete_path(&path);
+                format!("delete {name}")
+            }
+            Answer::RemoveRun(name) => {
+                if let Some(at) = self.run.index_of(&name) {
+                    self.run.close(at);
+                }
+                self.run_configurations.remove(&name);
+                if self.run_selected.as_deref() == Some(name.as_str()) {
+                    self.run_selected = None;
+                }
+                self.unsaved_run_configurations = true;
+                self.message = Some(format!("Removed {name}"));
+                format!("remove {name}")
+            }
         }
     }
 
@@ -2947,6 +3272,14 @@ impl QuillApp {
         // `.rs` one no longer moves the tabs and the editing area up and down by forty four points.
         let tools_width = text_tools::width(self.document().path());
         let tools_rect = title_bar::tools_rect(title_rect, self.menu_placement, tools_width);
+        // The run widget, between the project's name and the text tools. How much room it wants
+        // depends on the name it is showing and on whether there is a stop square to draw, and the
+        // bar leaves exactly that much clear — without its own height changing by a point, which is
+        // the whole reason the tools were moved into it in the first place.
+        let run_state = self.run_widget_state();
+        let run_width = run_widget::width(&run_state);
+        let run_rect =
+            title_bar::run_rect(title_rect, self.menu_placement, tools_width, run_width);
         let status_rect = Rect::from_min_size(
             Pos2::new(full.left(), full.bottom() - size::STATUS_BAR),
             Vec2::new(full.width(), size::STATUS_BAR),
@@ -2962,19 +3295,23 @@ impl QuillApp {
             Rect::from_min_size(body.min, Vec2::new(size::ACTIVITY_BAR, body.height()));
         let panes = Rect::from_min_max(Pos2::new(rail_rect.right(), body.top()), body.max);
 
-        // The terminal takes the bottom of the panes across their whole width, as it does in IntelliJ,
-        // and the explorer and the editing area share what is left.
-        let terminal_height = if self.terminal.visible {
+        // One tile takes the bottom of the panes across their whole width, as the terminal does in
+        // IntelliJ, and the explorer and the editing area share what is left. **One**: the terminal
+        // tile or the run tile, never both stacked, because two grids stacked take the editing area
+        // below the fold of anything.
+        let tile_height = if self.terminal.visible {
             self.panes
                 .terminal_height
                 .clamp(settings::TERMINAL_MIN, (panes.height() - 120.0).max(settings::TERMINAL_MIN))
+        } else if self.run.visible {
+            self.panes
+                .run_height
+                .clamp(settings::RUN_MIN, (panes.height() - 120.0).max(settings::RUN_MIN))
         } else {
             0.0
         };
-        let upper = Rect::from_min_max(
-            panes.min,
-            Pos2::new(panes.right(), panes.bottom() - terminal_height),
-        );
+        let upper =
+            Rect::from_min_max(panes.min, Pos2::new(panes.right(), panes.bottom() - tile_height));
         let terminal_rect =
             Rect::from_min_max(Pos2::new(panes.left(), upper.bottom()), panes.max);
 
@@ -3001,6 +3338,7 @@ impl QuillApp {
             self.menu_placement,
             &menus,
             tools_width,
+            run_width,
         );
         if outcome.close {
             self.closing = true;
@@ -3049,6 +3387,19 @@ impl QuillApp {
             }
         }
 
+        // The run widget, drawn over the title bar after the bar for the reason the text tools are:
+        // the bar takes drags over the room between the menus and the buttons to move the window,
+        // and a control added earlier would sit underneath that and never be pressed.
+        if run_width > 0.0 {
+            let chosen = {
+                let mut run_ui = ui.new_child(egui::UiBuilder::new().max_rect(run_rect));
+                run_widget::show(&mut run_ui, run_rect, &run_state)
+            };
+            if let Some(chosen) = chosen {
+                action = Some(chosen);
+            }
+        }
+
         // The rail of pane buttons down the far left.
         {
             let state = activity_bar::RailState {
@@ -3056,6 +3407,7 @@ impl QuillApp {
                 git_open: self.git.as_ref().is_some_and(|git| git.panel.open),
                 in_repository: self.git.is_some(),
                 terminal_visible: self.terminal.visible,
+                run_visible: self.run.visible,
             };
             let opacity = self.settings.opacity;
             let chosen = {
@@ -3410,6 +3762,70 @@ impl QuillApp {
                 self.focus = Focus::Editor;
             }
         }
+        // The run tile, in the same place and never at the same time.
+        if self.run.visible {
+            let panel_outcome = {
+                let mut panel_ui = ui.new_child(egui::UiBuilder::new().max_rect(terminal_rect));
+                panel_ui.set_clip_rect(terminal_rect);
+                let font_size = self.settings.terminal_font_size;
+                run_panel::show(
+                    &mut panel_ui,
+                    terminal_rect,
+                    &mut self.run,
+                    &self.renderer,
+                    font_size,
+                    self.settings.opacity,
+                )
+            };
+            if panel_outcome.drag != 0.0 {
+                let limit = (body.height() - 120.0).max(settings::RUN_MIN);
+                self.panes.run_height =
+                    (self.panes.run_height - panel_outcome.drag).clamp(settings::RUN_MIN, limit);
+                self.unsaved_settings = true;
+            }
+            if panel_outcome.reset_height {
+                self.panes.run_height = settings::RUN_HEIGHT;
+                self.unsaved_settings = true;
+            }
+            if panel_outcome.take_focus {
+                self.focus = Focus::Terminal;
+                // Clicking a run's tab is choosing it, so the widget and the tile agree about what
+                // `Run` with no name means.
+                if let Some(run) = self.run.active() {
+                    self.run_selected = Some(run.name().to_owned());
+                }
+            }
+            if let Some(text) = panel_outcome.copy {
+                ui.ctx().copy_text(text);
+            }
+            if panel_outcome.stop {
+                self.message =
+                    self.run.active().map(|run| format!("Stopping {}", run.name()));
+            }
+            if panel_outcome.rerun {
+                let name = self.run.active().map(|run| run.name().to_owned());
+                if let Some(name) = name {
+                    action = Some(Action::Run(RunAction::Rerun(Some(name))));
+                }
+            }
+            if panel_outcome.hide {
+                self.show_the_run_tile(false);
+            }
+        }
+        // What every program has said since the last frame, and the hard kill that follows a polite
+        // stop nobody answered. Outside the `visible` test on purpose: a program that is running
+        // has to be read whether or not anybody is looking at it, or its output would arrive in a
+        // rush the moment the tile came back up.
+        if self.run.settle() {
+            ui.ctx().request_repaint();
+        }
+        if let Some(left) = self.run.stopping_in() {
+            // An idle window draws nothing, and the grace has to actually run out — so the window
+            // is woken once, when it does, rather than kept awake for the whole two seconds.
+            ui.ctx().request_repaint_after(left);
+        }
+        self.run.focused = self.focus == Focus::Terminal && self.run.visible;
+
         // A terminal tab's own menu, drawn after the tile so it sits over it rather than under.
         if let Some((at, _)) = self.terminal_menu {
             let entries = actions::terminal_tab_menu();
@@ -3549,6 +3965,44 @@ impl QuillApp {
             }
         }
 
+        // The `Run Configurations` modal, drawn beside the other project-wide dialogs.
+        {
+            let running: Vec<String> = self
+                .run
+                .runs()
+                .iter()
+                .filter(|run| run.is_running())
+                .map(|run| run.name().to_owned())
+                .collect();
+            let mut dialog = std::mem::take(&mut self.run_dialog);
+            let outcome =
+                run_dialog::show(ui.ctx(), &mut dialog, &mut self.run_configurations, &running);
+            self.run_dialog = dialog;
+            if outcome.changed {
+                self.unsaved_run_configurations = true;
+            }
+            if let Some(name) = outcome.remove {
+                self.run_configurations.remove(&name);
+                if self.run_selected.as_deref() == Some(name.as_str()) {
+                    self.run_selected = None;
+                }
+                self.unsaved_run_configurations = true;
+            }
+            if let Some(name) = outcome.confirm_removal {
+                // The same furniture the git dialogs use, because silently killing a server
+                // somebody is watching is worse than one extra click.
+                self.confirmation = Some(Confirmation {
+                    title: "Remove".to_owned(),
+                    note: format!("{name} is running. Removing it stops the program first."),
+                    button: "REMOVE".to_owned(),
+                    answer: Answer::RemoveRun(name),
+                });
+            }
+            if outcome.closed {
+                self.unsaved_run_configurations = true;
+            }
+        }
+
         // The Settings window, drawn last because it is a modal and sits over everything.
         let before = self.settings.clone();
         let project = self.folder_name().unwrap_or_default();
@@ -3623,6 +4077,38 @@ impl QuillApp {
         // file once at the end rather than on every frame of the drag.
         if self.unsaved_settings && !ui.input(|input| input.pointer.any_down()) {
             self.write_settings();
+        }
+        // And the project's run configurations, on exactly the same terms: typing into a field in
+        // the dialog would otherwise write the file on every keystroke.
+        if settled {
+            self.remember_the_run_configurations();
+        }
+    }
+
+    /// What the run widget in the title bar needs to know to draw itself.
+    ///
+    /// Worked out here rather than in the widget for the reason every component in Quill decides
+    /// nothing: the widget draws what it is handed and reports what was pressed.
+    fn run_widget_state(&self) -> run_widget::WidgetState {
+        let rows = self.run_rows();
+        let running = self
+            .run_selected
+            .as_deref()
+            .and_then(|name| self.run.index_of(name))
+            .and_then(|at| self.run.at(at))
+            .is_some_and(run_panel::Run::is_running);
+        // `Run Current File` names the file it would run, so the row says what pressing it will do.
+        let current_file = self.run_file_template().and_then(|_| {
+            self.document()
+                .path()
+                .and_then(|path| path.file_name())
+                .map(|name| name.to_string_lossy().to_string())
+        });
+        run_widget::WidgetState {
+            selected: self.run_selected.clone(),
+            rows,
+            running,
+            current_file,
         }
     }
 
@@ -4688,8 +5174,14 @@ impl eframe::App for QuillApp {
         QuillApp::ui(self, ui);
     }
 
-    /// Write the settings, the pane sizes and what was open in the project before the window goes.
+    /// Write the settings, the pane sizes and what was open in the project before the window goes,
+    /// and stop everything that is running.
+    ///
+    /// Nothing ever orphans a child on purpose: `Session`'s own drop shuts a pseudoterminal down,
+    /// and this is the same path taken deliberately so it happens while the window is still here to
+    /// wait for it.
     fn on_exit(&mut self) {
+        self.run.kill_everything();
         self.write_settings();
         self.remember_the_project();
     }

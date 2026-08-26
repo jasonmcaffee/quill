@@ -44,7 +44,7 @@ use serde_json::{json, Map, Value};
 
 use quill_cli::protocol::{code, Reply, Request};
 
-use crate::app::actions::{Action, GitAction, HighlightColor};
+use crate::app::actions::{Action, GitAction, HighlightColor, RunAction};
 use crate::app::{QuillApp, ViewMode};
 use quill_core::symbols::Role;
 
@@ -56,6 +56,7 @@ use crate::components::status_bar;
 use crate::components::prompt_dialog::{Prompt, Purpose};
 use crate::services::control::Pending;
 use crate::services::file_kind;
+use crate::services::run_configurations::{Configuration, Origin};
 use crate::settings;
 use crate::theme::size;
 
@@ -95,6 +96,9 @@ pub enum Waiting {
     Screenshot { path: PathBuf, until: Instant, settled: Instant, asked: bool },
     /// Some text on the terminal's screen.
     TerminalText { needle: String, lines: Option<usize>, until: Instant },
+    /// Some text a run has written, which is how an agent waits for a dev server to say it is
+    /// listening before it uses it.
+    RunOutput { name: Option<String>, needle: String, tail: Option<usize>, until: Instant },
     /// A search that is still running.
     ModalResults { limit: usize, until: Instant },
     /// The references search, which runs on the same kind of thread.
@@ -124,6 +128,7 @@ impl Waiting {
         match self {
             Waiting::Screenshot { until, .. }
             | Waiting::TerminalText { until, .. }
+            | Waiting::RunOutput { until, .. }
             | Waiting::ModalResults { until, .. }
             | Waiting::References { until, .. }
             | Waiting::Git { until } => *until,
@@ -253,6 +258,19 @@ impl QuillApp {
                     )
                 })
             }
+            Waiting::RunOutput { name, needle, tail, .. } => {
+                // Pumped first, so a read straight after a start is not looking at a screen the
+                // program has already written past.
+                self.run.settle();
+                let output = self.run_output(name.as_deref(), *tail)?;
+                output.contains(needle.as_str()).then(|| {
+                    Reply::done(
+                        &request.command,
+                        format!("Found {needle} in the run's output"),
+                        json!({ "text": output, "waitedFor": needle, "found": true }),
+                    )
+                })
+            }
             Waiting::ModalResults { limit, .. } => {
                 let find = self.find_in_files.as_ref()?;
                 (!find.is_searching()).then(|| self.modal_results_reply(request, *limit))
@@ -288,6 +306,19 @@ impl QuillApp {
                     error: Some(quill_cli::protocol::Failure {
                         code: code::TIMED_OUT.to_owned(),
                         message: format!("{needle} did not appear on the terminal in time."),
+                    }),
+                };
+            }
+            Waiting::RunOutput { name, needle, tail, .. } => {
+                let output = self.run_output(name.as_deref(), *tail).unwrap_or_default();
+                return Reply {
+                    ok: false,
+                    command: "run.output".to_owned(),
+                    message: format!("{needle} was not written in time."),
+                    result: json!({ "text": output, "waitedFor": needle, "found": false }),
+                    error: Some(quill_cli::protocol::Failure {
+                        code: code::TIMED_OUT.to_owned(),
+                        message: format!("{needle} was not written in time."),
                     }),
                 };
             }
@@ -358,6 +389,7 @@ impl QuillApp {
             "editor" => self.cli_editor(request, verb, ctx),
             "highlight" => self.cli_highlight(request, verb),
             "terminal" => self.cli_terminal(request, verb),
+            "run" => self.cli_run(request, verb),
             "explorer" => self.cli_explorer(request, verb),
             "modal" => self.cli_modal(request, verb, ctx),
             "settings" => self.cli_settings(request, verb),
@@ -1419,6 +1451,15 @@ fn unknown(request: &Request) -> Outcome {
     )
 }
 
+/// What a configuration's origin is called in a reply: `permanent`, `temporary` or `suggested`.
+fn origin_name(origin: Origin) -> &'static str {
+    match origin {
+        Origin::Permanent => "permanent",
+        Origin::Temporary => "temporary",
+        Origin::Suggested => "suggested",
+    }
+}
+
 fn view_mode_name(mode: ViewMode) -> &'static str {
     match mode {
         ViewMode::Raw => "raw",
@@ -2405,17 +2446,16 @@ impl QuillApp {
 
     fn cli_terminal(&mut self, request: &Request, verb: &str) -> Outcome {
         match verb {
+            // Through `show_the_terminal_tile`, which is what the menu entry goes through, so
+            // showing the terminal puts the run tile away here as well: the bottom of the window
+            // holds one tile, and two grids drawn into one rectangle is what leaving this to each
+            // caller produced.
             "show" => {
-                self.terminal.visible = true;
-                if self.terminal.tabs.is_empty() {
-                    self.new_terminal_tab();
-                }
-                self.focus = crate::app::Focus::Terminal;
+                self.show_the_terminal_tile(true);
                 ok(request, "The terminal is showing.", self.terminal_value())
             }
             "hide" => {
-                self.terminal.visible = false;
-                self.focus = crate::app::Focus::Editor;
+                self.show_the_terminal_tile(false);
                 ok(request, "The terminal is hidden.", self.terminal_value())
             }
             "toggle" => {
@@ -2424,9 +2464,8 @@ impl QuillApp {
                 self.cli_terminal(request, verb)
             }
             "new" => {
-                self.terminal.visible = true;
+                self.show_the_terminal_tile(true);
                 self.new_terminal_tab();
-                self.focus = crate::app::Focus::Terminal;
                 ok(
                     request,
                     format!("Started terminal tab {}", self.terminal.tabs.active_index()),
@@ -2589,7 +2628,7 @@ impl QuillApp {
         if let Some(session) = self.terminal.tabs.active() {
             session.send(bytes.clone());
         }
-        self.terminal.visible = true;
+        self.show_the_terminal_tile(true);
         ok(request, said, json!({ "bytes": bytes.len(), "tab": self.terminal.tabs.active_index() }))
     }
 
@@ -2656,6 +2695,261 @@ impl QuillApp {
             "activeTab": self.terminal.tabs.active_index(),
             "count": self.terminal.tabs.count(),
             "focused": self.focus == crate::app::Focus::Terminal,
+        })
+    }
+
+    // ------------------------------------------------------------------- the run configurations
+
+    /// `quill-cli run ...` — the whole of `task-1683` from the command line, which also makes every
+    /// one of these an MCP tool the day it lands, because the tools are generated from the
+    /// catalogue.
+    ///
+    /// `run output` is the one to notice: it reads the run's `Screen` — the same screen the painter
+    /// reads — so an agent can start a dev server, read its port out of the log, exercise it and
+    /// stop it, with nobody watching.
+    fn cli_run(&mut self, request: &Request, verb: &str) -> Outcome {
+        match verb {
+            "list" => self.cli_run_list(request),
+            "add" => self.cli_run_add(request),
+            "remove" => self.cli_run_remove(request),
+            "start" => self.cli_run_do(request, RunAction::Start),
+            "stop" => self.cli_run_do(request, RunAction::Stop),
+            "rerun" => self.cli_run_do(request, RunAction::Rerun),
+            "select" => self.cli_run_select(request),
+            "output" => self.cli_run_output(request),
+            "status" => self.cli_run_status(request),
+            _ => unknown(request),
+        }
+    }
+
+    fn cli_run_list(&mut self, request: &Request) -> Outcome {
+        let rows: Vec<String> = self
+            .run_rows()
+            .iter()
+            .map(|row| {
+                let state = self
+                    .run
+                    .index_of(&row.name)
+                    .and_then(|at| self.run.at(at))
+                    .map(|run| run.state().label())
+                    .unwrap_or_else(|| "not started".to_owned());
+                format!(
+                    "{}{:<28} {:<11} {state}",
+                    if self.run_selected.as_deref() == Some(row.name.as_str()) { "*" } else { " " },
+                    row.name,
+                    origin_name(row.origin)
+                )
+            })
+            .collect();
+        let count = rows.len();
+        lines(request, format!("{count} run configurations"), rows, self.run_value())
+    }
+
+    fn cli_run_add(&mut self, request: &Request) -> Outcome {
+        let Some(name) = request.text("name") else {
+            return no(request, code::USAGE, "Say what to call it.");
+        };
+        let Some(command) = request.text("command") else {
+            return no(request, code::USAGE, "Say what to run.");
+        };
+        if self.run_configurations.find(&name).is_some() {
+            return no(
+                request,
+                code::USAGE,
+                format!("There is already a run configuration called {name}."),
+            );
+        }
+        let configuration = Configuration {
+            name: name.clone(),
+            command: command.clone(),
+            directory: request.text("directory").unwrap_or_default(),
+            env: request.text("env").unwrap_or_default(),
+        };
+        if configuration.program_and_arguments().is_none() {
+            return no(request, code::USAGE, "The command has no program in it.");
+        }
+        self.run_configurations.add_permanent(configuration);
+        self.run_selected = Some(name.clone());
+        self.unsaved_run_configurations = true;
+        ok(request, format!("Added {name}"), self.run_value())
+    }
+
+    fn cli_run_remove(&mut self, request: &Request) -> Outcome {
+        let Some(name) = request.text("name") else {
+            return no(request, code::USAGE, "Say which configuration.");
+        };
+        if self.run_configurations.find(&name).is_none() {
+            return no(request, code::NOT_FOUND, format!("There is no run configuration called {name}."));
+        }
+        // Typing the command is the deliberate act the dialog's question exists to ask for, which is
+        // the rule `explorer delete` already keeps — so the run is stopped and the configuration
+        // goes, with no question.
+        let stopped = self.run.index_of(&name).is_some();
+        self.answer_the_question(crate::app::Answer::RemoveRun(name.clone()));
+        ok(
+            request,
+            match stopped {
+                true => format!("Stopped and removed {name}"),
+                false => format!("Removed {name}"),
+            },
+            self.run_value(),
+        )
+    }
+
+    /// The three that do the same thing to a configuration: start it, stop it, run it again.
+    ///
+    /// One arm rather than three, because all three go through `run_a_configuration`, which is the
+    /// one place a run action turns into a change — so a thing done from a script and the same
+    /// thing done from the widget are the same thing, including what it says about it.
+    fn cli_run_do(
+        &mut self,
+        request: &Request,
+        what: impl FnOnce(Option<String>) -> RunAction,
+    ) -> Outcome {
+        let named = request.text("name");
+        if let Some(name) = &named {
+            if self.configuration_named(Some(name)).is_none() {
+                return no(
+                    request,
+                    code::NOT_FOUND,
+                    format!("There is no run configuration called {name}."),
+                );
+            }
+        } else if self.run_selected.is_none() {
+            return no(
+                request,
+                code::NOT_APPLICABLE,
+                "No run configuration is chosen. `run select <name>` chooses one.",
+            );
+        }
+        self.message = None;
+        self.run_a_configuration(what(named));
+        let said = self.message.clone().unwrap_or_default();
+        ok(request, said, self.run_value())
+    }
+
+    fn cli_run_select(&mut self, request: &Request) -> Outcome {
+        let Some(name) = request.text("name") else {
+            return no(request, code::USAGE, "Say which configuration.");
+        };
+        if self.configuration_named(Some(&name)).is_none() {
+            return no(request, code::NOT_FOUND, format!("There is no run configuration called {name}."));
+        }
+        self.run_a_configuration(RunAction::Select(name.clone()));
+        ok(request, format!("{name} is chosen"), self.run_value())
+    }
+
+    fn cli_run_output(&mut self, request: &Request) -> Outcome {
+        // Take in whatever the programs have written since the last frame, so a read straight after
+        // a start is not looking at the screen as it was before anything ran.
+        self.run.settle();
+        let name = request.text("name");
+        let tail = request.whole("tail");
+        let Some(text) = self.run_output(name.as_deref(), tail) else {
+            return no(
+                request,
+                code::NOT_APPLICABLE,
+                match name {
+                    Some(name) => format!("{name} has not been run."),
+                    None => "Nothing has been run. `run start` starts something.".to_owned(),
+                },
+            );
+        };
+        match request.text("wait-for") {
+            Some(needle) if !text.contains(&needle) => Outcome::Hold(Waiting::RunOutput {
+                name,
+                needle,
+                tail,
+                until: waits_for(request, "timeout", DEFAULT_WAIT),
+            }),
+            Some(needle) => ok(
+                request,
+                String::new(),
+                json!({ "text": text, "waitedFor": needle, "found": true }),
+            ),
+            None => ok(request, String::new(), json!({ "text": text })),
+        }
+    }
+
+    fn cli_run_status(&mut self, request: &Request) -> Outcome {
+        self.run.settle();
+        let name = request.text("name").or_else(|| self.run_selected.clone());
+        let Some(name) = name else {
+            return no(
+                request,
+                code::NOT_APPLICABLE,
+                "No run configuration is chosen. `run select <name>` chooses one.",
+            );
+        };
+        let Some(run) = self.run.index_of(&name).and_then(|at| self.run.at(at)) else {
+            return ok(
+                request,
+                format!("{name} has not been run."),
+                json!({ "name": name, "started": false, "running": false, "state": "not started" }),
+            );
+        };
+        let state = run.state();
+        ok(
+            request,
+            format!("{name} is {}", state.label()),
+            json!({
+                "name": name,
+                "started": true,
+                "running": state.is_running(),
+                "state": state.label(),
+                "exitCode": run.exit_code(),
+            }),
+        )
+    }
+
+    /// What a run has written, with the blank lines under it trimmed away and at most `tail` lines
+    /// kept. `None` when there is no such run.
+    fn run_output(&self, name: Option<&str>, tail: Option<usize>) -> Option<String> {
+        let index = match name {
+            Some(name) => self.run.index_of(name)?,
+            None => self.run.active_index(),
+        };
+        let run = self.run.at(index)?;
+        let whole = run.session.snapshot().text();
+        let mut rows: Vec<&str> = whole.lines().collect();
+        while rows.last().is_some_and(|row| row.trim().is_empty()) {
+            rows.pop();
+        }
+        if let Some(tail) = tail {
+            let from = rows.len().saturating_sub(tail);
+            rows = rows[from..].to_vec();
+        }
+        Some(rows.join("\n"))
+    }
+
+    /// Everything about running, which every one of these commands answers with.
+    fn run_value(&self) -> Value {
+        let configurations: Vec<Value> = self
+            .run_rows()
+            .iter()
+            .map(|row| {
+                let configuration = self.configuration_named(Some(&row.name)).unwrap_or_default();
+                let run = self.run.index_of(&row.name).and_then(|at| self.run.at(at));
+                json!({
+                    "name": row.name,
+                    "command": configuration.command,
+                    "directory": configuration.directory,
+                    "env": configuration.env,
+                    "origin": origin_name(row.origin),
+                    "started": run.is_some(),
+                    "running": row.running,
+                    "state": run.map(|run| run.state().label()),
+                    "exitCode": run.and_then(|run| run.exit_code()),
+                })
+            })
+            .collect();
+        json!({
+            "selected": self.run_selected,
+            "visible": self.run.visible,
+            "height": self.panes.run_height,
+            "configurations": configurations,
+            "runs": self.run.names(),
+            "activeRun": self.run.active().map(|run| run.name().to_owned()),
         })
     }
 
@@ -3461,18 +3755,9 @@ impl QuillApp {
             );
         }
         if let Some(question) = self.confirmation.take() {
-            let label = match question.answer {
-                crate::app::Answer::Git(what) => {
-                    let label = what.label();
-                    self.send_git(what);
-                    label
-                }
-                crate::app::Answer::Delete(path) => {
-                    let name = path.display().to_string();
-                    self.delete_path(&path);
-                    format!("delete {name}")
-                }
-            };
+            // Through the same function the dialog's button goes through, so a question answered
+            // from a script and one answered by hand are the same answer.
+            let label = self.answer_the_question(question.answer);
             return ok(request, format!("Confirmed: {label}"), json!({ "confirmed": label }));
         }
         if self.git.as_ref().is_some_and(|git| git.panel.open) {

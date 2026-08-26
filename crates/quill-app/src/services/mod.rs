@@ -18,6 +18,7 @@ pub mod plugins;
 pub mod preview_images;
 pub mod project_state;
 pub mod recycle;
+pub mod run_configurations;
 pub mod store;
 pub mod symbol_index;
 pub mod text_renderer;

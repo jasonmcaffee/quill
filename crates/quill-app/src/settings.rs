@@ -20,6 +20,14 @@ pub const EXPLORER_MAX: f32 = 620.0;
 pub const TERMINAL_HEIGHT: f32 = 260.0;
 pub const TERMINAL_MIN: f32 = 90.0;
 
+/// The same for the run tile, which is the terminal tile's sibling and sits in the same place.
+///
+/// Its own entry rather than a shared one, because the two hold different things: a terminal is
+/// typed into and a run is read, and somebody who wants a tall log and a short shell should get
+/// both. They start at the same height because they are the same shape.
+pub const RUN_HEIGHT: f32 = TERMINAL_HEIGHT;
+pub const RUN_MIN: f32 = TERMINAL_MIN;
+
 /// How opaque the background is when Quill starts. Not fully opaque, so the transparency is visible
 /// without opening the settings. The design shows 83 per cent.
 pub const DEFAULT_OPACITY: f32 = 0.83;
@@ -322,6 +330,8 @@ pub struct Panes {
     pub explorer_width: f32,
     /// How tall the terminal tile is.
     pub terminal_height: f32,
+    /// How tall the run tile is. Its own measurement — see [`RUN_HEIGHT`].
+    pub run_height: f32,
     /// How much of the editing area the source takes in the side by side view, from 0.15 to 0.85.
     pub preview_fraction: f32,
     /// How much of the `Find in Files` modal the results take, the rest going to the preview of the
@@ -339,6 +349,7 @@ impl Panes {
         Self {
             explorer_width: EXPLORER_WIDTH,
             terminal_height: TERMINAL_HEIGHT,
+            run_height: RUN_HEIGHT,
             preview_fraction: 0.5,
             find_split: crate::components::find_in_files::SPLIT,
             references_split: crate::components::references::SPLIT,
@@ -352,6 +363,9 @@ impl Panes {
         }
         if let Some(height) = values.number("panes.terminal.height") {
             panes.terminal_height = height.max(TERMINAL_MIN);
+        }
+        if let Some(height) = values.number("panes.run.height") {
+            panes.run_height = height.max(RUN_MIN);
         }
         if let Some(fraction) = values.number("panes.preview.fraction") {
             panes.preview_fraction = fraction.clamp(0.15, 0.85);
@@ -374,6 +388,7 @@ impl Panes {
     pub fn write_into(&self, values: &mut Values) {
         values.set("panes.explorer.width", format!("{:.0}", self.explorer_width));
         values.set("panes.terminal.height", format!("{:.0}", self.terminal_height));
+        values.set("panes.run.height", format!("{:.0}", self.run_height));
         values.set("panes.preview.fraction", format!("{:.3}", self.preview_fraction));
         values.set("panes.find.split", format!("{:.3}", self.find_split));
         values.set("panes.references.split", format!("{:.3}", self.references_split));
@@ -525,6 +540,7 @@ mod tests {
         let panes = Panes {
             explorer_width: 320.0,
             terminal_height: 400.0,
+            run_height: 300.0,
             preview_fraction: 0.3,
             find_split: 0.6,
             references_split: 0.4,

@@ -1231,6 +1231,148 @@ Read how tall the terminal tile is, or set it. The same measurement dragging its
 quill-cli terminal height 400
 ```
 
+## run — the named commands the project is started with
+
+A run configuration is a named command line, a folder and some environment variables, kept in the project. Starting one runs the program in a pseudoterminal, so `run output` is what it would have printed to a terminal — which is how to start a dev server, read the port out of its log, use it, and stop it, with nobody watching.
+
+### run list
+
+```
+quill-cli run list
+```
+
+The project's run configurations: the name, the command, the folder and the environment of each, whether it is permanent, temporary or a suggestion, and what its run is doing.
+
+```sh
+quill-cli run list --json
+```
+
+### run add
+
+```
+quill-cli run add <name> <command> [--directory <path>] [--env <pairs>]
+```
+
+Keep a new run configuration in the project. The command is one line: the first word is the program and the rest are its arguments, and no shell runs it, so nothing is expanded and && is an argument.
+
+- `name` — What to call it, which is what the widget and the Run menu show.
+- `command` — The command line. Everything after the name is taken as the command, so it needs no quotes. Everything after it on the line belongs to it.
+
+- `--directory <path>` — The folder it runs in, relative to the project. The project itself when it is left out.
+- `--env <pairs>` — NAME=value pairs separated by semicolons.
+
+```sh
+quill-cli run add "Dev server" node server.js --port 3000
+quill-cli run add build cargo build --release --directory crates/quill-app
+quill-cli run add serve npm run dev --env "PORT=3000; DEBUG=app:*"
+```
+
+### run remove
+
+```
+quill-cli run remove <name>
+```
+
+Take a run configuration away. One whose program is still running is stopped first.
+
+- `name` — The configuration, as `run list` gives it.
+
+```sh
+quill-cli run remove "Dev server"
+```
+
+### run start
+
+```
+quill-cli run start [name]
+```
+
+Run a configuration, showing the run tile. Starting one that is already running stops it and starts it again rather than making a second copy. A detector's suggestion started this way is kept as a temporary configuration.
+
+- `name` (optional) — The configuration. The chosen one when it is left out.
+
+```sh
+quill-cli run start
+quill-cli run start "Dev server"
+```
+
+### run stop
+
+```
+quill-cli run stop [name]
+```
+
+Stop a run: the interrupt a program can catch, and a hard kill two seconds later or on a second stop. The tab stays, holding what the program wrote.
+
+- `name` (optional) — The configuration. The chosen one when it is left out.
+
+```sh
+quill-cli run stop
+quill-cli run stop "Dev server"
+```
+
+### run rerun
+
+```
+quill-cli run rerun [name]
+```
+
+Stop a run and start it again, whatever state it was in.
+
+- `name` (optional) — The configuration. The chosen one when it is left out.
+
+```sh
+quill-cli run rerun
+```
+
+### run select
+
+```
+quill-cli run select <name>
+```
+
+Choose which configuration the widget's play button, the Run menu and `run start` with no name all mean.
+
+- `name` — The configuration.
+
+```sh
+quill-cli run select "Dev server"
+```
+
+### run output
+
+```
+quill-cli run output [name] [--tail <number>] [--wait-for <text>] [--timeout <milliseconds>]
+```
+
+What a run has written, as text. It ran in a pseudoterminal, so this is what it would have printed to a terminal — colours and progress bars included, with the escape sequences already read.
+
+- `name` (optional) — The configuration. The run that is showing when it is left out.
+
+- `--tail <number>` — Only the last so many lines.
+- `--wait-for <text>` — Wait until this text has been written before answering, which is how to wait for a server to say it is listening.
+- `--timeout <milliseconds>` — How long to wait for --wait-for. 10000 by default.
+
+```sh
+quill-cli run output --tail 20
+quill-cli run output "Dev server" --wait-for "Listening on" --timeout 30000
+```
+
+### run status
+
+```
+quill-cli run status [name]
+```
+
+Whether a run is going, and what it ended with: running, finished, stopped, or the exit code it chose.
+
+- `name` (optional) — The configuration. The chosen one when it is left out.
+
+```sh
+quill-cli run status --json
+quill-cli run status "Dev server" --json
+```
+
 ## explorer — the file tree down the left
 
 `explorer files` is the list Quill searches, which leaves out `target`, `node_modules` and `__pycache__`.

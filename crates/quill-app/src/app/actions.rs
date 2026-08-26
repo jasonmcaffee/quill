@@ -87,6 +87,14 @@ pub enum Action {
     ResetFontSize,
     /// Show or hide the terminal along the bottom.
     ToggleTerminal,
+    /// Show or hide the run tile along the bottom.
+    ///
+    /// The bottom of the window shows **one** of the two, so showing this one puts the terminal
+    /// away and the other way round — two grids stacked take the editing area below the fold of
+    /// anything, which is the choice IntelliJ's bottom tool windows make too.
+    ToggleRunTile,
+    /// Anything on the Run menu, or on the run widget in the title bar.
+    Run(RunAction),
     /// Close the file tab that is showing.
     CloseTab,
     /// Show the next file tab in this pane, wrapping round at the end.
@@ -244,6 +252,74 @@ impl Action {
     /// control and S in a search box saves the file, as it does in every other editor.
     pub fn belongs_to_a_focused_text_box(&self) -> bool {
         matches!(self, Action::Undo | Action::Redo | Action::SelectAll)
+    }
+}
+
+/// Everything the Run menu and the run widget can ask for.
+///
+/// A group of its own rather than six more variants of [`Action`], for the reason [`GitAction`] is
+/// one: they all go to one place, and a menu's worth of entries reads better as a list than as six
+/// more lines in an enum shared with `Save`.
+///
+/// The three that take a name take `None` to mean **the configuration the widget has chosen**, so
+/// one entry serves the menu, the widget, the keyboard and the command line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunAction {
+    /// Start a configuration. Starting one that is already running stops it and starts it again —
+    /// a rerun, not a second copy, which is `task-1683` §5.2 and IntelliJ's own default.
+    Start(Option<String>),
+    /// Stop it: politely the first time, and for good the second.
+    Stop(Option<String>),
+    /// Stop it and start it again, whatever state it was in.
+    Rerun(Option<String>),
+    /// Choose a configuration without running it, which is what clicking a row of the widget's
+    /// flyout does.
+    Select(String),
+    /// Run the file that is showing, through its language's `run.file`. **Absent** rather than
+    /// dimmed for a file whose language names no command, which is the rule the three
+    /// code-navigation entries already follow.
+    CurrentFile,
+    /// Open the `Run Configurations` modal.
+    Edit,
+}
+
+impl RunAction {
+    /// The name the command line calls this entry, after the `run-` that [`Action::name`] puts in
+    /// front of it.
+    pub fn name(&self) -> &'static str {
+        match self {
+            RunAction::Start(_) => "start",
+            RunAction::Stop(_) => "stop",
+            RunAction::Rerun(_) => "rerun",
+            RunAction::Select(_) => "select",
+            RunAction::CurrentFile => "current-file",
+            RunAction::Edit => "edit",
+        }
+    }
+
+    /// The entry of this name. `named` is the configuration it is about, and `None` means the one
+    /// the widget has chosen.
+    pub fn from_name(name: &str, named: Option<String>) -> Option<RunAction> {
+        Some(match name {
+            "start" => RunAction::Start(named),
+            "stop" => RunAction::Stop(named),
+            "rerun" => RunAction::Rerun(named),
+            "select" => RunAction::Select(named.unwrap_or_default()),
+            "current-file" => RunAction::CurrentFile,
+            "edit" => RunAction::Edit,
+            _ => return None,
+        })
+    }
+
+    /// The configuration this entry names, if it names one.
+    pub fn configuration(&self) -> Option<&str> {
+        match self {
+            RunAction::Start(named) | RunAction::Stop(named) | RunAction::Rerun(named) => {
+                named.as_deref()
+            }
+            RunAction::Select(named) => Some(named),
+            RunAction::CurrentFile | RunAction::Edit => None,
+        }
     }
 }
 
@@ -560,6 +636,21 @@ pub struct MenuState {
     /// Whether there is anywhere to go back to, and forward to.
     pub can_go_back: bool,
     pub can_go_forward: bool,
+    /// The run configuration the widget has chosen, if one is. What `Run <name>` is named after,
+    /// and what dims the whole top of the Run menu when there is none.
+    pub run_selected: Option<String>,
+    /// Every configuration the project offers, in the order the widget's flyout lists them:
+    /// permanents, then temporaries, then what the detectors suggest.
+    pub run_names: Vec<String>,
+    /// True when the chosen configuration is running, which is what un-dims `Stop`.
+    pub run_active: bool,
+    /// True when the open file's language has said how one file of it is run, which is what puts
+    /// `Run Current File` on the menu. **Absent** rather than dimmed when it is false, like the
+    /// code-navigation entries above: a `.rs` file will never have one, because running one file
+    /// of a Cargo project is not a thing cargo does.
+    pub run_file_applies: bool,
+    /// True when the run tile is the one showing along the bottom.
+    pub run_tile_visible: bool,
 }
 
 /// The whole menu bar: `Quill`, `File`, `Edit` and `View`, in that order.
@@ -568,7 +659,81 @@ pub struct MenuState {
 /// the application menu first whatever it is called. Inside the window it is drawn first for the same
 /// reason, so the bar reads `Quill  File  Edit  View` on both platforms.
 pub fn menus(state: &MenuState) -> Vec<Menu> {
-    vec![quill_menu(), file_menu(state), edit_menu(state), view_menu(state), git_menu(state)]
+    vec![
+        quill_menu(),
+        file_menu(state),
+        edit_menu(state),
+        view_menu(state),
+        run_menu(state),
+        git_menu(state),
+    ]
+}
+
+/// What runs a configuration from the keyboard, per platform.
+///
+/// IntelliJ's own, which is what somebody who has used one will try: `Shift+F10` on Windows and
+/// `Ctrl+R` on macOS. They differ because the platforms do, not because Quill has an opinion.
+pub fn run_shortcut() -> Shortcut {
+    if cfg!(target_os = "macos") {
+        Shortcut::control(egui::Key::R)
+    } else {
+        Shortcut { key: egui::Key::F10, command: false, shift: true, alt: false, ctrl: false }
+    }
+}
+
+/// And what stops one: `Ctrl+F2` on Windows, `Cmd+F2` on macOS. IntelliJ's again.
+pub fn stop_shortcut() -> Shortcut {
+    if cfg!(target_os = "macos") {
+        Shortcut::command(egui::Key::F2)
+    } else {
+        Shortcut::control(egui::Key::F2)
+    }
+}
+
+/// The `Run` menu, between `View` and `Git`, because that is where IntelliJ has one and where
+/// people will look for it.
+///
+/// The name of the chosen configuration is **live in the entry**, exactly as the Git menu's entries
+/// already name the branch, so `Run Dev server` says what pressing it will do rather than leaving
+/// it to be guessed from the widget at the other end of the bar.
+///
+/// Every entry is an [`Action`] dispatched in `QuillApp::run_action`, so the widget, the menu, the
+/// rail and the keyboard cannot come to disagree about what running means.
+pub fn run_menu(state: &MenuState) -> Menu {
+    let chosen = state.run_selected.clone();
+    let has_chosen = chosen.is_some();
+    let named = |verb: &str| match &chosen {
+        Some(name) => format!("{verb} {name}"),
+        None => verb.to_owned(),
+    };
+    let mut entries = vec![
+        Entry::with_shortcut(&named("Run"), Action::Run(RunAction::Start(None)), run_shortcut())
+            .enabled(has_chosen),
+    ];
+    // Absent rather than dimmed for a file whose language names no command: a control that can
+    // never apply to this kind of file is not a control that is unavailable just now.
+    if state.run_file_applies {
+        entries.push(Entry::item("Run Current File", Action::Run(RunAction::CurrentFile)));
+    }
+    entries.push(
+        Entry::with_shortcut(&named("Stop"), Action::Run(RunAction::Stop(None)), stop_shortcut())
+            .enabled(state.run_active),
+    );
+    entries.push(Entry::item("Rerun", Action::Run(RunAction::Rerun(None))).enabled(has_chosen));
+    // The configurations themselves, each as an entry that runs it. Only when there are any: a
+    // separator with nothing under it is a line for no reason.
+    if !state.run_names.is_empty() {
+        entries.push(Entry::Separator);
+        for name in &state.run_names {
+            entries.push(
+                Entry::item(name, Action::Run(RunAction::Start(Some(name.clone()))))
+                    .checked(chosen.as_deref() == Some(name.as_str())),
+            );
+        }
+    }
+    entries.push(Entry::Separator);
+    entries.push(Entry::item("Edit Configurations...", Action::Run(RunAction::Edit)));
+    Menu { name: "Run".to_owned(), entries }
 }
 
 /// The Git menu, which holds what the reference capture in `tasks/quill-ide-tdd.md` holds.
@@ -958,6 +1123,11 @@ fn view_menu(state: &MenuState) -> Menu {
                 Shortcut::control(egui::Key::Backtick),
             )
             .checked(state.terminal_visible),
+            Entry::item(
+                if state.run_tile_visible { "Hide Run Tile" } else { "Run Tile" },
+                Action::ToggleRunTile,
+            )
+            .checked(state.run_tile_visible),
             Entry::item("New Terminal Tab", Action::NewTerminalTab),
             Entry::item("Close Terminal Tab", Action::CloseTerminalTab)
                 .enabled(state.terminal_tabs > 0),
@@ -1212,7 +1382,7 @@ mod tests {
     fn quill_comes_first_and_then_file_edit_view_and_git() {
         let bar = menus(&MenuState::default());
         let order: Vec<&str> = bar.iter().map(|menu| menu.name.as_str()).collect();
-        assert_eq!(order, vec!["Quill", "File", "Edit", "View", "Git"]);
+        assert_eq!(order, vec!["Quill", "File", "Edit", "View", "Run", "Git"]);
     }
 
     #[test]
@@ -1263,6 +1433,101 @@ mod tests {
             matches!(entry, Entry::Item { action: Action::Git(GitAction::ShowDiff(Some(at))), .. } if *at == path)
         });
         assert!(aimed, "Show Diff on a row is about that row's file");
+    }
+
+    #[test]
+    fn the_run_menu_names_the_configuration_that_is_chosen() {
+        // Live in the entry, as the Git menu's entries already name the branch: `Run Dev server`
+        // says what pressing it will do rather than leaving it to be read off the widget at the
+        // other end of the bar.
+        let state = MenuState {
+            run_selected: Some("Dev server".to_owned()),
+            run_names: vec!["Dev server".to_owned(), "cargo run".to_owned()],
+            ..MenuState::default()
+        };
+        let run = names(&run_menu(&state).entries);
+        assert_eq!(run[0], "Run Dev server");
+        assert_eq!(run[1], "Stop Dev server");
+        assert_eq!(run[2], "Rerun");
+        assert!(run.contains(&"cargo run".to_owned()), "and each configuration is an entry: {run:?}");
+        assert_eq!(run.last(), Some(&"Edit Configurations...".to_owned()));
+    }
+
+    #[test]
+    fn with_nothing_chosen_the_run_entries_are_dimmed_rather_than_missing() {
+        // A menu that changes shape depending on what has been chosen is harder to use than one
+        // that does not, which is the rule the Git menu already keeps outside a repository.
+        let menu = run_menu(&MenuState::default());
+        let usable: Vec<String> = menu
+            .entries
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Item { name, enabled: true, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(usable, vec!["Edit Configurations...".to_owned()]);
+        assert_eq!(names(&menu.entries)[0], "Run", "with no name after it, because none is chosen");
+    }
+
+    #[test]
+    fn stop_is_dimmed_until_something_is_running() {
+        let chosen =
+            MenuState { run_selected: Some("Dev server".to_owned()), ..MenuState::default() };
+        let stop = |state: &MenuState| {
+            run_menu(state)
+                .entries
+                .iter()
+                .find_map(|entry| match entry {
+                    Entry::Item { name, enabled, .. } if name.starts_with("Stop") => Some(*enabled),
+                    _ => None,
+                })
+                .expect("a Stop entry")
+        };
+        assert!(!stop(&chosen));
+        assert!(stop(&MenuState { run_active: true, ..chosen }));
+    }
+
+    #[test]
+    fn run_current_file_is_absent_for_a_file_whose_language_names_no_command() {
+        // The rule the three code-navigation entries already follow. A `.rs` file will never have
+        // one, because running one file of a Cargo project is not a thing cargo does.
+        assert!(!names(&run_menu(&MenuState::default()).entries)
+            .contains(&"Run Current File".to_owned()));
+        let state = MenuState { run_file_applies: true, ..MenuState::default() };
+        assert!(names(&run_menu(&state).entries).contains(&"Run Current File".to_owned()));
+    }
+
+    #[test]
+    fn the_run_tile_is_toggled_from_the_view_menu_beside_the_terminal() {
+        let view = names(&find(&menus(&MenuState::default()), "View").entries);
+        let terminal = view.iter().position(|name| name == "Terminal").expect("Terminal");
+        let tile = view.iter().position(|name| name == "Run Tile").expect("Run Tile");
+        assert!(tile > terminal, "beside it, and after it: {view:?}");
+        let showing = MenuState { run_tile_visible: true, ..MenuState::default() };
+        assert!(names(&find(&menus(&showing), "View").entries).contains(&"Hide Run Tile".to_owned()));
+    }
+
+    #[test]
+    fn the_run_and_stop_shortcuts_are_the_ones_the_platform_uses() {
+        // IntelliJ's own, which is what somebody who has used one will try.
+        let state = MenuState { run_selected: Some("Dev server".to_owned()), run_active: true, ..MenuState::default() };
+        let run = if cfg!(target_os = "macos") {
+            action_for_key(&state, egui::Key::R, &pressing_control())
+        } else {
+            action_for_key(
+                &state,
+                egui::Key::F10,
+                &egui::Modifiers { shift: true, ..Default::default() },
+            )
+        };
+        assert_eq!(run, Some(Action::Run(RunAction::Start(None))));
+        let stop = if cfg!(target_os = "macos") {
+            action_for_key(&state, egui::Key::F2, &pressing_command())
+        } else {
+            action_for_key(&state, egui::Key::F2, &pressing_control())
+        };
+        assert_eq!(stop, Some(Action::Run(RunAction::Stop(None))));
     }
 
     #[test]
@@ -1548,6 +1813,12 @@ mod tests {
             has_selection: true,
             recent: vec![PathBuf::from("/tmp/one")],
             terminal_tabs: 1,
+            // The run entries are dimmed with nothing chosen, and a dimmed entry's shortcut is
+            // still a shortcut the bar claims, so this walks them switched on.
+            run_selected: Some("Dev server".to_owned()),
+            run_names: vec!["Dev server".to_owned()],
+            run_active: true,
+            run_file_applies: true,
             ..MenuState::default()
         };
         let mut seen: Vec<(Shortcut, String)> = Vec::new();

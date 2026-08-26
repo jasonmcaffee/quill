@@ -68,6 +68,19 @@ const ICON: &str = "icon.png";
 /// plainly instead of loading as a language whose files quietly never draw.
 pub const RENDERERS: &[&str] = &["mermaid"];
 
+/// The project detectors built into this version of Quill that a plugin's `run.project` may name.
+///
+/// Checked the same way [`RENDERERS`] is, and for the same reason: a manifest asking for a detector
+/// Quill does not have should say so plainly rather than load as a language whose projects are
+/// quietly never noticed. `services::run_configurations::detect` is what each one does.
+///
+/// This is the answer to the question `task-1683` opens with — should running node mean a Node
+/// plugin? No: node is how JavaScript runs, and a plugin with no language, no extensions and no
+/// tokens, existing to carry one line of data, is not a plugin. The JavaScript manifest carries
+/// that line itself, exactly as Mermaid named a built-in renderer rather than widening
+/// `plugin.kind`.
+pub const PROJECT_RUNNERS: &[&str] = &["cargo", "npm"];
+
 /// The kind of plugin. One today, and the field exists so that a second one can be refused rather
 /// than half-loaded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,6 +128,14 @@ pub struct Plugin {
     pub extensions: Vec<String>,
     /// The built-in renderer this language's files are drawn with, if it has one.
     pub renders: Option<String>,
+    /// How one file of this language is run, with `{file}` standing for the path — `node {file}`.
+    ///
+    /// What puts `Run Current File` on the run widget's flyout and the `Run` menu for a file of
+    /// this language, and nothing else. Off unless a manifest asks for it, which is the rule every
+    /// key added since `task-1671` has followed.
+    pub run_file: Option<String>,
+    /// The project detector this language's projects are found by, named from [`PROJECT_RUNNERS`].
+    pub run_project: Option<String>,
     pub grammar: Grammar,
     pub theme: SyntaxTheme,
     /// The bytes of `icon.png`, when it has one.
@@ -220,6 +241,31 @@ impl Plugins {
         self.installed
             .iter()
             .any(|plugin| plugin.enabled && plugin.renders.as_deref() == Some(name))
+    }
+
+    /// How one file of `path`'s language is run, when a plugin that is switched on says.
+    ///
+    /// Asked at the moment of use, exactly as [`Plugins::renders`] is, so switching the JavaScript
+    /// plugin off withdraws `Run Current File` from `.js` files in the same frame rather than at
+    /// the next restart.
+    pub fn run_file(&self, path: &Path) -> Option<&str> {
+        self.for_path(path)?.run_file.as_deref()
+    }
+
+    /// The project detectors the plugins that are switched on have asked for, each named once.
+    ///
+    /// JavaScript and TypeScript both say `npm`, and both being installed is not two projects, so
+    /// the list is deduplicated here rather than in the detector.
+    pub fn project_runners(&self) -> Vec<&str> {
+        let mut runners: Vec<&str> = Vec::new();
+        for plugin in self.installed.iter().filter(|plugin| plugin.enabled) {
+            if let Some(runner) = plugin.run_project.as_deref() {
+                if !runners.contains(&runner) {
+                    runners.push(runner);
+                }
+            }
+        }
+        runners
     }
 
     /// Switch a plugin on or off, and remember it.
@@ -443,6 +489,8 @@ pub fn parse(values: &Values, bundled: bool) -> Result<Plugin, String> {
         kind,
         extensions,
         renders,
+        run_file: run_file(values)?,
+        run_project: run_project(values)?,
         grammar,
         theme: SyntaxTheme {
             name: values.text("theme.name").unwrap_or("Dracula").to_owned(),
@@ -452,6 +500,46 @@ pub fn parse(values: &Values, bundled: bool) -> Result<Plugin, String> {
         bundled,
         enabled: true,
     })
+}
+
+/// `run.file`: the command that runs one file of this language, with `{file}` for the path.
+///
+/// The placeholder is **required**, because a template without it would run the same file whatever
+/// tab was open — a manifest that appears to work and quietly does the wrong thing, which is the
+/// one outcome every other check in this file exists to prevent. Nothing else about it is checked:
+/// it is a command line, and `services::run_configurations::split_command` reads it the way it
+/// reads every other one.
+fn run_file(values: &Values) -> Result<Option<String>, String> {
+    let Some(template) = word(values, "run.file") else {
+        return Ok(None);
+    };
+    if !template.contains(crate::services::run_configurations::FILE_PLACEHOLDER) {
+        return Err(format!(
+            "run.file is `{template}`, which has no {} in it, so it would run the same file whatever was open",
+            crate::services::run_configurations::FILE_PLACEHOLDER
+        ));
+    }
+    Ok(Some(template))
+}
+
+/// `run.project`: the name of a project detector built into Quill.
+///
+/// Checked against [`PROJECT_RUNNERS`] exactly as `language.renders` is checked against
+/// [`RENDERERS`]. **Nothing in a plugin is executed**: the manifest says "a project of this
+/// language announces itself, and this is which detector notices", and the code that reads
+/// `Cargo.toml` and `package.json` shipped with the binary. The most a third-party manifest can do
+/// is suggest text, visibly.
+fn run_project(values: &Values) -> Result<Option<String>, String> {
+    let Some(named) = word(values, "run.project") else {
+        return Ok(None);
+    };
+    if PROJECT_RUNNERS.contains(&named.as_str()) {
+        return Ok(Some(named));
+    }
+    Err(format!(
+        "run.project is `{named}`, and this version of Quill detects {}",
+        PROJECT_RUNNERS.join(", ")
+    ))
 }
 
 /// `language.definers`: a comma list of `keyword=kind` saying which keyword makes the word after
@@ -883,6 +971,82 @@ mod tests {
         let text = "plugin.id = a\nlanguage.extensions = .a\nlanguage.definers = fn=gadget";
         let problem = parse(&Values::parse(text), false).expect_err("there is no gadget kind");
         assert!(problem.contains("gadget") && problem.contains("function"), "{problem}");
+    }
+
+    #[test]
+    fn the_code_plugins_say_how_a_file_and_a_project_of_theirs_is_run() {
+        // `task-1683` §8, and the answer to "should running node mean a Node plugin": no — node is
+        // how JavaScript runs, and the JavaScript manifest says so itself.
+        let (plugins, problems) = Plugins::load(None);
+        assert!(problems.is_empty(), "{problems:?}");
+        let javascript = plugins.get("javascript").expect("javascript");
+        assert_eq!(javascript.run_file.as_deref(), Some("node {file}"));
+        assert_eq!(javascript.run_project.as_deref(), Some("npm"));
+        let typescript = plugins.get("typescript").expect("typescript");
+        assert_eq!(typescript.run_file.as_deref(), Some("npx tsx {file}"));
+        assert_eq!(typescript.run_project.as_deref(), Some("npm"));
+        // Rust names a detector and no file runner: running one file of a Cargo project is not a
+        // thing cargo does, so the entry is absent for a `.rs` file rather than offered and wrong.
+        let rust = plugins.get("rust").expect("rust");
+        assert_eq!(rust.run_file, None);
+        assert_eq!(rust.run_project.as_deref(), Some("cargo"));
+
+        // What that adds up to, asked the way the window asks it.
+        assert_eq!(plugins.run_file(Path::new("server.js")), Some("node {file}"));
+        assert_eq!(plugins.run_file(Path::new("main.rs")), None);
+        assert_eq!(plugins.run_file(Path::new("notes.md")), None, "no plugin claims Markdown");
+        // Named once, because JavaScript and TypeScript both being installed is not two projects.
+        // In the order the plugins are held, which is by name, so it is the same on every run.
+        assert_eq!(plugins.project_runners(), vec!["npm", "cargo"]);
+    }
+
+    #[test]
+    fn switching_a_plugin_off_withdraws_its_running_in_the_same_frame() {
+        // The rule `Plugins::renders` already keeps, which is what makes this a plugin rather than
+        // a feature with a plugin painted on it.
+        let (mut plugins, _) = Plugins::load(None);
+        assert!(plugins.run_file(Path::new("server.js")).is_some());
+        plugins.set_enabled(None, "javascript", false);
+        assert!(plugins.run_file(Path::new("server.js")).is_none());
+        // TypeScript still asks for `npm`, so the suggestions do not withdraw until it goes too.
+        assert!(plugins.project_runners().contains(&"npm"));
+        plugins.set_enabled(None, "typescript", false);
+        assert_eq!(plugins.project_runners(), vec!["cargo"]);
+    }
+
+    #[test]
+    fn the_older_plugins_ask_for_none_of_what_running_added() {
+        // The rule every key since `task-1671` has followed: a language that names neither is a
+        // language nothing about it changed for. CSS and Mermaid are what keep it honest — a
+        // stylesheet is not run and neither is a diagram.
+        let (plugins, _) = Plugins::load(None);
+        for id in ["css", "mermaid"] {
+            let plugin = plugins.get(id).expect(id);
+            assert_eq!(plugin.run_file, None, "{id} runs no file");
+            assert_eq!(plugin.run_project, None, "{id} detects no project");
+        }
+        assert_eq!(plugins.run_file(Path::new("site.css")), None);
+        assert_eq!(plugins.run_file(Path::new("flow.mmd")), None);
+    }
+
+    #[test]
+    fn a_manifest_naming_a_detector_quill_does_not_have_is_refused_with_a_reason() {
+        // The rule `plugin.kind`, `language.renders`, `language.definers` and `language.imports`
+        // already keep.
+        let head = "plugin.id = a\nlanguage.extensions = .a\n";
+        let problem = parse(&Values::parse(&format!("{head}run.project = gradle")), false)
+            .expect_err("gradle is not a detector this version has");
+        assert!(problem.contains("gradle"), "{problem}");
+        assert!(problem.contains("cargo") && problem.contains("npm"), "and it says what there is: {problem}");
+        // And a run.file with no placeholder in it, which would run the same file whatever was open.
+        let problem = parse(&Values::parse(&format!("{head}run.file = node server.js")), false)
+            .expect_err("a template with no placeholder");
+        assert!(problem.contains("{file}"), "{problem}");
+        // The shapes that are right are read.
+        let good = format!("{head}run.file = ruby {{file}}\nrun.project = cargo");
+        let plugin = parse(&Values::parse(&good), false).expect("a language that runs");
+        assert_eq!(plugin.run_file.as_deref(), Some("ruby {file}"));
+        assert_eq!(plugin.run_project.as_deref(), Some("cargo"));
     }
 
     #[test]
