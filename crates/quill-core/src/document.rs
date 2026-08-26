@@ -99,9 +99,18 @@ pub struct Document {
     path: Option<PathBuf>,
     /// True when there are changes that have not been written to disk.
     modified: bool,
-    /// Bumped on every change. The view compares it against the revision it last laid out to know
-    /// whether the layout it holds is stale.
+    /// Bumped on every change of any kind, including one that only moved the caret. Anything asking
+    /// "did anything at all happen" reads this: whether the window needs painting again, whether the
+    /// marked passages need writing out.
     revision: u64,
+    /// Bumped only when the text or its formatting changed, so that what was laid out and what was
+    /// coloured can be told apart from where the caret is.
+    ///
+    /// Moving the caret used to bump `revision`, and both the layout cache and the syntax colouring
+    /// were keyed on `revision` — so every frame of dragging a selection re-tokenised the file and
+    /// laid the whole document out again. See `tasks/task-1666-performance-tdd.md` section 2, and
+    /// the test that says a layout which changed means this moved.
+    text_revision: u64,
 }
 
 impl Default for Document {
@@ -126,6 +135,7 @@ impl Document {
             path: None,
             modified: false,
             revision: 1,
+            text_revision: 1,
         }
     }
 
@@ -203,6 +213,15 @@ impl Document {
         self.revision
     }
 
+    /// The revision of the text and its formatting alone.
+    ///
+    /// Unchanged by moving the caret, by selecting, and by marking a passage with a highlight colour,
+    /// because none of those changes where a single letter sits. Laying out and colouring are keyed
+    /// on this.
+    pub fn text_revision(&self) -> u64 {
+        self.text_revision
+    }
+
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }
@@ -257,7 +276,7 @@ impl Document {
         // Also the formatting for text typed next, so that an empty document and a document with text in
         // it behave the same way.
         change.apply_over_change(&mut self.pending);
-        self.revision += 1;
+        self.text_changed();
     }
 
     /// Colour the document by what its text is: keywords, strings, comments and the rest.
@@ -277,6 +296,10 @@ impl Document {
             return;
         }
         self.chars.set(0..end, &StyleChange::color(base));
+        // Gathered first and applied in one pass. Calling `set` once per token walked the whole span
+        // list once per token, which on a 169 kilobyte source file was 561 ms — long enough that a
+        // keystroke was a visible stall. See `tasks/task-1666-performance-tdd.md` section 3.
+        let mut changes: Vec<(Range<usize>, StyleChange)> = Vec::with_capacity(spans.len());
         for (range, color) in spans {
             // A span from a highlighter that has not caught up with an edit yet would otherwise
             // panic inside the span list, and a colour is never worth a crash.
@@ -286,9 +309,10 @@ impl Document {
             {
                 continue;
             }
-            self.chars.set(start..stop, &StyleChange::color(*color));
+            changes.push((start..stop, StyleChange::color(*color)));
         }
-        self.revision += 1;
+        self.chars.set_many(&changes);
+        self.text_changed();
     }
 
     // --------------------------------------------------------------------- the marked passages
@@ -511,8 +535,17 @@ impl Document {
 
     fn mark_changed(&mut self) {
         self.modified = true;
-        self.revision += 1;
+        self.text_changed();
         self.redo.clear();
+    }
+
+    /// Record that the text, or the formatting over it, is different from what was last laid out.
+    ///
+    /// Every change that moves a letter goes through here, and nothing that only moves the caret
+    /// does. `a_layout_that_changed_means_the_text_revision_moved` is what keeps that true.
+    fn text_changed(&mut self) {
+        self.revision += 1;
+        self.text_revision += 1;
     }
 
     fn push_undo(&mut self, kind: EditKind) {
@@ -561,7 +594,7 @@ impl Document {
         self.redo.push(current);
         self.last_edit = EditKind::Other;
         self.modified = true;
-        self.revision += 1;
+        self.text_changed();
     }
 
     fn redo(&mut self) {
@@ -573,7 +606,7 @@ impl Document {
         self.undo.push(current);
         self.last_edit = EditKind::Other;
         self.modified = true;
-        self.revision += 1;
+        self.text_changed();
     }
 
     fn insert(&mut self, text: &str) {
@@ -906,6 +939,128 @@ mod tests {
             &FixedMetrics::default(),
             width,
         )
+    }
+
+    /// A document with something of everything in it, so that a command applied to it has something
+    /// to do: several paragraphs, a bold word, a coloured word, a marked passage and a selection.
+    fn a_document_with_something_of_everything() -> Document {
+        let mut document = Document::from_text("the first line
+the second line
+
+the fourth line");
+        document.apply(Command::PlaceCaret { offset: 4, extend: false });
+        document.apply(Command::PlaceCaret { offset: 9, extend: true });
+        document.apply(Command::ToggleBold);
+        document.set_syntax(Color::WHITE, &[(0..3, Color::BLUE), (15..18, Color::GREEN)]);
+        document.highlight(20..26, Rgba::new(0xFF, 0xC0, 0x40, 0x60));
+        document.apply(Command::PlaceCaret { offset: 20, extend: false });
+        // Ending in the middle of a line rather than at the end of one, so that a command such as
+        // `MoveLineEnd` has somewhere to go.
+        document.apply(Command::PlaceCaret { offset: 26, extend: true });
+        document
+    }
+
+    /// Every command, in the order they are declared, so that one added later is added here too.
+    fn every_command() -> Vec<Command> {
+        vec![
+            Command::Insert("x".to_owned()),
+            Command::Insert("
+".to_owned()),
+            Command::DeleteBackward,
+            Command::DeleteForward,
+            Command::DeleteWordBackward,
+            Command::MoveLeft { extend: false },
+            Command::MoveLeft { extend: true },
+            Command::MoveRight { extend: false },
+            Command::MoveRight { extend: true },
+            Command::MoveWordLeft { extend: false },
+            Command::MoveWordRight { extend: true },
+            Command::MoveLineStart { extend: false },
+            Command::MoveLineEnd { extend: true },
+            Command::MoveDocumentStart { extend: false },
+            Command::MoveDocumentEnd { extend: true },
+            Command::PlaceCaret { offset: 7, extend: false },
+            Command::PlaceCaret { offset: 12, extend: true },
+            Command::SelectAll,
+            Command::ApplyStyle(StyleChange::size(28.0)),
+            Command::ToggleBold,
+            Command::ToggleItalic,
+            Command::ToggleUnderline,
+            Command::ToggleStrikethrough,
+            Command::SetAlign(Align::Center),
+            Command::SetLineSpacing(2.0),
+            Command::Undo,
+            Command::Redo,
+        ]
+    }
+
+    /// The invariant the whole of `task-1666` rests on: **a layout that changed means the text
+    /// revision moved.**
+    ///
+    /// Laying out and colouring are keyed on `text_revision`, so a command that changes what the
+    /// text looks like without bumping it would leave the old picture on the screen — a fault that
+    /// looks like a drawing bug and lives in the model. This applies every command in turn and fails
+    /// if the layout came out different while the revision stood still, so a command added later
+    /// that forgets is caught the day it is written.
+    #[test]
+    fn a_layout_that_changed_means_the_text_revision_moved() {
+        for command in every_command() {
+            let mut document = a_document_with_something_of_everything();
+            let before_layout = lay_out(&document, 200.0);
+            let before_revision = document.text_revision();
+            document.apply(command.clone());
+            let after_layout = lay_out(&document, 200.0);
+            if after_layout != before_layout {
+                assert_ne!(
+                    document.text_revision(),
+                    before_revision,
+                    "{command:?} changed the layout without bumping the text revision"
+                );
+            }
+        }
+    }
+
+    /// The other half of it: a command that only moved the caret must not bump the text revision, or
+    /// dragging a selection lays the document out again on every frame, which is what made a large
+    /// file crawl.
+    #[test]
+    fn moving_the_caret_is_not_a_change_to_the_text() {
+        let movements = [
+            Command::MoveLeft { extend: false },
+            Command::MoveRight { extend: true },
+            Command::MoveWordRight { extend: false },
+            Command::MoveLineEnd { extend: true },
+            Command::MoveDocumentStart { extend: false },
+            Command::MoveDocumentEnd { extend: true },
+            Command::PlaceCaret { offset: 3, extend: false },
+            Command::PlaceCaret { offset: 11, extend: true },
+            Command::SelectAll,
+        ];
+        for command in movements {
+            let mut document = a_document_with_something_of_everything();
+            let before = document.text_revision();
+            let moved = document.apply(command.clone());
+            assert!(moved, "{command:?} is expected to move the caret in this document");
+            assert_eq!(
+                document.text_revision(),
+                before,
+                "{command:?} moved the caret and nothing else, so nothing needs laying out again"
+            );
+            assert_ne!(document.revision(), before, "the window still has to be painted again");
+        }
+    }
+
+    /// Marking a passage is a colour painted behind the text. It moves no letter, so nothing needs
+    /// laying out again — but the window does have to be painted.
+    #[test]
+    fn marking_a_passage_is_not_a_change_to_the_text() {
+        let mut document = a_document_with_something_of_everything();
+        let before = document.text_revision();
+        assert!(document.highlight(0..5, Rgba::new(0x40, 0xC0, 0xFF, 0x60)));
+        assert_eq!(document.text_revision(), before);
+        assert_ne!(document.revision(), before);
+        assert!(document.clear_highlight(0..5));
+        assert_eq!(document.text_revision(), before);
     }
 
     #[test]

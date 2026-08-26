@@ -83,6 +83,9 @@ path = "examples/mermaid_check.rs"
 name = "mermaid_texts"
 path = "examples/mermaid_texts.rs"
 
+[[example]]
+name = "frame_cost"
+path = "examples/frame_cost.rs"
 
 [dev-dependencies]
 egui_kittest.workspace = true

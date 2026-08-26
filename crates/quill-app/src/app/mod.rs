@@ -35,7 +35,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use egui::{Color32, CornerRadius, Pos2, Rect, Vec2};
-use quill_core::{layout, Command, Document, Highlights, Layout, Rgba};
+use quill_core::{layout, relayout, Command, Document, Highlights, Layout, Rgba};
 
 use crate::components::activity_bar;
 use crate::components::context_menu;
@@ -1340,7 +1340,10 @@ impl QuillApp {
 
     /// Colour one file. One in each pane is asked about every frame, because every pane is drawing.
     fn colour_the_file(&mut self, index: usize) {
-        let revision = self.files.at(index).document.revision();
+        // The text revision. Keyed on the revision, this re-tokenised the whole file and rebuilt
+        // every style span on every frame in which the caret moved, which is every frame of dragging
+        // a selection. See `tasks/task-1666-performance-tdd.md` section 2.
+        let revision = self.files.at(index).document.text_revision();
         if self.files.at(index).coloured_revision == Some(revision) {
             return;
         }
@@ -1372,7 +1375,7 @@ impl QuillApp {
         file.document.set_syntax(base, &spans);
         // `set_syntax` bumps the revision, so what is remembered is the revision *after* it, or the
         // next frame would colour it all over again for ever.
-        file.coloured_revision = Some(file.document.revision());
+        file.coloured_revision = Some(file.document.text_revision());
         file.cached.stale = true;
     }
 
@@ -2021,7 +2024,9 @@ impl QuillApp {
     /// each one asks its paragraph to be at least as tall as it is drawn, and only then is the
     /// preview laid out.
     fn refresh_preview(&mut self, ctx: &egui::Context, width: f32) {
-        let revision = self.document().revision();
+        // The text revision, for the reason `refresh_layout` records: the preview is built from the
+        // source, and moving the caret does not change the source.
+        let revision = self.document().text_revision();
         let cached = &self.files.active().cached;
         if cached.preview.is_some()
             && !cached.stale
@@ -2241,7 +2246,11 @@ impl QuillApp {
     /// What was worked out is kept on the tab rather than on the window, so each pane's file is laid
     /// out at that pane's width and nothing is laid out twice a frame. See `files::Cached`.
     fn refresh_layout(&mut self, width: f32) {
-        let revision = self.document().revision();
+        // The **text** revision, not the revision. Moving the caret bumps the revision, so keying
+        // this on it laid the whole document out again on every frame of dragging a selection — 82 ms
+        // a frame on a file the size of `app/mod.rs`. See `tasks/task-1666-performance-tdd.md`
+        // section 2.
+        let revision = self.document().text_revision();
         let cached = &self.files.active().cached;
         if !cached.stale
             && revision == cached.laid_out_revision
@@ -2249,7 +2258,12 @@ impl QuillApp {
         {
             return;
         }
-        let laid = layout(
+        // What was laid out last time is handed over rather than thrown away: `relayout` keeps every
+        // paragraph whose text and formatting are unchanged, so typing a letter costs the paragraph
+        // it was typed into instead of the file.
+        let previous = std::mem::take(&mut self.files.active_mut().cached.layout);
+        let laid = relayout(
+            previous,
             self.document().text(),
             self.document().chars(),
             self.document().paragraphs(),
@@ -2471,7 +2485,10 @@ impl QuillApp {
                 } else {
                     self.tree.matching(&self.filter).iter().map(|path| path.to_path_buf()).collect()
                 };
-                let decorations: Vec<(PathBuf, explorer::Decoration)> = rows
+                // A map rather than a list. It used to be searched for each row as the row was
+                // drawn, comparing paths, so a project with four hundred rows open did a hundred and
+                // sixty thousand path comparisons every frame.
+                let decorations: std::collections::HashMap<PathBuf, explorer::Decoration> = rows
                     .into_iter()
                     .map(|path| {
                         let icon = self.plugin_icon(ui.ctx(), Some(&path));
@@ -2484,11 +2501,7 @@ impl QuillApp {
                     })
                     .collect();
                 let decorate = move |path: &std::path::Path| -> explorer::Decoration {
-                    decorations
-                        .iter()
-                        .find(|(known, _)| known == path)
-                        .map(|(_, decoration)| decoration.clone())
-                        .unwrap_or_default()
+                    decorations.get(path).cloned().unwrap_or_default()
                 };
                 let mut explorer_ui = ui.new_child(egui::UiBuilder::new().max_rect(explorer_rect));
                 explorer::show(

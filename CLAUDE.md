@@ -142,6 +142,53 @@ images rest on. `sample-diagrams/` holds one file per type, and it is what both 
 and a person read; `cargo run --example mermaid_check` lays every one of them out and says what came
 of it, which is the quickest way to see that a layout change has broken nothing.
 
+## A frame costs what is on the screen, not what is in the file
+
+`task-1666` reported that selecting text, scrolling and dragging the window were jagged on Windows
+with a few tabs open. Measured through the control channel against the real window, one frame of
+dragging a selection through `app/mod.rs` cost **818 ms**. It costs 20.8 ms now, which is one frame
+at sixty a second plus the loopback round trip — the floor.
+
+Four rules came out of it, and a change to the editing area has to keep all four.
+
+**A caret move is not a change to the text.** `Document` counts two revisions.
+`Document::revision()` counts every change of any kind and is what "does the window need painting
+again" reads. `Document::text_revision()` counts only what alters the text or its formatting, and is
+what `refresh_layout`, `refresh_preview` and `colour_the_file` are keyed on. Keyed on the first,
+every frame of a drag re-tokenised the file, rebuilt every style span and laid the whole document out
+again. `a_layout_that_changed_means_the_text_revision_moved` applies every `Command` in turn and
+fails if the layout came out different while `text_revision` stood still, so a command added later
+that forgets is caught the day it is written.
+
+**The painter touches the lines it can see.** `Layout::visible_lines` is a pair of binary searches
+over the clip rectangle, and `paint_text`, `Layout::selection_rects_in` and `Layout::decorations_in`
+all take a line range. egui culls a mesh only against its bounding box, and the bounding box of a
+whole document plainly overlaps the window, so collecting every glyph in the file meant tessellating
+and uploading every glyph in the file, sixty times a second. `paint_text` returns how many glyphs it
+placed, which is what makes that testable with no window at all.
+
+**An edit costs the paragraph it changed.** `quill_core::relayout` takes the previous layout and
+keeps every paragraph whose text, formatting and paragraph style fingerprint the same, laying out
+only the run between the longest matching prefix and the longest matching suffix. **The fingerprint
+is derived from the state rather than reported by the editor**, for the reason
+`follow_the_open_file` records: a list of the places that have to say "I changed this" is a list
+whose next entry will be the one that forgot, and a stale line on the screen is a fault that looks
+like a drawing bug and lives in the model. It is checked against a full layout for every shape of
+edit and has to be **identical**, not close.
+
+**Nothing that runs once a letter may allocate.** `StyleSpans::set_many` applies a tokeniser's whole
+output in one pass rather than one pass per token — 561 ms to 1.4 ms on a coloured 170 kilobyte file.
+`StyleSpans::spans()` gives layout the span list once with absolute positions to binary search,
+instead of `runs_in` walking from byte zero once a paragraph. `PlacedCluster::text` is a
+`ClusterText`, twenty-two bytes inline, rather than a `String`. And `TextRenderer` gives each font
+face a small integer id and remembers the last style it resolved, so measuring and drawing a letter
+no longer build a `String` to look one up.
+
+`crates/quill-app/examples/frame_cost.rs` is how any of this is measured again: it opens a real file
+with the real fonts of the machine, colours it as the window colours it, and prints what each part of
+a frame costs. `tasks/task-1666-performance-tdd.md` has the before and after tables and the two
+designs that were rejected.
+
 ## The Markdown preview draws pictures, and the layout engine knows nothing about pictures
 
 `![alt](picture.png)` on a line of its own draws the picture, in the preview and in the right hand
@@ -497,6 +544,14 @@ Four layers, and a change should leave all four green:
    change and an untracked file — which is enough to exercise every entry on the Git menu by hand. Layer 3 renders through the same code but offscreen, so only a real run shows that the
    operating system honoured the window's transparency or drew the menu bar.
 
+**A performance change is measured, not asserted.**
+`cargo run --release -p quill-app --example frame_cost -- <file> [width]` lays a real file out with
+the real fonts of this machine, colours it as the window colours it, and prints what each part of a
+frame costs. It is not a test and nothing fails it: a threshold in milliseconds would be a different
+number on every machine. What *is* a test is the work itself — how many glyphs the painter placed,
+how many clusters the fonts were asked to measure — because those are the same on every machine.
+`tasks/task-1666-performance-tdd.md` §11 lists the five that fail on the code as it was.
+
 A screenshot test must be the same on every run. The terminal's screenshot tests feed fixed bytes to a
 session with no shell behind it, through `QuillApp::new_detached_terminal_tab`, because when a real shell
 answers is not something a test can know. Tests that do run a shell assert on text and wait with a timeout.
@@ -586,6 +641,9 @@ trade that away to be a shade nearer a screenshot.
 - `tasks/task-1663-highlights-tdd.md` — highlighting a passage: where the ranges live so they move
   with the text, the file beside the project that remembers them, the right click menu and the drawn
   colour wheel, and the bulk commands.
+- `tasks/task-1666-performance-tdd.md` — why a frame cost 818 ms and now costs 20: the eight faults
+  that were found, what each was worth, the two revisions a document counts, the incremental layout
+  and why its fingerprint is derived rather than reported, and what was deliberately not done.
 - `tasks/quill-mermaid-plugin-tdd.md` — Mermaid: the four ways of drawing it that were weighed and why
   Quill writes its own, what each of the twenty types becomes on the screen, which ten are named
   rather than drawn, and what `language.renders` buys.

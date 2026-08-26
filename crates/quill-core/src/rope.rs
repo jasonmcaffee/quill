@@ -585,6 +585,16 @@ impl Rope {
         out
     }
 
+    /// The same, into a buffer the caller already has.
+    ///
+    /// Layout walks every paragraph in turn and needs the text of each, so asking for a fresh
+    /// `String` each time was one allocation per paragraph for no reason. The buffer is cleared
+    /// first, so a caller can hand the same one back for the next paragraph.
+    pub fn slice_into(&self, range: Range<usize>, out: &mut String) {
+        out.clear();
+        self.root.slice_into(range, out);
+    }
+
     pub fn line_to_byte(&self, line: usize) -> usize {
         if line >= self.len_lines() {
             return self.len_bytes();

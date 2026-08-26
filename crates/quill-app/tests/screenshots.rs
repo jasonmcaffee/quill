@@ -3648,6 +3648,142 @@ fn refused(harness: &mut Harness<'static, QuillApp>, line: &str) -> String {
     reply.error.expect("a refusal carries an error").code
 }
 
+/// Press at `from` and move through each of `path` before letting go.
+///
+/// [`drag`] moves once, which is enough for a divider: it starts the drag and ends it in the same
+/// motion. The editing area needs more, because the frame a drag *starts* on is the frame the caret
+/// is placed on, and it takes a second movement before there is anything selected — which is exactly
+/// what a person does with the mouse and is the gesture `task-1666` reported.
+fn drag_through(harness: &mut Harness<'static, QuillApp>, from: egui::Pos2, path: &[egui::Pos2]) {
+    let modifiers = Modifiers::default();
+    harness.input_mut().events.push(egui::Event::PointerMoved(from));
+    harness.run();
+    harness.input_mut().events.push(egui::Event::PointerButton {
+        pos: from,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers,
+    });
+    harness.run();
+    for at in path {
+        harness.input_mut().events.push(egui::Event::PointerMoved(*at));
+        harness.run();
+    }
+    harness.input_mut().events.push(egui::Event::PointerButton {
+        pos: *path.last().unwrap_or(&from),
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers,
+    });
+    harness.run();
+}
+
+/// A folder holding one long source file, for the `task-1666` performance tests.
+///
+/// Written fresh each time under a name of its own, which is what `git_folder` already does and what
+/// keeps two tests from writing over one another.
+fn a_folder_with_a_long_source_file(name: &str) -> std::path::PathBuf {
+    let root = std::env::temp_dir().join("quill-performance").join(name);
+    std::fs::create_dir_all(&root).expect("make the folder");
+    let source: String = (0..600)
+        .map(|i| format!("/// The {i}th one.\nfn line_{i}(value: usize) -> usize {{\n    value + {i}\n}}\n\n"))
+        .collect();
+    std::fs::write(root.join("long.rs"), source).expect("write long.rs");
+    root
+}
+
+/// `task-1666`. **Dragging a selection must lay nothing out again and colour nothing again.**
+///
+/// This is the gesture the ticket reported, and the fault behind it was that moving the caret counted
+/// as a change to the text: `refresh_layout` and `colour_the_file` were both keyed on
+/// `Document::revision()`, which a caret move bumps. So every frame of a drag re-tokenised the file,
+/// rebuilt every style span and laid the whole document out — about 650 ms a frame on a file the size
+/// of `app/mod.rs`.
+#[test]
+fn dragging_a_selection_lays_nothing_out_again_and_colours_nothing_again() {
+    let folder = a_folder_with_a_long_source_file("drag-selection");
+    let mut harness = harness_in(&folder);
+    did(&mut harness, "tab open long.rs --permanent");
+    harness.run();
+    // The file is coloured on the frame after it is opened, so let that happen before anything is
+    // measured; otherwise the first drag frame would be charged with work the opening owed.
+    harness.run();
+
+    let laid_out = harness.state().files.active().cached.laid_out_revision;
+    let coloured = harness.state().files.active().coloured_revision;
+    let text_revision = harness.state().document().text_revision();
+    let revision = harness.state().document().revision();
+    assert!(coloured.is_some(), "a .rs file is coloured by the bundled plugin");
+
+    let area = harness.state().editor_area();
+    drag_through(
+        &mut harness,
+        area.left_top() + vec2(60.0, 30.0),
+        &[
+            area.left_top() + vec2(120.0, 90.0),
+            area.left_top() + vec2(180.0, 170.0),
+            area.left_top() + vec2(220.0, 260.0),
+        ],
+    );
+    harness.run();
+
+    assert!(
+        !harness.state().document().selection().is_empty(),
+        "the drag should have selected some text"
+    );
+    assert_eq!(
+        harness.state().document().text_revision(),
+        text_revision,
+        "dragging a selection changes no text"
+    );
+    assert_eq!(
+        harness.state().files.active().cached.laid_out_revision,
+        laid_out,
+        "so the document was not laid out again"
+    );
+    assert_eq!(
+        harness.state().files.active().coloured_revision,
+        coloured,
+        "and it was not coloured again"
+    );
+    assert_ne!(
+        harness.state().document().revision(),
+        revision,
+        "the window still knows it has something new to paint"
+    );
+}
+
+/// The other half: typing really does change the text, so it is laid out again — but only the
+/// paragraph that changed. Every other line keeps the position it already had.
+#[test]
+fn typing_a_letter_lays_out_the_line_it_was_typed_into_and_leaves_the_rest_alone() {
+    let folder = a_folder_with_a_long_source_file("typing");
+    let mut harness = harness_in(&folder);
+    did(&mut harness, "tab open long.rs --permanent");
+    harness.run();
+    harness.run();
+
+    let before: Vec<f32> =
+        harness.state().layout().lines.iter().map(|line| line.y).collect();
+    let count = before.len();
+    assert!(count > 2000, "the fixture is meant to be long: {count} lines");
+
+    // Into the middle of the file, so there is plenty above it and plenty below it.
+    let middle = harness.state().document().text().len_bytes() / 2;
+    harness.state_mut().command(Command::PlaceCaret { offset: middle, extend: false });
+    harness.run();
+    harness.state_mut().command(Command::Insert("X".to_owned()));
+    harness.run();
+
+    let after: Vec<f32> = harness.state().layout().lines.iter().map(|line| line.y).collect();
+    assert_eq!(after.len(), count, "a letter typed into a line adds no lines");
+    assert_eq!(after, before, "and moves none of them");
+    assert!(
+        harness.state().document().text().to_string().contains("X"),
+        "the letter really was typed"
+    );
+}
+
 #[test]
 fn the_command_line_opens_a_file_into_a_tab() {
     let mut harness = harness_in(&sample_folder());

@@ -239,6 +239,92 @@ impl StyleSpans {
         self.style_at(offset).clone()
     }
 
+    /// Every span, as an absolute byte range paired with its formatting.
+    ///
+    /// A span stores a length rather than a position, which is what makes an insertion grow one span
+    /// instead of shifting every span after it. The cost is that a caller wanting positions has to
+    /// add the lengths up, and doing that inside a loop is how layout came to be O(paragraphs x
+    /// spans) — see `tasks/task-1666-performance-tdd.md` section 4. This is the one pass that turns
+    /// the list into positions, so a caller can walk it once and then binary search.
+    pub fn spans(&self) -> impl Iterator<Item = (Range<usize>, &CharStyle)> + '_ {
+        let mut acc = 0;
+        self.spans.iter().map(move |span| {
+            let start = acc;
+            acc += span.len;
+            (start..acc, &span.style)
+        })
+    }
+
+    /// Apply many changes in one pass over the span list.
+    ///
+    /// `set` is a pass over every span, which is right for one change: a person selecting a word and
+    /// pressing bold. Applying a tokeniser's output one call at a time made colouring a file
+    /// O(tokens x spans), which was measured at 561 ms for a 169 kilobyte source file. This walks the
+    /// spans and the changes together instead, and costs one pass whatever the number of changes.
+    ///
+    /// The ranges must be in increasing order and must not overlap, which is what a tokeniser
+    /// produces. One that is not is **skipped** rather than applied in the wrong place: a colour is
+    /// never worth showing the wrong text.
+    pub fn set_many(&mut self, changes: &[(Range<usize>, StyleChange)]) {
+        let total = self.total_len();
+        let mut ordered: Vec<(Range<usize>, &StyleChange)> = Vec::with_capacity(changes.len());
+        let mut previous_end = 0;
+        for (range, change) in changes {
+            let end = range.end.min(total);
+            if range.start < previous_end || range.start >= end || change.is_empty() {
+                continue;
+            }
+            previous_end = end;
+            ordered.push((range.start..end, change));
+        }
+        if ordered.is_empty() {
+            return;
+        }
+
+        let mut out: Vec<Span> = Vec::with_capacity(self.spans.len() + ordered.len() * 2);
+        let mut next = 0usize;
+        let mut acc = 0usize;
+        for span in &self.spans {
+            let start = acc;
+            let end = acc + span.len;
+            acc = end;
+            if span.len == 0 {
+                // The zero length span an empty document keeps its formatting in.
+                out.push(span.clone());
+                continue;
+            }
+            let mut at = start;
+            while next < ordered.len() && ordered[next].0.end <= at {
+                next += 1;
+            }
+            while at < end {
+                let Some((range, change)) = ordered.get(next) else { break };
+                if range.start >= end {
+                    break;
+                }
+                if range.start > at {
+                    out.push(Span { len: range.start - at, style: span.style.clone() });
+                    at = range.start;
+                }
+                let stop = range.end.min(end);
+                let mut styled = span.style.clone();
+                change.apply_to(&mut styled);
+                out.push(Span { len: stop - at, style: styled });
+                at = stop;
+                // A change reaching past this span carries on into the next one, so it is not
+                // finished with yet.
+                if range.end <= end {
+                    next += 1;
+                }
+            }
+            if at < end {
+                out.push(Span { len: end - at, style: span.style.clone() });
+            }
+        }
+        self.spans = out;
+        self.merge_neighbours();
+    }
+
     /// Walk the runs overlapping `range`, each as a byte range in document coordinates paired with its
     /// formatting. A run is a stretch of text with one style, which is what layout needs: one run is
     /// one font at one size in one colour.
@@ -264,8 +350,23 @@ impl StyleSpans {
     /// True when every byte in `range` already has `predicate` true of its formatting. Used to decide
     /// whether the bold button should turn bold on or off for a mixed selection.
     pub fn all_in(&self, range: Range<usize>, predicate: impl Fn(&CharStyle) -> bool) -> bool {
-        let runs = self.runs_in(range);
-        !runs.is_empty() && runs.iter().all(|(_, style)| predicate(style))
+        // Walked rather than collected. The toolbar asks this four times a frame — bold, italic,
+        // underline and strikethrough — so on a document held in twenty thousand spans, collecting
+        // was four lists of them built and thrown away for every frame drawn.
+        let mut any = false;
+        for (span, style) in self.spans() {
+            if span.start >= range.end {
+                break;
+            }
+            if span.end <= range.start || span.is_empty() {
+                continue;
+            }
+            any = true;
+            if !predicate(style) {
+                return false;
+            }
+        }
+        any
     }
 
     pub fn span_count(&self) -> usize {
@@ -293,17 +394,31 @@ impl StyleSpans {
     ///
     /// Without this the list grows by one span per keystroke and never shrinks.
     fn merge_neighbours(&mut self) {
-        let mut i = 0;
-        while i + 1 < self.spans.len() {
-            if self.spans[i].style == self.spans[i + 1].style {
-                let merged = self.spans.remove(i + 1);
-                self.spans[i].len += merged.len;
-            } else if self.spans[i].len == 0 && self.spans.len() > 1 {
-                self.spans.remove(i);
-            } else {
-                i += 1;
+        // One pass with a write cursor rather than `Vec::remove` in a loop. Removing from the middle
+        // shifts everything after it, so folding a twenty thousand span list was itself quadratic,
+        // which is half of what made colouring a source file slow.
+        let mut write = 0usize;
+        for read in 0..self.spans.len() {
+            if write > 0 && self.spans[write - 1].style == self.spans[read].style {
+                let len = self.spans[read].len;
+                self.spans[write - 1].len += len;
+                continue;
             }
+            if self.spans[read].len == 0 {
+                continue;
+            }
+            if write != read {
+                self.spans.swap(write, read);
+            }
+            write += 1;
         }
+        if write == 0 {
+            // Every span was empty, which is an empty document. The first one is kept rather than a
+            // fresh one made, so that formatting chosen before anything was typed is remembered.
+            self.spans.truncate(1);
+            return;
+        }
+        self.spans.truncate(write);
     }
 }
 
@@ -436,6 +551,70 @@ mod tests {
 
     fn bold_style() -> CharStyle {
         CharStyle { bold: true, ..CharStyle::default() }
+    }
+
+    /// `set_many` has to give exactly the answer a loop of `set` gives, because that loop is what it
+    /// replaced. Colouring a source file is where the difference showed: one call per token walked
+    /// the whole span list per token, which was 561 ms on a 169 kilobyte file.
+    #[test]
+    fn set_many_gives_the_same_answer_as_setting_one_at_a_time() {
+        let cases: Vec<Vec<(Range<usize>, StyleChange)>> = vec![
+            vec![(0..4, StyleChange::bold(true))],
+            vec![(0..4, StyleChange::bold(true)), (4..8, StyleChange::italic(true))],
+            vec![(2..5, StyleChange::color(Color::RED)), (9..14, StyleChange::color(Color::BLUE))],
+            vec![(0..20, StyleChange::size(20.0))],
+            vec![(19..20, StyleChange::underline(true))],
+            (0..10).map(|i| (i * 2..i * 2 + 1, StyleChange::color(Color::GREEN))).collect(),
+        ];
+        for changes in cases {
+            let mut one_at_a_time = StyleSpans::new(20, CharStyle::default());
+            one_at_a_time.set(0..7, &StyleChange::bold(true));
+            let mut all_at_once = one_at_a_time.clone();
+            for (range, change) in &changes {
+                one_at_a_time.set(range.clone(), change);
+            }
+            all_at_once.set_many(&changes);
+            assert_eq!(all_at_once, one_at_a_time, "for {changes:?}");
+        }
+    }
+
+    /// Out of order or overlapping ranges are skipped rather than applied in the wrong place, because
+    /// the alternative is showing the right text in the wrong colour and never finding out.
+    #[test]
+    fn set_many_skips_a_range_that_goes_backwards_or_overlaps_the_one_before_it() {
+        let mut spans = StyleSpans::new(20, CharStyle::default());
+        spans.set_many(&[
+            (4..8, StyleChange::color(Color::RED)),
+            (6..10, StyleChange::color(Color::BLUE)),
+            (2..3, StyleChange::color(Color::GREEN)),
+            (12..14, StyleChange::color(Color::YELLOW)),
+        ]);
+        assert_eq!(spans.style_at(5).color, Color::RED);
+        assert_eq!(spans.style_at(9).color, CharStyle::default().color, "the overlap was skipped");
+        assert_eq!(spans.style_at(2).color, CharStyle::default().color, "going backwards was skipped");
+        assert_eq!(spans.style_at(13).color, Color::YELLOW, "and the list carries on afterwards");
+        assert_eq!(spans.total_len(), 20, "the spans still cover the document exactly");
+    }
+
+    #[test]
+    fn set_many_over_an_empty_document_leaves_the_formatting_it_was_given() {
+        let mut spans = StyleSpans::new(0, bold_style());
+        spans.set_many(&[(0..4, StyleChange::italic(true))]);
+        assert_eq!(spans.span_count(), 1);
+        assert_eq!(spans.total_len(), 0);
+        assert!(spans.style_at(0).bold, "the formatting chosen before anything was typed is kept");
+    }
+
+    /// `spans` is what layout walks once instead of asking `runs_in` per paragraph, so the two have
+    /// to agree.
+    #[test]
+    fn spans_reports_the_same_runs_runs_in_does_for_the_whole_document() {
+        let mut spans = StyleSpans::new(30, CharStyle::default());
+        spans.set(4..9, &StyleChange::bold(true));
+        spans.set(12..20, &StyleChange::color(Color::RED));
+        let walked: Vec<(Range<usize>, &CharStyle)> = spans.spans().collect();
+        assert_eq!(walked, spans.runs_in(0..30));
+        assert_eq!(walked.last().expect("there is always one span").0.end, 30);
     }
 
     #[test]

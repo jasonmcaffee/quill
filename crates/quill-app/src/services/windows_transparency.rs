@@ -55,7 +55,10 @@ pub fn with_direct_composition(mut options: eframe::NativeOptions) -> eframe::Na
 ///
 /// It costs nothing worth saving. The fill was measured at 0.06 ms for a 1100 by 720 window and
 /// 0.04 ms for one filling a 4K screen, because it is a write into a surface the compositor owns
-/// rather than anything the graphics card has to draw.
+/// rather than anything the graphics card has to draw. It was measured again for `task-1666`, over
+/// six hundred frames of a real window at 1100 by 720: **0.036 ms**. That is a five hundredth of a
+/// frame at sixty a second, and it is now one of the larger single pieces of work in an idle frame
+/// — which says how little is left in one, not that this is worth changing.
 pub fn keep_transparent(window: &impl HasWindowHandle) {
     let Some(hwnd) = window_handle(window) else { return };
     let Some((width, height)) = client_size(hwnd) else { return };

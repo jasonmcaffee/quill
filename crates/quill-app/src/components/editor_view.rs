@@ -211,8 +211,9 @@ pub fn paint(
     let PaintStyle { selection: selection_color, caret: caret_color, show_caret } = style;
     let painter = ui.painter();
     let to_screen = |x: f32, y: f32| Pos2::new(text_origin.x + x, text_origin.y + y);
+    let visible = visible_lines(ui, layout, text_origin);
 
-    for rect in layout.selection_rects(document.selection().range()) {
+    for rect in layout.selection_rects_in(visible.clone(), document.selection().range()) {
         painter.rect_filled(
             Rect::from_min_size(to_screen(rect.x, rect.y), Vec2::new(rect.width, rect.height)),
             2.0,
@@ -220,7 +221,7 @@ pub fn paint(
         );
     }
 
-    paint_highlights(ui, document, layout, text_origin);
+    paint_highlights(ui, document, layout, text_origin, visible.clone());
     paint_text(ui, renderer, layout, text_origin);
 
     if show_caret {
@@ -243,17 +244,25 @@ pub fn paint(
 ///
 /// Only what is on the screen is asked for. `Highlights::overlapping` is a binary search and a walk,
 /// so a file with a thousand marks costs a frame the dozen that can be seen.
-fn paint_highlights(ui: &egui::Ui, document: &Document, layout: &Layout, text_origin: Pos2) {
+fn paint_highlights(
+    ui: &egui::Ui,
+    document: &Document,
+    layout: &Layout,
+    text_origin: Pos2,
+    lines: std::ops::Range<usize>,
+) {
     if document.highlights().is_empty() {
         return;
     }
     let painter = ui.painter();
-    let clip = painter.clip_rect();
-    let visible = layout
-        .visible_bytes(clip.top() - text_origin.y, clip.bottom() - text_origin.y);
-    for mark in document.highlights().overlapping(visible) {
+    let bytes = if lines.is_empty() {
+        0..0
+    } else {
+        layout.lines[lines.start].bytes.start..layout.lines[lines.end - 1].bytes.end
+    };
+    for mark in document.highlights().overlapping(bytes) {
         let color = crate::theme::color32(mark.color);
-        for rect in layout.selection_rects(mark.range.clone()) {
+        for rect in layout.selection_rects_in(lines.clone(), mark.range.clone()) {
             painter.rect_filled(
                 Rect::from_min_size(
                     Pos2::new(text_origin.x + rect.x, text_origin.y + rect.y),
@@ -270,9 +279,16 @@ fn paint_highlights(ui: &egui::Ui, document: &Document, layout: &Layout, text_or
 ///
 /// The Markdown preview uses this. It has no document behind it, only a layout, because it is produced from
 /// the source rather than edited.
-pub fn paint_text(ui: &egui::Ui, renderer: &TextRenderer, layout: &Layout, text_origin: Pos2) {
+pub fn paint_text(ui: &egui::Ui, renderer: &TextRenderer, layout: &Layout, text_origin: Pos2) -> usize {
     let painter = ui.painter();
     let to_screen = |x: f32, y: f32| Pos2::new(text_origin.x + x, text_origin.y + y);
+    // Only the lines that fall inside what is being drawn into. The whole document used to be
+    // collected and handed to egui as one mesh, which culls a mesh only against its bounding box —
+    // and the bounding box of a whole document plainly overlaps the window, so every glyph in the
+    // file was tessellated and uploaded to the graphics card on every frame. On a 169 kilobyte
+    // source file that was 7 ms a frame against the 0.07 ms one screenful costs. See
+    // `tasks/task-1666-performance-tdd.md` section 5.
+    let visible = visible_lines(ui, layout, text_origin);
 
     // Every glyph on screen is collected first and the texture is uploaded afterwards. Doing it the
     // other way round draws the frame from a texture that does not yet hold the glyphs rasterised
@@ -285,7 +301,7 @@ pub fn paint_text(ui: &egui::Ui, renderer: &TextRenderer, layout: &Layout, text_
     for _ in 0..3 {
         let generation = renderer.generation();
         placed.clear();
-        for line in &layout.lines {
+        for line in &layout.lines[visible.clone()] {
             let baseline = line.y + line.baseline;
             for run in &line.runs {
                 // Text is always painted fully opaque. The transparency slider fades the background
@@ -313,6 +329,7 @@ pub fn paint_text(ui: &egui::Ui, renderer: &TextRenderer, layout: &Layout, text_
 
     let texture = renderer.texture(ui.ctx());
     let mut mesh = Mesh::with_texture(texture);
+    let count = placed.len();
     for (rect, uv, color) in placed {
         mesh.add_rect_with_uv(rect, uv, color);
     }
@@ -320,13 +337,29 @@ pub fn paint_text(ui: &egui::Ui, renderer: &TextRenderer, layout: &Layout, text_
         painter.add(Shape::mesh(mesh));
     }
 
-    for (rect, color) in layout.decorations(renderer) {
+    for (rect, color) in layout.decorations_in(visible, renderer) {
         painter.rect_filled(
             Rect::from_min_size(to_screen(rect.x, rect.y), Vec2::new(rect.width, rect.height)),
             0.0,
             Color32::from_rgb(color.r, color.g, color.b),
         );
     }
+    count
+}
+
+/// The lines of `layout` that fall inside what `ui` is drawing into.
+///
+/// The clip rectangle is what says where the pane is: every caller sets it before painting, because
+/// text scrolled out of an editing area must not be drawn over the tabs above it. It is therefore
+/// also the honest answer to "what can be seen", and one function so that the selection, the marks,
+/// the glyphs and the rules cannot come to different answers about it.
+pub fn visible_lines(
+    ui: &egui::Ui,
+    layout: &Layout,
+    text_origin: Pos2,
+) -> std::ops::Range<usize> {
+    let clip = ui.painter().clip_rect();
+    layout.visible_lines(clip.top() - text_origin.y, clip.bottom() - text_origin.y)
 }
 
 /// Draw a thin border round the editing area so it is clear where text can be typed.
@@ -344,4 +377,83 @@ pub fn allocate(ui: &mut egui::Ui) -> (Rect, egui::Response) {
 /// A convenience for the toolbar: the change that a size box should send.
 pub fn size_change(size: f32) -> Command {
     Command::ApplyStyle(StyleChange::size(size.clamp(6.0, 144.0)))
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::text_renderer::TextRenderer;
+    use quill_core::{layout, CharStyle, ParagraphStyles, Rope, StyleSpans};
+
+    /// Draw into a context with no window and no graphics card behind it, and give back what the
+    /// painter reported. egui's context is all on the processor: a texture handed to it is a delta to
+    /// be uploaded later, so nothing here needs a device.
+    fn painted(clip: Rect, laid: &Layout, origin: Pos2) -> usize {
+        let renderer = TextRenderer::new();
+        let context = egui::Context::default();
+        let mut placed = 0;
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(clip));
+            inner.set_clip_rect(clip);
+            placed = paint_text(&inner, &renderer, laid, origin);
+        });
+        output.drop_without_applying_deltas();
+        placed
+    }
+
+    fn a_long_document(lines: usize) -> Layout {
+        let text: String = (0..lines).map(|i| format!("line number {i} of the document\n")).collect();
+        let rope = Rope::from_str(&text);
+        let spans = StyleSpans::new(rope.len_bytes(), CharStyle::default());
+        let paragraphs = ParagraphStyles::new(rope.len_lines());
+        layout(&rope, &spans, &paragraphs, &TextRenderer::new(), 900.0)
+    }
+
+    /// **Painting costs a screenful, not a document.**
+    ///
+    /// The painter used to walk every line in the file and hand egui one mesh holding every glyph in
+    /// it. egui culls a mesh only against its bounding box, and the bounding box of a whole document
+    /// plainly overlaps the window, so all of it was tessellated and uploaded to the graphics card
+    /// sixty times a second. Before this was fixed, this test reported every glyph in the file.
+    #[test]
+    fn painting_a_long_document_costs_a_screenful() {
+        let laid = a_long_document(5000);
+        let every = laid.lines.iter().flat_map(|line| line.runs.iter()).map(|run| run.clusters.len()).sum::<usize>();
+        assert!(every > 100_000, "the fixture is meant to be far larger than one screen");
+
+        let window = Rect::from_min_size(Pos2::new(0.0, 0.0), Vec2::new(900.0, 700.0));
+        let placed = painted(window, &laid, Pos2::new(0.0, 0.0));
+        assert!(placed > 0, "the top of the document is on the screen, so something is drawn");
+        assert!(
+            placed < every / 20,
+            "a seven hundred point window holds a small part of a five thousand line file, \
+             so nothing like {every} glyphs should be placed for it: {placed} were"
+        );
+    }
+
+    /// Scrolled a long way down, the same is true and the glyphs drawn are the ones down there.
+    #[test]
+    fn painting_a_document_scrolled_down_costs_the_same_screenful() {
+        let laid = a_long_document(5000);
+        let window = Rect::from_min_size(Pos2::new(0.0, 0.0), Vec2::new(900.0, 700.0));
+        let every = laid.lines.iter().flat_map(|line| line.runs.iter()).map(|run| run.clusters.len()).sum::<usize>();
+        let top = painted(window, &laid, Pos2::new(0.0, 0.0));
+        let scrolled = painted(window, &laid, Pos2::new(0.0, -20_000.0));
+        assert!(scrolled > 0, "there is text at that depth");
+        assert!(scrolled < every / 20, "and it is still one screenful, not {every} glyphs");
+        // Within a line or two of each other, because the same amount of window is being filled.
+        let difference = top.abs_diff(scrolled);
+        assert!(difference < top / 4, "{top} at the top against {scrolled} scrolled down");
+    }
+
+    /// Nothing is drawn when the document is scrolled entirely past the window, which is the case
+    /// that used to cost the most: every glyph collected and every one of them thrown away by the
+    /// scissor rectangle.
+    #[test]
+    fn a_document_scrolled_past_the_window_paints_nothing() {
+        let laid = a_long_document(200);
+        let window = Rect::from_min_size(Pos2::new(0.0, 0.0), Vec2::new(900.0, 700.0));
+        assert_eq!(painted(window, &laid, Pos2::new(0.0, -1_000_000.0)), 0);
+    }
 }

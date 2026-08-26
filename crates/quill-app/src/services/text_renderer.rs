@@ -88,6 +88,16 @@ impl FaceKey {
     fn of(style: &CharStyle) -> Self {
         Self { family: style.family.clone(), bold: style.bold, italic: style.italic }
     }
+
+    /// Whether this is the key a style would build, without building it.
+    ///
+    /// `of` allocates, because the key owns the family name. Measuring a letter and drawing a letter
+    /// each asked for a key, so laying out a file allocated and threw away a `String` per grapheme —
+    /// 167 ns a call, times a hundred and sixteen thousand. The memo in [`TextRenderer`] compares
+    /// with this instead.
+    fn is(&self, style: &CharStyle) -> bool {
+        self.bold == style.bold && self.italic == style.italic && self.family == style.family
+    }
 }
 
 /// The size of one cell of the terminal grid.
@@ -114,12 +124,20 @@ pub struct AtlasGlyph {
 
 /// A glyph at one size, which is what the atlas is keyed by. The size is held in quarter points so that
 /// the key can be hashed and so that nearly equal sizes share an entry.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+///
+/// The face is a small number rather than a family name and two flags, because this key is built and
+/// hashed once for every character on the screen every frame, and hashing a `String` there meant
+/// allocating one first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct GlyphKey {
-    face: FaceKey,
+    face: FaceId,
     character: char,
     quarter_points: u32,
 }
+
+/// Which face, as a number. Handed out in the order the faces are first asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct FaceId(u32);
 
 struct Atlas {
     image: ColorImage,
@@ -194,6 +212,15 @@ pub struct TextRenderer {
     /// Which family a character was found in when the chosen one had no shape for it, so the search runs
     /// once for each character rather than on every measurement.
     fallbacks: RefCell<HashMap<(char, bool, bool), Option<String>>>,
+    /// A number for each face that has been asked for, so that the atlas can be keyed on something
+    /// small. The face itself is `faces`; this is only the naming.
+    ids: RefCell<HashMap<FaceKey, FaceId>>,
+    /// The last face resolved, and the key it answers to.
+    ///
+    /// Layout and painting both walk run by run, and every character of a run has the same style, so
+    /// one entry answers nearly every question. It is compared with [`FaceKey::is`], which looks at
+    /// the family name rather than copying it.
+    memo: RefCell<Option<(FaceKey, FaceId, Option<Arc<FontVec>>)>>,
     atlas: RefCell<Atlas>,
 }
 
@@ -218,6 +245,8 @@ impl TextRenderer {
             families: installed,
             faces: RefCell::new(HashMap::new()),
             fallbacks: RefCell::new(HashMap::new()),
+            ids: RefCell::new(HashMap::new()),
+            memo: RefCell::new(None),
             atlas: RefCell::new(Atlas::new()),
         }
     }
@@ -278,7 +307,28 @@ impl TextRenderer {
     /// The face to use for a style, falling back through the italic and bold variants to the regular
     /// one, and then to any family this system has. A missing font must not stop text appearing.
     fn face_for(&self, style: &CharStyle) -> Option<Arc<FontVec>> {
+        self.resolve(style).1
+    }
+
+    /// The face for a style and the number it answers to, remembering the last one asked for.
+    fn resolve(&self, style: &CharStyle) -> (FaceId, Option<Arc<FontVec>>) {
+        if let Some((key, id, face)) = self.memo.borrow().as_ref() {
+            if key.is(style) {
+                return (*id, face.clone());
+            }
+        }
         let key = FaceKey::of(style);
+        let face = self.search(&key);
+        let next = self.ids.borrow().len() as u32;
+        let id = *self.ids.borrow_mut().entry(key.clone()).or_insert(FaceId(next));
+        *self.memo.borrow_mut() = Some((key, id, face.clone()));
+        (id, face)
+    }
+
+    /// Find the face for a style, falling back as [`Self::face_for`] describes. Called once per style
+    /// rather than once per letter, because [`Self::resolve`] remembers the answer.
+    fn search(&self, key: &FaceKey) -> Option<Arc<FontVec>> {
+        let key = key.clone();
         if let Some(face) = self.face(&key) {
             return Some(face);
         }
@@ -333,7 +383,7 @@ impl TextRenderer {
     /// Find or rasterise one glyph.
     pub fn glyph(&self, character: char, style: &CharStyle) -> Option<AtlasGlyph> {
         let key = GlyphKey {
-            face: FaceKey::of(style),
+            face: self.resolve(style).0,
             character,
             quarter_points: (style.size * 4.0).round() as u32,
         };
@@ -587,6 +637,48 @@ mod tests {
         assert!(renderer.advance("a", &style) > 0.0, "a missing family must not stop layout");
         assert!(renderer.line_metrics(&style).height() > 0.0);
         assert!(renderer.glyph('a', &style).is_some(), "it should fall back to a family we have");
+    }
+
+    /// The renderer remembers the last face it resolved, because layout and painting both walk run by
+    /// run and every character of a run shares a style. A memo that answered with the previous
+    /// style's face would draw a whole run in the wrong font, so this asks the same two styles over
+    /// and over in turn.
+    #[test]
+    fn alternating_between_two_styles_still_gives_each_its_own_glyph() {
+        let renderer = TextRenderer::new();
+        let regular = CharStyle { size: 20.0, ..CharStyle::default() };
+        let bold = CharStyle { size: 20.0, bold: true, ..CharStyle::default() };
+        let large = CharStyle { size: 40.0, ..CharStyle::default() };
+
+        let first_regular = renderer.glyph('R', &regular).expect("a shape for R");
+        let first_bold = renderer.glyph('R', &bold).expect("a shape for R in bold");
+        let first_large = renderer.glyph('R', &large).expect("a shape for R at 40 points");
+        for _ in 0..10 {
+            let again_regular = renderer.glyph('R', &regular).expect("a shape for R");
+            let again_bold = renderer.glyph('R', &bold).expect("a shape for R in bold");
+            let again_large = renderer.glyph('R', &large).expect("a shape for R at 40 points");
+            assert_eq!(again_regular.uv, first_regular.uv, "the same style gives the same glyph");
+            assert_eq!(again_bold.uv, first_bold.uv);
+            assert_eq!(again_large.uv, first_large.uv);
+        }
+        assert_ne!(first_regular.uv, first_bold.uv, "bold is a different entry in the atlas");
+        assert_ne!(first_regular.uv, first_large.uv, "and so is another size");
+        assert!(first_large.size.y > first_regular.size.y, "and it is drawn larger");
+    }
+
+    /// The same for measuring, which is what layout asks once for every grapheme cluster.
+    #[test]
+    fn alternating_between_two_styles_still_measures_each_on_its_own() {
+        let renderer = TextRenderer::new();
+        let small = CharStyle { size: 12.0, ..CharStyle::default() };
+        let large = CharStyle { size: 48.0, ..CharStyle::default() };
+        let small_first = renderer.advance("m", &small);
+        let large_first = renderer.advance("m", &large);
+        assert!(large_first > small_first);
+        for _ in 0..10 {
+            assert_eq!(renderer.advance("m", &small), small_first);
+            assert_eq!(renderer.advance("m", &large), large_first);
+        }
     }
 
     #[test]
