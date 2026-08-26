@@ -5,8 +5,8 @@ with folders that expand in place, a terminal along the bottom with tabs, and it
 through its background while the text stays solid.
 
 It is also, now, an editor you can write code in: line numbers down the left, a tab for each open
-file, a right click menu on the explorer, git in full, and plugins that colour JavaScript, TypeScript
-and Rust.
+file, a right click menu on the explorer, git in full, and plugins that colour CSS, JavaScript,
+TypeScript and Rust.
 
 ## Installing it
 
@@ -178,7 +178,7 @@ A merge or a rebase that stops on a conflict is not hidden: the status bar says 
 files are marked, the Git menu grows `Continue` and `Abort`, and the file opens with its markers in
 it — which is a file holding text, and therefore something Quill already edits.
 
-**Plugins** colour a file by what its text is. Three ship with Quill — JavaScript, TypeScript and
+**Plugins** colour a file by what its text is. Four ship with Quill — CSS, JavaScript, TypeScript and
 Rust — and each gives its files an icon, a set of words to colour, and the Dracula colour scheme. A
 plugin is a folder holding a `plugin.conf` and an icon, in the same `name = value` format the
 settings file uses; **nothing in one is executed**, so installing one is copying a folder.

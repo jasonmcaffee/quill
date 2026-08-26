@@ -384,6 +384,18 @@ nothing at all — and `Ctrl+]` is how a person detaches from `claude`.
 control code to be had from a key whose character depends on the keyboard; a letter is untouched,
 since `Ctrl+Shift+C` is `Ctrl+C` in every terminal there is.
 
+**And what egui calls a copy is not always one.** `task-1671` reported that `Ctrl+C` could not stop a
+command. The encoding was never wrong — `keys::encode` has turned it into `0x03` since the terminal
+was written — but the key press never arrived: `egui-winit` asks whether a press is a clipboard
+command *before* it pushes a key event, and `is_copy_command` is `modifiers.command && key == C`. On
+macOS `command` is the Apple key, so `Ctrl+C` is an ordinary key press and always worked; **on
+Windows `command` is the control key**, so every `Ctrl+C` became an `Event::Copy` with no key event
+and no text event behind it. `terminal_panel::clipboard_key` is where the choice is made now, the way
+every terminal on Windows makes it: something selected and `Ctrl+C` copies it **and lets go of the
+selection** — left behind it would swallow the next press too — nothing selected and it interrupts,
+`Ctrl+Shift+C` always copies, and `Ctrl+X` reaches the program as `0x18`, because nothing in a
+terminal can be cut and that is how a person leaves `nano`.
+
 ## Git runs the `git` program, on a thread
 
 `quill-git` shells out to `git` rather than using a library, and the reason is what the machine's own
@@ -677,9 +689,30 @@ is. What it buys is that switching the plugin off actually withdraws the feature
 `Plugins::renders` before it draws a diagram anywhere, so `.mmd` files stop being drawn and mermaid
 fences go back to being code in the same frame.
 
+**CSS is what made the tokeniser take instructions.** `task-1671` asks for a plugin like the other
+three, and writing the manifest was half an hour's work that would have produced a bad plugin. CSS
+breaks three of the rules in `quill_core::syntax`: **a hyphen is a letter** — nearly every property
+name has one in it, every custom property starts with two, and a pass that split a word there could
+not name a single property; `#ff0000` is a **colour**, and `number` wants a digit first, so half the
+colours in a file were coloured and half were not; and a stylesheet has **three** kinds of word worth
+telling apart — the at-rule, the property and the value — where a grammar had two lists.
+
+So `Grammar` gained three fields, each a manifest key, each **off unless a language asks for it**, so
+no plugin that shipped before changes by a pixel: `language.word_characters` (characters that are
+part of a word wherever they appear, `-` and `@` here), `language.types` (a third list, producing
+`Token::Type`, which until then was reachable only by the capital letter heuristic), and
+`language.hex_colors`. `plugins::tests::the_older_plugins_ask_for_none_of_what_css_added` is what
+keeps them opt-in.
+
+Which word goes in which list is the whole of the plugin's design, and one rule decides the awkward
+cases: **a word that is both a property and a value is coloured whichever way it is written more
+often**. `inset`, `left` and `content` are properties; `flex`, `grid` and `all` are values, because
+`display: flex` and `transition: all` are far commoner than the shorthand properties of the same
+name. `tasks/task-1671-css-plugin-tdd.md` has the table and the rest.
+
 A bundled plugin's icon is generated rather than drawn, and each one records how:
-`plugins/mermaid/icon.md` has the prompt, the endpoint and the two commands, so it can be made again
-without guessing.
+`plugins/mermaid/icon.md` and `plugins/css/icon.md` each have the prompt, the endpoint and the two
+commands, so it can be made again without guessing.
 
 A colour scheme **colours the tokens and not the editing area**. The window letting the desktop show
 through is the whole character of the product, and a scheme that repaints the background opaque would
@@ -712,6 +745,9 @@ trade that away to be a shade nearer a screenshot.
 - `tasks/task-1670-terminal-tdd.md` — the terminal that opened in `C:\Windows` running the wrong
   shell: the verbatim Windows path and where it came from, why `COMSPEC` is not the shell, when Quill
   reopens the last project, and the punctuation keys that reached no program at all.
+- `tasks/task-1671-css-plugin-tdd.md` — the CSS plugin: the four shapes of CSS the tokeniser could
+  not read, the three grammar keys added for them, which CSS word goes in which of the three lists,
+  and why `Ctrl+C` reached no program on Windows.
 - `tasks/task-1666-performance-tdd.md` — why a frame cost 818 ms and now costs 20: the eight faults
   that were found, what each was worth, the two revisions a document counts, the incremental layout
   and why its fingerprint is derived rather than reported, and what was deliberately not done.

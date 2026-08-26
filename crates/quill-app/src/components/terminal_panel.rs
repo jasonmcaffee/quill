@@ -642,29 +642,38 @@ fn handle_input(
     ui.memory_mut(|memory| memory.stop_text_input());
 
     let events = ui.input(|input| input.events.clone());
+    // The modifiers held this frame. `Event::Copy` and `Event::Cut` carry none of their own — egui
+    // consumed the key press that made them — so this is the only way to tell `Ctrl+C` from
+    // `Ctrl+Shift+C`, and the control key from the Apple one.
+    let held = ui.input(|input| input.modifiers);
     let mode = panel.tabs.active().map(|session| session.mode()).unwrap_or_default();
     let mut to_send: Vec<Vec<u8>> = Vec::new();
     let mut copy = None;
-    for event in events {
+    let mut clear_selection = false;
+    for event in &events {
         match event {
-            // A copy while the terminal has the keyboard copies what is selected in it.
             egui::Event::Copy | egui::Event::Cut => {
-                if let Some(session) = panel.tabs.active() {
-                    copy = session.selected_text();
+                let cut = matches!(event, egui::Event::Cut);
+                let selected = panel.tabs.active().and_then(|session| session.selected_text());
+                match clipboard_key(cut, selected, &held, mode) {
+                    Clipboard::Copy(text) => {
+                        copy = Some(text);
+                        clear_selection = true;
+                    }
+                    Clipboard::Send(bytes) => to_send.push(bytes),
+                    Clipboard::Nothing => {}
                 }
             }
             egui::Event::Paste(text) => {
-                to_send.push(keys::paste(&text, mode));
+                to_send.push(keys::paste(text, mode));
             }
-            egui::Event::Text(text) => {
-                // The text egui reports, rather than the letter worked out from the key, so that a keyboard
-                // layout, a dead key and an input method all reach the program as what was typed.
-                if !text.chars().any(char::is_control) {
-                    to_send.push(text.into_bytes());
-                }
+            // The text egui reports, rather than the letter worked out from the key, so that a keyboard
+            // layout, a dead key and an input method all reach the program as what was typed.
+            egui::Event::Text(text) if !text.chars().any(char::is_control) => {
+                to_send.push(text.clone().into_bytes());
             }
             egui::Event::Key { key, pressed: true, modifiers, .. } => {
-                if let Some(press) = key_press(key, &modifiers) {
+                if let Some(press) = key_press(*key, modifiers) {
                     // A key press with no modifier that egui also reported as text is left to the text
                     // event, so a letter is not sent twice.
                     if let Some(bytes) = keys::encode(press, mode) {
@@ -678,14 +687,80 @@ fn handle_input(
     if let Some(text) = copy {
         outcome.copy = Some(text);
     }
-    if !to_send.is_empty() {
+    if clear_selection || !to_send.is_empty() {
         if let Some(session) = panel.tabs.active_mut() {
-            // Typing puts the view back at the newest output, which is what every terminal does.
-            session.scroll_to_bottom();
-            for bytes in to_send {
-                session.send(bytes);
+            // The selection goes as soon as it has been copied. Left behind, it would swallow the
+            // next Ctrl+C as well, and the one after that, so dragging the mouse once would make a
+            // program impossible to stop.
+            if clear_selection {
+                session.clear_selection();
+            }
+            if !to_send.is_empty() {
+                // Typing puts the view back at the newest output, which is what every terminal does.
+                session.scroll_to_bottom();
+                for bytes in to_send {
+                    session.send(bytes);
+                }
             }
         }
+    }
+}
+
+/// What a clipboard key press means to the terminal.
+enum Clipboard {
+    /// Put this on the clipboard, and let go of the selection it came from.
+    Copy(String),
+    /// Give these bytes to the program.
+    Send(Vec<u8>),
+    Nothing,
+}
+
+/// Whether a copy or a cut in the terminal copies text or reaches the program.
+///
+/// `task-1671` reported that `Ctrl+C` could not stop a command. The encoding was never the problem —
+/// `keys::encode` has turned `Ctrl+C` into `0x03` since the terminal was written, and there is a test
+/// of it. **The key press never arrived.** Before `egui-winit` pushes a key event it asks whether the
+/// press is a clipboard command, and `is_copy_command` is `modifiers.command && key == C`. On macOS
+/// `command` is the Apple key, so `Ctrl+C` is an ordinary key press there and always worked. On
+/// Windows `command` *is* the control key, so every `Ctrl+C` became an `Event::Copy` with no key
+/// event and no text event behind it, and the terminal copied the selection instead — which with
+/// nothing selected meant it did nothing at all.
+///
+/// So the choice is made here, the way every terminal on Windows makes it:
+///
+/// - Something is selected, and `Ctrl+C` copies it. The selection is then let go of.
+/// - Nothing is selected, and `Ctrl+C` interrupts the program.
+/// - `Ctrl+Shift+C` copies whatever the state, which is the copy that never interrupts.
+/// - `Ctrl+X` reaches the program as `0x18`, always. There is nothing in a terminal that can be cut,
+///   and `Ctrl+X` is how a person leaves `nano`.
+///
+/// The control key has to be the one held for any of that. On macOS the Apple key is what makes
+/// these events, and `Cmd+C` there means copy and nothing else. `Shift+Delete` and `Ctrl+Insert`
+/// reach the window as the same two events and cannot be told from `Ctrl+X` and `Ctrl+C`, because
+/// egui consumed the key; they take the copying half, which is what they meant on Windows anyway.
+fn clipboard_key(
+    cut: bool,
+    selected: Option<String>,
+    modifiers: &egui::Modifiers,
+    mode: keys::Mode,
+) -> Clipboard {
+    let control = modifiers.ctrl && !modifiers.mac_cmd;
+    let to_the_program = |letter: char| {
+        let press = KeyPress::new(keys::Key::Character(letter), TermModifiers::control());
+        match keys::encode(press, mode) {
+            Some(bytes) => Clipboard::Send(bytes),
+            None => Clipboard::Nothing,
+        }
+    };
+    if control && cut {
+        return to_the_program('x');
+    }
+    if control && !modifiers.shift && selected.is_none() {
+        return to_the_program('c');
+    }
+    match selected {
+        Some(text) => Clipboard::Copy(text),
+        None => Clipboard::Nothing,
     }
 }
 
@@ -899,6 +974,57 @@ mod tests {
         // And a letter is not affected, because shift does not change which letter it is.
         let press = key_press(egui::Key::C, &control_shift).expect("Ctrl+Shift+C is a key press");
         assert_eq!(keys::encode(press, keys::Mode::default()), Some(vec![0x03]));
+    }
+
+    /// What `clipboard_key` decided, as something a test can compare.
+    fn decision(cut: bool, selected: Option<&str>, modifiers: egui::Modifiers) -> String {
+        match clipboard_key(cut, selected.map(str::to_owned), &modifiers, keys::Mode::default()) {
+            Clipboard::Copy(text) => format!("copy {text}"),
+            Clipboard::Send(bytes) => format!("send {bytes:02x?}"),
+            Clipboard::Nothing => "nothing".to_owned(),
+        }
+    }
+
+    #[test]
+    fn control_and_c_interrupts_the_program_when_nothing_is_selected() {
+        // `task-1671`. This is the whole ticket: on Windows egui turns Ctrl+C into a copy event and
+        // throws the key press away, so the terminal had no way to stop a command or leave `claude`.
+        let control = egui::Modifiers { ctrl: true, command: true, ..Default::default() };
+        assert_eq!(decision(false, None, control), "send [03]");
+    }
+
+    #[test]
+    fn control_and_c_copies_when_something_is_selected_and_then_lets_go_of_it() {
+        let control = egui::Modifiers { ctrl: true, command: true, ..Default::default() };
+        assert_eq!(decision(false, Some("the output"), control), "copy the output");
+        // Letting go is what the caller does with `Clipboard::Copy`, and it is what makes the second
+        // press an interrupt rather than a second copy of the same thing.
+        assert_eq!(decision(false, None, control), "send [03]");
+    }
+
+    #[test]
+    fn control_and_shift_and_c_is_the_copy_that_never_interrupts() {
+        let both = egui::Modifiers { ctrl: true, command: true, shift: true, ..Default::default() };
+        assert_eq!(decision(false, Some("the output"), both), "copy the output");
+        assert_eq!(decision(false, None, both), "nothing", "and it certainly does not interrupt");
+    }
+
+    #[test]
+    fn control_and_x_reaches_the_program_whatever_is_selected() {
+        // There is nothing in a terminal that can be cut, and Ctrl+X is how a person leaves `nano`.
+        let control = egui::Modifiers { ctrl: true, command: true, ..Default::default() };
+        assert_eq!(decision(true, None, control), "send [18]");
+        assert_eq!(decision(true, Some("the output"), control), "send [18]");
+    }
+
+    #[test]
+    fn the_apple_key_copies_and_never_interrupts() {
+        // On macOS these events are made by Cmd+C and Cmd+X, and Ctrl+C arrives as an ordinary key
+        // press instead — which is why the fault was Windows only.
+        let apple = egui::Modifiers { command: true, mac_cmd: true, ..Default::default() };
+        assert_eq!(decision(false, Some("the output"), apple), "copy the output");
+        assert_eq!(decision(false, None, apple), "nothing");
+        assert_eq!(decision(true, Some("the output"), apple), "copy the output");
     }
 
     #[test]

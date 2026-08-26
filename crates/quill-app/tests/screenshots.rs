@@ -2825,13 +2825,68 @@ fn a_typescript_file_is_coloured_by_its_plugin() {
 }
 
 #[test]
-fn the_plugins_page_lists_the_three_that_ship_with_quill() {
+fn a_css_file_is_coloured_by_its_plugin() {
+    // `task-1671`. Not a repository, for the reason the TypeScript one above gives: a window in one
+    // has a git message in its status bar for the first few frames.
+    let folder = std::env::temp_dir().join("quill-screenshot-css");
+    std::fs::create_dir_all(&folder).expect("make the folder");
+    let path = folder.join("site.css");
+    std::fs::write(
+        &path,
+        "/* the card */\n@media screen and (min-width: 40rem) {\n  .card:hover {\n    background-color: #ff79c6;\n    display: flex;\n    font-family: \"Iosevka\", monospace;\n    width: calc(100% - 2rem);\n    --brand-hue: 280;\n  }\n}\n",
+    )
+    .expect("write site.css");
+    let mut harness = harness_in(&folder);
+    harness.state_mut().open_path_permanently(&path);
+    harness.run();
+    harness.run();
+    // Read out of the document's own spans, so the five things the plugin had to be taught are
+    // checked as colours rather than only looked at.
+    let text = harness.state().document().text().to_string();
+    let chars = harness.state().document().chars();
+    let inside = |needle: &str| text.find(needle).unwrap_or_else(|| panic!("no {needle}")) + 1;
+    assert_eq!(
+        chars.style_at(inside("@media")).color,
+        Color::rgb(0xFF, 0x79, 0xC6),
+        "an at-rule is a keyword, in Dracula's pink, and the at sign is part of the word"
+    );
+    assert_eq!(
+        chars.style_at(inside("background-color")).color,
+        Color::rgb(0xBD, 0x93, 0xF9),
+        "a property is a builtin, in Dracula's purple, hyphen and all"
+    );
+    assert_eq!(
+        chars.style_at(inside("flex;")).color,
+        Color::rgb(0x8B, 0xE9, 0xFD),
+        "a value keyword is a type, in Dracula's cyan"
+    );
+    assert_eq!(
+        chars.style_at(inside("#ff79c6")).color,
+        Color::rgb(0xFF, 0xB8, 0x6C),
+        "a hex colour is a number, in Dracula's orange"
+    );
+    assert_eq!(
+        chars.style_at(inside("calc(")).color,
+        Color::rgb(0x50, 0xFA, 0x7B),
+        "a word before a bracket is a function, in Dracula's green"
+    );
+    assert_eq!(
+        chars.style_at(inside("/* the card */")).color,
+        Color::rgb(0x62, 0x72, 0xA4),
+        "the comment, in Dracula's blue-grey"
+    );
+    assert!(!harness.state().document().is_modified(), "colouring must not mark the file changed");
+    harness.snapshot(shot("syntax_css"));
+}
+
+#[test]
+fn the_plugins_page_lists_the_ones_that_ship_with_quill() {
     let mut harness = harness("");
     harness.state_mut().settings_window.open();
     harness.state_mut().settings_window.page = quill_app::settings::Page::Plugins;
     harness.run();
     harness.run();
-    for name in ["JavaScript", "TypeScript", "Rust"] {
+    for name in ["CSS", "JavaScript", "TypeScript", "Rust"] {
         harness.get_by_label(name);
     }
     harness.get_by_label("Marketplace");

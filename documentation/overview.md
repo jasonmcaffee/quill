@@ -297,8 +297,9 @@ to a *project* rather than to a person is not kept there; it is in the project's
 `Plugins` is the marketplace and what is installed. A plugin is a folder holding a `plugin.conf` and
 an icon, in the same `name = value` format the settings file uses, and it describes a language: its
 extensions, its keywords, what a comment and a string look like, and a colour per kind of token.
-**Nothing in one is executed**, so installing one is copying a folder. Three ship with Quill —
-JavaScript, TypeScript and Rust — and each page says plainly what its colouring does not handle.
+**Nothing in one is executed**, so installing one is copying a folder. Four ship with Quill —
+CSS, JavaScript, TypeScript and Rust — and each page says plainly what its colouring does not
+handle.
 
 ![The settings window on the Plugins page](images/09-settings-plugins.jpg)
 

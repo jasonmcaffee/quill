@@ -316,6 +316,7 @@ pub fn parse(values: &Values, bundled: bool) -> Result<Plugin, String> {
         language: name.clone(),
         keywords: list(values, "language.keywords"),
         builtins: list(values, "language.builtins"),
+        types: list(values, "language.types"),
         line_comment: values.text("language.line_comment").map(str::to_owned),
         block_comment: pair(values, "language.block_comment"),
         strings: values
@@ -327,6 +328,15 @@ pub fn parse(values: &Values, bundled: bool) -> Result<Plugin, String> {
         escapes: values.flag("language.escapes").unwrap_or(true),
         operators: values.text("language.operators").unwrap_or_default().chars().collect(),
         numbers: values.flag("language.numbers").unwrap_or(true),
+        // Comma separated single characters, the way `language.strings` names its quotes. Empty for
+        // every language but CSS, where a hyphen is a letter.
+        word_characters: values
+            .text("language.word_characters")
+            .unwrap_or_default()
+            .split(',')
+            .filter_map(|character| character.trim().chars().next())
+            .collect(),
+        hex_colors: values.flag("language.hex_colors").unwrap_or(false),
     };
     let colours: Vec<(Token, Color)> = Token::ALL
         .into_iter()
@@ -408,6 +418,11 @@ pub mod bundled {
             "rust",
             include_str!("../../plugins/rust/plugin.conf"),
             Some(include_bytes!("../../plugins/rust/icon.png")),
+        ),
+        (
+            "css",
+            include_str!("../../plugins/css/plugin.conf"),
+            Some(include_bytes!("../../plugins/css/icon.png")),
         ),
         (
             "mermaid",
@@ -500,7 +515,7 @@ mod tests {
         assert!(problems.is_empty(), "a bundled plugin should always parse: {problems:?}");
         let ids: Vec<&str> = plugins.all().iter().map(|plugin| plugin.id.as_str()).collect();
         assert!(ids.contains(&"javascript") && ids.contains(&"typescript") && ids.contains(&"rust"));
-        assert!(ids.contains(&"mermaid"));
+        assert!(ids.contains(&"mermaid") && ids.contains(&"css"));
         assert_eq!(plugins.for_path(Path::new("a.rs")).map(|p| p.id.as_str()), Some("rust"));
         assert_eq!(plugins.for_path(Path::new("a.ts")).map(|p| p.id.as_str()), Some("typescript"));
         assert_eq!(plugins.for_path(Path::new("a.js")).map(|p| p.id.as_str()), Some("javascript"));
@@ -510,6 +525,48 @@ mod tests {
             assert!(plugin.icon.is_some(), "{} has no icon", plugin.id);
             assert!(!plugin.theme.is_empty(), "{} has no colour scheme", plugin.id);
             assert!(!plugin.description.is_empty(), "{} says nothing about itself", plugin.id);
+        }
+    }
+
+    #[test]
+    fn the_css_plugin_reads_the_three_things_a_stylesheet_needs() {
+        // `task-1671`. Each of the three is off unless a manifest asks for it, so this is also what
+        // proves they reach the grammar at all rather than being read and dropped.
+        let (plugins, problems) = Plugins::load(None);
+        assert!(problems.is_empty(), "{problems:?}");
+        let css = plugins.get("css").expect("the css plugin");
+        assert!(css.claims(Path::new("site.css")));
+        assert!(css.claims(Path::new("SITE.CSS")));
+        assert!(!css.claims(Path::new("site.scss")), "Sass is a different language, deliberately");
+        assert_eq!(css.grammar.word_characters, vec!['-', '@'], "a hyphen is a letter in CSS");
+        assert!(css.grammar.hex_colors, "and #ff0000 is a number");
+        assert!(css.grammar.line_comment.is_none(), "// is not a comment in CSS");
+        assert!(css.grammar.types.contains(&"flex".to_owned()), "the third list is read");
+        assert!(css.grammar.builtins.contains(&"background-color".to_owned()));
+        assert!(css.grammar.keywords.contains(&"@media".to_owned()));
+        assert_eq!(css.renders, None, "a stylesheet has no picture");
+
+        // What that adds up to, read through the tokeniser the window uses.
+        use quill_core::syntax::{highlight, Token};
+        let text = "@media screen { .card { background-color: #ff79c6; display: flex; } }";
+        let found: Vec<(&str, Token)> = highlight(text, &css.grammar)
+            .into_iter()
+            .map(|(range, token)| (&text[range], token))
+            .collect();
+        assert!(found.contains(&("@media", Token::Keyword)), "{found:?}");
+        assert!(found.contains(&("background-color", Token::Builtin)), "{found:?}");
+        assert!(found.contains(&("#ff79c6", Token::Number)), "{found:?}");
+        assert!(found.contains(&("flex", Token::Type)), "{found:?}");
+    }
+
+    #[test]
+    fn the_older_plugins_ask_for_none_of_what_css_added() {
+        // The three keys are opt-in, which is what keeps a `.ts` file coloured exactly as it was.
+        let (plugins, _) = Plugins::load(None);
+        for plugin in plugins.all().iter().filter(|plugin| plugin.id != "css") {
+            assert!(plugin.grammar.word_characters.is_empty(), "{}", plugin.id);
+            assert!(!plugin.grammar.hex_colors, "{}", plugin.id);
+            assert!(plugin.grammar.types.is_empty(), "{}", plugin.id);
         }
     }
 
