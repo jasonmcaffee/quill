@@ -1092,6 +1092,11 @@ trade that away to be a shade nearer a screenshot.
   references and rename modals, and the fifty-scenario battery the implementation is held to.
   `task-1676` is the implementation of it; `cargo run --release -p quill-app --example symbol_cost`
   is how its budgets are measured again.
+- `tasks/task-1683-run-configurations-tdd.md` — run configurations: what IntelliJ's model, widget
+  and Run tool window each are, why a configuration in Quill is one named command rather than a
+  template per language, the run tile built on the terminal stack, the two manifest keys and the
+  built-in detectors that answer "should node be a plugin", and what a debugger would need that
+  this deliberately leaves visible. `task-1684` is the implementation of it.
 - `tasks/quill-mermaid-plugin-tdd.md` — Mermaid: the four ways of drawing it that were weighed and why
   Quill writes its own, what each of the twenty types becomes on the screen, which ten are named
   rather than drawn, and what `language.renders` buys.
