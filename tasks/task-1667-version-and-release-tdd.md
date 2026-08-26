@@ -340,3 +340,51 @@ release process: run `tools/release.ps1 -Part minor`, then confirm the version w
 installed `%LOCALAPPDATA%\Programs\Quill\quill.exe` reports the new version block, the running window's
 About box shows `0.2.0` and today's date, `quill-cli status --json` carries the same two values, and
 the GitHub release page has the installer on it and downloads.
+
+---
+
+## What was actually built, and where it differed from the design above
+
+Written after the work, so that the document describes what exists rather than what was intended.
+Everything in the plan was built; five things came out differently, each for a reason worth keeping.
+
+**The footer button says `Done`, not `Close`.** The first draft had `Close`, and the screenshot test
+found two controls with that name in one window — the header already draws a `Close` cross.
+`design/style-guide.md` §2 forbids exactly that, and names the Settings window's `Done` as the
+precedent. So the About box says `Done` too.
+
+**The box is 400 x 208, not 400 x 240.** The first accepted image had visibly more room under the last
+line than over the first; 208 makes the two equal.
+
+**The GitHub credential is read through a file, not a pipe.** Windows PowerShell 5.1 does not deliver a
+piped string to a native program's standard input in a form `git credential fill` accepts — it answers
+`refusing to work with credential missing protocol field` whether the input is one multi-line string
+or an array of lines. A redirection from a temporary file works, and the file holds the protocol and
+the host only; the answer, which holds the token, is never written down.
+
+**The instruction also went into the global `CLAUDE.md`** (`claude-settings/global/CLAUDE.md`, synced
+to `~/.claude/CLAUDE.md`). The plan put it in the Quill repository's own `CLAUDE.md`, which is right,
+and which an agent working out of a terminal rooted at `ai-service` — where Quill's tickets are filed —
+never reads. One short section carries the rule to wherever the work is being done, and points at the
+Quill file for the rest.
+
+**`documentation/overview.md` was deliberately not updated.** Its captures are taken by hand from the
+real window over a clear desktop and cropped with a margin, and it already records that three earlier
+features are waiting for the same pass. A hurried capture would be worse than the note that one is
+owed.
+
+### What the release proved
+
+`tools/release.ps1 -Part minor` was run for real and did the whole of it:
+
+| | |
+|---|---|
+| Version | `0.1.0` -> `0.2.0` in `Cargo.toml` and `Cargo.lock` |
+| Installer | `QuillSetup-0.2.0-x64.exe`, 7.5 MB, compiled by Inno Setup |
+| Installed | `%LOCALAPPDATA%\Programs\Quill\quill.exe`, version block reads `ProductName Quill`, `ProductVersion 0.2.0` |
+| Tag and push | `v0.2.0`, and `main` at `3fb3c25` |
+| Release | <https://github.com/jasonmcaffee/quill/releases/tag/v0.2.0>, asset 7,832,855 bytes, downloads anonymously with HTTP 200 |
+| The window | About box on the **installed** binary reads `Developed by Jason McAffee` / `Version: 0.2.0` / `Build Date: 2026-08-25 9:17pm` |
+| The command line | `quill-cli status --json` carries the same two values; `modal open about`, `modal state`, `modal move/size/reset`, `modal accept`, `modal cancel` and `action run about` all behave |
+
+Tests: 1,129 across the workspace, all green, including the four new screenshot tests.
