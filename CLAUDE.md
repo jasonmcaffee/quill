@@ -54,6 +54,13 @@ is compared against, changed only when the design changes. `crates/quill-app/tes
 **accepted output** — a change that alters the rendering fails against it, and `UPDATE_SNAPSHOTS=1`
 accepts a new one after somebody has opened the image and looked at it.
 
+**The Settings window is one size for every page, and the tallest page is what it has to hold.** It
+grew from 560 to 640 points when `task-1679` added the MCP page, because a dialog that changed height
+as its list was walked would jump under the pointer, and because a settings page here does not scroll.
+The other four gained empty space, which is the cheaper of the two costs. If a page ever needs more
+than 640, that is the point at which a scrolling page area is worth building rather than another
+eighty points.
+
 `components::modal` is the furniture every modal is made of: the frame, the header, the body
 rectangle, the footer, the buttons, the rows, a field and a tick box. The Settings window, the commit
 panel, the git dialogs, the text prompt, the confirmation, `Go to File` and `Find in Files` are all
@@ -791,6 +798,56 @@ drawn, which is what makes a screenshot taken straight after a command show what
 Qwen 3.8 27B, given only `docs/commands.md`, carries out 64 instructions phrased as a person would
 say them and scores **100%**, five rounds running, at two temperatures. The same 64 instructions with
 the documentation withheld score **3.13%**, which is what makes the first number mean something.
+
+## An agent is given the catalogue, not a second list
+
+Quill has a Model Context Protocol server, so a client that speaks it — Claude Code, Codex, anything
+else — is handed the commands as tools rather than being handed `docs/commands.md` and told to shell
+out. `quill_cli::mcp` is all of it, in the CLI crate rather than the window, because that is the way
+the dependency already points: the window can host it without the client ever learning what a window
+is. `task-1679` is the design, `quill-cli/docs/mcp.md` is what a person needs.
+
+**The tools are generated from `catalogue.rs`.** This is the fourth rule in the section above and it
+is the reason the module exists: a command added to Quill is a tool the day it is added, with its
+summary, its arguments and its flags, and `every_command_is_offered_as_a_tool_in_both_shapes` fails if
+one ever is not. Do not write a tool out by hand. If a tool needs to say something the catalogue does
+not, the catalogue is what should say it — the summary you are writing has a third reader now, and it
+is the one least able to ask what was meant.
+
+**One command is held back, and the list of exclusions is a test.** `mcp serve` would start a server
+from inside one. `tools::offered` is where that is written down and
+`exactly_one_command_is_held_back...` fails if the list grows, because an exclusion nobody argued
+about is how "everything is reachable" quietly stops being true.
+
+**One tool an area is the default, and it was measured rather than assumed.** Ninety-seven commands
+are ninety-seven tool definitions in an agent's context on every conversation — about **18,000
+tokens**, against **8,000** for the fourteen area tools, which still carry every command's usage line
+and summary. `quill-cli mcp tools --count` prints both figures against the catalogue as it is now, so
+the choice is never made against a number in a comment. `mcp.tools = every` is there for a client that
+permits tools by name, which is the one thing grouping really costs.
+
+**The server holds no session, and that is deliberate.** MCP `2025-06-18` has an `initialize`
+handshake and an optional session id; `2026-07-28` deleted both. A server that never *requires*
+`initialize`, issues no session id and echoes back whatever version the client named answers both with
+one code path. Do not add a version switch, and do not add a session.
+
+**A tool call goes down the control channel.** It becomes exactly the request `quill-cli` would have
+sent — same wire name, same arguments, same token, same port — so `run_cli` stays the one place a
+command becomes a change. Two things follow, and both are wanted: one server drives every open window,
+so two Quills sharing one `mcp.port` is the behaviour rather than a collision; and a window started
+with `--control off` has nothing for a server to drive, which the page says rather than listening
+uselessly.
+
+**The HTTP endpoint is off by default and should stay that way.** The stdio server an agent launches
+needs no port and lives as long as the conversation; a fixed open port will run `terminal send` for
+anything that can reach it. The browser case — the one thing a loopback port really has to defend
+against — is closed by refusing a non-loopback `Origin` and a cross-site `Sec-Fetch-Site`, which is
+what the specification asks for and what the token does for the older channel.
+
+**The installers use the agent's own command first.** `~/.claude.json` is rewritten by every running
+Claude Code and is a hundred kilobytes of somebody's settings; Codex's `config.toml` is hand-written
+and holds comments. `claude mcp add-json` and `codex mcp add` do the locking. The direct edit is the
+fallback, it takes a copy first, and it changes one key or one table and nothing else.
 
 ## One action, one place
 

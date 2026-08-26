@@ -1515,6 +1515,72 @@ fn the_terminal_page_holds_the_font_size_and_the_shell() {
 }
 
 #[test]
+fn the_mcp_page_holds_the_install_buttons_the_server_and_the_configuration_to_copy() {
+    // Two things are pinned before the page is drawn, and both are what make a picture of it the
+    // same on every machine. `QUILL_HOME` is where the installers look for an agent's own
+    // configuration, so a folder of its own is what makes the buttons read `Install for ...`
+    // whatever this machine happens to have; `QUILL_CLI_BIN` is the path written into the
+    // configuration blocks, which would otherwise be wherever this checkout is.
+    let home = std::env::temp_dir().join("quill-mcp-page-home");
+    std::fs::remove_dir_all(&home).ok();
+    std::fs::create_dir_all(&home).expect("make the folder");
+    std::env::set_var("QUILL_HOME", &home);
+    std::env::set_var("QUILL_CLI_BIN", r"C:\Program Files\Quill\quill-cli.exe");
+
+    let mut harness = harness("");
+    open_settings(&mut harness);
+    harness.get_by_label("MCP").click();
+    harness.run();
+
+    // `task-1679` asks for all four, and this is where a person finds each of them.
+    harness.get_by_label("Install for Claude Code");
+    harness.get_by_label("Install for Codex");
+    harness.get_by_label("MCP port");
+    harness.get_by_label("MCP tool shape");
+    harness.get_by_label("Claude Code configuration");
+    // One block at a time, and the other client's is a click away.
+    harness.get_by_label("Codex").click();
+    harness.run();
+    harness.get_by_label("Codex configuration");
+    harness.get_by_label("Claude Code").click();
+    harness.run();
+    harness.get_by_label("Copy");
+    assert!(
+        !harness.state().settings.mcp_enabled,
+        "the HTTP endpoint is off until somebody turns it on"
+    );
+    harness.snapshot(shot("settings_mcp"));
+
+    std::env::remove_var("QUILL_HOME");
+    std::env::remove_var("QUILL_CLI_BIN");
+    std::fs::remove_dir_all(&home).ok();
+}
+
+#[test]
+fn ticking_the_mcp_box_is_a_setting_and_not_a_listener_in_a_test() {
+    // A window a test builds never opens a command channel, so it never opens an MCP endpoint
+    // either — the rule `open_control_channel` already keeps, for the same reason: a test must not
+    // open a port or leave a listener behind when it ends. What the tick box does here is change
+    // the setting, which is what is checked.
+    let home = std::env::temp_dir().join("quill-mcp-tick-home");
+    std::fs::remove_dir_all(&home).ok();
+    std::fs::create_dir_all(&home).expect("make the folder");
+    std::env::set_var("QUILL_HOME", &home);
+
+    let mut harness = harness("");
+    open_settings(&mut harness);
+    harness.get_by_label("MCP").click();
+    harness.run();
+    harness.get_by_label("Also serve over HTTP on this machine").click();
+    harness.run();
+    assert!(harness.state().settings.mcp_enabled, "the tick box should have set it");
+    assert!(!harness.state().is_serving_mcp(), "a test window must not have opened a port");
+
+    std::env::remove_var("QUILL_HOME");
+    std::fs::remove_dir_all(&home).ok();
+}
+
+#[test]
 fn the_shell_typed_into_the_settings_is_what_a_new_terminal_runs() {
     let mut harness = harness("");
     open_settings(&mut harness);
@@ -4577,6 +4643,17 @@ fn the_settings_modal_opens_on_the_page_it_is_asked_for() {
     did(&mut harness, "modal open settings --page terminal");
     assert!(harness.state().settings_window.open);
     assert_eq!(harness.state().settings_window.page, settings::Page::Terminal);
+    // Every page the window has, including the one `task-1679` added: a page reachable by hand and
+    // not from the command line would be the thing the rule at the top of `app/cli.rs` forbids.
+    for (named, page) in [
+        ("appearance", settings::Page::Appearance),
+        ("editor", settings::Page::Editor),
+        ("plugins", settings::Page::Plugins),
+        ("mcp", settings::Page::Mcp),
+    ] {
+        did(&mut harness, &format!("modal open settings --page {named}"));
+        assert_eq!(harness.state().settings_window.page, page, "--page {named}");
+    }
     assert_eq!(refused(&mut harness, "modal open settings --page nonsense"), "usage");
 }
 

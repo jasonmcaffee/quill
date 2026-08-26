@@ -110,10 +110,13 @@ pub enum Page {
     Plugins,
     /// The terminal at the bottom of the window.
     Terminal,
+    /// The Model Context Protocol server, which is how an AI agent drives Quill.
+    Mcp,
 }
 
 impl Page {
-    pub const ALL: [Page; 4] = [Page::Appearance, Page::Editor, Page::Plugins, Page::Terminal];
+    pub const ALL: [Page; 5] =
+        [Page::Appearance, Page::Editor, Page::Plugins, Page::Terminal, Page::Mcp];
 
     /// The name in the list on the left, and the last part of the heading.
     pub fn title(self) -> &'static str {
@@ -122,6 +125,7 @@ impl Page {
             Page::Editor => "Editor",
             Page::Plugins => "Plugins",
             Page::Terminal => "Terminal",
+            Page::Mcp => "MCP",
         }
     }
 
@@ -134,6 +138,9 @@ impl Page {
             // group with pages under it.
             Page::Plugins => "",
             Page::Terminal => "Tools",
+            // The same heading as the terminal: both are a way of reaching something outside the
+            // editor from inside it.
+            Page::Mcp => "Tools",
         }
     }
 
@@ -144,6 +151,7 @@ impl Page {
             Page::Editor => &["Gutter", "Suggestions"],
             Page::Plugins => &["Marketplace", "Installed", "Colour Scheme", "Syntax"],
             Page::Terminal => &["Font", "Shell"],
+            Page::Mcp => &["Install", "Server", "Configuration"],
         }
     }
 
@@ -177,6 +185,12 @@ pub struct Settings {
     pub line_numbers: bool,
     /// Whether the completion popup arrives while you type, or waits to be asked.
     pub suggestions: Suggestions,
+    /// Whether this Quill hosts the MCP server over HTTP, so an agent can reach it at a URL.
+    pub mcp_enabled: bool,
+    /// The port it listens on when it does.
+    pub mcp_port: u16,
+    /// How many tools the catalogue is cut into for an agent. See `quill_cli::mcp::tools`.
+    pub mcp_tools: quill_cli::mcp::Shape,
 }
 
 impl Settings {
@@ -198,6 +212,16 @@ impl Settings {
             // ticket asked for: suggestions that arrive rather than ones you have to remember to
             // ask for.
             suggestions: Suggestions::Automatic,
+            // Off, and the reason is worth writing down rather than being read off as timidity.
+            // The MCP server an agent launches over its own pipes needs no port and no setting: it
+            // lives as long as the conversation and nothing is listening when nobody is asking,
+            // which is what `Settings -> Tools -> MCP`'s install buttons set up. A fixed open port
+            // that will run `terminal send` for anything that can reach it is a different
+            // proposition, and it should be a thing somebody turned on rather than a thing they
+            // were given.
+            mcp_enabled: false,
+            mcp_port: quill_cli::mcp::DEFAULT_PORT,
+            mcp_tools: quill_cli::mcp::Shape::default(),
         }
     }
 
@@ -224,6 +248,17 @@ impl Settings {
         if let Some(chosen) = values.text("editor.suggestions").and_then(Suggestions::parse) {
             settings.suggestions = chosen;
         }
+        if let Some(on) = values.flag("mcp.enabled") {
+            settings.mcp_enabled = on;
+        }
+        if let Some(port) = values.number("mcp.port") {
+            settings.mcp_port = clamp_port(port);
+        }
+        if let Some(shape) =
+            values.text("mcp.tools").and_then(quill_cli::mcp::Shape::parse)
+        {
+            settings.mcp_tools = shape;
+        }
         settings
     }
 
@@ -241,6 +276,9 @@ impl Settings {
         }
         values.set("editor.line_numbers", if self.line_numbers { "true" } else { "false" });
         values.set("editor.suggestions", self.suggestions.name());
+        values.set("mcp.enabled", if self.mcp_enabled { "true" } else { "false" });
+        values.set("mcp.port", self.mcp_port.to_string());
+        values.set("mcp.tools", self.mcp_tools.name());
     }
 
     /// The program a new terminal should run, or nothing when this machine's own default is wanted.
@@ -266,6 +304,15 @@ impl Default for Settings {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// A port brought inside its limits.
+///
+/// Every setting here is clamped rather than refused, which is what a slider does and what a hand
+/// edited file gets. A port below 1024 needs privileges on macOS and is never what anybody meant,
+/// and there is nothing above 65535 to be had.
+pub fn clamp_port(port: f32) -> u16 {
+    port.clamp(quill_cli::mcp::MIN_PORT as f32, u16::MAX as f32) as u16
 }
 
 /// Where the draggable dividers were left.
@@ -367,10 +414,45 @@ mod tests {
             terminal_shell: "pwsh.exe".to_owned(),
             line_numbers: false,
             suggestions: Suggestions::Manual,
+            mcp_enabled: true,
+            mcp_port: 9001,
+            mcp_tools: quill_cli::mcp::Shape::Every,
         };
         let mut values = Values::new();
         settings.write_into(&mut values);
         assert_eq!(Settings::read_from(&values), settings);
+    }
+
+    #[test]
+    fn the_mcp_server_is_off_until_somebody_turns_it_on() {
+        // Not timidity: the server an agent launches over its own pipes needs neither this setting
+        // nor a port, and it is what the install buttons write. A fixed open port that will run
+        // `terminal send` should be a thing somebody chose.
+        let fresh = Settings::new();
+        assert!(!fresh.mcp_enabled);
+        assert_eq!(fresh.mcp_port, quill_cli::mcp::DEFAULT_PORT);
+        assert_eq!(fresh.mcp_tools, quill_cli::mcp::Shape::Grouped);
+    }
+
+    #[test]
+    fn a_hand_edited_port_is_brought_inside_its_limits_rather_than_refused() {
+        // The rule every other setting keeps: an extreme is clamped and only a value that is not a
+        // number at all is a mistake.
+        let low = Settings::read_from(&Values::parse("mcp.port = 22
+"));
+        assert_eq!(low.mcp_port, quill_cli::mcp::MIN_PORT);
+        let high = Settings::read_from(&Values::parse("mcp.port = 999999
+"));
+        assert_eq!(high.mcp_port, u16::MAX);
+        let nonsense = Settings::read_from(&Values::parse("mcp.port = banana
+"));
+        assert_eq!(nonsense.mcp_port, quill_cli::mcp::DEFAULT_PORT, "an unreadable line is no line");
+        let shape = Settings::read_from(&Values::parse("mcp.tools = every
+"));
+        assert_eq!(shape.mcp_tools, quill_cli::mcp::Shape::Every);
+        let unknown = Settings::read_from(&Values::parse("mcp.tools = clever
+"));
+        assert_eq!(unknown.mcp_tools, quill_cli::mcp::Shape::Grouped, "a word this version does not have is ignored");
     }
 
     #[test]

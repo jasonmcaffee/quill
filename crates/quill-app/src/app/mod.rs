@@ -70,6 +70,7 @@ use crate::services::file_marks::FileMarks;
 use crate::services::file_tree::FileTree;
 use crate::services::file_clipboard::FileClipboard;
 use crate::services::launcher;
+use crate::services;
 use crate::services::icons::Icons;
 use crate::services::plugins::Plugins;
 use crate::services::mermaid_scene::MermaidScenes;
@@ -482,6 +483,9 @@ pub struct QuillApp {
     /// The command channel, once it has been opened. `None` in every window a test builds, and in a
     /// released Quill started with `--control off`: a window with no channel is an ordinary window.
     pub(crate) control: Option<control::Server>,
+    /// The MCP endpoint this window hosts, when `mcp.enabled` is on. `None` in every window a test
+    /// builds, exactly as the command channel is: a test must not open a port either.
+    pub(crate) mcp: Option<services::mcp::Hosted>,
     /// Commands that have been accepted and are waiting for something — a painted frame, a shell, a
     /// search, git. See `app::cli`.
     pub(crate) cli_waiting: Vec<(control::Pending, cli::Waiting)>,
@@ -566,6 +570,7 @@ impl QuillApp {
             last_highlight: theme::color::HIGHLIGHT_YELLOW,
             marks: FileMarks::new(),
             control: None,
+            mcp: None,
             cli_waiting: Vec::new(),
             completion: None,
             completion_anchor: None,
@@ -600,6 +605,11 @@ impl QuillApp {
                 server.port()
             ));
         }
+        // The MCP endpoint is opened from here for the same reason the command channel is: a test
+        // must not open a port or leave a listener behind when it ends. A window that never calls
+        // this has no endpoint and is an ordinary window in every other respect.
+        self.mcp = Some(services::mcp::Hosted::new());
+        self.reconcile_mcp();
     }
 
     /// Set the window's look up before the first frame is drawn.
@@ -3066,6 +3076,10 @@ impl QuillApp {
             &families,
             &project,
             &self.plugins,
+            // What the MCP page's status line reads. A window that never opened an endpoint — every
+            // window a test builds — reads as off, which is what it is.
+            self.mcp.as_ref().map(|hosted| hosted.state()).unwrap_or(&services::mcp::State::Off),
+            &quill_cli::mcp::install::quill_cli_program(),
             &on_disk,
             &icon_for,
         );
@@ -3120,7 +3134,33 @@ impl QuillApp {
         {
             self.set_the_font_everywhere();
         }
+        // The MCP endpoint follows its three settings. It is asked on every settings change rather
+        // than only when one of the three moved, because `Hosted::reconcile` answers "nothing
+        // changed" in two comparisons and a list of the settings that have to remember to tell it
+        // is a list whose next entry will be the one that forgot.
+        self.reconcile_mcp();
         self.unsaved_settings = true;
+    }
+
+    /// Whether this window is hosting an MCP endpoint right now.
+    ///
+    /// False in every window a test builds, because a test never opens one — the same rule the
+    /// command channel keeps. It is here so a test can say so rather than reaching into the field.
+    pub fn is_serving_mcp(&self) -> bool {
+        self.mcp.as_ref().and_then(|hosted| hosted.state().port()).is_some()
+    }
+
+    /// Bring the MCP endpoint into line with the settings.
+    ///
+    /// Does nothing in a window that never opened one, which is every window a test builds.
+    pub(crate) fn reconcile_mcp(&mut self) {
+        let has_channel = self.control.is_some();
+        let (enabled, port, shape) =
+            (self.settings.mcp_enabled, self.settings.mcp_port, self.settings.mcp_tools);
+        let folder = self.tree.root().to_path_buf();
+        if let Some(hosted) = &mut self.mcp {
+            hosted.reconcile(enabled, port, shape, has_channel, &folder);
+        }
     }
 
     /// A pinch on the trackpad, or the wheel with the zoom modifier held, over the editing area.

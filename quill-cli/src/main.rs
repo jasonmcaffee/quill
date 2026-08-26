@@ -37,6 +37,7 @@ use quill_cli::client::{self, Unreachable, DEFAULT_LAUNCH_TIMEOUT, DEFAULT_TIMEO
 use quill_cli::instances::Instance;
 use quill_cli::parse::{self, Global, Typed};
 use quill_cli::protocol::{code, Reply};
+use quill_cli::mcp;
 use quill_cli::{help, VERSION};
 
 const OK: i32 = 0;
@@ -217,11 +218,314 @@ fn locally(command: &'static Command, typed: &Typed) -> i32 {
                 Err(problem) => unreachable_to_code(&problem, &typed.global),
             }
         }
+        "mcp.serve" => serve(typed),
+        "mcp.install" => install(typed),
+        "mcp.config" => configuration(typed),
+        "mcp.tools" => mcp_tools(typed),
         other => {
             complain(&format!("`{other}` is not answered by the client."), &typed.global);
             USAGE
         }
     }
+}
+
+/// Run the MCP server, which is how an AI agent drives Quill.
+///
+/// It does not end until the client goes away — the pipe closes, or the process is stopped — which
+/// is what an agent that launched it expects. Nothing is printed on standard output but MCP
+/// messages, because a stray line there is not noise to a client, it is a parse failure that takes
+/// the connection down.
+fn serve(typed: &Typed) -> i32 {
+    let shape = match shape_from(typed) {
+        Ok(shape) => shape,
+        Err(problem) => {
+            complain(&problem, &typed.global);
+            return USAGE;
+        }
+    };
+    let transport = match transport_from(typed) {
+        Ok(transport) => transport,
+        Err(problem) => {
+            complain(&problem, &typed.global);
+            return USAGE;
+        }
+    };
+    let named = typed
+        .arguments
+        .get("instance")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| typed.global.instance.clone());
+    let server = mcp::Server::new(shape, mcp::Quills::new(named));
+    match transport {
+        mcp::Transport::Stdio => match mcp::stdio::serve(&server) {
+            Ok(()) => OK,
+            Err(problem) => {
+                // Standard error, always: standard output is the channel.
+                eprintln!("quill-cli mcp serve: {problem}");
+                REFUSED
+            }
+        },
+        mcp::Transport::Http => {
+            let port = match port_from(typed) {
+                Ok(port) => port,
+                Err(problem) => {
+                    complain(&problem, &typed.global);
+                    return USAGE;
+                }
+            };
+            let endpoint = match mcp::http::Endpoint::start(port, server) {
+                Ok(endpoint) => endpoint,
+                Err(problem) => {
+                    complain(
+                        &format!(
+                            "Could not listen on port {port}: {problem}. Another Quill or another \
+                             program may already have it."
+                        ),
+                        &typed.global,
+                    );
+                    return REFUSED;
+                }
+            };
+            eprintln!("Quill's MCP server is at {}", mcp::endpoint(endpoint.port()));
+            // The listener is on a thread of its own, so this one has nothing to do but stay alive.
+            // It ends when the process is stopped, which is how a server started by hand is stopped.
+            loop {
+                std::thread::sleep(Duration::from_secs(3600));
+            }
+        }
+    }
+}
+
+/// Write Quill into an agent's own configuration, or take it out again.
+fn install(typed: &Typed) -> i32 {
+    let clients = match clients_from(typed.arguments.get("client").and_then(Value::as_str)) {
+        Ok(clients) => clients,
+        Err(problem) => {
+            complain(&problem, &typed.global);
+            return USAGE;
+        }
+    };
+    let wanted = match wanted_from(typed) {
+        Ok(wanted) => wanted,
+        Err(problem) => {
+            complain(&problem, &typed.global);
+            return USAGE;
+        }
+    };
+    let removing = typed.arguments.contains_key("remove");
+    let mut results = Vec::new();
+    let mut worst = OK;
+    for client in clients {
+        let done = if removing {
+            mcp::install::remove(client, &wanted)
+        } else {
+            mcp::install::install(client, &wanted)
+        };
+        match done {
+            Ok(done) => results.push(json!({
+                "client": client.name(),
+                "ok": true,
+                "message": done.message,
+                "file": done.file.to_string_lossy(),
+                "throughTheCli": done.through_the_cli,
+            })),
+            Err(problem) => {
+                worst = REFUSED;
+                results.push(json!({ "client": client.name(), "ok": false, "message": problem }));
+            }
+        }
+    }
+    if typed.global.json {
+        say(&json!({ "ok": worst == OK, "command": "mcp.install", "result": { "clients": results } }));
+    } else if !typed.global.quiet {
+        for result in &results {
+            println!("{}", result["message"].as_str().unwrap_or_default());
+        }
+    }
+    worst
+}
+
+/// Print the configuration to paste into a client that has no button of its own.
+fn configuration(typed: &Typed) -> i32 {
+    let clients = match clients_from(typed.arguments.get("client").and_then(Value::as_str)) {
+        Ok(clients) => clients,
+        Err(problem) => {
+            complain(&problem, &typed.global);
+            return USAGE;
+        }
+    };
+    let wanted = match wanted_from(typed) {
+        Ok(wanted) => wanted,
+        Err(problem) => {
+            complain(&problem, &typed.global);
+            return USAGE;
+        }
+    };
+    if typed.global.json {
+        let described: Vec<Value> = clients
+            .iter()
+            .map(|client| {
+                json!({
+                    "client": client.name(),
+                    "title": client.title(),
+                    "file": match client {
+                        mcp::install::Client::Claude => mcp::install::claude_file(&wanted).to_string_lossy().into_owned(),
+                        mcp::install::Client::Codex => mcp::install::codex_file().to_string_lossy().into_owned(),
+                    },
+                    "configuration": wanted.example(*client),
+                })
+            })
+            .collect();
+        say(&json!({
+            "ok": true,
+            "command": "mcp.config",
+            "result": { "name": wanted.name, "transport": wanted.transport.name(), "clients": described },
+        }));
+        return OK;
+    }
+    if typed.global.quiet {
+        return OK;
+    }
+    for client in clients {
+        println!("# {} \u{2014} {}", client.title(), match client {
+            mcp::install::Client::Claude => mcp::install::claude_file(&wanted).display().to_string(),
+            mcp::install::Client::Codex => mcp::install::codex_file().display().to_string(),
+        });
+        println!("{}", wanted.example(client));
+        println!();
+    }
+    OK
+}
+
+/// The tools an agent would be given, or how much they cost.
+fn mcp_tools(typed: &Typed) -> i32 {
+    let shape = match shape_from(typed) {
+        Ok(shape) => shape,
+        Err(problem) => {
+            complain(&problem, &typed.global);
+            return USAGE;
+        }
+    };
+    if typed.arguments.contains_key("count") {
+        // Both shapes, always, because the number that matters is the comparison rather than either
+        // figure on its own. Bytes divided by four is the usual rule of thumb for tokens and is
+        // called that rather than dressed up as a measurement.
+        let counted: Vec<Value> = [mcp::Shape::Grouped, mcp::Shape::Every]
+            .iter()
+            .map(|shape| {
+                let tools = mcp::tools::as_json(*shape);
+                let bytes = serde_json::to_string(&tools).unwrap_or_default().len();
+                json!({
+                    "shape": shape.name(),
+                    "tools": tools.len(),
+                    "bytes": bytes,
+                    "roughTokens": bytes / 4,
+                })
+            })
+            .collect();
+        if typed.global.json {
+            say(&json!({ "ok": true, "command": "mcp.tools", "result": { "shapes": counted } }));
+        } else if !typed.global.quiet {
+            for shape in &counted {
+                let number = |name: &str| shape[name].as_u64().unwrap_or_default();
+                println!(
+                    "{:<10}{:>4} tools{:>9} bytes{:>8} tokens (roughly)",
+                    shape["shape"].as_str().unwrap_or_default(),
+                    number("tools"),
+                    number("bytes"),
+                    number("roughTokens")
+                );
+            }
+        }
+        return OK;
+    }
+    let tools = mcp::tools::as_json(shape);
+    if typed.global.json {
+        say(&json!({
+            "ok": true,
+            "command": "mcp.tools",
+            "result": { "shape": shape.name(), "count": tools.len(), "tools": tools },
+        }));
+    } else if !typed.global.quiet {
+        for tool in &tools {
+            println!(
+                "{:<26}{}",
+                tool["name"].as_str().unwrap_or_default(),
+                tool["title"].as_str().unwrap_or_default()
+            );
+        }
+    }
+    OK
+}
+
+/// Everything the two writing commands need, read off the command line.
+fn wanted_from(typed: &Typed) -> Result<mcp::install::Wanted, String> {
+    let mut wanted = mcp::install::Wanted {
+        transport: transport_from(typed)?,
+        port: port_from(typed)?,
+        ..mcp::install::Wanted::default()
+    };
+    if let Some(name) = typed.arguments.get("name").and_then(Value::as_str) {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("A server needs a name.".to_owned());
+        }
+        wanted.name = name.to_owned();
+    }
+    if let Some(scope) = typed.arguments.get("scope").and_then(Value::as_str) {
+        wanted.scope = mcp::install::Scope::parse(scope)
+            .ok_or_else(|| format!("`{scope}` is not a scope. It is `user` or `project`."))?;
+    }
+    Ok(wanted)
+}
+
+fn clients_from(named: Option<&str>) -> Result<Vec<mcp::install::Client>, String> {
+    match named.map(str::trim) {
+        None | Some("") | Some("both") | Some("all") => {
+            Ok(mcp::install::Client::ALL.to_vec())
+        }
+        Some(name) => mcp::install::Client::parse(name).map(|client| vec![client]).ok_or_else(|| {
+            format!("`{name}` is not a client Quill can write to. It is `claude`, `codex`, or `both`.")
+        }),
+    }
+}
+
+fn shape_from(typed: &Typed) -> Result<mcp::Shape, String> {
+    match typed.arguments.get("tools").and_then(Value::as_str) {
+        Some(named) => mcp::Shape::parse(named)
+            .ok_or_else(|| format!("`{named}` is not a tool shape. It is `grouped` or `every`.")),
+        None => Ok(mcp::Shape::default()),
+    }
+}
+
+fn transport_from(typed: &Typed) -> Result<mcp::Transport, String> {
+    match typed.arguments.get("transport").and_then(Value::as_str) {
+        Some(named) => mcp::Transport::parse(named)
+            .ok_or_else(|| format!("`{named}` is not a transport. It is `stdio` or `http`.")),
+        None => Ok(mcp::Transport::default()),
+    }
+}
+
+fn port_from(typed: &Typed) -> Result<u16, String> {
+    let Some(named) = typed.arguments.get("port") else {
+        return Ok(mcp::DEFAULT_PORT);
+    };
+    let named = match named {
+        Value::Number(number) => number.to_string(),
+        Value::String(text) => text.trim().to_owned(),
+        other => other.to_string(),
+    };
+    let port: u16 = named
+        .parse()
+        .map_err(|_| format!("`{named}` is not a port number."))?;
+    if port < mcp::MIN_PORT {
+        return Err(format!(
+            "{port} is below {}, which needs privileges and is never what was meant.",
+            mcp::MIN_PORT
+        ));
+    }
+    Ok(port)
 }
 
 /// Everything else: find a Quill, send the command, print what came back.

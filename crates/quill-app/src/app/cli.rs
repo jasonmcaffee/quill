@@ -365,6 +365,7 @@ impl QuillApp {
             "git" => self.cli_git(request, verb),
             "action" => self.cli_action(request, verb, ctx),
             "project" => self.cli_project(request, verb),
+            "mcp" => self.cli_mcp(request, verb),
             _ => no(
                 request,
                 code::UNKNOWN_COMMAND,
@@ -2930,7 +2931,7 @@ impl QuillApp {
                         return no(
                             request,
                             code::USAGE,
-                            format!("{page} is not a Settings page. Say appearance, editor, plugins or terminal."),
+                            format!("{page} is not a Settings page. Say appearance, editor, plugins, terminal or mcp."),
                         );
                     };
                     self.settings_window.page = chosen;
@@ -3358,6 +3359,46 @@ impl QuillApp {
         }
     }
 
+    /// `mcp status`: what this window is doing about the Model Context Protocol.
+    ///
+    /// The window is the only thing that knows, which is why it is the one `mcp` command that is not
+    /// answered by the client. It reports what the settings say **and** what is actually happening,
+    /// because those two come apart in the two cases that matter: a port another Quill is holding,
+    /// and a window started with `--control off`.
+    fn cli_mcp(&mut self, request: &Request, verb: &str) -> Outcome {
+        match verb {
+            "status" => {
+                let state = self
+                    .mcp
+                    .as_ref()
+                    .map(|hosted| hosted.state().clone())
+                    .unwrap_or(crate::services::mcp::State::Off);
+                let shape = self.settings.mcp_tools;
+                let tools = quill_cli::mcp::tools::tools(shape).len();
+                let endpoint = state.port().map(quill_cli::mcp::endpoint);
+                ok(
+                    request,
+                    state.message(),
+                    json!({
+                        "state": state.name(),
+                        "enabled": self.settings.mcp_enabled,
+                        "port": self.settings.mcp_port,
+                        "endpoint": endpoint,
+                        "tools": { "shape": shape.name(), "count": tools },
+                        "controlChannel": self.control.is_some(),
+                        // What an agent that launches the server itself should be told to run. It is
+                        // the answer whether or not anything is listening, which is the point of it.
+                        "stdio": {
+                            "command": quill_cli::mcp::install::quill_cli_program().to_string_lossy(),
+                            "arguments": ["mcp", "serve"],
+                        },
+                    }),
+                )
+            }
+            _ => unknown(request),
+        }
+    }
+
     fn cli_settings_set(&mut self, request: &Request) -> Outcome {
         let (Some(name), Some(value)) = (request.text("key"), request.text("value")) else {
             return no(request, code::USAGE, "Say a setting and a value.");
@@ -3419,6 +3460,9 @@ impl QuillApp {
             "terminal.shell" => self.settings.terminal_shell.clone(),
             "editor.line_numbers" => self.settings.line_numbers.to_string(),
             "editor.suggestions" => self.settings.suggestions.name().to_owned(),
+            "mcp.enabled" => self.settings.mcp_enabled.to_string(),
+            "mcp.port" => self.settings.mcp_port.to_string(),
+            "mcp.tools" => self.settings.mcp_tools.name().to_owned(),
             "panes.explorer.width" => format!("{:.0}", self.panes.explorer_width),
             "panes.terminal.height" => format!("{:.0}", self.panes.terminal_height),
             "panes.preview.fraction" => format!("{:.3}", self.panes.preview_fraction),
@@ -3471,6 +3515,13 @@ impl QuillApp {
             "editor.suggestions" => {
                 settings.suggestions = crate::settings::Suggestions::parse(value).ok_or_else(|| {
                     format!("{name} wants automatic or manual, and {value} is neither.")
+                })?
+            }
+            "mcp.enabled" => settings.mcp_enabled = flag()?,
+            "mcp.port" => settings.mcp_port = crate::settings::clamp_port(number()?),
+            "mcp.tools" => {
+                settings.mcp_tools = quill_cli::mcp::Shape::parse(value).ok_or_else(|| {
+                    format!("{name} wants grouped or every, and {value} is neither.")
                 })?
             }
             "panes.explorer.width" => {
@@ -3905,6 +3956,7 @@ fn settings_page(name: &str) -> Option<crate::settings::Page> {
         "editor" => Page::Editor,
         "plugins" => Page::Plugins,
         "terminal" => Page::Terminal,
+        "mcp" => Page::Mcp,
         _ => return None,
     })
 }
@@ -3958,6 +4010,21 @@ const SETTINGS: &[SettingKey] = &[
         help: "Whether the completion popup arrives as you type. Ctrl+Space works either way.",
     },
     SettingKey {
+        name: "mcp.enabled",
+        accepts: "true or false",
+        help: "Whether this Quill serves MCP over HTTP. An agent that launches the server itself needs neither this nor a port.",
+    },
+    SettingKey {
+        name: "mcp.port",
+        accepts: "1024 to 65535",
+        help: "The port it serves on when it does.",
+    },
+    SettingKey {
+        name: "mcp.tools",
+        accepts: "grouped or every",
+        help: "One tool an area, or one tool a command. `mcp tools --count` says what each costs.",
+    },
+    SettingKey {
         name: "panes.explorer.width",
         accepts: "150 to 620",
         help: "How wide the file explorer is.",
@@ -3994,6 +4061,9 @@ fn fresh_value(name: &str, fresh: &crate::settings::Settings) -> String {
         "terminal.shell" => fresh.terminal_shell.clone(),
         "editor.line_numbers" => fresh.line_numbers.to_string(),
         "editor.suggestions" => fresh.suggestions.name().to_owned(),
+        "mcp.enabled" => fresh.mcp_enabled.to_string(),
+        "mcp.port" => fresh.mcp_port.to_string(),
+        "mcp.tools" => fresh.mcp_tools.name().to_owned(),
         "panes.explorer.width" => format!("{:.0}", panes.explorer_width),
         "panes.terminal.height" => format!("{:.0}", panes.terminal_height),
         "panes.preview.fraction" => format!("{:.3}", panes.preview_fraction),

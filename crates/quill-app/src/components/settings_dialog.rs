@@ -13,14 +13,22 @@ use egui::{CornerRadius, Pos2, Rect, Sense, Stroke, Vec2};
 
 use crate::components::controls;
 use crate::components::modal;
+use crate::components::mcp_page::{self, McpState};
 use crate::components::plugins_page::{self, PluginsOutcome, PluginsState};
 use crate::services::plugins::Plugins;
 use crate::settings::{Page, Settings, Suggestions, FONT_SIZES, MIN_OPACITY, TERMINAL_FONT_SIZES};
 use crate::theme::{color, icon, size};
 
 /// How large the window is, before it is shrunk to fit a small Quill window.
+///
+/// It grew by eighty points when `task-1679` added the MCP page, which is the tallest of the five:
+/// two rows of buttons, three controls and a block of configuration to be read and copied. The
+/// window is one size for every page — a dialog that changed height as its list was walked would
+/// jump under the pointer — so the tallest page is what it has to hold. The other four gain empty
+/// space at the bottom, which is the cheaper of the two costs, and `modal::fit` still shrinks the
+/// whole thing to whatever room a small Quill window has.
 const WIDTH: f32 = 900.0;
-const HEIGHT: f32 = 560.0;
+const HEIGHT: f32 = 640.0;
 /// How wide the list of pages is.
 const LIST_WIDTH: f32 = 258.0;
 const HEADER: f32 = 46.0;
@@ -35,6 +43,8 @@ pub struct SettingsWindow {
     pub search: String,
     /// What the Plugins page is showing.
     pub plugins: PluginsState,
+    /// What the MCP page is showing.
+    pub mcp: McpState,
 }
 
 impl SettingsWindow {
@@ -62,6 +72,12 @@ pub fn show(
     families: &[String],
     project: &str,
     plugins: &Plugins,
+    mcp_running: &crate::services::mcp::State,
+    // `quill_cli` is the client an agent is told to launch. It is passed in rather than worked out
+    // in the page, because `current_exe` in the window is `quill.exe`, and because a screenshot
+    // test has to be able to pin it: a picture holding this machine's own path is a picture no
+    // other machine can match.
+    quill_cli: &std::path::Path,
     installed_on_disk: &dyn Fn(&str) -> bool,
     icon_for: &dyn Fn(&str) -> Option<egui::TextureHandle>,
 ) -> SettingsOutcome {
@@ -75,7 +91,19 @@ pub fn show(
     // decides how large that rectangle is and where it sits, which is also what makes the Settings
     // window draggable and resizable along with every other modal.
     let (inner, should_close) = modal::show(ctx, "quill-settings", WIDTH, HEIGHT, |ui, area| {
-        contents(ui, area, state, settings, families, project, plugins, installed_on_disk, icon_for)
+        contents(
+            ui,
+            area,
+            state,
+            settings,
+            families,
+            project,
+            plugins,
+            mcp_running,
+            quill_cli,
+            installed_on_disk,
+            icon_for,
+        )
     });
 
     outcome.changed = inner.changed;
@@ -97,6 +125,12 @@ fn contents(
     families: &[String],
     project: &str,
     plugins: &Plugins,
+    mcp_running: &crate::services::mcp::State,
+    // `quill_cli` is the client an agent is told to launch. It is passed in rather than worked out
+    // in the page, because `current_exe` in the window is `quill.exe`, and because a screenshot
+    // test has to be able to pin it: a picture holding this machine's own path is a picture no
+    // other machine can match.
+    quill_cli: &std::path::Path,
     installed_on_disk: &dyn Fn(&str) -> bool,
     icon_for: &dyn Fn(&str) -> Option<egui::TextureHandle>,
 ) -> SettingsOutcome {
@@ -160,6 +194,11 @@ fn contents(
         }
         Page::Terminal => {
             outcome.changed |= terminal_page(ui, page_area, settings);
+        }
+        Page::Mcp => {
+            outcome.changed |=
+                mcp_page::show(ui, page_area, &mut state.mcp, settings, mcp_running, quill_cli)
+                    .changed;
         }
     }
 
@@ -436,7 +475,7 @@ fn editor_page(ui: &mut egui::Ui, area: Rect, settings: &mut Settings) -> bool {
 }
 
 /// A tick box with its label to the right of it, drawn the way every other control here is.
-fn checkbox(ui: &mut egui::Ui, row: Rect, name: &str, value: &mut bool) -> bool {
+pub(crate) fn checkbox(ui: &mut egui::Ui, row: Rect, name: &str, value: &mut bool) -> bool {
     let box_rect = Rect::from_min_size(Pos2::new(row.left(), row.center().y - 8.0), Vec2::splat(16.0));
     let response = ui.interact(row, ui.id().with(("settings-check", name)), Sense::click());
     let painter = ui.painter();
@@ -544,7 +583,7 @@ fn default_shell_name() -> &'static str {
 }
 
 /// `Appearance & Behavior  >  Appearance` across the top of the page, and the line under it.
-fn breadcrumb(ui: &mut egui::Ui, area: Rect, page: Page) -> f32 {
+pub(crate) fn breadcrumb(ui: &mut egui::Ui, area: Rect, page: Page) -> f32 {
     let painter = ui.painter_at(area);
     let y = area.top() + 26.0;
     if page.group().is_empty() {
@@ -581,7 +620,7 @@ fn breadcrumb(ui: &mut egui::Ui, area: Rect, page: Page) -> f32 {
 }
 
 /// A heading inside a page, with a rule running to the right edge, as IntelliJ draws one.
-fn section(ui: &mut egui::Ui, area: Rect, top: f32, name: &str) -> f32 {
+pub(crate) fn section(ui: &mut egui::Ui, area: Rect, top: f32, name: &str) -> f32 {
     let painter = ui.painter_at(area);
     let galley =
         painter.layout_no_wrap(name.to_owned(), egui::FontId::proportional(12.5), color::TEXT_STRONG);
@@ -595,11 +634,11 @@ fn section(ui: &mut egui::Ui, area: Rect, top: f32, name: &str) -> f32 {
     y + 20.0
 }
 
-fn row_at(area: Rect, top: f32) -> Rect {
+pub(crate) fn row_at(area: Rect, top: f32) -> Rect {
     Rect::from_min_size(Pos2::new(area.left() + 24.0, top), Vec2::new(area.width() - 48.0, 28.0))
 }
 
-fn label(ui: &mut egui::Ui, area: Rect, row: Rect, text: &str) {
+pub(crate) fn label(ui: &mut egui::Ui, area: Rect, row: Rect, text: &str) {
     let painter = ui.painter_at(area);
     let galley =
         painter.layout_no_wrap(text.to_owned(), egui::FontId::proportional(12.5), color::TEXT_CONTROL);
@@ -611,7 +650,7 @@ fn label(ui: &mut egui::Ui, area: Rect, row: Rect, text: &str) {
 }
 
 /// A line of explanation under a control, in the faintest colour.
-fn note(ui: &mut egui::Ui, area: Rect, top: f32, text: &str) -> f32 {
+pub(crate) fn note(ui: &mut egui::Ui, area: Rect, top: f32, text: &str) -> f32 {
     let painter = ui.painter_at(area);
     let galley = painter.layout(
         text.to_owned(),
@@ -624,7 +663,7 @@ fn note(ui: &mut egui::Ui, area: Rect, top: f32, text: &str) -> f32 {
 }
 
 /// A button with a word in it, which the footer uses.
-fn wide_button(ui: &mut egui::Ui, area: Rect, name: &str) -> bool {
+pub(crate) fn wide_button(ui: &mut egui::Ui, area: Rect, name: &str) -> bool {
     let response = ui.interact(area, ui.id().with(("settings-button", name)), Sense::click());
     let fill = if response.hovered() { color::ACCENT } else { color::CONTROL };
     let painter = ui.painter();

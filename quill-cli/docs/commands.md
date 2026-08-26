@@ -7,6 +7,11 @@ program can read.
 This document is written to be handed to an AI agent whole. If you are an agent, read the next two
 sections and then work from the reference at the bottom.
 
+**If your client speaks the Model Context Protocol, you do not need this document at all.** Quill has
+an MCP server, generated from the same list of commands, so the tools are the commands and they
+cannot fall behind. `quill-cli mcp install claude`, or the buttons in `Settings -> Tools -> MCP`.
+[mcp.md](mcp.md) is the whole of it.
+
 ## The four things to know first
 
 1. **Always pass `--json`.** Without it you get a sentence meant for a person; with it you get
@@ -1368,7 +1373,7 @@ Open a modal, and put something in its box in the same breath.
 
 - `--query <text>` — Type this into the modal's box as it opens.
 - `--path <path>` — The folder a new file goes in, or the file being renamed. Needed by new-file and rename.
-- `--page <name>` — Which page the Settings modal shows: appearance, editor, plugins or terminal.
+- `--page <name>` — Which page the Settings modal shows: appearance, editor, plugins, terminal or mcp.
 
 ```sh
 quill-cli modal open go-to-file --query mdrs
@@ -1751,6 +1756,104 @@ The projects that have been open, newest first.
 ```sh
 quill-cli project recent --json
 ```
+
+## mcp — the server an AI agent drives Quill through
+
+The Model Context Protocol server, which is how an AI agent discovers and drives Quill without being handed a document first. Its tools are generated from this same catalogue, so a command added to Quill is a tool the day it is added.
+
+### mcp serve
+
+```
+quill-cli mcp serve [--transport <stdio|http>] [--port <number>] [--tools <grouped|every>] [--instance <which>]
+```
+
+Run the Model Context Protocol server, which is how an AI agent drives Quill. Over stdin and stdout by default, which is what an agent that launches it wants; over HTTP with `--transport http`.
+
+- `--transport <stdio|http>` — How the client talks to it. `stdio` by default.
+- `--port <number>` — Which port to listen on, for `--transport http`. 7345 by default.
+- `--tools <grouped|every>` — One tool per area, or one tool per command. `grouped` by default.
+- `--instance <which>` — Which running Quill to drive, when several are running.
+
+```sh
+quill-cli mcp serve
+quill-cli mcp serve --transport http --port 7345
+```
+
+Answered by the CLI itself; no Quill needs to be running.
+
+### mcp status
+
+```
+quill-cli mcp status
+```
+
+What this Quill is doing about MCP: whether it is serving over HTTP, on which port, in which tool shape, how many tools that is, and where an agent's configuration should point.
+
+```sh
+quill-cli mcp status --json
+```
+
+### mcp install
+
+```
+quill-cli mcp install <client> [--transport <stdio|http>] [--port <number>] [--scope <user|project>] [--name <name>] [--remove]
+```
+
+Write Quill's MCP server into an agent's own configuration, so it is there next time the agent starts.
+
+- `client` — `claude`, `codex`, or `both`.
+
+- `--transport <stdio|http>` — Which way the agent should talk to it. `stdio` by default, which needs no port.
+- `--port <number>` — The port to point at, for `--transport http`.
+- `--scope <user|project>` — `user` for every project, `project` for this folder only. `user` by default.
+- `--name <name>` — What the server is called in the agent's configuration. `quill` by default.
+- `--remove` — Take it out again rather than putting it in.
+
+```sh
+quill-cli mcp install both
+quill-cli mcp install claude --scope project
+```
+
+Answered by the CLI itself; no Quill needs to be running.
+
+### mcp config
+
+```
+quill-cli mcp config [client] [--transport <stdio|http>] [--port <number>] [--name <name>]
+```
+
+Print the configuration to paste into an agent that has no button of its own: the JSON an `mcpServers` block wants, and the TOML Codex wants.
+
+- `client` (optional) — `claude` or `codex`. Both when it is left out.
+
+- `--transport <stdio|http>` — Which way to describe. `stdio` by default.
+- `--port <number>` — The port to name, for `--transport http`.
+- `--name <name>` — What to call the server. `quill` by default.
+
+```sh
+quill-cli mcp config
+quill-cli mcp config codex --transport http
+```
+
+Answered by the CLI itself; no Quill needs to be running.
+
+### mcp tools
+
+```
+quill-cli mcp tools [--tools <grouped|every>] [--count]
+```
+
+The tools the MCP server offers, exactly as it would answer `tools/list`. This is how to see what an agent will be given, and how the cost of the two shapes is compared.
+
+- `--tools <grouped|every>` — Which shape to print. `grouped` by default.
+- `--count` — Print how many tools and how large the list is, rather than the list.
+
+```sh
+quill-cli mcp tools --json
+quill-cli mcp tools --tools every --count
+```
+
+Answered by the CLI itself; no Quill needs to be running.
 
 
 <!-- end generated reference -->

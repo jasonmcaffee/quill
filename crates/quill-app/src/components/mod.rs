@@ -22,6 +22,7 @@ pub mod gutter;
 pub mod menu_bar;
 pub mod modal;
 pub mod picture_view;
+pub mod mcp_page;
 pub mod plugins_page;
 pub mod prompt_dialog;
 pub mod references;

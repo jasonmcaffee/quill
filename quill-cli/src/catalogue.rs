@@ -19,6 +19,13 @@
 //! Names are lower case and hyphenated — `save-as`, `go-to-file`, `find-in-files` — and never
 //! abbreviated to something a reader would have to learn.
 //!
+//! ## It is also what an agent is given
+//!
+//! `mcp::tools` turns this same list into Model Context Protocol tools, so a command added here is a
+//! tool an agent can call the day it is added, with this summary, these arguments and these flags.
+//! That is a third reader of every line below, and the one least able to ask what was meant: write
+//! the summary for somebody who cannot see the window.
+//!
 //! ## What a command is made of
 //!
 //! Positional [`Argument`]s in the order they are typed, then [`Flag`]s in any order. The client
@@ -132,6 +139,57 @@ pub fn areas() -> Vec<&'static str> {
 /// The commands in one area.
 pub fn in_area(area: &str) -> Vec<&'static Command> {
     COMMANDS.iter().filter(|command| command.area == area).collect()
+}
+
+/// What an area is called where it is given a heading of its own.
+///
+/// It lives here rather than in the thing that prints it, because two things print it now: the
+/// written reference, which `examples/reference.rs` generates, and the MCP tool for the area, whose
+/// title and description an agent reads instead of the reference. A second copy of these words
+/// would be a second copy that falls behind, which is the same reason the commands themselves are
+/// one list.
+pub fn area_title(area: &'static str) -> &'static str {
+    match area {
+        "" => "Commands with no area",
+        "window" => "window — the window itself",
+        "tab" => "tab — the files that are open",
+        "pane" => "pane — the editing area split into panes",
+        "editor" => "editor — the text in the tab that is showing",
+        "highlight" => "highlight — the passages marked in the project's files",
+        "terminal" => "terminal — the shells along the bottom",
+        "explorer" => "explorer — the file tree down the left",
+        "modal" => "modal — every dialog, driven the same way",
+        "settings" => "settings — Edit -> Settings, by the names in the settings file",
+        "plugins" => "plugins — the languages Quill colours",
+        "git" => "git — the Git menu",
+        "action" => "action — every menu entry there is",
+        "project" => "project — the folder this window is showing",
+        "mcp" => "mcp — the server an AI agent drives Quill through",
+        other => other,
+    }
+}
+
+/// The paragraph under that heading: what the area is for, and the one thing worth knowing about it
+/// before reading its commands.
+pub fn area_note(area: &'static str) -> &'static str {
+    match area {
+        "" => "Six commands are typed on their own, because they are about the CLI or about a whole Quill rather than about one part of a window.",
+        "window" => "`window screenshot` is how to see what a command did. The picture is of the real window, so it is evidence rather than a description.",
+        "tab" => "A tab holds a file. A relative path is resolved against the project folder, and every reply says which absolute path it used.",
+        "pane" => "The editing area can be split into panes side by side, each with its own tabs, which is IntelliJ's split view. `pane split` moves the tab that is showing into a new pane on the right — it moves rather than copies, because two tabs on one file would be two documents over one path. A pane holding only that tab keeps it and the new pane opens empty, ready for the next file: opening a file always lands in the pane that has the keyboard.",
+        "editor" => "These are about the tab that is showing. Lines and columns count from 1, which is what the status bar shows.",
+        "highlight" => "A highlight is a colour behind a passage of text. It stays there until it is cleared, in this file and next time the project is opened, and it moves with the text as the file is edited. These work on a file whether it is open or not, so `highlight apply` can mark twenty passages across twenty files in one call.",
+        "terminal" => "`terminal send` types into the shell and presses Enter; `terminal read --wait-for` is how to wait for what it did.",
+        "explorer" => "`explorer files` is the list Quill searches, which leaves out `target`, `node_modules` and `__pycache__`.",
+        "modal" => "One set of commands drives all of them: open it, type in it, read its results, choose a row, accept or cancel. A modal added to Quill later is driven with these same commands.",
+        "settings" => "The names are the ones in Quill's own `settings.conf`, so there is one vocabulary rather than two. A change takes effect at once, in every tab, and is written to the file.",
+        "plugins" => "A plugin describes a language: its extensions, its keywords and a colour per kind of token. Nothing in one is executed and nothing is fetched over a network.",
+        "git" => "Git runs on a thread, so an action is asked for and `git status` says what came back. `--wait` holds the answer open until it has.",
+        "action" => "The escape hatch, and the guarantee: every entry on every menu has a name here, and the list is built by walking the real menus, so a menu entry added to Quill tomorrow can be run from the command line tomorrow.",
+        "project" => "A project is a window. Opening a second project is `quill-cli launch <folder>`, which starts a second Quill; `project open` changes the folder this window is showing.",
+        "mcp" => "The Model Context Protocol server, which is how an AI agent discovers and drives Quill without being handed a document first. Its tools are generated from this same catalogue, so a command added to Quill is a tool the day it is added.",
+        _ => "",
+    }
 }
 
 const fn argument(name: &'static str, required: bool, help: &'static str) -> Argument {
@@ -924,7 +982,7 @@ pub const COMMANDS: &[Command] = &[
         flags: &[
             option("query", "text", "Type this into the modal's box as it opens."),
             option("path", "path", "The folder a new file goes in, or the file being renamed. Needed by new-file and rename."),
-            option("page", "name", "Which page the Settings modal shows: appearance, editor, plugins or terminal."),
+            option("page", "name", "Which page the Settings modal shows: appearance, editor, plugins, terminal or mcp."),
         ],
         examples: &[
             "quill-cli modal open go-to-file --query mdrs",
@@ -1189,6 +1247,70 @@ pub const COMMANDS: &[Command] = &[
         flags: NO_FLAGS,
         examples: &["quill-cli project recent --json"],
         local: false,
+    },
+    // ---------------------------------------------------------------------------------- the MCP server
+    Command {
+        area: "mcp",
+        verb: "serve",
+        summary: "Run the Model Context Protocol server, which is how an AI agent drives Quill. Over stdin and stdout by default, which is what an agent that launches it wants; over HTTP with `--transport http`.",
+        arguments: NO_ARGUMENTS,
+        flags: &[
+            option("transport", "stdio|http", "How the client talks to it. `stdio` by default."),
+            option("port", "number", "Which port to listen on, for `--transport http`. 7345 by default."),
+            option("tools", "grouped|every", "One tool per area, or one tool per command. `grouped` by default."),
+            option("instance", "which", "Which running Quill to drive, when several are running."),
+        ],
+        examples: &["quill-cli mcp serve", "quill-cli mcp serve --transport http --port 7345"],
+        local: true,
+    },
+    Command {
+        area: "mcp",
+        verb: "status",
+        summary: "What this Quill is doing about MCP: whether it is serving over HTTP, on which port, in which tool shape, how many tools that is, and where an agent's configuration should point.",
+        arguments: NO_ARGUMENTS,
+        flags: NO_FLAGS,
+        examples: &["quill-cli mcp status --json"],
+        local: false,
+    },
+    Command {
+        area: "mcp",
+        verb: "install",
+        summary: "Write Quill's MCP server into an agent's own configuration, so it is there next time the agent starts.",
+        arguments: &[argument("client", true, "`claude`, `codex`, or `both`.")],
+        flags: &[
+            option("transport", "stdio|http", "Which way the agent should talk to it. `stdio` by default, which needs no port."),
+            option("port", "number", "The port to point at, for `--transport http`."),
+            option("scope", "user|project", "`user` for every project, `project` for this folder only. `user` by default."),
+            option("name", "name", "What the server is called in the agent's configuration. `quill` by default."),
+            switch("remove", "Take it out again rather than putting it in."),
+        ],
+        examples: &["quill-cli mcp install both", "quill-cli mcp install claude --scope project"],
+        local: true,
+    },
+    Command {
+        area: "mcp",
+        verb: "config",
+        summary: "Print the configuration to paste into an agent that has no button of its own: the JSON an `mcpServers` block wants, and the TOML Codex wants.",
+        arguments: &[argument("client", false, "`claude` or `codex`. Both when it is left out.")],
+        flags: &[
+            option("transport", "stdio|http", "Which way to describe. `stdio` by default."),
+            option("port", "number", "The port to name, for `--transport http`."),
+            option("name", "name", "What to call the server. `quill` by default."),
+        ],
+        examples: &["quill-cli mcp config", "quill-cli mcp config codex --transport http"],
+        local: true,
+    },
+    Command {
+        area: "mcp",
+        verb: "tools",
+        summary: "The tools the MCP server offers, exactly as it would answer `tools/list`. This is how to see what an agent will be given, and how the cost of the two shapes is compared.",
+        arguments: NO_ARGUMENTS,
+        flags: &[
+            option("tools", "grouped|every", "Which shape to print. `grouped` by default."),
+            switch("count", "Print how many tools and how large the list is, rather than the list."),
+        ],
+        examples: &["quill-cli mcp tools --json", "quill-cli mcp tools --tools every --count"],
+        local: true,
     },
 ];
 

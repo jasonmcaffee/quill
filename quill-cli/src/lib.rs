@@ -3,9 +3,9 @@
 //! Two targets are built from this crate and they need different halves of it.
 //!
 //! - `quill-cli`, the program somebody types at, uses all of it.
-//! - `quill-app`, the window, uses [`catalogue`], [`protocol`] and [`instances`]: the list of what
-//!   commands exist, the shape of a request and a reply, and where a running Quill says how to
-//!   reach it.
+//! - `quill-app`, the window, uses [`catalogue`], [`protocol`], [`instances`] and [`mcp`]: the list
+//!   of what commands exist, the shape of a request and a reply, where a running Quill says how to
+//!   reach it, and the MCP server it hosts over HTTP when somebody has switched that on.
 //!
 //! Nothing here depends on `quill-app`, which is what keeps the client a small program with no
 //! window, no graphics card and no fonts behind it — and what keeps the dependency pointing one
@@ -15,6 +15,7 @@ pub mod catalogue;
 pub mod client;
 pub mod help;
 pub mod instances;
+pub mod mcp;
 pub mod parse;
 pub mod protocol;
 

@@ -12,7 +12,8 @@ The first half of this file is what Quill is and how to use it. The second half 
 [Architecture](#architecture) for the crates, the seams and what one frame does,
 [How plugins work](#how-plugins-work) for what is in a manifest and what the tokeniser does with it,
 [The command line](#the-command-line-and-the-channel-underneath-it) for the channel a running Quill is
-driven down, and [Where a change goes](#where-a-change-goes) for which file to open first.
+driven down and the MCP server on top of it, and [Where a change goes](#where-a-change-goes) for which
+file to open first.
 
 ## Installing it
 
@@ -42,6 +43,18 @@ quill-cli window screenshot shot.png                 # a real picture of the win
 Everything the menus, the keyboard and the mouse can ask for is a command, and `--json` makes every
 answer machine-readable. `quill-cli/README.md` says how it works; `quill-cli/docs/commands.md` is the
 reference, written to be handed to an AI agent whole.
+
+## Giving it to an AI agent
+
+`Settings -> Tools -> MCP`, then **Install for Claude Code** or **Install for Codex**. Restart the
+agent and it can drive Quill: open files, read and change the text, run things in the terminal,
+search the project, work the Git menu, and take a screenshot of the real window and look at it.
+
+The tools are **generated from the same catalogue the command line is**, so a command added to Quill
+is a tool the day it is added and there is no second list to fall behind. By default an agent is
+given one tool an area rather than one a command, which names everything Quill does for about a
+third of the context. `quill-cli/docs/mcp.md` is the whole of it, including what a fixed open port
+does and does not defend against — which is why it is off until you turn it on.
 
 ## Running it
 
@@ -143,6 +156,10 @@ pages down the left under their headings, and the chosen page on the right.
 - `Tools -> Terminal` sets which program a terminal tab runs and the size the terminal draws its grid
   at. Left empty, it is `$SHELL` on macOS and the newer PowerShell this machine has on Windows, and the
   note under the field says which that is.
+- `Tools -> MCP` is how Quill is given to an AI agent: a button that writes it into Claude Code's or
+  Codex's own configuration, the block to paste into anything else, and a tick box for serving the
+  same thing over HTTP on a port. The button needs no port and is what should be preferred; the port
+  is off until it is turned on.
 
 Changes take effect as they are made. The settings, the recent projects and where the dividers between the
 panes were left are kept in `~/Library/Application Support/Quill` on macOS and `%APPDATA%\Quill` on Windows,
@@ -713,6 +730,30 @@ is the only one that knows what actually happened — which tab the file landed 
 before it changed, how many results a search found. `quill-cli/docs/protocol.md` is what a client in
 another language needs.
 
+### And the MCP server on top of it
+
+An AI client that speaks the Model Context Protocol is given Quill's commands as **tools**, so it does
+not have to be handed a document first and does not have to know it may shell out to a program it has
+never heard of. `quill_cli::mcp` is the server, `quill-cli mcp serve` runs it, and the buttons in
+`Settings -> Tools -> MCP` write it into Claude Code's and Codex's own configuration.
+
+Three things about it are worth knowing here; `quill-cli/docs/mcp.md` is the rest.
+
+**The tools are generated from the catalogue**, which is the fourth rule of the three above: a command
+added to Quill is a tool the day it is added, with its summary, its arguments and its flags, and a
+test fails if one ever is not. A hand-written set of tools would be a third copy of what Quill can do,
+which is the exact thing the catalogue exists to prevent.
+
+**An agent is given one tool an area, not one a command.** Ninety-seven commands would be ninety-seven
+tool definitions in the agent's context on every conversation — measured at roughly three times what
+fourteen area tools cost, which still name every command Quill has, each with its usage line and its
+summary. `mcp.tools = every` is there for a client that permits tools by name and would rather pay.
+
+**It is a client of the channel above, not a peer of it.** A tool call becomes exactly the request
+`quill-cli` would have sent, down the same socket with the same token, so `run_cli` stays the one
+place a command becomes a change. It also means one server drives every open window, which is why two
+Quills sharing one `mcp.port` is the behaviour rather than a collision.
+
 ## Where a change goes
 
 | To add | Change | And you get |
@@ -847,6 +888,7 @@ Each stands on its own, and states any fact it needs rather than pointing at ano
 | `CLAUDE.md` | The conventions the code already follows, written for whoever changes it next. |
 | `quill-cli/docs/commands.md` | The command line reference, written to be handed to an AI agent whole. |
 | `quill-cli/docs/protocol.md` | The socket underneath it, for a client in another language. |
+| `quill-cli/docs/mcp.md` | The MCP server: installing it into an agent, the two tool shapes and what each costs, and what a local port does and does not defend against. |
 | `quill-cli/agent-assessment/qwen-38-27B-assessment.md` | How well a local model does with that reference, measured against a live window. |
 | `installer/README.md` | How to build an installer, on either platform. |
 | `tasks/quill-technical-design-document.md` | The editor: what was chosen, what was rejected, and what is deliberately not included. |
@@ -861,3 +903,4 @@ Each stands on its own, and states any fact it needs rather than pointing at ano
 | `tasks/task-1671-css-plugin-tdd.md` | The CSS plugin: the four shapes of CSS the tokeniser could not read, and the three grammar keys added for them. |
 | `tasks/task-1672-zoom-tdd.md` | The zoom that keeps the line you were reading where it was. |
 | `tasks/task-1673-split-view-tdd.md` | The source and its preview scrolling together, dragging a tab into another pane, and the scrollbar. |
+| `tasks/task-1679-mcp-tdd.md` | The MCP server: why the tools are generated, what the two shapes were measured at, and why the server holds no session. |
