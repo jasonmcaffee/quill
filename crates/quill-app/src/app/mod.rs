@@ -1608,12 +1608,27 @@ impl QuillApp {
         }
     }
 
-    /// How large the run tile's grid is at its current height, so a program is told the right size
-    /// from its first line rather than being resized on the frame after it starts.
+    /// How large the run tile's grid is going to be, so a program is opened at that size and is
+    /// **never resized**.
+    ///
+    /// This is not a nicety. A pseudoconsole resized while its child is writing its first line
+    /// loses that line — measured six times out of six on `cmd /c echo something`, which writes and
+    /// exits inside a millisecond and was therefore always still starting when the tile drew its
+    /// first frame and told it the real size. An empty tab for a program that plainly printed
+    /// something is the one thing a run tile must not do, because the whole point of it is that the
+    /// evidence outlives the process.
+    ///
+    /// So the size is worked out from the rectangle the tile really has — `RunPanel::tile`, which
+    /// the window records every frame whether the tile is showing or not — through the same
+    /// function the tile itself uses, and the two agree exactly. The guess underneath is only ever
+    /// reached before the window has drawn a frame at all.
     fn run_grid_size(&self) -> quill_terminal::session::Size {
         let cell = self.renderer.cell_metrics(self.settings.terminal_font_size);
-        let width = self.editor_area.width().max(600.0);
-        run_panel::grid_size(Vec2::new(width, self.panes.run_height), cell)
+        let tile = match self.run.tile.width() > 1.0 && self.run.tile.height() > 1.0 {
+            true => self.run.tile.size(),
+            false => Vec2::new(self.editor_area.width().max(600.0), self.panes.run_height),
+        };
+        run_panel::grid_size(tile, cell)
     }
 
     /// Write the project's run configurations down, if this window is the one that may.
@@ -3314,6 +3329,24 @@ impl QuillApp {
             Rect::from_min_max(panes.min, Pos2::new(panes.right(), panes.bottom() - tile_height));
         let terminal_rect =
             Rect::from_min_max(Pos2::new(panes.left(), upper.bottom()), panes.max);
+        // Where the run tile is, recorded whether it is showing or not, so that a run started while
+        // it is put away is still opened at the size it will be drawn at. See `run_grid_size`.
+        self.run.tile = match self.run.visible {
+            true => terminal_rect,
+            // The rectangle it *would* have, which is what it will be given the moment something is
+            // run: showing the tile is what starting a run does.
+            false => Rect::from_min_max(
+                Pos2::new(
+                    panes.left(),
+                    panes.bottom()
+                        - self
+                            .panes
+                            .run_height
+                            .clamp(settings::RUN_MIN, (panes.height() - 120.0).max(settings::RUN_MIN)),
+                ),
+                panes.max,
+            ),
+        };
 
         let explorer_width = if self.explorer_visible {
             self.panes.explorer_width.clamp(settings::EXPLORER_MIN, settings::EXPLORER_MAX)

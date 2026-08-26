@@ -421,9 +421,14 @@ pub(crate) fn grid(
         return outcome;
     };
 
-    // Told once, and told to both the emulator and the program on the far side.
-    session.resize(wanted);
+    // **Pumped before it is resized**, which is the order that matters rather than a tidiness:
+    // `Session::resize` refuses to tell a program that has ended, because telling it wipes what it
+    // wrote — and whether it has ended is only known once the events it sent have been read. The
+    // other way round, a program that exited since the last frame is still thought to be running
+    // for one more resize, and that resize is the one that empties the tab. Measured on
+    // `task-1683`: `cmd /c echo something` lost its output every single time.
     session.pump();
+    session.resize(wanted);
     let screen = session.snapshot();
 
     // The whole tile is filled first, so the strip narrower than one cell at the right and the bottom is the

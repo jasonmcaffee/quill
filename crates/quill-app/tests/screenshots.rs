@@ -4725,6 +4725,64 @@ fn run_current_file_is_offered_for_a_javascript_file_and_not_for_a_rust_one() {
 }
 
 #[test]
+fn a_program_that_prints_and_stops_leaves_what_it_printed_in_its_tab() {
+    // The one test here that starts a real program, and it earns it: this is the fault `task-1683`
+    // spent its last hour on. A run is opened at a **guessed** size and told the real one on the
+    // first frame the tile draws — and a pseudoconsole resized while its child is writing its first
+    // line loses that line. `cmd /c echo something` writes and exits inside a millisecond, so it
+    // was always still starting when that frame came, and its tab came up empty every single time.
+    //
+    // The fix is that `QuillApp::run_grid_size` works the size out from the rectangle the tile
+    // really has, so there is no resize at all. What proves it is a program that prints and stops.
+    let folder = std::env::temp_dir().join("quill-run-prints-and-stops");
+    std::fs::create_dir_all(&folder).expect("make the project");
+    let mut harness = harness_in(&folder);
+
+    let marker = "quill-printed-this";
+    let command = if cfg!(target_os = "windows") {
+        format!("cmd /c echo {marker}")
+    } else {
+        format!("/bin/sh -c \"echo {marker}\"")
+    };
+    harness.state_mut().run_configurations.add_permanent(configuration("printer", &command));
+    harness.state_mut().run_selected = Some("printer".to_owned());
+    choose(&mut harness, Action::Run(RunAction::Start(None)));
+
+    // `pump`, not `Harness::run`: `run` gives the window four steps to go quiet and panics
+    // otherwise, which is right for a settled window and wrong while a program is being waited for.
+    // The rule `task-1654` wrote down, wearing a different hat again.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        harness.step();
+        let run = harness.state().run.at(0).expect("the run");
+        if !run.is_running() && run.session.snapshot().contains(marker) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the program did not print and finish in thirty seconds; it is {} and the screen holds {:?}",
+            run.state().label(),
+            run.session.snapshot().text()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    // And it stays there, which is what a tab outliving its program means: the frames after it
+    // finished must not take it away either.
+    for _ in 0..8 {
+        harness.step();
+    }
+    let run = harness.state().run.at(0).expect("the run");
+    assert_eq!(run.state().label(), "finished");
+    assert!(
+        run.session.snapshot().contains(marker),
+        "the output should still be there, and the screen holds {:?}",
+        run.session.snapshot().text()
+    );
+    harness.state_mut().run.kill_everything();
+    std::fs::remove_dir_all(&folder).ok();
+}
+
+#[test]
 fn the_run_configurations_dialog_lists_them_on_the_left_and_edits_one_on_the_right() {
     let mut harness = harness("");
     harness

@@ -773,6 +773,20 @@ closing a terminal tab already takes, without dropping the session, so the grid 
 program. The window is woken **once** when the grace runs out rather than kept drawing for the whole
 two seconds.
 
+**A pseudoconsole must be opened at the size it will be drawn at, and never resized while its
+program is starting or after it has ended.** Both halves lose the program's output, because
+`ResizePseudoConsole` makes the console host re-render its buffer — and that buffer is being written
+into at one end of a program's life and empty at the other. It was measured on `cmd /c echo
+something`, which writes and exits inside a millisecond and so was **always** still starting when
+the tile drew its first frame and told it the real size: its tab came up empty every single time,
+and `node hello.js` two runs in three. `QuillApp::run_grid_size` therefore works the size out from
+the rectangle the tile really has — recorded on `RunPanel::tile` every frame, whether the tile is
+showing or not — so there is no resize at all; `Session::resize` refuses to tell a program that has
+ended; and `terminal_panel::grid` **pumps before it resizes**, because whether a program has ended
+is only known once the events it sent have been read.
+`a_program_that_prints_and_stops_leaves_what_it_printed_in_its_tab` is the guard, and it fails on
+the code as it was.
+
 **Plugins contribute data, not types.** The answer to "should running node mean a Node plugin" is
 no: node is how JavaScript runs, and the JavaScript manifest says so itself with `run.file = node
 {file}`. `run.project` names a detector **built into Quill**, checked against

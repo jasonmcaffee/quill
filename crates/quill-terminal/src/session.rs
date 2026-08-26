@@ -179,6 +179,10 @@ impl Session {
             // start in: it says so and starts in `C:\Windows` instead, which is a terminal that opens,
             // works, and is quietly in the wrong folder. That module says where such a path comes from.
             working_directory: settings.working_directory.as_deref().map(crate::paths::plain),
+            // Not the one that matters, and it is left alone deliberately: `tty::new` does not
+            // read it. The draining is decided by the fourth argument to `EventLoop::new` below,
+            // which is where alacritty's own configuration eventually puts this value and which is
+            // where the comment about it is.
             drain_on_exit: false,
             // Laid over what this process already has rather than replacing it: `tty::new` starts
             // the child from Quill's own environment and applies these on top.
@@ -196,7 +200,22 @@ impl Session {
         // A window identifier of zero: Quill has one window in a process, so there is nothing to tell
         // apart. It reaches the shell as `WINDOWID`.
         let pty = alacritty_terminal::tty::new(&options, size.into(), 0)?;
-        let event_loop = EventLoop::new(term.clone(), proxy, pty, false, false)?;
+        // The fourth argument is `drain_on_exit`, and it is `true` so that **what a program wrote
+        // just before it ended is read**. With it false the reader loop leaves the pseudoterminal
+        // alone the moment the child exits, and a program that prints one line and stops has all of
+        // its output still sitting in the pipe — so the screen comes out empty. Whether it did was
+        // a race: a slow enough program was read on an earlier turn of the loop and looked fine,
+        // which is what made this look like it worked in `quill-terminal`'s own tests.
+        //
+        // The terminal never showed it, because a shell does not exit a millisecond after printing
+        // and its tab closes when it goes. `task-1683`'s run tile is where it became visible:
+        // `node hello.js` finished with an empty tab, which is the one thing a run tile must not
+        // do, since the whole point of it is that the evidence outlives the process. It costs one
+        // non-blocking read of a pipe that already has its end-of-file on it.
+        //
+        // The identically named `tty::Options::drain_on_exit` above is **not** this one; `tty::new`
+        // does not read it.
+        let event_loop = EventLoop::new(term.clone(), proxy, pty, true, false)?;
         let notifier = Notifier(event_loop.channel());
         event_loop.spawn();
 
@@ -429,12 +448,35 @@ impl Session {
     /// Both have to be told, and they have to be told the same thing: the emulator so the grid is the right
     /// shape, and the program through `SIGWINCH` so it draws in the right places. Telling only one is the
     /// fault that leaves a full screen program drawing into the wrong half of the tile.
+    /// **A program that has ended is not told.** `ResizePseudoConsole` makes the console host
+    /// re-render its buffer, and once the child has gone that buffer is empty — so telling it
+    /// wipes everything the program wrote, on the frame after it finished.
+    ///
+    /// Resizing one that has only just **started** loses its output too, and that half is not
+    /// fixed here because it cannot be: a pseudoconsole resized while its child is writing its
+    /// first line loses that line, measured at six times out of six. The answer is not to resize
+    /// it at all, which means opening it at the size it is going to be drawn at — see
+    /// `QuillApp::run_grid_size`.
+    ///
+    /// That is what `task-1683` found: `cmd /c echo something` left an empty run tab **every**
+    /// time, and `node hello.js` two runs in three. Both write, exit within a millisecond, and are
+    /// then resized by the first frame the tile draws, because a session is spawned at a guessed
+    /// size and told the real one once there is a rectangle to measure. A program still running
+    /// survived it, because there the host re-renders a buffer that still has the text in it —
+    /// which is why a dev server looked fine and made this look like a race.
+    ///
+    /// The emulator is still resized, so the finished output reflows to the width the tile is now
+    /// and the view is not stuck at the shape it happened to end at. There is simply nothing on the
+    /// far side left to tell.
     pub fn resize(&mut self, size: Size) {
         if size == self.size {
             return;
         }
         self.size = size;
         self.term.lock().resize(size);
+        if !self.running {
+            return;
+        }
         if let Some(notifier) = self.notifier.as_mut() {
             notifier.on_resize(size.into());
         }
@@ -1161,6 +1203,35 @@ mod tests {
     }
 
     #[test]
+    fn what_a_program_wrote_just_before_it_ended_is_still_on_the_screen() {
+        // `drain_on_exit`. Without it the reader loop leaves the pseudoterminal alone the moment
+        // the child exits, and a program that prints one line and stops has all of its output
+        // still sitting in the pipe — so the screen is empty. `task-1683`'s run tile is where that
+        // became visible, because the whole point of it is that the evidence outlives the process.
+        let message = "quill-drain-on-exit-works";
+        let settings = if cfg!(target_os = "windows") {
+            SessionSettings {
+                shell: Some(test_shell()),
+                args: vec!["/c".to_owned(), format!("echo {message}")],
+                ..SessionSettings::default()
+            }
+        } else {
+            SessionSettings {
+                shell: Some(test_shell()),
+                args: vec!["-c".to_owned(), format!("echo {message}")],
+                ..SessionSettings::default()
+            }
+        };
+        let session = run_to_the_end(settings);
+        assert!(!session.is_running());
+        assert!(
+            session.snapshot().contains(message),
+            "the program's last words should still be there, and the screen holds {:?}",
+            session.snapshot().text()
+        );
+    }
+
+    #[test]
     fn a_variable_in_the_settings_reaches_the_program() {
         // The whole of what `SessionSettings::env` is for: a run configuration's `PORT=3000` has to
         // be in the child's environment. Asked of the program itself rather than of Quill, by
@@ -1227,6 +1298,39 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
+    }
+
+    #[test]
+    fn resizing_after_a_program_has_ended_keeps_what_it_wrote() {
+        // The fault `task-1683` found, and the one that made a run tab come up empty: the tile
+        // resizes its session on the first frame it draws, and a session is spawned at a guessed
+        // size, so a program that writes and exits inside a millisecond was **always** resized
+        // after it had gone — and `ResizePseudoConsole` re-renders the console host's buffer, which
+        // by then is empty.
+        let message = "quill-resize-after-exit";
+        let (flag, command) = if cfg!(target_os = "windows") {
+            ("/c", format!("echo {message}"))
+        } else {
+            ("-c", format!("echo {message}"))
+        };
+        let settings = SessionSettings {
+            shell: Some(test_shell()),
+            args: vec![flag.to_owned(), command],
+            ..SessionSettings::default()
+        };
+        let mut session = run_to_the_end(settings);
+        assert!(session.snapshot().contains(message), "it is there to begin with");
+        // Resizing it to the size it already has is not a resize, and must not be one here either.
+        session.resize(session.size());
+        // The tile measuring itself, one frame later.
+        session.resize(Size::new(24, 120));
+        assert!(
+            session.snapshot().contains(message),
+            "and still there after the resize, which is the whole point of a tab that outlives its \
+             program; the screen holds {:?}",
+            session.snapshot().text()
+        );
+        assert_eq!(session.size().columns, 120, "and the emulator did take the new shape");
     }
 
     #[test]

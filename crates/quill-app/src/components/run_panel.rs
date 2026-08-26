@@ -155,6 +155,13 @@ pub struct RunPanel {
     selecting: bool,
     /// The rectangle the grid last filled, for the tests.
     grid_area: Rect,
+    /// The rectangle the tile has along the bottom of the window, whether it is showing or not.
+    ///
+    /// Recorded by the window every frame rather than by this file when it draws, because a run
+    /// **started while the tile is put away** has to be given the right size too — and a session
+    /// given the wrong size is one that gets resized a millisecond later, which is what
+    /// `QuillApp::run_grid_size` explains and what loses a fast program's output.
+    pub tile: Rect,
 }
 
 impl Default for RunPanel {
@@ -172,6 +179,7 @@ impl RunPanel {
             active: 0,
             selecting: false,
             grid_area: Rect::ZERO,
+            tile: Rect::ZERO,
         }
     }
 
