@@ -329,6 +329,18 @@ pub struct QuillApp {
     /// move, so what the gesture has asked for is kept here between frames and the setting changes
     /// only when it has asked for a whole point.
     zoom_pending: f32,
+    /// Set once a pane has taken this frame's zoom gesture.
+    ///
+    /// A gesture belongs to the window rather than to a pane, because the size is one setting for
+    /// the whole window, and the pointer says which pane it is about. Every pane used to ask the
+    /// same `zoom_delta` for itself, so with the editing area split the size stepped once for
+    /// each
+    /// pane: one notch of the wheel took sixteen points to thirty two.
+    zoom_taken: bool,
+    /// Set when the pane with the keyboard is willing to take the gesture but has no pointer over
+    /// it, which is settled at the end of the frame — a pinch with the pointer over the explorer or
+    /// the terminal still zooms the pane a person is typing into.
+    zoom_offered_to_the_keyboard: bool,
     /// The pictures in the preview, decoded and kept between frames.
     ///
     /// One of the three caches that stay on the window rather than moving onto the tab with the rest
@@ -444,6 +456,8 @@ impl QuillApp {
             reveal_in_explorer: 0,
             editor_area: Rect::ZERO,
             zoom_pending: 1.0,
+            zoom_taken: false,
+            zoom_offered_to_the_keyboard: false,
             preview_images: PreviewImages::new(),
             mermaid_scenes: MermaidScenes::new(),
             themed: false,
@@ -1000,13 +1014,19 @@ impl QuillApp {
                 match self.files.active_mut().picture.as_mut() {
                     Some(picture) => picture.step_zoom(larger, area),
                     None => {
+                        // About the caret, which is what a person zooming with the keyboard is
+                        // looking at. `task-1672`.
+                        self.anchor_the_view_at_the_caret();
                         self.set_font_size(settings::step_font_size(self.settings.font_size, larger))
                     }
                 }
             }
             Action::ResetFontSize => match self.files.active_mut().picture.as_mut() {
                 Some(picture) => picture.fit(),
-                None => self.set_font_size(settings::DEFAULT_FONT_SIZE),
+                None => {
+                    self.anchor_the_view_at_the_caret();
+                    self.set_font_size(settings::DEFAULT_FONT_SIZE)
+                }
             },
             Action::ToggleTerminal => {
                 self.terminal.visible = !self.terminal.visible;
@@ -1827,6 +1847,7 @@ impl QuillApp {
                     file.document = document;
                     file.scroll = 0.0;
                     file.forget_git();
+                    file.forget_where_it_was_being_read();
                 }
                 if index == self.files.active_index() {
                     self.forget_layout();
@@ -2301,6 +2322,8 @@ impl QuillApp {
         if !self.git_looked {
             self.open_repository();
         }
+        self.zoom_taken = false;
+        self.zoom_offered_to_the_keyboard = false;
         // Before anything is drawn, so that what a command asked for is in the frame about to be
         // painted and therefore in the next screenshot.
         self.pump_control(ui.ctx());
@@ -2569,6 +2592,13 @@ impl QuillApp {
         self.files.focus_pane(keyboard);
         if let Some(index) = close {
             self.close_tab(index);
+        }
+        // A gesture nobody was pointing at belongs to the pane being typed into. Here rather than
+        // in the loop, because a pane earlier in the row must not take a gesture aimed at one
+        // later in it, and which pane the pointer is over is not known until they are all drawn.
+        if !self.zoom_taken && self.zoom_offered_to_the_keyboard {
+            self.zoom_taken = true;
+            self.zoom_the_text(ui, 0.0);
         }
 
         // The dividers between the panes, added after every pane for the reason
@@ -2958,22 +2988,92 @@ impl QuillApp {
     /// a fast one both end up where the fingers say. Nothing here needs to know what one notch of a
     /// wheel is worth in points, which is a platform's business and differs between mice.
     ///
+    /// `above` is how far below the top of the view the point the gesture is about sits: where the
+    /// pointer is, or the top of the view when the gesture arrived with the pointer somewhere else.
+    /// Whatever text is there is what the zoom is not allowed to move, which is what `task-1672`
+    /// asks for — a person zooming in is zooming in on the line they are looking at, and having to
+    /// scroll back to it afterwards is the whole complaint.
+    ///
     /// What comes out is written to the settings file once the pointer is up rather than on every
     /// frame, by the rule `ui` already keeps for a dragged divider.
-    fn zoom_the_text(&mut self, ui: &egui::Ui) {
+    fn zoom_the_text(&mut self, ui: &egui::Ui, above: f32) {
         let gesture = ui.input(|input| input.zoom_delta());
         if (gesture - 1.0).abs() < f32::EPSILON {
             return;
         }
         self.zoom_pending *= gesture;
+        let mut steps = 0i32;
         while self.zoom_pending >= ZOOM_STEP {
             self.zoom_pending /= ZOOM_STEP;
-            self.set_font_size(settings::step_font_size(self.settings.font_size, true));
+            steps += 1;
         }
         while self.zoom_pending <= 1.0 / ZOOM_STEP {
             self.zoom_pending *= ZOOM_STEP;
-            self.set_font_size(settings::step_font_size(self.settings.font_size, false));
+            steps -= 1;
         }
+        if steps == 0 {
+            return;
+        }
+        // Counted first and taken afterwards, so the point that is to stay put is read off the
+        // layout as it is now — before `set_font_size` marks it stale — however many sizes one
+        // frame of the gesture turns out to be worth.
+        self.anchor_the_view(above);
+        for _ in 0..steps.abs() {
+            self.set_font_size(settings::step_font_size(self.settings.font_size, steps > 0));
+        }
+    }
+
+    /// Remember the text `above` points below the top of the editing area, so the zoom can put it
+    /// back there once the file has been laid out at its new size.
+    ///
+    /// Set before the size changes, and before [`Self::set_the_font_everywhere`] takes the top of
+    /// the view for every other file, so this one — the pane being zoomed — keeps the point the
+    /// person is actually looking at.
+    fn anchor_the_view(&mut self, above: f32) {
+        let file = self.files.active_mut();
+        let at = file.cached.layout.anchor_at_y(file.scroll + above);
+        file.zoom_anchor = Some(files::ViewAnchor { at, above });
+    }
+
+    /// The same, for a zoom from the keyboard, which has no pointer to be about.
+    ///
+    /// The caret is what a person is working on, so that is the point kept still — clamped into the
+    /// view, so a caret that is off the top or the bottom of the window anchors the edge nearest it
+    /// rather than scrolling the file to somewhere nobody asked to be.
+    fn anchor_the_view_at_the_caret(&mut self) {
+        let view_height = (self.editor_area.height() - size::EDITOR_PADDING_Y * 2.0).max(0.0);
+        let file = self.files.active();
+        let caret = file.cached.layout.caret_at(file.document.selection().head);
+        let above = (caret.y - file.scroll).clamp(0.0, view_height);
+        self.anchor_the_view(above);
+    }
+
+    /// Scroll a view back to the place it was anchored at before the font changed.
+    ///
+    /// Called on the frame the file is laid out again, after `refresh_layout` and before the scroll
+    /// position is read for anything else, so the wheel and the caret still have the last word in
+    /// the ordinary way. Clamped to what there is to scroll, because a larger font can leave a file
+    /// that overflowed the window no longer overflowing it.
+    fn keep_the_place_through_a_zoom(&mut self, view_height: f32) {
+        let file = self.files.active_mut();
+        let Some(anchor) = file.zoom_anchor.take() else {
+            return;
+        };
+        let overflow = (file.cached.layout.height - view_height).max(0.0);
+        file.scroll =
+            (file.cached.layout.y_of_anchor(anchor.at) - anchor.above).clamp(0.0, overflow);
+    }
+
+    /// The same for the Markdown preview, which scrolls on its own and is laid out from the same
+    /// base style, so a change of size moves it in exactly the same way.
+    fn keep_the_previews_place_through_a_zoom(&mut self, view_height: f32) {
+        let file = self.files.active_mut();
+        let Some(anchor) = file.preview_anchor.take() else {
+            return;
+        };
+        let overflow = (file.cached.preview_layout.height - view_height).max(0.0);
+        file.preview_scroll =
+            (file.cached.preview_layout.y_of_anchor(anchor.at) - anchor.above).clamp(0.0, overflow);
     }
 
     /// Set the editor's font size, from the keyboard or from a pinch.
@@ -3006,6 +3106,13 @@ impl QuillApp {
     /// having unsaved changes, because what Quill saves is plain text and carries no formatting.
     fn set_the_font_everywhere(&mut self) {
         let change = self.settings.as_style_change();
+        // Before anything is changed, because an anchor describes the layout the reader can still
+        // see. Every file rather than the one showing, for the same reason the font itself reaches
+        // every file: the other tabs are laid out again too, and a tab that came back scrolled
+        // somewhere else would be a tab that had moved while nobody was looking at it.
+        for file in self.files.iter_mut() {
+            file.anchor_the_views();
+        }
         for file in self.files.iter_mut() {
             file.document.set_base_style(change.clone());
         }
@@ -3016,6 +3123,12 @@ impl QuillApp {
         for file in self.files.iter_mut() {
             file.cached.stale = true;
             file.cached.preview = None;
+        }
+        // The frame that puts each view back where it was anchored is the frame after this one, and
+        // an idle window draws nothing — the last notch of a gesture would otherwise be left
+        // showing the text at its new size in the old place until something else woke the window.
+        if let Some(context) = &self.context {
+            context.request_repaint();
         }
     }
 
@@ -3288,6 +3401,7 @@ impl QuillApp {
         let text_width = (area.width() - size::EDITOR_PADDING_X * 2.0).max(50.0);
         let ctx = ui.ctx().clone();
         self.refresh_preview(&ctx, text_width);
+        self.keep_the_previews_place_through_a_zoom(area.height() - size::EDITOR_PADDING_Y * 2.0);
 
         // The preview scrolls on its own, so reading the rendered page does not move the caret.
         let wheel = ui.input(|input| input.smooth_scroll_delta.y);
@@ -3430,6 +3544,9 @@ impl QuillApp {
         let has_keyboard = self.focus == Focus::Editor && focused;
         let text_width = (area.width() - padding - size::EDITOR_PADDING_X).max(50.0);
         self.refresh_layout(text_width);
+        // Straight after the layout, so the rest of the frame — the wheel, the caret, the painter
+        // — sees the scroll position the zoom asked for rather than the one it was left at.
+        self.keep_the_place_through_a_zoom(area.height() - size::EDITOR_PADDING_Y * 2.0);
 
         let scroll = self.files.active().scroll;
         let origin = Pos2::new(area.left() + padding, area.top() + size::EDITOR_PADDING_Y - scroll);
@@ -3473,19 +3590,34 @@ impl QuillApp {
         }
 
         // A pinch, or the wheel with the zoom modifier held, changes the size of the text that is
-        // being worked on: either the editing area has the keyboard, or the pointer is demonstrably
-        // over it.
+        // being worked on: either the pointer is demonstrably over this pane, or this is the pane
+        // with the keyboard and no pane has the pointer.
         //
         // Neither of those is `response.hovered()`, and it took measuring the real window to find
         // out why it must not be. A two notch gesture produced thirty eight frames, eleven of them
         // carrying a zoom — and on every one of those eleven `hovered()` was false and
         // `pointer.hover_pos()` was `None`, because egui reports no pointer at all on a frame whose
         // only input is a wheel event. Gating on either alone threw the whole gesture away and the
-        // text never moved, which is exactly what the first version of this did.
-        let pointer_in_the_editor =
-            ui.input(|input| input.pointer.hover_pos()).is_some_and(|at| area.contains(at));
-        if has_keyboard || pointer_in_the_editor {
-            self.zoom_the_text(ui);
+        // text never moved, which is exactly what the first version of this did. So the last place
+        // the pointer was seen is asked for as well, which is what `latest_pos` is, and it is what
+        // says which pane a gesture with no pointer on this frame is still about.
+        let pointer = ui
+            .input(|input| input.pointer.hover_pos().or_else(|| input.pointer.latest_pos()))
+            .filter(|at| area.contains(*at));
+        if !self.zoom_taken {
+            match pointer {
+                // Over this pane, so the gesture is this pane's, about the text it is over.
+                Some(at) => {
+                    self.zoom_taken = true;
+                    let top = area.top() + size::EDITOR_PADDING_Y;
+                    self.zoom_the_text(ui, (at.y - top).max(0.0));
+                }
+                // Not over this pane. The pane with the keyboard takes it at the end of the frame
+                // if no pane turns out to have the pointer, keeping the top of its view still,
+                // because there is then no point on the screen for the gesture to be about.
+                None if has_keyboard => self.zoom_offered_to_the_keyboard = true,
+                None => {}
+            }
         }
 
         let wheel = ui.input(|input| input.smooth_scroll_delta.y);

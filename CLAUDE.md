@@ -455,6 +455,51 @@ having unsaved changes, because what Quill saves is plain text and carries no fo
 and all, which is a browser's zoom rather than an editor's; with it left on, one press of command and
 plus would do both.
 
+## A zoom keeps the line you were reading where it was
+
+`task-1672` reported that zooming in meant scrolling back to the line you had zoomed in on. The
+editing area is not a `ScrollArea`: a tab holds `OpenFile::scroll`, a number of points from the top
+of the document, and that number means something different the moment the text is laid out at a
+different size. `app/mod.rs` is 5,900 points tall at nine points and 10,500 at sixteen, so a scroll
+position that did not change was a reader half a file away from what they were looking at.
+
+**What is remembered is the text, not the offset.** `quill_core::Anchor` is where the line the point
+fell on starts and how far down that line it sat; `Layout::anchor_at_y` takes one before the size
+changes and `Layout::y_of_anchor` puts it back after, so the line is worked out again rather than
+remembered and a paragraph that wraps differently at the new size still has an answer. The fraction
+is what makes it exact rather than nearly exact — anchoring on `caret_at`, which returns the glyph
+box, loses where in the line the point was and drifts a line or two over a whole gesture.
+`Layout::line_of_anchor` is the off-by-one that had to be got right: `line_of_offset` gives the
+**earlier** line for an offset on a line break, which is right for a caret ending a line and wrong
+for an anchor, because a wrapped line starts at the byte the line above ends at.
+
+**The anchor lives on the tab**, beside the scroll position it corrects, as `OpenFile::zoom_anchor`
+and `preview_anchor` — one for each thing that scrolls. It is taken before the size changes and used
+on the first frame the file is laid out again, which for a tab nobody is looking at may be much
+later and is still the right answer, because a file that has not been laid out again has not moved.
+`set_the_font_everywhere` takes one for **every** open file, so a tab comes back at the line it was
+left at; an anchor already taken is left alone, so the pointer's anchor — set first by the pane
+being zoomed — beats the top-of-view one. It is cleared exactly where a document is **replaced**,
+and must not be cleared by `forget_what_was_worked_out`, which is also how showing a tab throws
+away what was laid out for it.
+
+**Which point stays still depends on how the size was changed**: the pointer for a pinch or
+`Ctrl`+wheel, the caret clamped into the view for the keyboard, the top of the view for the Settings
+window and for every tab that has neither. The pointer is asked for as
+`hover_pos().or(latest_pos())` because egui reports no pointer at all on a frame whose only input is
+a wheel event.
+
+**A gesture belongs to the window, not to a pane.** `zoom_the_text` was called from `show_editor`,
+once per pane, and each pane accumulated the same `zoom_delta`: with the editing area split, one
+notch of the wheel took sixteen points to thirty two. It is claimed once a frame now and the pointer
+decides whose it is — a pane under the pointer takes it, and the pane with the keyboard takes it at
+the end of the frame if no pane turned out to have the pointer. Settled after the pane loop, because
+a pane earlier in the row must not claim a gesture aimed at one later in it.
+
+The correction lands on the frame **after** the size changed, since `set_font_size` only marks the
+layout stale. An idle window draws nothing, so `set_the_font_everywhere` asks for a repaint —
+without it the last notch of a gesture sits uncorrected until something else wakes the window.
+
 ## Every pane is resized by dragging its edge
 
 The explorer, the split between the Markdown source and its preview, and the terminal tile are all resized
@@ -748,6 +793,10 @@ trade that away to be a shade nearer a screenshot.
 - `tasks/task-1671-css-plugin-tdd.md` — the CSS plugin: the four shapes of CSS the tokeniser could
   not read, the three grammar keys added for them, which CSS word goes in which of the three lists,
   and why `Ctrl+C` reached no program on Windows.
+- `tasks/task-1672-zoom-tdd.md` — the zoom that kept the line you were reading: why a scroll
+  position cannot survive a change of size, the three ways of putting the view back that were
+  weighed, where the anchor lives and when it is cleared, and the split view where one notch of the
+  wheel was worth two sizes.
 - `tasks/task-1666-performance-tdd.md` — why a frame cost 818 ms and now costs 20: the eight faults
   that were found, what each was worth, the two revisions a document counts, the incremental layout
   and why its fingerprint is derived rather than reported, and what was deliberately not done.

@@ -28,7 +28,7 @@
 
 use std::path::{Path, PathBuf};
 
-use quill_core::{Document, Layout, Preview};
+use quill_core::{Anchor, Document, Layout, Preview};
 
 use crate::app::{PlacedDiagram, PlacedPicture, ViewMode};
 use crate::components::gutter::{BlameRow, Change};
@@ -76,6 +76,26 @@ impl Cached {
     }
 }
 
+/// A place in a view that is to stay where it is while the text is laid out again.
+///
+/// Zooming changes how tall every line is, so a scroll position — a number of points down the
+/// document — means something different afterwards, and the reader is left looking at a different
+/// part of the file. What is remembered instead is the text that was under a point on the screen
+/// and how far down the view that point was; putting the two back together once the new layout
+/// exists gives the scroll position that leaves that text exactly where it was.
+///
+/// Taken before the font size changes, because it has to describe the layout the reader can still
+/// see, and used up on the first frame the file is laid out again — which for a file in a pane that
+/// is not on the screen may be a good while later, and is still the right answer, because a file
+/// that has not been laid out again has not moved.
+#[derive(Debug, Clone, Copy)]
+pub struct ViewAnchor {
+    /// The text that is to stay put.
+    pub at: Anchor,
+    /// How far below the top of the view it was, in points.
+    pub above: f32,
+}
+
 /// One open file, and everything about it that is not about the window.
 pub struct OpenFile {
     pub document: Document,
@@ -84,6 +104,10 @@ pub struct OpenFile {
     pub scroll: f32,
     /// How far the Markdown preview is scrolled, which is separate from the source.
     pub preview_scroll: f32,
+    /// What the source is to be scrolled back to once it has been laid out at a new font size, and
+    /// the same for the preview. See [`ViewAnchor`].
+    pub zoom_anchor: Option<ViewAnchor>,
+    pub preview_anchor: Option<ViewAnchor>,
     /// One row a paragraph, once this file has been annotated with git blame.
     pub blame: Option<Vec<BlameRow>>,
     /// Which paragraphs differ from the version git has.
@@ -126,6 +150,8 @@ impl OpenFile {
             view_mode: ViewMode::Raw,
             scroll: 0.0,
             preview_scroll: 0.0,
+            zoom_anchor: None,
+            preview_anchor: None,
             blame: None,
             line_changes: Vec::new(),
             transient: false,
@@ -179,6 +205,35 @@ impl OpenFile {
     pub fn forget_what_was_worked_out(&mut self) {
         self.cached = Cached::fresh();
         self.coloured_revision = None;
+    }
+
+    /// A different document has taken this tab, so where the last one was being read means nothing.
+    ///
+    /// Separate from [`Self::forget_what_was_worked_out`] because that is also how showing a tab
+    /// throws away what was laid out for it, and a tab being shown is a tab whose document is the
+    /// one it always had: an anchor thrown away there is a tab that jumps the next time the font
+    /// changes while it is not the one on the screen, which is the fault `task-1672` is about.
+    pub fn forget_where_it_was_being_read(&mut self) {
+        self.zoom_anchor = None;
+        self.preview_anchor = None;
+    }
+
+    /// Remember where each view is, so a change of font size can put it back.
+    ///
+    /// The top of the view, which is what a person means by "do not move the file about" when the
+    /// size is changed from the Settings window or from a tab they are not looking at. A zoom over
+    /// the text asks for a point of its own — the pointer, or the caret — and sets that first,
+    /// which is why an anchor already taken is left alone: the one nearest to what the reader is
+    /// actually doing wins, and both describe the layout as it is now.
+    pub fn anchor_the_views(&mut self) {
+        if self.zoom_anchor.is_none() {
+            let at = self.cached.layout.anchor_at_y(self.scroll);
+            self.zoom_anchor = Some(ViewAnchor { at, above: 0.0 });
+        }
+        if self.preview_anchor.is_none() {
+            let at = self.cached.preview_layout.anchor_at_y(self.preview_scroll);
+            self.preview_anchor = Some(ViewAnchor { at, above: 0.0 });
+        }
     }
 }
 
@@ -667,6 +722,7 @@ impl OpenFiles {
                 file.picture = None;
                 file.forget_git();
                 file.forget_what_was_worked_out();
+                file.forget_where_it_was_being_read();
                 self.show(index);
                 index
             }

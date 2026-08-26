@@ -1689,6 +1689,254 @@ fn a_pinch_too_small_to_ask_for_a_size_is_kept_rather_than_thrown_away() {
     );
 }
 
+/// A file long enough to be scrolled about in, one short line a paragraph so nothing wraps.
+fn a_long_file() -> String {
+    (0..200).map(|n| format!("line {n} of the file\n")).collect()
+}
+
+/// A folder of long files for the zoom tests, kept out of [`sample_folder`] because a file written
+/// there is a row in the explorer of every screenshot in this file.
+fn a_folder_of_long_files() -> std::path::PathBuf {
+    let root = std::env::temp_dir().join("quill-zoom-folder");
+    std::fs::create_dir_all(&root).expect("make the zoom folder");
+    std::fs::write(root.join("long.txt"), a_long_file()).expect("write long.txt");
+    std::fs::write(root.join("longer.txt"), a_long_file()).expect("write longer.txt");
+    std::fs::write(root.join("short.txt"), "a short file\n").expect("write short.txt");
+    root
+}
+
+/// Which paragraph of `file` is drawn `above` points below the top of its view.
+///
+/// The pane's own rectangle does not come into it: `above` is a distance below the top of a view,
+/// and every pane's view starts at the same height, so this can ask about a file in a pane the test
+/// is not focused on.
+fn paragraph_in(file: &quill_app::app::files::OpenFile, above: f32) -> usize {
+    let offset = file.cached.layout.offset_at(0.0, file.scroll + above);
+    file.document.text().byte_to_line(offset)
+}
+
+/// The open file with this name, which is how a test asks about a pane it is not focused on.
+fn file_named<'a>(app: &'a QuillApp, name: &str) -> &'a quill_app::app::files::OpenFile {
+    app.files
+        .iter()
+        .find(|file| file.name() == name)
+        .unwrap_or_else(|| panic!("{name} should be open"))
+}
+
+/// Which paragraph of the open file is drawn at `screen_y`.
+///
+/// The paragraph rather than the line or the offset in points, because it is the same number
+/// whatever size the text is drawn at — which is exactly the question `task-1672` asks: is the
+/// reader still looking at what they were looking at.
+fn paragraph_under(app: &QuillApp, screen_y: f32) -> usize {
+    let top = app.editor_area().top() + quill_app::theme::size::EDITOR_PADDING_Y;
+    let down = app.files.active().scroll + (screen_y - top);
+    let offset = app.layout().offset_at(0.0, down);
+    app.document().text().byte_to_line(offset)
+}
+
+/// How far below the top of the view the caret is drawn.
+fn caret_below_the_top(app: &QuillApp) -> f32 {
+    app.layout().caret_at(app.document().selection().head).y - app.files.active().scroll
+}
+
+#[test]
+fn a_pinch_keeps_the_line_under_the_pointer_where_it_is() {
+    // `task-1672`: zooming in and then having to scroll back to the line you were zooming in on is
+    // the whole complaint. The text under the pointer is what the gesture is about, so it is what
+    // must not move.
+    let mut harness = harness(&a_long_file());
+    let area = harness.state().editor_area();
+    // A long way down the file, so there is room to go wrong in either direction.
+    harness.state_mut().files.active_mut().scroll = 900.0;
+    harness.run();
+    let at = egui::pos2(area.center().x, area.top() + area.height() * 0.6);
+    let was_under_the_pointer = paragraph_under(harness.state(), at.y);
+    let was_scrolled_to = harness.state().files.active().scroll;
+
+    harness.input_mut().events.push(egui::Event::PointerMoved(at));
+    harness.input_mut().events.push(egui::Event::Zoom(1.2));
+    harness.run();
+    harness.run();
+
+    assert_eq!(harness.state().settings.font_size, 20.0, "the pinch should have asked for a size");
+    assert_eq!(
+        paragraph_under(harness.state(), at.y),
+        was_under_the_pointer,
+        "the same line should still be under the pointer"
+    );
+    // And it took moving the view to keep it there: the same line is further down a document laid
+    // out in a larger font, so a scroll position that did not change would be the fault itself.
+    assert!(
+        harness.state().files.active().scroll > was_scrolled_to,
+        "the view should have followed the text down the file"
+    );
+
+    // Pinching back out is the same question the other way round. Two sizes' worth, because what a
+    // gesture asks for and what a step costs do not divide, and the remainder of the pinch above is
+    // carried — so asking for exactly one size back can land either side of the next step.
+    harness.input_mut().events.push(egui::Event::PointerMoved(at));
+    harness.input_mut().events.push(egui::Event::Zoom(1.0 / (1.2 * 1.2)));
+    harness.run();
+    harness.run();
+    let smaller = harness.state().settings.font_size;
+    assert!(smaller < 20.0, "pinching out should have come back down: {smaller}");
+    assert_eq!(
+        paragraph_under(harness.state(), at.y),
+        was_under_the_pointer,
+        "and still under it on the way back out"
+    );
+}
+
+#[test]
+fn the_keyboards_zoom_keeps_the_caret_where_it_is() {
+    // A pinch is about the pointer; the keyboard has none, so it is about the caret, which is what
+    // a person pressing command and plus is working on.
+    let text = a_long_file();
+    let mut harness = harness(&text);
+    let ctx = harness.ctx.clone();
+    let offset = text.find("line 90 ").expect("the file has a ninetieth line");
+    harness.state_mut().command(Command::PlaceCaret { offset, extend: false });
+    harness.run();
+    // Scrolled so the caret sits well inside the view rather than at either edge of it.
+    let caret = harness.state().layout().caret_at(offset).y;
+    harness.state_mut().files.active_mut().scroll = caret - 200.0;
+    harness.run();
+    let was = caret_below_the_top(harness.state());
+    assert!((was - 200.0).abs() < 1.0, "the caret should be 200 points down the view, not {was}");
+
+    harness.state_mut().run_action(Action::ChangeFontSize { larger: true }, &ctx);
+    harness.run();
+    harness.run();
+    assert_eq!(harness.state().settings.font_size, 20.0);
+    let now = caret_below_the_top(harness.state());
+    assert!((now - was).abs() < 3.0, "the caret should have stayed put: {was} then {now}");
+
+    // Back down two sizes, and it is still where it was.
+    harness.state_mut().run_action(Action::ChangeFontSize { larger: false }, &ctx);
+    harness.run();
+    harness.state_mut().run_action(Action::ChangeFontSize { larger: false }, &ctx);
+    harness.run();
+    harness.run();
+    assert_eq!(harness.state().settings.font_size, 13.0);
+    let smaller = caret_below_the_top(harness.state());
+    assert!((smaller - was).abs() < 3.0, "and still there in a smaller font: {smaller}");
+}
+
+#[test]
+fn a_zoom_leaves_a_tab_that_was_not_showing_at_the_line_it_was_left_at() {
+    // The font is one setting for the whole window, so every tab is laid out again — and a tab that
+    // came back scrolled somewhere else would be a tab that had moved while nobody was looking at
+    // it. What is kept for those is the top of their view, since there is no pointer over them and
+    // no caret being typed at.
+    let folder = a_folder_of_long_files();
+    let long = folder.join("long.txt");
+    let mut harness = harness_in(&folder);
+    let ctx = harness.ctx.clone();
+    harness.state_mut().open_path_permanently(&long);
+    harness.run();
+    harness.state_mut().files.active_mut().scroll = 900.0;
+    harness.run();
+    let top = harness.state().editor_area().top() + quill_app::theme::size::EDITOR_PADDING_Y;
+    let was_at_the_top = paragraph_under(harness.state(), top);
+
+    // Show a different file, change the size from there, and come back.
+    harness.state_mut().open_path_permanently(&folder.join("short.txt"));
+    harness.run();
+    harness.state_mut().run_action(Action::ChangeFontSize { larger: true }, &ctx);
+    harness.run();
+    harness.state_mut().open_path_permanently(&long);
+    harness.run();
+    harness.run();
+    assert_eq!(harness.state().files.active().name(), "long.txt");
+    assert_eq!(
+        paragraph_under(harness.state(), top),
+        was_at_the_top,
+        "the line it was left at should still be the first one showing"
+    );
+}
+
+#[test]
+fn a_pinch_in_a_split_is_the_pointers_pane_and_steps_the_size_once() {
+    // The size is one setting for the window, so a gesture is the window's rather than a pane's.
+    // Every pane used to take the same `zoom_delta` for itself, which stepped the size once for
+    // each of them: with two panes one notch of the wheel took sixteen points to thirty two.
+    let folder = a_folder_of_long_files();
+    let mut harness = harness_in(&folder);
+    let ctx = harness.ctx.clone();
+    harness.state_mut().open_path_permanently(&folder.join("long.txt"));
+    harness.run();
+    harness.state_mut().open_path_permanently(&folder.join("longer.txt"));
+    harness.state_mut().run_action(Action::SplitRight, &ctx);
+    harness.run();
+    assert_eq!(harness.state().files.pane_count(), 2, "there should be two panes");
+    let showing = harness.state().files.active().name();
+    assert_eq!(showing, "longer.txt", "the new pane has the keyboard");
+
+    // Both panes scrolled into their files, so an anchor that was not applied shows up as a line
+    // that is not the one that was there.
+    for name in ["long.txt", "longer.txt"] {
+        let index = harness.state().files.iter().position(|file| file.name() == name).unwrap();
+        harness.state_mut().files.at_mut(index).scroll = 900.0;
+    }
+    harness.run();
+
+    // The pointer over the left hand pane, which is the one **without** the keyboard. The right
+    // hand pane is the focused one, so its rectangle is the one the window reports, and the left
+    // one is beside it.
+    let right = harness.state().editor_area();
+    let down = right.top() + quill_app::theme::size::EDITOR_PADDING_Y + 300.0;
+    let at = egui::pos2(right.left() - 100.0, down);
+    let was_under_the_pointer = paragraph_in(file_named(harness.state(), "long.txt"), 300.0);
+    let was_at_the_top = paragraph_in(file_named(harness.state(), "longer.txt"), 0.0);
+
+    harness.input_mut().events.push(egui::Event::PointerMoved(at));
+    harness.input_mut().events.push(egui::Event::Zoom(1.2));
+    harness.run();
+    harness.run();
+
+    assert_eq!(
+        harness.state().settings.font_size,
+        20.0,
+        "one notch is one size, however many panes thought the gesture was theirs"
+    );
+    assert_eq!(
+        paragraph_in(file_named(harness.state(), "long.txt"), 300.0),
+        was_under_the_pointer,
+        "the pane under the pointer should have kept the line the pointer was on"
+    );
+    assert_eq!(
+        paragraph_in(file_named(harness.state(), "longer.txt"), 0.0),
+        was_at_the_top,
+        "and the other pane the line at the top of it, there being no pointer over it"
+    );
+}
+
+#[test]
+fn a_zoom_keeps_the_markdown_previews_place_too() {
+    // The preview is laid out from the same base style, so it moves in exactly the same way, and it
+    // scrolls on its own — so it needs its own anchor rather than the source's.
+    let text: String = (0..120).map(|n| format!("Paragraph {n} of the page.\n\n")).collect();
+    let mut harness = harness(&text);
+    let ctx = harness.ctx.clone();
+    harness.state_mut().set_view_mode(ViewMode::Preview);
+    harness.run();
+    harness.state_mut().files.active_mut().preview_scroll = 700.0;
+    harness.run();
+    let at_the_top = |app: &QuillApp| {
+        let scrolled = app.files.active().preview_scroll;
+        app.preview_layout().offset_at(0.0, scrolled)
+    };
+    let was = at_the_top(harness.state());
+    assert!(was > 0, "the preview should be scrolled into the page, not sitting at the top of it");
+
+    harness.state_mut().run_action(Action::ChangeFontSize { larger: true }, &ctx);
+    harness.run();
+    harness.run();
+    assert_eq!(harness.state().settings.font_size, 20.0);
+    assert_eq!(at_the_top(harness.state()), was, "the same words should be at the top of the page");
+}
+
 #[test]
 fn the_filter_box_puts_its_words_on_the_same_line_as_the_magnifier() {
     // It used to lay them out against the top edge of the box: a `TextEdit` with `Frame::NONE` has

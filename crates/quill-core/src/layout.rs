@@ -245,6 +245,28 @@ pub struct Caret {
     pub line: usize,
 }
 
+/// A point down the page, held as something that survives the text being laid out again.
+///
+/// A scroll position is a number of points from the top of the document, so it means something
+/// different the moment the text is laid out at a different size: zooming in from twelve points to
+/// twenty at the same scroll offset leaves the reader looking at a line a third of the way further
+/// up the file. What does not change is *which line* was being looked at, so that is what an anchor
+/// holds — where the line starts, and how far down it the point sat. Take one with
+/// [`Layout::anchor_at_y`] before the size changes and ask the new layout for
+/// [`Layout::y_of_anchor`] after it, and the same text is under the same point on the screen.
+///
+/// The offset is the **start of the line**, not the offset under the point, so a line that wraps
+/// differently at the new size still has an answer: [`Layout::line_of_offset`] gives whichever of
+/// its lines that byte now falls on.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Anchor {
+    /// Where the line the point fell on starts.
+    pub offset: usize,
+    /// How far down that line the point sat, from 0 at its top edge to 1 at its bottom, so a line
+    /// drawn taller keeps the point in the same place within it.
+    pub fraction: f32,
+}
+
 /// Lay `text` out into `width`, measuring with `metrics`.
 ///
 /// Every paragraph is laid out from four things and nothing else: its text, the character formatting
@@ -854,6 +876,44 @@ impl Layout {
             y: line.y + line.baseline - line.ascent,
             height: line.ascent + line.descent,
             line: index,
+        }
+    }
+
+    /// What is at a vertical position, as something that survives being laid out again.
+    ///
+    /// See [`Anchor`]. An empty layout answers with the start of the document, which is the only
+    /// honest answer and is where the view is anyway.
+    pub fn anchor_at_y(&self, y: f32) -> Anchor {
+        let Some(line) = self.lines.get(self.line_at_y(y)) else {
+            return Anchor { offset: 0, fraction: 0.0 };
+        };
+        let fraction =
+            if line.height > 0.0 { ((y - line.y) / line.height).clamp(0.0, 1.0) } else { 0.0 };
+        Anchor { offset: line.bytes.start, fraction }
+    }
+
+    /// Where an anchor has ended up in this layout.
+    pub fn y_of_anchor(&self, anchor: Anchor) -> f32 {
+        match self.lines.get(self.line_of_anchor(anchor.offset)) {
+            Some(line) => line.y + line.height * anchor.fraction,
+            None => 0.0,
+        }
+    }
+
+    /// Which line an anchor's offset belongs to, which is not quite the question
+    /// [`Self::line_of_offset`] answers.
+    ///
+    /// An anchor holds the offset a line **starts** at, and where a paragraph wraps the second line
+    /// starts at the byte the first one ends at. `line_of_offset` gives the earlier of the two —
+    /// deliberately, because a caret sitting on a line break belongs to the line it is ending — so
+    /// an anchor taken on a wrapped continuation line would come back one line too high, and the
+    /// view would creep up the file a line at a time as the size was stepped. So a line that
+    /// *starts* at the offset wins; anything else falls through to the ordinary answer.
+    fn line_of_anchor(&self, offset: usize) -> usize {
+        let index = self.lines.partition_point(|line| line.bytes.start < offset);
+        match self.lines.get(index) {
+            Some(line) if line.bytes.start == offset => index,
+            _ => self.line_of_offset(offset),
         }
     }
 
@@ -1685,6 +1745,97 @@ mod tests {
         assert_eq!(result.visible_bytes(400.0, 600.0), 0..0);
         assert_eq!(result.visible_bytes(-100.0, -50.0), 0..0);
         assert_eq!(result.visible_bytes(100.0, 100.0), 0..0, "no height is nothing to draw");
+    }
+
+    #[test]
+    fn an_anchor_says_which_line_was_being_looked_at_and_where_in_it() {
+        // Ten lines of three letters, 20 tall each by FixedMetrics, holding bytes 4n to 4n+3.
+        let (rope, spans, paragraphs) = fixture(&"abc
+".repeat(10).trim_end());
+        let laid = layout(&rope, &spans, &paragraphs, &FixedMetrics::default(), 1000.0);
+
+        let top = laid.anchor_at_y(0.0);
+        assert_eq!(top, Anchor { offset: 0, fraction: 0.0 });
+
+        let fifth = laid.anchor_at_y(85.0);
+        assert_eq!(fifth, Anchor { offset: 16, fraction: 0.25 }, "a quarter down the fifth line");
+
+        // Put back into the layout it came from, an anchor gives the position it was taken at.
+        assert_eq!(laid.y_of_anchor(fifth), 85.0);
+        assert_eq!(laid.y_of_anchor(top), 0.0);
+    }
+
+    #[test]
+    fn an_anchor_holds_the_same_text_still_when_the_font_changes() {
+        // The same document at two sizes, which is what zooming does. `ScaledMetrics` makes a line
+        // 1.25 times the font size tall, so nothing about these numbers is guessed at.
+        let text = "the first line
+the second line
+the third line
+the fourth line";
+        let rope = Rope::from_str(text);
+        let paragraphs = ParagraphStyles::new(rope.len_lines());
+        let at = |size: f32| {
+            let spans = StyleSpans::new(
+                rope.len_bytes(),
+                CharStyle { size, ..CharStyle::default() },
+            );
+            layout(&rope, &spans, &paragraphs, &ScaledMetrics, 1000.0)
+        };
+        let small = at(12.0);
+        let large = at(24.0);
+
+        // The reader is looking at the third line, a third of the way down it, and it is 40 points
+        // below the top of the window.
+        let anchor = small.anchor_at_y(small.lines[2].y + 5.0);
+        assert_eq!(anchor.offset, small.lines[2].bytes.start);
+
+        let was = small.y_of_anchor(anchor);
+        let now = large.y_of_anchor(anchor);
+        assert!(now > was, "the same line is further down the page in the larger font");
+        // Scrolling by the difference is what keeps it where it was, and it is the same line.
+        assert_eq!(large.line_of_offset(anchor.offset), 2);
+        assert!((now - (large.lines[2].y + 5.0 * 2.0)).abs() < 0.01, "a third of the way down it");
+    }
+
+    #[test]
+    fn an_anchor_on_a_wrapped_line_lands_on_whichever_line_now_holds_it() {
+        // One paragraph that wraps, laid out at two widths: the anchor is a byte offset, so the
+        // line it names is worked out again rather than remembered.
+        let (rope, spans, paragraphs) = fixture("one two three four five six seven eight");
+        let wide = layout(&rope, &spans, &paragraphs, &FixedMetrics::default(), 1000.0);
+        let narrow = layout(&rope, &spans, &paragraphs, &FixedMetrics::default(), 100.0);
+        assert_eq!(wide.lines.len(), 1);
+        assert!(narrow.lines.len() > 1, "it wraps at this width");
+
+        let anchor = wide.anchor_at_y(0.0);
+        assert_eq!(narrow.y_of_anchor(anchor), 0.0, "the first line either way");
+
+        // A point taken from the middle of the wrapped layout is put back on the line holding it,
+        // and not on the one before it: a wrapped line can start at the byte the line above ends
+        // at, which is the case `line_of_anchor` exists for.
+        let middle = narrow.anchor_at_y(narrow.lines[1].y);
+        assert_eq!(narrow.y_of_anchor(middle), narrow.lines[1].y, "the second line, not the first");
+        assert_eq!(wide.y_of_anchor(middle), 0.0, "it is all one line at the wider size");
+
+        // And an empty paragraph, whose line starts where it ends, is still a line of its own.
+        let (rope, spans, paragraphs) = fixture("abc
+
+def");
+        let laid = layout(&rope, &spans, &paragraphs, &FixedMetrics::default(), 1000.0);
+        let blank = laid.anchor_at_y(laid.lines[1].y);
+        assert_eq!(laid.y_of_anchor(blank), laid.lines[1].y, "the empty line between the two");
+    }
+
+    #[test]
+    fn an_anchor_taken_from_nothing_is_the_start_of_the_document() {
+        let (rope, spans, paragraphs) = fixture("");
+        let laid = layout(&rope, &spans, &paragraphs, &FixedMetrics::default(), 500.0);
+        let empty = Layout::default();
+        assert_eq!(empty.anchor_at_y(120.0), Anchor { offset: 0, fraction: 0.0 });
+        assert_eq!(empty.y_of_anchor(Anchor { offset: 900, fraction: 0.5 }), 0.0);
+        // An offset past the end of a real document is its last line rather than nothing at all.
+        assert_eq!(laid.y_of_anchor(Anchor { offset: 900, fraction: 0.0 }), 0.0);
     }
 
     #[test]
