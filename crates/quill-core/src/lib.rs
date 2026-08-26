@@ -8,6 +8,7 @@
 //! [`metrics::FontMetrics`] against real font files. Replacing the whole user interface layer would
 //! not touch this crate.
 
+pub mod completion;
 pub mod cursor;
 pub mod document;
 pub mod highlights;
@@ -21,6 +22,7 @@ pub mod style;
 pub mod symbols;
 pub mod syntax;
 
+pub use completion::{Candidate, Row as CompletionRow, Source as CompletionSource};
 pub use cursor::Selection;
 pub use document::{Command, Document};
 pub use highlights::{Highlight, Highlights, Rgba};

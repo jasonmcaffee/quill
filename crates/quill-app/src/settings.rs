@@ -54,6 +54,47 @@ pub fn step_font_size(from: f32, up: bool) -> f32 {
     next.unwrap_or(if up { FONT_SIZES[FONT_SIZES.len() - 1] } else { FONT_SIZES[0] })
 }
 
+/// Whether the completion popup appears without being asked for.
+///
+/// Two values rather than three, and the reason is worth writing down: the person this setting
+/// exists for is the one who found the popup arriving unasked distracting, and for them `manual` is
+/// already the off switch — `Ctrl+Space`, the `Complete Word` entry and the command line all still
+/// work, and nothing appears until one of them is asked. A third value meaning "off altogether"
+/// would take away a key that never interrupts anybody.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Suggestions {
+    /// The popup opens while you type, at a two character stem. IntelliJ's own default.
+    #[default]
+    Automatic,
+    /// Nothing opens unless it is asked for.
+    Manual,
+}
+
+impl Suggestions {
+    /// The word the settings file, the command line and a test spell it with.
+    pub fn name(self) -> &'static str {
+        match self {
+            Suggestions::Automatic => "automatic",
+            Suggestions::Manual => "manual",
+        }
+    }
+
+    /// Read a value, or nothing when the file holds something this version does not have — the same
+    /// answer `plugin.kind` gives, for the same reason.
+    pub fn parse(name: &str) -> Option<Self> {
+        match name.trim().to_lowercase().as_str() {
+            "automatic" => Some(Suggestions::Automatic),
+            "manual" => Some(Suggestions::Manual),
+            _ => None,
+        }
+    }
+
+    /// True when the popup is allowed to open on its own, which is what the tick box shows.
+    pub fn is_automatic(self) -> bool {
+        self == Suggestions::Automatic
+    }
+}
+
 /// One page of the Settings window, and the group it is listed under.
 ///
 /// The list on the left of the window is built from this, so adding a page is one variant and one match
@@ -100,7 +141,7 @@ impl Page {
     pub fn sections(self) -> &'static [&'static str] {
         match self {
             Page::Appearance => &["Font", "Background"],
-            Page::Editor => &["Gutter"],
+            Page::Editor => &["Gutter", "Suggestions"],
             Page::Plugins => &["Marketplace", "Installed", "Colour Scheme", "Syntax"],
             Page::Terminal => &["Font", "Shell"],
         }
@@ -134,6 +175,8 @@ pub struct Settings {
     pub terminal_shell: String,
     /// Whether the editing area has a column of line numbers down its left.
     pub line_numbers: bool,
+    /// Whether the completion popup arrives while you type, or waits to be asked.
+    pub suggestions: Suggestions,
 }
 
 impl Settings {
@@ -151,6 +194,10 @@ impl Settings {
             // On, because a line number is useful in prose as well as in code and a person who does
             // not want one can put it away from the gutter's own menu.
             line_numbers: true,
+            // On, which is what IntelliJ's own "Show suggestions as you type" is, and what the
+            // ticket asked for: suggestions that arrive rather than ones you have to remember to
+            // ask for.
+            suggestions: Suggestions::Automatic,
         }
     }
 
@@ -174,6 +221,9 @@ impl Settings {
         if let Some(on) = values.flag("editor.line_numbers") {
             settings.line_numbers = on;
         }
+        if let Some(chosen) = values.text("editor.suggestions").and_then(Suggestions::parse) {
+            settings.suggestions = chosen;
+        }
         settings
     }
 
@@ -190,6 +240,7 @@ impl Settings {
             values.set("terminal.shell", self.terminal_shell.clone());
         }
         values.set("editor.line_numbers", if self.line_numbers { "true" } else { "false" });
+        values.set("editor.suggestions", self.suggestions.name());
     }
 
     /// The program a new terminal should run, or nothing when this machine's own default is wanted.
@@ -315,6 +366,7 @@ mod tests {
             terminal_font_size: 14.0,
             terminal_shell: "pwsh.exe".to_owned(),
             line_numbers: false,
+            suggestions: Suggestions::Manual,
         };
         let mut values = Values::new();
         settings.write_into(&mut values);
@@ -338,6 +390,23 @@ mod tests {
         let blank = Settings::read_from(&Values::parse("terminal.shell =   
 "));
         assert_eq!(blank.shell(), None, "a line with nothing after it is not a shell");
+    }
+
+    #[test]
+    fn suggestions_default_to_automatic_and_a_value_this_version_does_not_have_is_ignored() {
+        assert_eq!(Settings::new().suggestions, Suggestions::Automatic);
+        assert!(Settings::new().suggestions.is_automatic());
+        let manual = Settings::read_from(&Values::parse("editor.suggestions = manual
+"));
+        assert_eq!(manual.suggestions, Suggestions::Manual);
+        // A word this version has never heard of leaves the default alone rather than switching the
+        // feature off by accident, which is the answer `plugin.kind` gives to the same question.
+        let odd = Settings::read_from(&Values::parse("editor.suggestions = telepathy
+"));
+        assert_eq!(odd.suggestions, Suggestions::Automatic);
+        for value in [Suggestions::Automatic, Suggestions::Manual] {
+            assert_eq!(Suggestions::parse(value.name()), Some(value));
+        }
     }
 
     #[test]

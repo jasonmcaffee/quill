@@ -33,6 +33,7 @@ impl Action {
             Action::GoToDefinition => "go-to-definition".to_owned(),
             Action::FindReferences => "find-references".to_owned(),
             Action::RenameSymbol => "rename-symbol".to_owned(),
+            Action::CompleteWord => "complete-word".to_owned(),
             Action::NavigateBack => "navigate-back".to_owned(),
             Action::NavigateForward => "navigate-forward".to_owned(),
             Action::OpenRecent(_) => "open-recent".to_owned(),
@@ -113,6 +114,7 @@ impl Action {
             "go-to-definition" => Action::GoToDefinition,
             "find-references" => Action::FindReferences,
             "rename-symbol" => Action::RenameSymbol,
+            "complete-word" => Action::CompleteWord,
             "navigate-back" => Action::NavigateBack,
             "navigate-forward" => Action::NavigateForward,
             "open-recent" => Action::OpenRecent(with_path()),
@@ -307,9 +309,17 @@ mod tests {
                 }
             }
         }
+        // Every gate switched on, so the walk reaches the entries that are **absent** rather than
+        // dimmed when a file's language cannot answer them. Left at their defaults, this walked a
+        // menu with no `Go to Definition`, no `Find References`, no `Rename Symbol` and no
+        // `Complete Word` in it and said nothing was missing — which is how `complete-word` came to
+        // have a name that `action run` could not find it by.
         let state = MenuState {
             recent: vec![PathBuf::from("/a/project")],
             unfinished: Some("merge"),
+            definitions_apply: true,
+            symbols_apply: true,
+            completion_applies: true,
             ..MenuState::default()
         };
         let mut out = Vec::new();

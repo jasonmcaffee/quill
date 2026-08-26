@@ -46,6 +46,14 @@ pub enum Action {
     FindReferences,
     /// Open the rename modal on the word at the caret.
     RenameSymbol,
+    /// Offer the names the word being typed at the caret could become.
+    ///
+    /// The same list the popup opens on its own, asked for by hand — so it works from **one**
+    /// character rather than two, and it works inside a comment or a string, where the automatic
+    /// popup deliberately never opens: somebody who asks in a doc comment deserves the file's words.
+    /// With no identifier character to the left of the caret at all it says so in the status bar,
+    /// which is what every honest miss in Quill does.
+    CompleteWord,
     /// Go back to where the caret was before the last jump, reopening the tab if it was closed.
     NavigateBack,
     /// The mirror of it, pushed by [`Action::NavigateBack`] and cleared by any new jump.
@@ -526,6 +534,10 @@ pub struct MenuState {
     /// True when the open file has a language at all, which is what `Find References` and
     /// `Rename Symbol` need — neither needs a definition, so a stylesheet keeps both.
     pub symbols_apply: bool,
+    /// True when a switched-on plugin claims the open file, which is what puts `Complete Word` on
+    /// the menu. **Absent** rather than dimmed when it is false, like the three entries above it:
+    /// prose and a picture have no words worth offering and never will.
+    pub completion_applies: bool,
     /// Whether there is anywhere to go back to, and forward to.
     pub can_go_back: bool,
     pub can_go_forward: bool,
@@ -754,6 +766,17 @@ pub fn symbol_entries(state: &MenuState) -> Vec<Entry> {
             "Rename Symbol...",
             Action::RenameSymbol,
             Shortcut { key: egui::Key::F6, command: false, shift: true, alt: false, ctrl: false },
+        ));
+    }
+    if state.completion_applies {
+        // IntelliJ's own binding, and the real control key on both platforms rather than the Apple
+        // key on one of them: `Cmd+Space` is Spotlight. macOS may have claimed `Ctrl+Space` for
+        // switching input sources, in which case the menu entry is how a person reaches it there —
+        // which is a note for the menu test rather than a reason to bind something else here.
+        entries.push(Entry::with_shortcut(
+            "Complete Word",
+            Action::CompleteWord,
+            Shortcut::control(egui::Key::Space),
         ));
     }
     entries

@@ -221,6 +221,21 @@ definition changes in **this file**, and a function, type, constant or module ch
 **project**. `--scope file` and `--scope project` say so outright, and `--include comments,strings`
 adds the textual matches, which are left alone by default.
 
+**Finish a name that is half typed.** The editor offers the names the word under the caret could
+become — this file's own words and definitions, the other open tabs' definitions, the project's, and
+the language's own keywords — ranked best first. `--choose` applies one of them to the word being
+typed, which is exactly what pressing `Enter` on that row in the popup does.
+
+```sh
+quill-cli editor caret --line 42 --column 9 --json
+quill-cli editor complete --json
+quill-cli editor complete --choose open_the_match --json
+```
+
+Matching is a subsequence and it ignores case, so `lyt` finds `layout` and `pt` finds `paint_text`.
+The row equal to what has already been typed is never offered, because taking it would change
+nothing. A file no plugin claims — Markdown, plain text, a picture — has no completions and says so.
+
 **Do something with no command of its own.** Every menu entry has a name:
 
 ```sh
@@ -904,6 +919,26 @@ Rename the word at the caret everywhere it is used. Prints the change set withou
 quill-cli editor rename open_the_result --json
 quill-cli editor rename open_the_result --apply
 quill-cli editor rename total --scope project --include comments --apply
+```
+
+### editor complete
+
+```
+quill-cli editor complete [--offset <bytes>] [--line <number>] [--column <number>] [--limit <number>] [--choose <name>]
+```
+
+The names the word being typed at the caret could become, best first: the same list the popup shows, with what each row is and where it came from. --choose applies one of them to the stem exactly as Enter would.
+
+- `--offset <bytes>` — Ask about this position in the file rather than about the caret.
+- `--line <number>` — Ask about this line, counting from 1.
+- `--column <number>` — The column on that line. 1 when it is left out.
+- `--limit <number>` — Print at most this many rows. All of them when it is left out.
+- `--choose <name>` — Apply this row to the word being typed, as Enter would. It has to be one of the names offered.
+
+```sh
+quill-cli editor complete --json
+quill-cli editor complete --limit 5 --json
+quill-cli editor complete --choose draw_frame
 ```
 
 ### editor navigate-back

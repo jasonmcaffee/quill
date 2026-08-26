@@ -269,6 +269,23 @@ pub fn symbols_apply(path: Option<&Path>, grammars: &Grammars) -> bool {
     path.is_some_and(|path| !is_image(path) && grammars.for_path(path).is_some())
 }
 
+/// True when auto-complete can apply to this file.
+///
+/// **A switched-on language plugin claims it** — nothing more. A wider question than
+/// [`definitions_apply`] and the same one [`symbols_apply`] asks, because completion needs neither a
+/// definition nor a rename rule: it needs somebody to have said what a word is. CSS completes, and
+/// its keywords and its own custom properties are real offers even though it names no definers;
+/// Mermaid completes its keywords; Markdown, plain text and a picture have no popup and no menu
+/// entry — **absent**, not dimmed, which is Quill's rule for a control that can never apply.
+///
+/// It is a function of its own rather than a call to [`symbols_apply`] because the two answer
+/// different questions that happen to agree today: one is "can this name be found everywhere it is
+/// used", and this is "is there a list of words worth offering". The menu, the automatic trigger and
+/// the command line all ask this one, so they cannot disagree.
+pub fn completion_applies(path: Option<&Path>, grammars: &Grammars) -> bool {
+    path.is_some_and(|path| !is_image(path) && grammars.for_path(path).is_some())
+}
+
 /// True for the files the Markdown preview is meant for.
 pub fn is_markdown(path: Option<&Path>) -> bool {
     matches!(
@@ -496,6 +513,14 @@ mod tests {
         }
         assert!(!definitions_apply(None, &grammars), "an unsaved document has no language");
         assert!(!symbols_apply(None, &grammars));
+        // Completion is the wider question again: a stylesheet completes, prose does not.
+        for code in ["main.rs", "app.js", "index.ts", "site.css"] {
+            assert!(completion_applies(Some(Path::new(code)), &grammars), "{code} completes");
+        }
+        for other in ["notes.md", "notes.txt", "photo.png"] {
+            assert!(!completion_applies(Some(Path::new(other)), &grammars), "{other}");
+        }
+        assert!(!completion_applies(None, &grammars), "an unsaved document has no language");
         // And the two are the opposite way round from formatting, which is what lets the command
         // key and B mean bold in prose and `Go to Definition` in code without either being dimmed.
         for code in ["main.rs", "app.js"] {

@@ -1746,6 +1746,40 @@ the fourth line");
     }
 
     #[test]
+    fn accepting_a_completion_shifts_the_marks_after_it_and_leaves_the_rest_alone() {
+        // `task-1677` scenario 34. Accepting a suggestion is one `ReplaceMany` and nothing else, so
+        // the marked passages move by exactly what it inserted — the same two lines that already
+        // shift them for every other edit, rather than a rule of completion's own.
+        let mut document = Document::from_text("let dra = one two three");
+        let before = document.text().to_string().find("two").expect("two");
+        document.highlight(before..before + 3, MARK);
+        let stem = document.text().to_string().find("dra").expect("dra");
+        assert!(document.apply(Command::ReplaceMany(vec![
+            (stem..stem + 3, "draw_frame".to_owned()),
+        ])));
+        assert_eq!(document.text().to_string(), "let draw_frame = one two three");
+        let grown = "draw_frame".len() - "dra".len();
+        let mark = document.highlights().at(before + grown).expect("the mark");
+        assert_eq!(
+            document.text().byte_slice(mark.range.clone()),
+            "two",
+            "the mark is still on its own word: {:?}",
+            mark.range
+        );
+        assert_eq!(document.highlights().len(), 1);
+        // And the caret lands after the inserted name, which is what makes typing carry on.
+        assert_eq!(document.selection().head, stem + "draw_frame".len());
+        // One undo step, by construction: undo restores a state.
+        document.apply(Command::Undo);
+        assert_eq!(document.text().to_string(), "let dra = one two three");
+        assert_eq!(
+            document.highlights().at(before).map(|mark| mark.range.clone()),
+            Some(before..before + 3),
+            "and the mark came back with it"
+        );
+    }
+
+    #[test]
     fn clearing_takes_the_one_under_the_caret_and_leaves_the_others() {
         let mut document = Document::from_text("one two three");
         document.highlight(0..3, MARK);

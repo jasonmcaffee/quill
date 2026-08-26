@@ -209,6 +209,23 @@ the menu that opened it**, never in a popup of its own, for the reason a flyout 
 egui's `color_picker_color32` is not used: it is a square with two strips beside it, and it brings
 egui's own sliders into a window that paints everything at measured positions.
 
+**A list that hangs off the writing.** `components::completion`, the suggestions the editing area
+offers as a word is typed. A `MENU` fill with a one point `CONTROL_BORDER` stroke at
+`CONTROL_CORNER`, a 6 point margin, and rows 24 points tall — a **menu** row rather than a list row,
+because it is a list of things to choose between the way a menu is. The chosen row is the one pill,
+`SELECTED_ROW`, and the pointer draws `CONTROL` over any other. In each row: the kind's drawn glyph
+in `TEXT_DIM` in a 20 point column, the name at 12.5 points with its matched letters picked out in
+`ACCENT` by `controls::marked_text`, and — where the row has anything to add — a quiet
+`· name` at 11 points in `TEXT_FAINT` against the right hand edge. Up to eight rows, and more
+scroll.
+
+**It is an `egui::Area` on the foreground order rather than an `egui::Popup`**, and that is the one
+place in Quill where the difference matters. egui keeps at most one popup open at a time, which is
+the rule the flyouts and the colour wheel already bend to; this list must coexist with nothing *and*
+must never take the keyboard, because the document keeps it and typing carries on underneath. It is
+positioned by the window each frame from the caret's own box: under the caret's line, flipped above
+it when the rows would cross the bottom of the pane, and clamped inside the pane.
+
 **A divider between panes.** `components::splitter`, always. It decides the grab width, the highlight
 under the pointer, the pointer shape and the double click that puts the pane back. A new pane adds
 its size to `settings::Panes`, with a smallest and a largest, clamped both when reading the file and
@@ -270,6 +287,12 @@ sitting there, `TEXT_STRONG` when what it opens is open. Nor can a picture be dr
 without resampling it. `task-1657` offered to have an image generated for this one, and this is why
 it was refused. Setting it as text is no better: the text options panel's `B` is real text, and it
 needs `theme::BOLD_FAMILY` bound before the first frame to look like anything.
+
+**Five icons say what a name is**, and they are `theme::icon::symbol_kind`: a pair of brackets for a
+function, a hollow square for a type, a filled one for a constant, a small disc for a variable and
+three stacked lines for a module. Each is the shape the thing is written as, which is what lets five
+marks tell each other apart at eleven points — and the brackets are `()` rather than `)(`, which the
+first version of them drew and which the first accepted screenshot is what caught.
 
 **One icon is drawn in colours of its own**, and it is `theme::icon::color_wheel` — the button that
 opens the colour wheel. It is a ring of six wedges in the six named hues, with the tint it is given

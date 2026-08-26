@@ -232,6 +232,65 @@ disagree. That absence is also what lets the command key and `B` mean bold in pr
 Definition` in code: `formatting_applies` and `definitions_apply` are true of opposite files, so the
 two can never both fire on one press.
 
+## A name is offered while it is still being typed, and nothing new is indexed to do it
+
+Type two letters of a word in a file a plugin claims and a list of the names it could become appears
+under the caret; `Up` and `Down` steer it, `Tab` and `Enter` take a row, `Escape` puts it away, and
+typing carries on underneath it the whole time. `Ctrl+Space` and `Edit -> Complete Word` ask for the
+same list by hand. `task-1677` is the design and `task-1678` is the implementation.
+
+**Everything it offers was already in memory**, which is what makes it a small feature where most
+editors' completion is an enormous one. Four sources, all of them kept fresh by `task-1676`: this
+tab's definitions and its **distinct words**, cached on the tab and keyed on
+`Document::text_revision()`; the other open tabs' definitions; `services::symbol_index`, which gained
+a sorted name list to scan; and the file's `Grammar`, whose keywords, builtins and types the manifest
+has held since the plugin was read. No new thread, no new index, no watcher, no debounce. The
+ownership rule carries over unchanged: the open files' paths are dropped from what the index offers,
+or a name being edited in a tab would be offered twice, once live and once as the disk last saw it.
+
+**The match is a case-insensitive subsequence and the score is Sublime's rubric** — a large bonus for
+a prefix, one per matched letter on a word boundary, one per consecutive letter, a small one for
+matching case, and a penalty per unmatched letter so the shorter of two names wins. The alignment is
+the **best** one rather than the first, found by filling a small table, because `pt` reads
+`paint_text` two ways and only one of them is the one a person meant. `quill_core::completion` is all
+of it, pure, tested with no window — and **its tests pin orderings, never scores**: a test asserting
+`-13` would be a test of the constants rather than of anything anybody can see.
+
+**The row equal to the stem is never offered**, and that one rule is what makes `Enter` safe. VS Code
+grew a three-way setting (`editor.acceptSuggestionOnEnter`) because people pressed `Enter` meaning
+"new line" and got a suggestion; dropping the no-op row answers it at candidate time instead, so once
+a word is completely typed the list has either something genuinely longer to offer or nothing at all
+— and with nothing to offer it has already closed.
+
+**Exactly five keys are consumed, and only while it is open**: `Up`, `Down`, `Tab`, `Enter`,
+`Escape`, taken out of the frame's input before any pane reads it, which is the one-frame ordering
+`Find in Files` and `Go to File` already rely on. They are taken with the modifiers compared **for
+real** rather than through `InputState::consume_key`, which matches by `Modifiers::matches_logically`
+— that only asks whether the modifiers the *pattern* names are held, so a pattern of `NONE` matched
+`Shift+Enter` as well and the popup was swallowing an ordinary new line. `Ctrl+Tab` is still
+`Next Tab`, and the three meanings of `Tab` — move tab, indent, complete — stay on three distinct
+chords. `Tab` replaces the whole identifier and `Enter` replaces the stem, which is IntelliJ's own
+distinction and is right in both directions.
+
+**The popup is an `egui::Area`, not an `egui::Popup`.** egui keeps one popup open at a time — the
+rule that already shaped the flyouts and the colour wheel — and this list must coexist with nothing
+*and* must never take the keyboard. It is drawn after the pane loop from the caret geometry the pane
+with the keyboard recorded, so it is never under a divider and never drawn twice in a split view.
+
+**Nothing here runs once a frame.** The state carries the `text_revision` and the caret its rows were
+worked out at, and a frame in which neither moved costs two integer comparisons — `task-1666`'s rule,
+kept the way `symbols::Hover` keeps it. The keystroke budget is **under 5 ms on the largest file in
+this repository**, and `cargo run --release -p quill-app --example completion_cost` is how it is
+measured again. It was over that when first written (6.6 ms), and the fix was removing waste rather
+than capping the pool: the dedup was a linear search over the rows already kept, the alignment table
+and the candidate's characters were three allocations *per candidate*, and the sort comparator counted
+every name's characters at every comparison. 4.59 ms now, worst case.
+
+`editor.suggestions` is `automatic` or `manual`, with a tick box in `Settings -> Editor`. `manual` is
+already the off switch — `Ctrl+Space` and the menu entry work either way — which is why there is no
+third value. `quill-cli editor complete` prints the rows and `--choose` applies one, both through the
+same functions the popup uses.
+
 ## A frame costs what is on the screen, not what is in the file
 
 `task-1666` reported that selecting text, scrolling and dragging the window were jagged on Windows
@@ -964,6 +1023,12 @@ trade that away to be a shade nearer a screenshot.
 - `tasks/task-1666-performance-tdd.md` — why a frame cost 818 ms and now costs 20: the eight faults
   that were found, what each was worth, the two revisions a document counts, the incremental layout
   and why its fingerprint is derived rather than reported, and what was deliberately not done.
+- `tasks/task-1677-autocomplete-tdd.md` — auto-complete: what each tier of editor does and which of
+  their behaviours is worth copying, why the candidates are the ones `task-1676` already keeps rather
+  than a word database of their own, the Sublime scoring rubric restated for identifiers, the five
+  keys and why `Tab` and `Enter` differ, and the thirty-five scenario battery. `task-1678` is the
+  implementation of it; `cargo run --release -p quill-app --example completion_cost` is how its one
+  budget is measured again.
 - `tasks/task-1675-code-editing-tdd.md` — go to definition, find all references and rename: the
   three mechanisms that were weighed (a language server client, tree-sitter and stack graphs, a
   syntactic index) and why the index was chosen, the two grammar keys a language adds, the

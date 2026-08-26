@@ -15,7 +15,7 @@ use crate::components::controls;
 use crate::components::modal;
 use crate::components::plugins_page::{self, PluginsOutcome, PluginsState};
 use crate::services::plugins::Plugins;
-use crate::settings::{Page, Settings, FONT_SIZES, MIN_OPACITY, TERMINAL_FONT_SIZES};
+use crate::settings::{Page, Settings, Suggestions, FONT_SIZES, MIN_OPACITY, TERMINAL_FONT_SIZES};
 use crate::theme::{color, icon, size};
 
 /// How large the window is, before it is shrunk to fit a small Quill window.
@@ -397,7 +397,8 @@ fn appearance_page(
     changed
 }
 
-/// `Editor > Editor`: what the gutter down the left of the editing area shows.
+/// `Editor > Editor`: what the gutter down the left of the editing area shows, and whether
+/// completions arrive unasked.
 fn editor_page(ui: &mut egui::Ui, area: Rect, settings: &mut Settings) -> bool {
     let mut changed = false;
     let mut pen = breadcrumb(ui, area, Page::Editor);
@@ -410,6 +411,26 @@ fn editor_page(ui: &mut egui::Ui, area: Rect, settings: &mut Settings) -> bool {
         area,
         pen,
         "A number against each line of the file. Quill wraps, so a paragraph that runs over several rows is numbered once, against its first row. Right clicking the gutter puts the numbers away and annotates with git blame.",
+    );
+    pen += 44.0;
+    pen = section(ui, area, pen, "Suggestions");
+    // A tick box over a two-value setting: `automatic` is ticked and `manual` is not, which is what
+    // the wording says. The value itself is a named pair rather than a flag because the settings
+    // file and the command line both spell it out, and because a third value would be a change to
+    // the pair rather than to the meaning of a `true`.
+    let row = row_at(area, pen);
+    let mut automatic = settings.suggestions.is_automatic();
+    if checkbox(ui, row, "Suggest completions as you type", &mut automatic) {
+        settings.suggestions =
+            if automatic { Suggestions::Automatic } else { Suggestions::Manual };
+        changed = true;
+    }
+    pen += 32.0;
+    note(
+        ui,
+        area,
+        pen,
+        "A list of names appears under the caret once two letters of a word have been typed, in a file whose language a plugin claims. Off, nothing appears until you ask: Ctrl+Space, or Complete Word on the Edit menu, which work either way.",
     );
     changed
 }

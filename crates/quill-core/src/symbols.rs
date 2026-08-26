@@ -339,6 +339,31 @@ impl FileSymbols {
     pub fn words(&self) -> usize {
         self.words.len()
     }
+
+    /// Every distinct spelling of an identifier in this file, sorted, each one once.
+    ///
+    /// What completion offers for the locals, the parameters, the field names and everything else
+    /// the definers cannot see — and the only thing it can offer in a language that deliberately
+    /// named no definers, which is what makes it work in a stylesheet.
+    ///
+    /// Derived from [`Self::words`] rather than collected in the read, because the read runs
+    /// whenever the text changes and `task-1666`'s rule is that nothing running that often may
+    /// allocate more than it already does: a file with eleven thousand words has a few hundred
+    /// spellings, and the window builds this list once a text revision beside the definitions it
+    /// already builds there.
+    ///
+    /// Sorted so that a caller can say two files hold the same words by comparing the lists, and so
+    /// that the order a stem is scored in is the file's spelling rather than its layout.
+    pub fn distinct_words(&self, text: &str) -> Vec<String> {
+        let mut spellings: Vec<&str> = self
+            .words
+            .iter()
+            .filter_map(|word| text.get(word.clone()))
+            .collect();
+        spellings.sort_unstable();
+        spellings.dedup();
+        spellings.into_iter().map(str::to_owned).collect()
+    }
 }
 
 /// Where `at` sits relative to a range, for a binary search over ranges that do not overlap.
@@ -1029,6 +1054,28 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_distinct_words_of_a_file_are_each_spelling_once_in_order() {
+        // What completion offers for the names no definer keyword can see. A file naming `value`
+        // five times offers it once, and the list is sorted so it is the same on every run.
+        let text = "fn draw(value: usize) -> usize {
+    let count = value;
+    count + value
+}
+";
+        let read = FileSymbols::read(text, &rust());
+        let words = read.distinct_words(text);
+        assert_eq!(words, vec!["count", "draw", "usize", "value"], "{words:?}");
+        assert!(read.words() > words.len(), "the file says `value` more than once");
+        assert_eq!(words, read.distinct_words(text), "and the same list every time");
+        // A language with no definers at all still has words, which is the whole point of them.
+        let css_text = ".card { --brand-hue: 280; background-color: #ff79c6; }
+";
+        let css_words = FileSymbols::read(css_text, &css()).distinct_words(css_text);
+        assert!(css_words.contains(&"--brand-hue".to_owned()), "{css_words:?}");
+        assert!(css_words.contains(&"background-color".to_owned()), "{css_words:?}");
     }
 
     #[test]

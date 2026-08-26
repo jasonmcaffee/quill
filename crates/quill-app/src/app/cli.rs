@@ -1488,6 +1488,7 @@ impl QuillApp {
             "definition" => self.cli_editor_definition(request),
             "references" => self.cli_editor_references(request),
             "rename" => self.cli_editor_rename(request),
+            "complete" => self.cli_editor_complete(request),
             "navigate-back" => self.cli_navigate(request, true),
             "navigate-forward" => self.cli_navigate(request, false),
             _ => unknown(request),
@@ -1904,6 +1905,126 @@ impl QuillApp {
             many => format!("'{name}' has {many} candidate definitions"),
         };
         ok(request, sentence, json!({ "name": name, "candidates": rows }))
+    }
+
+    /// `quill-cli editor complete` — the names the word being typed could become.
+    ///
+    /// It goes through the same two functions the popup does: `completion_at` works out the stem and
+    /// the rows, and `--choose` opens the state exactly as `Ctrl+Space` would and then accepts it
+    /// exactly as `Enter` would. So a thing done from the command line and the same thing done by
+    /// hand really are the same thing, and the list a script reads is the list a person is looking
+    /// at rather than a second answer worked out beside it.
+    ///
+    /// Listing changes nothing at all — not even which row is chosen — because a script asking what
+    /// is on offer must not move a popup somebody is steering.
+    fn cli_editor_complete(&mut self, request: &Request) -> Outcome {
+        if !self.completion_applies_here() {
+            return no(
+                request,
+                code::NOT_APPLICABLE,
+                "No plugin claims this file, so Quill has no words to offer.",
+            );
+        }
+        let offset = match self.cli_offset(request) {
+            Ok(offset) => offset,
+            Err(problem) => return no(request, code::USAGE, problem),
+        };
+        if let Some(name) = request.text("choose") {
+            return self.cli_editor_complete_choose(request, offset, name.trim());
+        }
+        let (stem, word, rows) = self.completion_at(offset);
+        if word.is_empty() {
+            return no(request, code::NOT_APPLICABLE, "There is nothing to complete here.");
+        }
+        let limit = request.whole("limit").unwrap_or(rows.len());
+        let shown: Vec<&quill_core::completion::Row> = rows.iter().take(limit).collect();
+        let lines_of_it: Vec<String> = shown
+            .iter()
+            .map(|row| {
+                format!(
+                    "{:<32}{:<10}{:<10}{}",
+                    row.name,
+                    row.kind.map_or("", |kind| kind.name()),
+                    row.source.name(),
+                    row.detail
+                )
+            })
+            .collect();
+        let value: Vec<Value> = shown
+            .iter()
+            .map(|row| {
+                json!({
+                    "name": row.name,
+                    "kind": row.kind.map(|kind| kind.name()),
+                    "source": row.source.name(),
+                    "detail": row.detail,
+                    "matched": row.matched,
+                })
+            })
+            .collect();
+        lines(
+            request,
+            match rows.len() {
+                0 => format!("Nothing completes '{word}'"),
+                1 => format!("1 completion for '{word}'"),
+                many => format!("{many} completions for '{word}', {} shown", shown.len()),
+            },
+            lines_of_it,
+            json!({
+                "stem": word,
+                "offset": stem.start,
+                "end": stem.end,
+                "total": rows.len(),
+                "rows": value,
+            }),
+        )
+    }
+
+    /// `--choose`: apply one of the offered rows, as pressing `Enter` on it would.
+    ///
+    /// The caret is moved to the point the question was asked about first, so that `--offset` and
+    /// `--line` mean the same thing here as they do when the rows are being listed, and so that the
+    /// edit lands where the caret is — which is the one place an accept can land.
+    fn cli_editor_complete_choose(
+        &mut self,
+        request: &Request,
+        offset: usize,
+        name: &str,
+    ) -> Outcome {
+        if name.is_empty() {
+            return no(request, code::USAGE, "Say which completion to take.");
+        }
+        self.document_mut().apply(quill_core::Command::PlaceCaret { offset, extend: false });
+        self.complete_word();
+        let Some(state) = self.completion.as_ref() else {
+            return no(
+                request,
+                code::NOT_APPLICABLE,
+                self.message.clone().unwrap_or_else(|| "There is nothing to complete here.".to_owned()),
+            );
+        };
+        let stem = self.document().text().byte_slice(state.stem.clone());
+        if !self.choose_the_completion(name) {
+            let offered: Vec<String> = self
+                .completion
+                .as_ref()
+                .map(|state| state.rows.iter().take(8).map(|row| row.name.clone()).collect())
+                .unwrap_or_default();
+            self.close_the_completion();
+            return no(
+                request,
+                code::NOT_FOUND,
+                format!("'{name}' is not one of the completions for '{stem}'. These are: {}.", offered.join(", ")),
+            );
+        }
+        if !self.accept_the_completion(false) {
+            return no(request, code::FAILED, format!("'{name}' could not be applied."));
+        }
+        ok(
+            request,
+            format!("Completed '{stem}' to '{name}'"),
+            json!({ "stem": stem, "name": name, "caret": self.caret_offset() }),
+        )
     }
 
     /// `quill-cli editor references` — every place a name is used.
@@ -3297,6 +3418,7 @@ impl QuillApp {
             "terminal.font.size" => format!("{:.0}", self.settings.terminal_font_size),
             "terminal.shell" => self.settings.terminal_shell.clone(),
             "editor.line_numbers" => self.settings.line_numbers.to_string(),
+            "editor.suggestions" => self.settings.suggestions.name().to_owned(),
             "panes.explorer.width" => format!("{:.0}", self.panes.explorer_width),
             "panes.terminal.height" => format!("{:.0}", self.panes.terminal_height),
             "panes.preview.fraction" => format!("{:.3}", self.panes.preview_fraction),
@@ -3346,6 +3468,11 @@ impl QuillApp {
             // and is a better message than one made up here.
             "terminal.shell" => settings.terminal_shell = value.trim().to_owned(),
             "editor.line_numbers" => settings.line_numbers = flag()?,
+            "editor.suggestions" => {
+                settings.suggestions = crate::settings::Suggestions::parse(value).ok_or_else(|| {
+                    format!("{name} wants automatic or manual, and {value} is neither.")
+                })?
+            }
             "panes.explorer.width" => {
                 self.panes.explorer_width =
                     number()?.clamp(settings::EXPLORER_MIN, settings::EXPLORER_MAX);
@@ -3826,6 +3953,11 @@ const SETTINGS: &[SettingKey] = &[
         help: "Whether the editing area has a column of line numbers.",
     },
     SettingKey {
+        name: "editor.suggestions",
+        accepts: "automatic or manual",
+        help: "Whether the completion popup arrives as you type. Ctrl+Space works either way.",
+    },
+    SettingKey {
         name: "panes.explorer.width",
         accepts: "150 to 620",
         help: "How wide the file explorer is.",
@@ -3861,6 +3993,7 @@ fn fresh_value(name: &str, fresh: &crate::settings::Settings) -> String {
         "terminal.font.size" => format!("{:.0}", fresh.terminal_font_size),
         "terminal.shell" => fresh.terminal_shell.clone(),
         "editor.line_numbers" => fresh.line_numbers.to_string(),
+        "editor.suggestions" => fresh.suggestions.name().to_owned(),
         "panes.explorer.width" => format!("{:.0}", panes.explorer_width),
         "panes.terminal.height" => format!("{:.0}", panes.terminal_height),
         "panes.preview.fraction" => format!("{:.3}", panes.preview_fraction),

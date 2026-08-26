@@ -70,6 +70,15 @@ pub struct Index {
     files: usize,
     /// True when the walk stopped at [`LIMIT`] rather than at the end of the project.
     capped: bool,
+    /// Every name the table holds, sorted, each one once.
+    ///
+    /// The hash table answers "where is *this* name defined" and cannot answer "which names could
+    /// `lyt` become", which is the question completion asks a keystroke at a time. A sorted list
+    /// answers it with one walk — and, for a stem that is a prefix, with a binary search into the
+    /// range it starts. Built once when the index is built rather than collected per keystroke,
+    /// because `task-1666`'s rule is that nothing running that often may allocate: on Quill's own
+    /// repository this is 4,445 strings the table already owns a copy of.
+    names: Vec<String>,
 }
 
 impl Index {
@@ -107,6 +116,14 @@ impl Index {
     /// How many names are known, which is the table's own size rather than the definitions'.
     pub fn names(&self) -> usize {
         self.by_name.len()
+    }
+
+    /// Every name the index holds, sorted and each one once.
+    ///
+    /// What completion scans for a stem. Borrowed rather than copied, because it runs at keystroke
+    /// time and the caller only reads it.
+    pub fn sorted_names(&self) -> &[String] {
+        &self.names
     }
 
     /// True when the walk stopped at [`LIMIT`], so a caller can say so rather than imply the
@@ -150,6 +167,7 @@ impl Index {
             for definition in symbols::file_definitions(&text, grammar) {
                 if total >= LIMIT {
                     index.capped = true;
+                    index.settle();
                     return Some(index);
                 }
                 total += 1;
@@ -165,7 +183,17 @@ impl Index {
                     });
             }
         }
+        index.settle();
         Some(index)
+    }
+
+    /// Write down the sorted name list, once the table is finished.
+    ///
+    /// Here rather than at each `insert`, because a sorted list kept sorted through a hundred
+    /// thousand insertions is a hundred thousand searches; one sort at the end is one sort.
+    fn settle(&mut self) {
+        self.names = self.by_name.keys().cloned().collect();
+        self.names.sort_unstable();
     }
 }
 
@@ -324,6 +352,11 @@ mod tests {
             "a class method is found by its shape, and says so"
         );
         assert!(index.definitions_of("nothing-defines-this").is_empty());
+        // And the sorted list holds every name once, which is what a stem is scanned against.
+        let names = index.sorted_names();
+        assert_eq!(names.len(), index.names(), "one entry a name: {names:?}");
+        assert!(names.windows(2).all(|pair| pair[0] < pair[1]), "sorted: {names:?}");
+        assert!(names.contains(&"Layout".to_owned()) && names.contains(&"new".to_owned()));
         std::fs::remove_dir_all(&folder).ok();
     }
 

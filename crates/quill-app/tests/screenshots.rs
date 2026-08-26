@@ -5914,3 +5914,347 @@ fn a_modifier_click_on_the_definition_itself_opens_the_references() {
     assert_eq!(modal.name, "draw");
     assert!(!modal.hits().is_empty());
 }
+
+// Auto-complete (`task-1677`).
+//
+// The pictures are what say the list hangs under the caret, that the matched letters are picked out,
+// that each row carries the glyph for what it is and a quiet word saying where it came from, and
+// that the list flips above the caret rather than running off the bottom of the pane. Everything
+// underneath is tested with no window in `quill_core::completion` and `app::completion`; what is
+// here is what only a real window can show.
+
+/// A small project for the completion pictures.
+///
+/// Separate from [`code_folder`] on purpose: the explorer draws whatever is in the folder, so adding
+/// a file to a fixture another test has already accepted a picture of would change that picture for
+/// a reason that is not a change to Quill.
+///
+/// It is built so that one stem, `dra`, offers ten rows covering all five kinds a definition can be
+/// — a function, a variable, a module, a type and a constant — and more rows than the eight the list
+/// draws, which is what the scrolling picture needs. `distant.rs` is never opened, so what it
+/// defines can only have come from the project's index.
+fn completion_folder() -> std::path::PathBuf {
+    static FOLDER: OnceLock<std::path::PathBuf> = OnceLock::new();
+    FOLDER
+        .get_or_init(|| {
+            let root = std::env::temp_dir().join("quill-screenshot-completion");
+            std::fs::create_dir_all(&root).expect("make the completion folder");
+            std::fs::write(
+                root.join("layout.rs"),
+                "//! Laying a document out.\n\
+                 \n\
+                 pub struct Layout;\n\
+                 \n\
+                 const DRAW_LIMIT: usize = 8;\n\
+                 \n\
+                 impl Layout {\n\
+                 \x20   pub fn new() -> Self {\n\
+                 \x20       let drawn = 0;\n\
+                 \x20       let _ = drawn;\n\
+                 \x20       Layout\n\
+                 \x20   }\n\
+                 \n\
+                 \x20   /// Draw the whole of it.\n\
+                 \x20   pub fn draw(&self) {}\n\
+                 \n\
+                 \x20   pub fn draw_frame(&self) {}\n\
+                 \n\
+                 \x20   pub fn draw_gutter(&self) {}\n\
+                 \n\
+                 \x20   pub fn draw_caret(&self) {}\n\
+                 \n\
+                 \x20   pub fn redraw(&self) {}\n\
+                 \n\
+                 \x20   pub fn paint_text(&self) {}\n\
+                 }\n\
+                 \n\
+                 pub mod parts {\n\
+                 \x20   pub fn first() {}\n\
+                 \n\
+                 \x20   pub fn second() {}\n\
+                 \n\
+                 \x20   pub fn third() {}\n\
+                 \n\
+                 \x20   pub fn fourth() {}\n\
+                 \n\
+                 \x20   pub fn fifth() {}\n\
+                 \n\
+                 \x20   pub fn sixth() {}\n\
+                 }\n",
+            )
+            .expect("write layout.rs");
+            std::fs::write(
+                root.join("caret.rs"),
+                "pub struct Caret;\n\nimpl Caret {\n    pub fn new() -> Self {\n        Caret\n    }\n\n    pub fn paint(&self, layout: &Layout) {\n        layout.draw();\n    }\n}\n",
+            )
+            .expect("write caret.rs");
+            std::fs::write(
+                root.join("distant.rs"),
+                "pub struct Drawing;\n\npub mod drawings {}\n\npub fn draw_everything() {}\n",
+            )
+            .expect("write distant.rs");
+            std::fs::write(root.join("notes.md"), "# Notes\n\nA note about drawing.\n")
+                .expect("write notes.md");
+            root
+        })
+        .clone()
+}
+
+/// A window on the completion folder, with its index built and the named file open.
+fn completion_harness(open: &str) -> Harness<'static, QuillApp> {
+    let folder = completion_folder();
+    let mut harness = harness_in(&folder);
+    harness.state_mut().open_path_permanently(&folder.join(open));
+    // The index is read on a thread, so the harness is run until the answer arrives. Each run is a
+    // frame; nothing here waits on a clock.
+    for _ in 0..600 {
+        pump(&mut harness);
+        let ready = harness
+            .state()
+            .symbols_indexer()
+            .is_some_and(|indexer| !indexer.is_building() && !indexer.index().is_empty());
+        if ready {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    harness.run();
+    harness
+}
+
+/// Type `text` a letter at a time, as real text events, which is the path the released binary takes
+/// and the only one that fires the automatic trigger.
+fn type_letters(harness: &mut Harness<'static, QuillApp>, text: &str) {
+    for letter in text.chars() {
+        harness.input_mut().events.push(egui::Event::Text(letter.to_string()));
+        harness.run();
+    }
+}
+
+/// The names on offer, in the order the popup is showing them.
+fn completions(harness: &Harness<'static, QuillApp>) -> Vec<String> {
+    harness
+        .state()
+        .completion()
+        .map(|state| state.rows.iter().map(|row| row.name.clone()).collect())
+        .unwrap_or_default()
+}
+
+#[test]
+fn typing_a_word_offers_the_names_it_could_become() {
+    // Scenarios 12 and 33: the list opens on the second character, hangs under the caret, and each
+    // row carries its matched letters in the accent colour, a glyph for what it is, and a quiet word
+    // saying where it came from.
+    let mut harness = completion_harness("layout.rs");
+    // On the blank line under the struct, so the list has room to hang below the caret.
+    let text = harness.state().document().text().to_string();
+    let blank = text.find("\nconst DRAW_LIMIT").expect("the blank line above the constant");
+    harness.state_mut().command(Command::PlaceCaret { offset: blank, extend: false });
+    harness.run();
+
+    type_letters(&mut harness, "d");
+    assert!(harness.state().completion().is_none(), "one character is noise, not an offer");
+    type_letters(&mut harness, "ra");
+
+    let offered = completions(&harness);
+    assert_eq!(
+        offered,
+        [
+            "draw",
+            "drawn",
+            "drawings",
+            "Drawing",
+            "draw_caret",
+            "draw_frame",
+            "draw_gutter",
+            "draw_everything",
+            "DRAW_LIMIT",
+            "redraw",
+        ],
+        "the order the rubric gives"
+    );
+    assert_eq!(harness.state().completion().expect("open").chosen, 0, "the best row is pre-chosen");
+    // Every row names itself, which is what makes it findable at all.
+    harness.get_by_label("Completion draw");
+    harness.get_by_label("Completion Drawing");
+    // The list is drawn under the caret's own line.
+    let anchor = harness.state().completion_anchor().expect("the popup was drawn");
+    assert!(anchor.pane.contains_rect(
+        quill_app::components::completion::where_it_goes(8, anchor.caret, anchor.pane)
+    ));
+    harness.snapshot(shot("completion_list"));
+}
+
+#[test]
+fn the_list_flips_above_the_caret_at_the_bottom_of_the_pane() {
+    // Scenario 22. Under the word is where the eye already is, so it only ever flips when the rows
+    // would cross the bottom of the pane.
+    let mut harness = completion_harness("layout.rs");
+    let end = harness.state().document().text().len_bytes();
+    harness.state_mut().command(Command::PlaceCaret { offset: end, extend: false });
+    harness.run();
+    type_letters(&mut harness, "dra");
+    assert!(harness.state().completion().is_some(), "{:?}", completions(&harness));
+    let anchor = harness.state().completion_anchor().expect("the popup was drawn");
+    let rows = harness.state().completion().expect("open").shown().len();
+    let area = quill_app::components::completion::where_it_goes(rows, anchor.caret, anchor.pane);
+    assert!(
+        area.bottom() <= anchor.caret.top(),
+        "the caret is at the bottom of the pane, so the list belongs above it: {area:?} against {:?}",
+        anchor.caret
+    );
+    assert!(anchor.pane.contains_rect(area), "and all of it is still on the screen");
+    harness.snapshot(shot("completion_above_the_caret"));
+}
+
+#[test]
+fn walking_past_the_eighth_row_scrolls_the_list() {
+    // Scenario 25's second half: eight rows are drawn and the pill drags the rest into view.
+    let mut harness = completion_harness("layout.rs");
+    let text = harness.state().document().text().to_string();
+    let blank = text.find("\nconst DRAW_LIMIT").expect("the blank line");
+    harness.state_mut().command(Command::PlaceCaret { offset: blank, extend: false });
+    harness.run();
+    type_letters(&mut harness, "dra");
+    assert!(completions(&harness).len() > 8, "{:?}", completions(&harness));
+    for _ in 0..9 {
+        harness.key_press(egui::Key::ArrowDown);
+        harness.run();
+    }
+    let state = harness.state().completion().expect("open");
+    assert_eq!(state.chosen, 9, "the tenth row, and no further: the ends are clamped");
+    assert!(state.scroll > 0, "so the list scrolled to reach it");
+    assert!(state.shown().contains(&state.chosen));
+    // The caret has not moved: the arrows were consumed before the editing area read them.
+    assert!(
+        harness.state().document().text().to_string().contains("dra\nconst DRAW_LIMIT"),
+        "and nothing was typed by the arrows"
+    );
+    harness.snapshot(shot("completion_scrolled"));
+}
+
+#[test]
+fn clicking_a_row_takes_it_and_the_click_never_reaches_the_document() {
+    // Scenario 30. The list's own `Area` is in front of the editing area, so the click lands on the
+    // row rather than placing a caret behind it.
+    let mut harness = completion_harness("layout.rs");
+    let text = harness.state().document().text().to_string();
+    let blank = text.find("\nconst DRAW_LIMIT").expect("the blank line");
+    harness.state_mut().command(Command::PlaceCaret { offset: blank, extend: false });
+    harness.run();
+    type_letters(&mut harness, "dra");
+    harness.get_by_label("Completion draw_gutter").click();
+    harness.run();
+    assert!(harness.state().completion().is_none(), "taking a row closes the list");
+    let after = harness.state().document().text().to_string();
+    assert!(after.contains("draw_gutter\nconst DRAW_LIMIT"), "{after:?}");
+    assert!(
+        harness.state().document().selection().is_empty(),
+        "and the click placed no caret in the document behind the list"
+    );
+}
+
+#[test]
+fn tab_takes_the_best_row_and_the_editing_area_never_sees_the_key() {
+    // Scenarios 26 and 28 through the real window: `Tab` is the gesture the ticket names, and while
+    // the list is open it must not also type a tab into the file.
+    let mut harness = completion_harness("layout.rs");
+    let text = harness.state().document().text().to_string();
+    let blank = text.find("\nconst DRAW_LIMIT").expect("the blank line");
+    harness.state_mut().command(Command::PlaceCaret { offset: blank, extend: false });
+    harness.run();
+    type_letters(&mut harness, "dra");
+    harness.key_press(egui::Key::Tab);
+    harness.run();
+    let after = harness.state().document().text().to_string();
+    assert!(after.contains("draw\nconst DRAW_LIMIT"), "{after:?}");
+    assert!(!after.contains('\t'), "no tab was typed into the file");
+    assert!(harness.state().completion().is_none());
+    // And with the list shut, `Tab` means what it always meant.
+    harness.key_press(egui::Key::Tab);
+    harness.run();
+    assert!(
+        harness.state().document().text().to_string().contains("draw\t"),
+        "{:?}",
+        harness.state().document().text().to_string()
+    );
+}
+
+#[test]
+fn a_split_view_has_one_list_at_most_and_it_is_in_the_pane_with_the_keyboard() {
+    // Scenario 23. One `Option` on the window makes "at most one" true by construction; the picture
+    // is what says it is drawn in the right pane and over the divider rather than under it.
+    let mut harness = completion_harness("caret.rs");
+    let folder = completion_folder();
+    harness.state_mut().open_path_permanently(&folder.join("layout.rs"));
+    let ctx = harness.ctx.clone();
+    harness.state_mut().run_action(Action::SplitRight, &ctx);
+    harness.run();
+    assert_eq!(harness.state().files.pane_count(), 2);
+    let text = harness.state().document().text().to_string();
+    let blank = text.find("\nconst DRAW_LIMIT").expect("the blank line");
+    harness.state_mut().command(Command::PlaceCaret { offset: blank, extend: false });
+    harness.run();
+    type_letters(&mut harness, "dra");
+    assert!(harness.state().completion().is_some(), "{:?}", completions(&harness));
+    let anchor = harness.state().completion_anchor().expect("the popup was drawn");
+    let editing = harness.state().editor_area();
+    assert!(
+        anchor.pane.left() >= editing.left() - 1.0,
+        "the list belongs to the pane with the keyboard: {:?} against {editing:?}",
+        anchor.pane
+    );
+    harness.snapshot(shot("completion_split_view"));
+}
+
+#[test]
+fn nothing_is_offered_in_a_file_no_plugin_claims() {
+    // Scenario 13 through the menu the window really builds: absent, not dimmed.
+    let harness = completion_harness("notes.md");
+    let names: Vec<String> = quill_app::app::actions::menus(&harness.state().menu_state())
+        .iter()
+        .find(|menu| menu.name == "Edit")
+        .expect("the Edit menu")
+        .entries
+        .iter()
+        .filter_map(|entry| match entry {
+            quill_app::app::actions::Entry::Item { name, .. } => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(!names.contains(&"Complete Word".to_owned()), "{names:?}");
+    let mut harness = completion_harness("layout.rs");
+    let names: Vec<String> = quill_app::app::actions::menus(&harness.state().menu_state())
+        .iter()
+        .find(|menu| menu.name == "Edit")
+        .expect("the Edit menu")
+        .entries
+        .iter()
+        .filter_map(|entry| match entry {
+            quill_app::app::actions::Entry::Item { name, .. } => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(names.contains(&"Complete Word".to_owned()), "{names:?}");
+    harness.run();
+}
+
+#[test]
+fn the_editor_page_holds_the_gutter_and_the_suggestions() {
+    // `task-1677` §8.3 put `editor.suggestions` here, beside the line numbers, because both are
+    // about what the editing area does rather than about what it looks like. The tick box is the
+    // furniture `components::modal` and this dialog already had; what is new is the section.
+    let mut harness = harness("");
+    open_settings(&mut harness);
+    harness.get_by_label("Editor").click();
+    harness.run();
+    harness.get_by_label("Show line numbers");
+    harness.get_by_label("Suggest completions as you type");
+    assert!(harness.state().settings.suggestions.is_automatic(), "on in a fresh Quill");
+    harness.snapshot(shot("settings_editor"));
+
+    // And the box really is the setting: clicking it puts the popup back to being asked for.
+    harness.get_by_label("Suggest completions as you type").click();
+    harness.run();
+    assert!(!harness.state().settings.suggestions.is_automatic());
+}

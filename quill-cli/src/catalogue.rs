@@ -603,6 +603,25 @@ pub const COMMANDS: &[Command] = &[
     },
     Command {
         area: "editor",
+        verb: "complete",
+        summary: "The names the word being typed at the caret could become, best first: the same list the popup shows, with what each row is and where it came from. --choose applies one of them to the stem exactly as Enter would.",
+        arguments: NO_ARGUMENTS,
+        flags: &[
+            option("offset", "bytes", "Ask about this position in the file rather than about the caret."),
+            option("line", "number", "Ask about this line, counting from 1."),
+            option("column", "number", "The column on that line. 1 when it is left out."),
+            option("limit", "number", "Print at most this many rows. All of them when it is left out."),
+            option("choose", "name", "Apply this row to the word being typed, as Enter would. It has to be one of the names offered."),
+        ],
+        examples: &[
+            "quill-cli editor complete --json",
+            "quill-cli editor complete --limit 5 --json",
+            "quill-cli editor complete --choose draw_frame",
+        ],
+        local: false,
+    },
+    Command {
+        area: "editor",
         verb: "navigate-back",
         summary: "Go back to where the caret was before the last jump, reopening the file if its tab was closed.",
         arguments: NO_ARGUMENTS,

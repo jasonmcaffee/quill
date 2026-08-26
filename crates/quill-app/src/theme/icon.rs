@@ -377,3 +377,71 @@ pub fn color_wheel(painter: &egui::Painter, centre: Pos2, color: Color32) {
     painter.circle_stroke(centre, outer, Stroke::new(1.0, color));
     painter.circle_filled(centre, inner, Color32::from_rgb(0x26, 0x2C, 0x36));
 }
+
+/// The five kinds of thing a definition can name, drawn rather than lettered.
+///
+/// A completion row says what it is offering with one of these, in front of the name. Drawn for the
+/// reason every icon here is drawn: the characters editors usually use for these — a Greek phi for a
+/// function, a bracket pair for a type — are not in the fonts Quill hands egui, and a missing glyph
+/// renders as an empty box. Each one is the shape the thing is written as in code, which is what
+/// makes five small marks tell each other apart at eleven points:
+///
+/// - a **function** is a pair of brackets, because that is what a call looks like;
+/// - a **type** is a hollow square, the shape of a thing with an inside;
+/// - a **constant** is a filled square, the same shape with nothing that can change in it;
+/// - a **variable** is a small filled circle, the plainest mark there is;
+/// - a **module** is three stacked lines, a folder's worth of things seen edge on.
+pub fn symbol_kind(painter: &egui::Painter, centre: Pos2, kind: quill_core::SymbolKind, color: Color32) {
+    use quill_core::SymbolKind;
+    let stroke = Stroke::new(1.3, color);
+    match kind {
+        SymbolKind::Function => {
+            // A pair of brackets: the tips point inwards and each bow reaches outwards, which is
+            // `()`. Drawn the other way round it is `)(`, which is a different thing altogether and
+            // is what the first version of this drew.
+            for side in [-1.0_f32, 1.0] {
+                let tip = centre.x + side * 1.4;
+                let bow = centre.x + side * 3.4;
+                painter.line_segment(
+                    [Pos2::new(tip, centre.y - 4.2), Pos2::new(bow, centre.y - 1.8)],
+                    stroke,
+                );
+                painter.line_segment(
+                    [Pos2::new(bow, centre.y - 1.8), Pos2::new(bow, centre.y + 1.8)],
+                    stroke,
+                );
+                painter.line_segment(
+                    [Pos2::new(bow, centre.y + 1.8), Pos2::new(tip, centre.y + 4.2)],
+                    stroke,
+                );
+            }
+        }
+        SymbolKind::Type => {
+            painter.rect_stroke(
+                Rect::from_center_size(centre, egui::Vec2::splat(7.6)),
+                CornerRadius::same(1),
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+        }
+        SymbolKind::Constant => {
+            painter.rect_filled(
+                Rect::from_center_size(centre, egui::Vec2::splat(6.4)),
+                CornerRadius::same(1),
+                color,
+            );
+        }
+        SymbolKind::Variable => {
+            painter.circle_filled(centre, 3.0, color);
+        }
+        SymbolKind::Module => {
+            for row in -1..=1 {
+                let y = centre.y + row as f32 * 3.2;
+                painter.line_segment(
+                    [Pos2::new(centre.x - 4.0, y), Pos2::new(centre.x + 4.0, y)],
+                    stroke,
+                );
+            }
+        }
+    }
+}

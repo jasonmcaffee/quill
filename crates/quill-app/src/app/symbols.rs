@@ -73,6 +73,14 @@ pub struct TabSymbols {
     /// Kept as names rather than looked up through the text each time, because the question asked
     /// of this is always "what defines *this* name" and answering it should not need the file.
     pub named: Vec<(String, symbols::Definition)>,
+    /// Every distinct spelling of an identifier in this file, sorted, each one once.
+    ///
+    /// What completion offers for the locals, the parameters and the field names — everything the
+    /// definers cannot see — and the only thing it can offer in a stylesheet, where `task-1675`
+    /// deliberately named no definers at all. Built here rather than per keystroke, keyed on the
+    /// same `text_revision` as everything else on this structure, so a caret moving recomputes
+    /// nothing.
+    pub words: Vec<String>,
 }
 
 /// The word under the pointer while the modifier is held, and where a click on it would go.
@@ -99,7 +107,10 @@ impl QuillApp {
     /// started lazily rather than in `QuillApp::new`, because a window that never asks a question
     /// about a symbol — every unit test that builds one — should not have a thread reading a folder
     /// behind it.
-    pub(crate) fn keep_the_symbol_index_fresh(&mut self) {
+    ///
+    /// Public because the measuring instruments drive a real window with no frames in it, and a
+    /// window whose index has never been asked for would measure a project with nothing in it.
+    pub fn keep_the_symbol_index_fresh(&mut self) {
         let root = self.tree.root().to_path_buf();
         let files = self.tree.file_count();
         // The file list and the plugins together are what the answer depends on, so a plugin
@@ -166,8 +177,9 @@ impl QuillApp {
                     (text[definition.name_range.clone()].to_owned(), definition.clone())
                 })
                 .collect();
+            let words = read.distinct_words(&text);
             self.files.at_mut(index).cached.symbols =
-                Some(TabSymbols { revision, read, named });
+                Some(TabSymbols { revision, read, named, words });
         }
         self.files.at(index).cached.symbols.as_ref().expect("just read")
     }
@@ -1084,8 +1096,10 @@ mod tests {
     }
 
     #[test]
-    fn the_three_entries_are_absent_for_a_file_whose_language_cannot_answer() {
-        // Scenarios 16 and 17, through the menu the window really builds.
+    fn the_symbol_entries_are_absent_for_a_file_whose_language_cannot_answer() {
+        // Scenarios 16 and 17, through the menu the window really builds. `Complete Word` sits with
+        // them and asks a wider question — a plugin claiming the file at all — so a stylesheet has
+        // it and a note does not.
         let (folder, mut app) = a_window("quill-symbols-absent");
         let names = |state: &MenuState| -> Vec<String> {
             crate::app::actions::symbol_entries(state)
@@ -1099,14 +1113,14 @@ mod tests {
         app.open_path_permanently(&folder.join("layout.rs"));
         assert_eq!(
             names(&app.menu_state()),
-            vec!["Go to Definition", "Find References", "Rename Symbol..."],
-            "a Rust file has all three"
+            vec!["Go to Definition", "Find References", "Rename Symbol...", "Complete Word"],
+            "a Rust file has all four"
         );
         app.open_path_permanently(&folder.join("site.css"));
         assert_eq!(
             names(&app.menu_state()),
-            vec!["Find References", "Rename Symbol..."],
-            "a stylesheet has no definitions, and keeps the other two"
+            vec!["Find References", "Rename Symbol...", "Complete Word"],
+            "a stylesheet has no definitions, and keeps the other three"
         );
         app.open_path_permanently(&folder.join("notes.md"));
         assert!(names(&app.menu_state()).is_empty(), "a note has none of them");

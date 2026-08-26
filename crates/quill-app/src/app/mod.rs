@@ -28,6 +28,7 @@
 pub mod action_names;
 pub mod actions;
 pub mod cli;
+pub mod completion;
 pub mod files;
 pub mod git;
 pub mod symbols;
@@ -484,6 +485,14 @@ pub struct QuillApp {
     /// Commands that have been accepted and are waiting for something — a painted frame, a shell, a
     /// search, git. See `app::cli`.
     pub(crate) cli_waiting: Vec<(control::Pending, cli::Waiting)>,
+    /// The completion popup, when one is open. One at most, because it belongs to the pane with the
+    /// keyboard — the same reasoning as the one `hover` and the one `references` modal. See
+    /// `app::completion`.
+    pub(crate) completion: Option<completion::CompletionState>,
+    /// Where the popup hangs. Frame local, recorded by the pane that has the keyboard as it draws
+    /// its caret, because the pane loop borrows the focus and no one else can know where that caret
+    /// ended up on the screen. Read after the loop, which is where the popup is drawn.
+    completion_anchor: Option<completion::CompletionAnchor>,
 }
 
 impl QuillApp {
@@ -558,6 +567,8 @@ impl QuillApp {
             marks: FileMarks::new(),
             control: None,
             cli_waiting: Vec::new(),
+            completion: None,
+            completion_anchor: None,
         }
     }
 
@@ -936,6 +947,7 @@ impl QuillApp {
             on_a_highlight: self.marks_under_the_caret(),
             definitions_apply: self.definitions_apply_here(),
             symbols_apply: self.symbols_apply_here(),
+            completion_applies: self.completion_applies_here(),
             can_go_back: !self.back.is_empty(),
             can_go_forward: !self.forward.is_empty(),
         }
@@ -1018,6 +1030,12 @@ impl QuillApp {
                 let offset = self.caret_offset();
                 self.rename_symbol(offset);
             }
+            // Only while the editing area has the keyboard. The menu's keyboard watcher does not
+            // care what has the focus and does not consume the press, and `Ctrl+Space` is a key a
+            // terminal sends — as a NUL byte — so without this guard one press would both open a
+            // list over a file nobody was typing into and reach the program in the terminal.
+            Action::CompleteWord if self.focus == Focus::Editor => self.complete_word(),
+            Action::CompleteWord => {}
             Action::NavigateBack => self.navigate(true),
             Action::NavigateForward => self.navigate(false),
             Action::Save => self.save(),
@@ -2689,11 +2707,18 @@ impl QuillApp {
         // it. Two things must not follow the borrowed focus and are passed in instead — the keyboard,
         // or every pane would take the same key presses and draw a caret, and `editor_area`, which
         // the status bar reads on the frame after. See `tasks/task-1664-split-view-tdd.md` §6.
+        // The completion popup's five keys, taken out of the frame's input **before** any pane reads
+        // it, which is the one-frame ordering `Find in Files` and `Go to File` already rely on: a
+        // key the popup takes never reaches `editor_view::handle_input`. Everything else flows
+        // through untouched.
+        self.route_the_completion_keys(ui);
         let pane_rects = self.pane_rects(editing_area);
         let had_the_keyboard = self.files.focused_pane();
         let mut keyboard = had_the_keyboard;
         self.tab_strips.clear();
         self.tab_drag = None;
+        // Rebuilt by the pane that has the keyboard, which is the only thing that can know it.
+        self.completion_anchor = None;
         // A close can remove a pane and renumber the ones after it, so it is done once the loop has
         // finished rather than underneath itself.
         let mut close: Option<usize> = None;
@@ -2710,6 +2735,11 @@ impl QuillApp {
         // Where a tab being carried would land, and where it did. After the loop, because a tab
         // picked up in one pane is dropped on another as often as not.
         self.settle_the_tab_drag(ui, &pane_rects);
+        // The completion popup, drawn from the geometry the pane with the keyboard recorded. After
+        // the loop for the reason the tab drag is settled after it: this is the first moment
+        // anything knows where that pane's caret ended up, and one popup drawn here can never be
+        // underneath a divider or drawn twice in a split view.
+        self.show_the_completion(ui);
         // A gesture nobody was pointing at belongs to the pane being typed into. Here rather than
         // in the loop, because a pane earlier in the row must not take a gesture aimed at one
         // later in it, and which pane the pointer is over is not known until they are all drawn.
@@ -3869,6 +3899,15 @@ impl QuillApp {
         // layout they measure against is borrowed at the same time, and a method on `self` would
         // borrow the whole window. Both now live on the same tab, and the two are separate fields of
         // it, which is a borrow the compiler allows through one reference.
+        // Whether a character reached the document this frame, which is the one thing the automatic
+        // trigger fires on. Read before the input is handled, because handling it is what consumes
+        // the events. A paste, an undo and a command line edit are all deliberately not typing.
+        let typed = has_keyboard
+            && ui.input(|input| {
+                input.events.iter().any(|event| {
+                    matches!(event, egui::Event::Text(text) if !text.chars().any(char::is_control))
+                })
+            });
         let file = self.files.active_mut();
         let laid = &file.cached.layout;
         let document = &mut file.document;
@@ -3892,6 +3931,13 @@ impl QuillApp {
         }
         if outcome.changed || pointer_changed {
             self.refresh_layout(text_width);
+        }
+
+        // Open, refilter or close the completion popup, now that the letter just typed is in the
+        // file. Only the pane with the keyboard, because there is one popup and it belongs to
+        // whichever pane is being typed into.
+        if focused {
+            self.keep_the_completion_fresh(typed);
         }
 
         // A right click opens the editing area's own menu. Inside a selection it leaves the
@@ -3966,6 +4012,13 @@ impl QuillApp {
         self.files.active_mut().scroll = scroll;
 
         let origin = Pos2::new(area.left() + padding, area.top() + size::EDITOR_PADDING_Y - scroll);
+
+        // Where the completion popup hangs, worked out from the caret's own box at the position the
+        // frame settled on. Recorded rather than drawn here: the window draws it after the whole row
+        // of panes, so it sits over the dividers rather than under one.
+        if focused {
+            self.remember_where_the_completion_hangs(origin, area);
+        }
 
         // The gutter is drawn from the same origin as the text, so a number cannot drift away from
         // the line it belongs to.
