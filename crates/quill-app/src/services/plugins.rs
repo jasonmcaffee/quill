@@ -81,6 +81,19 @@ pub const RENDERERS: &[&str] = &["mermaid"];
 /// `plugin.kind`.
 pub const PROJECT_RUNNERS: &[&str] = &["cargo", "npm"];
 
+/// The debuggers built into this version of Quill that a plugin's `debug.adapter` may name.
+///
+/// The third registry of this shape, checked the same way and for the same reason: a manifest naming
+/// a debugger Quill cannot drive should say so plainly rather than load as a language whose files
+/// quietly offer a Debug button that never works.
+///
+/// **Which debugger a language uses is data in the plugin, and the debugger itself is code in
+/// Quill.** `services::debuggers` is what each name knows how to find and how to start — where
+/// `lldb-dap` lives on `PATH`, how to translate a run configuration into that adapter's own launch
+/// shape — so the most a third-party manifest can do is name an adapter that shipped in the binary,
+/// visibly. Nothing in a plugin is executed and nothing is ever fetched.
+pub const DEBUGGERS: &[&str] = &["lldb", "node"];
+
 /// The kind of plugin. One today, and the field exists so that a second one can be refused rather
 /// than half-loaded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,6 +149,13 @@ pub struct Plugin {
     pub run_file: Option<String>,
     /// The project detector this language's projects are found by, named from [`PROJECT_RUNNERS`].
     pub run_project: Option<String>,
+    /// The debugger this language's files are debugged with, named from [`DEBUGGERS`].
+    ///
+    /// What puts the whole debug half of the Run menu, the gutter's breakpoints and the debug tile
+    /// in front of a file of this language, and nothing else. **Absent** rather than dimmed for a
+    /// language that names none, which is the rule the three code-navigation entries already follow:
+    /// a stylesheet has nothing to step through and never will.
+    pub debug_adapter: Option<String>,
     pub grammar: Grammar,
     pub theme: SyntaxTheme,
     /// The bytes of `icon.png`, when it has one.
@@ -268,6 +288,24 @@ impl Plugins {
     /// the next restart.
     pub fn run_file(&self, path: &Path) -> Option<&str> {
         self.for_path(path)?.run_file.as_deref()
+    }
+
+    /// The debugger `path`'s language names, when a plugin that is switched on names one.
+    ///
+    /// **The one question the menus, the title bar, the gutter and the command line all ask**, so
+    /// none of them can disagree about whether a file can be debugged — which is the rule
+    /// `file_kind::definitions_apply` set and the reason there is a function here rather than four
+    /// readings of `for_path`. Asked at the moment of use, exactly as [`Plugins::renders`] is, so
+    /// switching the Rust plugin off withdraws debugging from `.rs` files in the same frame rather
+    /// than at the next restart.
+    pub fn debugger_for(&self, path: &Path) -> Option<&str> {
+        self.for_path(path)?.debug_adapter.as_deref()
+    }
+
+    /// True when any plugin that is switched on names a debugger at all, which is what decides
+    /// whether the debug tile can ever be reached in this project.
+    pub fn any_debugger(&self) -> bool {
+        self.installed.iter().any(|plugin| plugin.enabled && plugin.debug_adapter.is_some())
     }
 
     /// The project detectors the plugins that are switched on have asked for, each named once.
@@ -509,6 +547,7 @@ pub fn parse(values: &Values, bundled: bool) -> Result<Plugin, String> {
         renders,
         run_file: run_file(values)?,
         run_project: run_project(values)?,
+        debug_adapter: debug_adapter(values)?,
         grammar,
         theme: SyntaxTheme {
             name: values.text("theme.name").unwrap_or("Dracula").to_owned(),
@@ -557,6 +596,25 @@ fn run_project(values: &Values) -> Result<Option<String>, String> {
     Err(format!(
         "run.project is `{named}`, and this version of Quill detects {}",
         PROJECT_RUNNERS.join(", ")
+    ))
+}
+
+/// `debug.adapter`: the name of a debugger built into Quill.
+///
+/// Checked against [`DEBUGGERS`] exactly as `run.project` is checked against [`PROJECT_RUNNERS`],
+/// and the refusal reads the same way, because it is the same decision made a third time: the
+/// manifest says "files of this language can be debugged, and this is which debugger knows how", and
+/// the code that finds and drives that debugger shipped with the binary.
+fn debug_adapter(values: &Values) -> Result<Option<String>, String> {
+    let Some(named) = word(values, "debug.adapter") else {
+        return Ok(None);
+    };
+    if DEBUGGERS.contains(&named.as_str()) {
+        return Ok(Some(named));
+    }
+    Err(format!(
+        "debug.adapter is `{named}`, and this version of Quill drives {}",
+        DEBUGGERS.join(", ")
     ))
 }
 
@@ -905,6 +963,55 @@ mod tests {
         assert_eq!(mermaid.path_separator, None);
         assert!(mermaid.path_roots.is_empty());
         assert!(!mermaid.completes_imports(), "so no import is ever read out of a diagram");
+    }
+
+    /// The same rule a fourth time, for the key `task-1687` added. Mermaid and CSS name no debugger,
+    /// so every debug control is **absent** for their files — which is Quill's rule for a control
+    /// that can never apply, and is what keeps the key opt-in.
+    #[test]
+    fn the_older_plugins_ask_for_none_of_what_debugging_added() {
+        let (plugins, problems) = Plugins::load(None);
+        assert!(problems.is_empty(), "{problems:?}");
+        for id in ["mermaid", "css"] {
+            let plugin = plugins.get(id).expect(id);
+            assert_eq!(plugin.debug_adapter, None, "{id} names no debugger");
+        }
+        assert_eq!(plugins.debugger_for(Path::new("a.css")), None);
+        assert_eq!(plugins.debugger_for(Path::new("a.mmd")), None);
+        assert_eq!(plugins.debugger_for(Path::new("a.txt")), None, "and nothing claims a .txt");
+    }
+
+    /// The three that do name one, and the two shapes they name.
+    #[test]
+    fn the_languages_that_can_be_debugged_name_the_debugger_that_can_do_it() {
+        let (plugins, _) = Plugins::load(None);
+        assert_eq!(plugins.debugger_for(Path::new("src/main.rs")), Some("lldb"));
+        assert_eq!(plugins.debugger_for(Path::new("server.js")), Some("node"));
+        assert_eq!(plugins.debugger_for(Path::new("server.ts")), Some("node"));
+        assert!(plugins.any_debugger());
+    }
+
+    /// Asked at the moment of use, exactly as `renders` is: switching the plugin off withdraws
+    /// debugging from its files in the same frame rather than at the next restart.
+    #[test]
+    fn switching_a_plugin_off_withdraws_debugging_from_its_files() {
+        let (mut plugins, _) = Plugins::load(None);
+        assert_eq!(plugins.debugger_for(Path::new("a.rs")), Some("lldb"));
+        plugins.set_enabled(None, "rust", false);
+        assert_eq!(plugins.debugger_for(Path::new("a.rs")), None);
+    }
+
+    /// The refusal reads the way `run.project`'s does, because it is the same decision made again.
+    #[test]
+    fn a_debugger_this_version_cannot_drive_is_refused_rather_than_half_loaded() {
+        let head = "plugin.id = a\nlanguage.extensions = .a\n";
+        let refused = parse(&Values::parse(&format!("{head}debug.adapter = gdb")), false)
+            .expect_err("gdb is not one Quill drives");
+        assert!(refused.contains("gdb"), "{refused}");
+        assert!(refused.contains("lldb, node"), "it says what this version does drive: {refused}");
+        let accepted = parse(&Values::parse(&format!("{head}debug.adapter = lldb")), false)
+            .expect("one it does drive");
+        assert_eq!(accepted.debug_adapter.as_deref(), Some("lldb"));
     }
 
     #[test]

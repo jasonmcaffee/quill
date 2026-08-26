@@ -57,6 +57,9 @@ fn main() {
     let read = timed(20, || {
         let _ = folding::regions(&text, reading);
     });
+    for (what, cost) in folding::breakdown(&text, reading) {
+        println!("      {what:<22} {cost:8.3} ms");
+    }
     let regions = folding::regions(&text, reading);
     println!("  reading the blocks         {read:8.3} ms   {} blocks", regions.len());
     if let Some(grammar) = grammars.for_path(&path) {

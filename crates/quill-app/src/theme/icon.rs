@@ -534,3 +534,150 @@ pub fn clear(painter: &egui::Painter, centre: Pos2, color: Color32) {
 pub fn state_dot(painter: &egui::Painter, centre: Pos2, color: Color32) {
     painter.circle_filled(centre, 3.2, color);
 }
+
+/// How wide a breakpoint dot is drawn, which is what the gutter reserves for it.
+pub const BREAKPOINT_RADIUS: f32 = 4.5;
+
+/// The breakpoint dot in the gutter: filled while it is on, a ring while it is off or while the
+/// adapter has not bound it.
+///
+/// Drawn rather than lettered, which is what the style guide asks for and what every other mark in
+/// the gutter already is. A ring rather than a second colour, because what is different about an
+/// unverified breakpoint is that it is hollow — the program has not agreed to stop there yet.
+pub fn breakpoint(painter: &egui::Painter, centre: Pos2, filled: bool, color: Color32) {
+    if filled {
+        painter.circle_filled(centre, BREAKPOINT_RADIUS, color);
+    } else {
+        painter.circle_stroke(centre, BREAKPOINT_RADIUS - 0.75, Stroke::new(1.5, color));
+    }
+}
+
+/// The mark a breakpoint carrying a condition or a log message wears: a halo round the dot.
+///
+/// IntelliJ puts a question mark on a conditional breakpoint, and a question mark is what this was
+/// first drawn as — two short strokes at the dot's lower right. Blown up four times it read as a
+/// **blob stuck to the dot** rather than as a mark, which at nine real pixels is what anybody would
+/// see: there is no room inside or beside a nine-pixel circle for a glyph.
+///
+/// A ring round it has the one property that matters at this size — a silhouette that differs from
+/// the plain dot's at a glance — and it cannot be confused with a **hollow** dot, because a hollow
+/// one has nothing in the middle.
+pub fn breakpoint_badge(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    painter.circle_stroke(
+        centre,
+        BREAKPOINT_RADIUS + 2.5,
+        Stroke::new(1.2, color.gamma_multiply(0.7)),
+    );
+}
+
+/// The bug on the activity bar's debug button: a body, three pairs of legs and two antennae.
+///
+/// Drawn rather than lettered, in the manner of every other icon here, and recognisable at the
+/// eighteen points the rail draws its buttons at.
+pub fn bug(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    let stroke = Stroke::new(1.4, color);
+    let body = Rect::from_center_size(centre, egui::Vec2::new(8.0, 10.0));
+    painter.rect_stroke(body, CornerRadius::same(4), stroke, egui::StrokeKind::Middle);
+    // The three pairs of legs, evenly down the body, which is what makes it read as an insect
+    // rather than as a rounded rectangle.
+    for step in 0..3 {
+        let y = body.top() + 2.5 + step as f32 * 2.75;
+        painter
+            .line_segment([Pos2::new(body.left(), y), Pos2::new(body.left() - 3.0, y - 1.0)], stroke);
+        painter.line_segment(
+            [Pos2::new(body.right(), y), Pos2::new(body.right() + 3.0, y - 1.0)],
+            stroke,
+        );
+    }
+    painter.line_segment(
+        [Pos2::new(centre.x - 1.5, body.top()), Pos2::new(centre.x - 3.5, body.top() - 3.0)],
+        stroke,
+    );
+    painter.line_segment(
+        [Pos2::new(centre.x + 1.5, body.top()), Pos2::new(centre.x + 3.5, body.top() - 3.0)],
+        stroke,
+    );
+}
+
+/// Resume: the play triangle with a bar in front of it, which is what every debugger draws.
+pub fn resume(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    painter.rect_filled(
+        Rect::from_min_size(Pos2::new(centre.x - 6.0, centre.y - 5.0), egui::Vec2::new(2.0, 10.0)),
+        CornerRadius::same(1),
+        color,
+    );
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            Pos2::new(centre.x - 1.0, centre.y - 5.5),
+            Pos2::new(centre.x + 6.0, centre.y),
+            Pos2::new(centre.x - 1.0, centre.y + 5.5),
+        ],
+        color,
+        Stroke::NONE,
+    ));
+}
+
+/// Which of the three stepping pictures [`step`] draws.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepIcon {
+    Over,
+    Into,
+    Out,
+}
+
+/// The three stepping icons, which differ only in where the arrow goes.
+///
+/// One function rather than three, because they are one picture with a parameter: a line the program
+/// is on with the statement as a dot on it, and an arrow that goes over it, into it, or out of it.
+/// Drawing them separately would be three chances for the three to stop looking like a set.
+pub fn step(painter: &egui::Painter, centre: Pos2, kind: StepIcon, color: Color32) {
+    let stroke = Stroke::new(1.5, color);
+    let base = centre.y + 5.0;
+    painter.line_segment([Pos2::new(centre.x - 6.0, base), Pos2::new(centre.x + 6.0, base)], stroke);
+    match kind {
+        StepIcon::Over => {
+            // An arc that hops over the dot, as three segments: a real arc would be a dozen points
+            // for a shape eleven points wide, and a glyph is not an option here.
+            painter.line_segment(
+                [Pos2::new(centre.x - 5.0, base - 1.0), Pos2::new(centre.x - 2.5, base - 5.5)],
+                stroke,
+            );
+            painter.line_segment(
+                [Pos2::new(centre.x - 2.5, base - 5.5), Pos2::new(centre.x + 2.5, base - 5.5)],
+                stroke,
+            );
+            painter.line_segment(
+                [Pos2::new(centre.x + 2.5, base - 5.5), Pos2::new(centre.x + 5.0, base - 1.0)],
+                stroke,
+            );
+            painter.circle_filled(Pos2::new(centre.x, base - 1.5), 1.8, color);
+        }
+        StepIcon::Into => {
+            painter.line_segment(
+                [Pos2::new(centre.x, base - 9.0), Pos2::new(centre.x, base - 3.5)],
+                stroke,
+            );
+            arrow_head(painter, Pos2::new(centre.x, base - 1.5), 1.0, color);
+        }
+        StepIcon::Out => {
+            painter.line_segment(
+                [Pos2::new(centre.x, base - 1.5), Pos2::new(centre.x, base - 7.5)],
+                stroke,
+            );
+            arrow_head(painter, Pos2::new(centre.x, base - 9.5), -1.0, color);
+        }
+    }
+}
+
+/// A small filled triangle pointing up or down, which is the head of the two stepping arrows.
+fn arrow_head(painter: &egui::Painter, tip: Pos2, direction: f32, color: Color32) {
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            tip,
+            Pos2::new(tip.x - 3.0, tip.y - 3.5 * direction),
+            Pos2::new(tip.x + 3.0, tip.y - 3.5 * direction),
+        ],
+        color,
+        Stroke::NONE,
+    ));
+}

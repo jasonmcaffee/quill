@@ -206,6 +206,27 @@ A merge or a rebase that stops on a conflict is not hidden: the status bar says 
 files are marked, the Git menu grows `Continue` and `Abort`, and the file opens with its markers in
 it — which is a file holding text, and therefore something Quill already edits.
 
+**A debugger**, in the `Run` menu under the run entries. Click the gutter to put a red dot on a line,
+press `Shift+F9` to start the configuration the play button starts *under a debugger*, and the
+program stops there: the line is marked, the call stack and the variables are in the debug tile along
+the bottom, and `F8`, `F7`, `Shift+F8` and `F9` step over, into, out and on. Double click a value to
+change it in the running program, `Alt+F8` evaluates any expression, and while the program is paused
+each local's value is painted at the end of the line that names it.
+
+Quill speaks the **Debug Adapter Protocol**, so one client drives every language's debugger: Rust and
+native code through `lldb-dap` or CodeLLDB, JavaScript and TypeScript through Microsoft's js-debug.
+Which debugger a language uses is one line in its plugin and the code that drives it shipped with the
+binary, so nothing in a plugin is executed — and **nothing is fetched**: pressing Debug with no
+adapter installed is one sentence saying what was looked for and where it comes from, not a download.
+`Settings` takes an explicit path in `debug.lldb` or `debug.node` for a machine that keeps one
+somewhere else.
+
+Breakpoints move with the text as you edit above them, survive a restart in `.quill/breakpoints.conf`,
+and carry a condition or a message to log instead of stopping. What the debugger says about one is
+what is drawn: a breakpoint it could not bind stays hollow rather than pretending. `quill-cli debug`
+is the whole of it from the command line, which is what lets an agent set a breakpoint, run to it and
+read a variable rather than guessing about a program.
+
 **Plugins** colour a file by what its text is. Five ship with Quill — JavaScript, TypeScript, Rust,
 CSS and Mermaid — and each gives its files an icon, a set of words to colour, and the Dracula colour
 scheme. A plugin is a folder holding a `plugin.conf` and an icon, in the same `name = value` format
@@ -852,9 +873,6 @@ left to right, which is correct for Latin, Greek and Cyrillic and wrong for Arab
 Search and replace inside the open file, and several carets at once. `Find in Files` searches the
 project and opens what it finds; it does not replace, which is a destructive operation across a whole
 project and wants a ticket and a confirmation of its own.
-
-Code folding. The 12 point gap beside the line numbers is where its arrows would go, and nothing else
-about the gutter would have to move; what it needs is a notion of a block, which needs a real parser.
 
 A three way merge editor, a language server, and a marketplace that fetches a plugin over the
 network. Each is named with its reason in `tasks/quill-ide-tdd.md`.

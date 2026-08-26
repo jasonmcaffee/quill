@@ -14,7 +14,36 @@ debugger, step over, into and out of calls, see the call stack, and view and cha
 variables while the program is paused — behaving the way IntelliJ behaves, in the languages Quill's
 plugins already claim.
 
-This document is the design. `task-1689` is the implementation. Nothing here is built yet.
+This document is the design. `task-1689` is the implementation, and it is built: the whole of §4 to
+§12 shipped in Quill 0.14.0.
+
+Four things the implementation settled differently from the text below, each recorded where the code
+makes the choice rather than only here:
+
+- **§2.2's lifecycle summary has `setBreakpoints` before `launch`, and it has to be the other way.**
+  The `initialized` event is what says an adapter will accept breakpoints, and no adapter sends it
+  until `launch` has arrived; sending them earlier gets them refused by lldb-dap and dropped by
+  js-debug. `quill_dap::session`'s own comment records it.
+- **§6.2's gutter column was already spent.** `task-1686` put the folding arrows in the 12 points
+  `components::gutter` had reserved, and a second control cannot share twelve points with one that
+  already fills them. The dot is drawn **over the line number** instead, which is what IntelliJ does
+  and what costs the gutter no width at all — so no accepted screenshot moved sideways. With the line
+  numbers switched off there is nothing to draw over and a column of its own is reserved.
+- **§9's debug button goes *above* the run one, not below it.** The rail is read bottom upwards, so
+  "below" would have taken the bottom-left corner — which is where `task-1658`'s reference capture
+  puts the **terminal** and where a dozen accepted screenshots have it. The older promise wins.
+- **`runInTerminal` is answered with `success` and no process id.** §7.2 says Quill replies with the
+  process id; a pseudoconsole hands back a console rather than a child and alacritty's pty layer does
+  not surface it. The specification makes `processId` optional for exactly that reason, and it is what
+  lldb-dap's own comm-file scheme and js-debug both expect.
+
+And one thing the implementation had to add that the design did not name: **"stopped" and "there is
+something to look at" are not the same instant.** A `stopped` event is one thing and the four requests
+it causes are another, so there is a window of a few round trips in which the session is paused and
+knows nothing about where. Measured against a real CodeLLDB, `debug status` in that window answers
+with a null line and `debug variables` with an empty list — both of which look exactly like a program
+that stopped somewhere uninteresting. `DebugState::is_ready` is the distinction, and it is what
+`--wait-for-pause` waits for.
 
 ## 2. What the surveyed editors do
 

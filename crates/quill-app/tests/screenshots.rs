@@ -8062,3 +8062,731 @@ fn a_picture_has_no_folding_entries_at_all() {
     assert!(quill_app::app::actions::folding_menu(&state).is_empty());
     assert!(quill_app::app::actions::folding_here_menu(&state).is_empty());
 }
+
+// ============================================================================================
+// Debugging: the gutter, the tile, the execution point and the inline values.
+//
+// `task-1687`. Every picture here is drawn from a **detached** session — one with no adapter behind
+// it, fed fixed DAP messages — which is the trick the terminal's own pictures and the run tile's
+// already use: when a real debugger answers is not something a test can know, and a picture that
+// depended on it would differ between runs. The session runs the whole state machine over those
+// messages, so what is drawn is what a real adapter sending them would have drawn.
+
+use quill_app::app::actions::DebugAction;
+use quill_dap::Message;
+
+/// A folder holding one real Rust file to set breakpoints in.
+///
+/// Its own folder for `folding_folder`'s reason: `sample_folder`'s file count is in the status bar of
+/// a dozen accepted screenshots, and another file there would change every one of them.
+fn debug_folder(name: &str) -> std::path::PathBuf {
+    let root = std::env::temp_dir().join("quill-screenshot-debug").join(name);
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::create_dir_all(&root).expect("make the folder");
+    std::fs::write(
+        root.join("main.rs"),
+        "fn main() {\n\
+        \x20   let attempts = 3;\n\
+        \x20   let items = vec![1, 2, 3];\n\
+        \x20   let total = attempts + items.len();\n\
+        \x20   println!(\"{total}\");\n\
+         }\n",
+    )
+    .expect("write main.rs");
+    root
+}
+
+/// A window on that folder with `main.rs` open.
+fn debug_harness(name: &str) -> Harness<'static, QuillApp> {
+    let folder = debug_folder(name);
+    let mut harness = harness_in(&folder);
+    harness.get_by_label_contains("main.rs").click();
+    harness.run();
+    harness.run();
+    harness
+}
+
+/// What the adapter would have said, so a whole session is a list of values with no process in it.
+fn answer(request_seq: i64, command: &str, body: serde_json::Value) -> Message {
+    Message::Response {
+        seq: 900 + request_seq,
+        request_seq,
+        command: command.to_owned(),
+        success: true,
+        message: None,
+        body,
+    }
+}
+
+/// Everything the session has asked for since this was last called, and forget it.
+fn asked(harness: &mut Harness<'static, QuillApp>) -> Vec<serde_json::Value> {
+    harness.state_mut().debug.as_mut().expect("a session").requested()
+}
+
+/// The seq the session really used for `command`, out of a batch of what it asked for.
+///
+/// Nothing about the order or the numbering is assumed: the test answers what was asked, exactly as
+/// an adapter would. One `stopped` produces two requests at once, which is why the batch is read
+/// whole rather than one request at a time.
+fn seq_of(asked: &[serde_json::Value], command: &str) -> i64 {
+    asked
+        .iter()
+        .find(|frame| frame["command"] == command)
+        .and_then(|frame| frame["seq"].as_i64())
+        .unwrap_or_else(|| panic!("the session should have asked for {command}: {asked:#?}"))
+}
+
+/// The two together, for the many places only one request is outstanding.
+fn asked_for(harness: &mut Harness<'static, QuillApp>, command: &str) -> i64 {
+    let batch = asked(harness);
+    seq_of(&batch, command)
+}
+
+/// Hand a message to the session and let the window settle.
+fn feed_debug(harness: &mut Harness<'static, QuillApp>, message: Message) {
+    harness.state_mut().debug.as_mut().expect("a session").feed(message);
+    harness.run();
+}
+
+/// Everything an ordinary adapter offers.
+fn capabilities() -> serde_json::Value {
+    serde_json::json!({
+        "supportsConfigurationDoneRequest": true,
+        "supportsSetVariable": true,
+        "supportsConditionalBreakpoints": true,
+        "supportsLogPoints": true,
+        "supportsTerminateRequest": true,
+    })
+}
+
+/// Drive a detached session from nothing to stopped at line 4 of `main.rs`, with three locals.
+///
+/// The whole lifecycle, in the protocol's own order, answering what the session really asked for.
+fn paused_harness(name: &str) -> Harness<'static, QuillApp> {
+    let mut harness = debug_harness(name);
+    let path = debug_folder(name).join("main.rs");
+    harness
+        .state_mut()
+        .new_detached_debug_session("lldb", configuration("app", "target/debug/app.exe"));
+    harness.state_mut().show_the_debug_tile(true);
+    harness.run();
+
+    let initialize = asked_for(&mut harness, "initialize");
+    feed_debug(&mut harness, answer(initialize, "initialize", capabilities()));
+    // The launch went out with it; the adapter then says it is ready for breakpoints.
+    asked_for(&mut harness, "launch");
+    feed_debug(&mut harness, Message::Initialized);
+    let done = asked_for(&mut harness, "configurationDone");
+    feed_debug(&mut harness, answer(done, "configurationDone", serde_json::Value::Null));
+
+    feed_debug(
+        &mut harness,
+        Message::Stopped(quill_dap::Stopped {
+            reason: "breakpoint".to_owned(),
+            thread: Some(1),
+            description: None,
+            text: None,
+            all_threads: true,
+        }),
+    );
+    // One `stopped` asks for both at once, so the batch is read whole.
+    let batch = asked(&mut harness);
+    let threads = seq_of(&batch, "threads");
+    let stack = seq_of(&batch, "stackTrace");
+    feed_debug(
+        &mut harness,
+        answer(threads, "threads", serde_json::json!({ "threads": [{ "id": 1, "name": "main" }] })),
+    );
+    feed_debug(
+        &mut harness,
+        answer(
+            stack,
+            "stackTrace",
+            serde_json::json!({ "stackFrames": [
+                { "id": 1000, "name": "app::main", "line": 4, "source": { "path": path.to_string_lossy() } },
+                { "id": 1001, "name": "core::ops::function::FnOnce::call_once", "line": 250, "presentationHint": "subtle" }
+            ]}),
+        ),
+    );
+    let scopes = asked_for(&mut harness, "scopes");
+    feed_debug(
+        &mut harness,
+        answer(
+            scopes,
+            "scopes",
+            serde_json::json!({ "scopes": [
+                { "name": "Locals", "variablesReference": 7, "expensive": false },
+                { "name": "Registers", "variablesReference": 8, "expensive": true }
+            ]}),
+        ),
+    );
+    let variables = asked_for(&mut harness, "variables");
+    feed_debug(
+        &mut harness,
+        answer(
+            variables,
+            "variables",
+            serde_json::json!({ "variables": [
+                { "name": "attempts", "value": "3", "type": "i32", "variablesReference": 0 },
+                { "name": "items", "value": "Vec<i32>(len:3)", "type": "alloc::vec::Vec<i32>", "variablesReference": 17 },
+                { "name": "total", "value": "6", "type": "usize", "variablesReference": 0 }
+            ]}),
+        ),
+    );
+    harness
+}
+
+#[test]
+fn the_gutter_draws_an_enabled_a_disabled_an_unverified_and_a_conditional_breakpoint() {
+    let mut harness = debug_harness("gutter");
+    let folder = debug_folder("gutter");
+    let path = folder.join("main.rs");
+    // Line 2 plain, line 3 conditional, line 4 disabled, line 5 unverified — one of each, so the
+    // picture is the whole vocabulary at once.
+    did(&mut harness, &format!("debug breakpoint add {} 2", path.display()));
+    did(
+        &mut harness,
+        &format!("debug breakpoint add {} 3 --condition \"attempts > 3\"", path.display()),
+    );
+    did(&mut harness, &format!("debug breakpoint add {} 4", path.display()));
+    did(&mut harness, &format!("debug breakpoint disable {} 4", path.display()));
+    did(&mut harness, &format!("debug breakpoint add {} 5", path.display()));
+    harness.run();
+    assert_eq!(harness.state().document().breakpoints().len(), 4);
+    // One of each, which is what the picture is of.
+    let conditional: Vec<bool> = harness
+        .state()
+        .document()
+        .breakpoints()
+        .iter()
+        .map(quill_core::Breakpoint::is_conditional)
+        .collect();
+    assert_eq!(conditional, vec![false, true, false, false]);
+
+    // A session that answered "I could not bind the last one", which is what makes it hollow. Quill
+    // draws the adapter's answer rather than its own hope.
+    harness
+        .state_mut()
+        .new_detached_debug_session("lldb", configuration("app", "target/debug/app.exe"));
+    harness.run();
+    let initialize = asked_for(&mut harness, "initialize");
+    feed_debug(&mut harness, answer(initialize, "initialize", capabilities()));
+    feed_debug(&mut harness, Message::Initialized);
+    let breakpoints = asked_for(&mut harness, "setBreakpoints");
+    feed_debug(
+        &mut harness,
+        answer(
+            breakpoints,
+            "setBreakpoints",
+            // Three sent — the disabled one is not — and the last could not be bound.
+            serde_json::json!({ "breakpoints": [
+                { "id": 1, "verified": true, "line": 2 },
+                { "id": 2, "verified": true, "line": 3 },
+                { "id": 3, "verified": false, "message": "no code on that line" }
+            ]}),
+        ),
+    );
+    harness.get_by_label("Remove breakpoint on line 2");
+    harness.get_by_label("Set breakpoint on line 1");
+    harness.snapshot(shot("debug_gutter"));
+}
+
+#[test]
+fn the_debug_tile_shows_the_frames_the_variables_and_a_watch() {
+    let mut harness = paused_harness("tile");
+    assert!(harness.state().debug.as_ref().expect("a session").is_paused());
+    assert_eq!(harness.state().debug.as_ref().expect("a session").frames.len(), 2);
+
+    // A watch, answered as a debugger would answer one.
+    harness.state_mut().debug.as_mut().expect("a session").add_watch("items.len()");
+    harness.run();
+    let evaluate = asked_for(&mut harness, "evaluate");
+    feed_debug(
+        &mut harness,
+        answer(evaluate, "evaluate", serde_json::json!({ "result": "3", "type": "usize" })),
+    );
+
+    // And a structure opened, which is the whole of the lazy model: nothing deeper was fetched
+    // until this row was clicked.
+    harness.state_mut().debug.as_mut().expect("a session").toggle_row("Locals/items");
+    harness.run();
+    let children = asked_for(&mut harness, "variables");
+    feed_debug(
+        &mut harness,
+        answer(
+            children,
+            "variables",
+            serde_json::json!({ "variables": [
+                { "name": "[0]", "value": "1", "type": "i32", "variablesReference": 0 },
+                { "name": "[1]", "value": "2", "type": "i32", "variablesReference": 0 },
+                { "name": "[2]", "value": "3", "type": "i32", "variablesReference": 0 }
+            ]}),
+        ),
+    );
+
+    harness.get_by_label("Frame: app::main");
+    harness.get_by_label("Variable: attempts = 3");
+    harness.get_by_label_contains("Remove watch: items.len()");
+    // The stepping buttons are all there, and so is the stop.
+    for button in ["Resume", "Step Over", "Step Into", "Step Out", "Stop Debugging"] {
+        harness.get_by_label(button);
+    }
+    harness.snapshot(shot("debug_tile"));
+}
+
+#[test]
+fn the_execution_point_and_the_inline_values_are_drawn_over_the_source() {
+    let mut harness = paused_harness("point");
+    let folder = debug_folder("point");
+    // The window jumped to the file the program stopped in and put the caret on line 4.
+    assert!(harness.state().document().path().expect("a file").ends_with("main.rs"));
+    let (path, line) =
+        harness.state().debug.as_ref().expect("a session").location().expect("stopped somewhere");
+    assert!(path.ends_with("main.rs"), "{}", path.display());
+    assert_eq!(line, 4);
+    assert!(path.starts_with(&folder));
+    harness.snapshot(shot("debug_execution_point"));
+}
+
+#[test]
+fn the_bottom_of_the_window_holds_one_of_three_tiles_and_never_two() {
+    // Two grids stacked take the editing area below the fold of anything, so showing any of the
+    // three puts the other two away. `task-1683` made this a pair; this is the trio.
+    let mut harness = paused_harness("tiles");
+    assert!(harness.state().debug_panel.visible);
+    assert!(!harness.state().run.visible && !harness.state().terminal.visible);
+
+    choose(&mut harness, Action::ToggleTerminal);
+    assert!(harness.state().terminal.visible);
+    assert!(!harness.state().debug_panel.visible && !harness.state().run.visible);
+
+    choose(&mut harness, Action::ToggleRunTile);
+    assert!(harness.state().run.visible);
+    assert!(!harness.state().debug_panel.visible && !harness.state().terminal.visible);
+
+    choose(&mut harness, Action::ToggleDebugTile);
+    assert!(harness.state().debug_panel.visible);
+    assert!(!harness.state().run.visible && !harness.state().terminal.visible);
+
+    // And the rail has a button for each of the three, at the bottom of the window.
+    harness.get_by_label("Debug tile");
+    harness.get_by_label("Terminal tile");
+    harness.get_by_label("Run tile");
+
+    // The command line goes down the same path, which is what `show_the_*_tile` exists for.
+    did(&mut harness, "terminal show");
+    assert!(!harness.state().debug_panel.visible, "terminal show puts the debug tile away");
+}
+
+#[test]
+fn stepping_lets_go_of_the_frame_and_the_execution_point() {
+    let mut harness = paused_harness("stepping");
+    assert!(!harness.state().debug.as_ref().expect("a session").rows.is_empty());
+
+    choose(&mut harness, Action::Debug(DebugAction::StepOver));
+    let debug = harness.state().debug.as_ref().expect("a session");
+    assert!(!debug.is_paused(), "the program is going again");
+    assert!(debug.rows.is_empty(), "every variablesReference died the moment it was told to go on");
+    assert!(debug.location().is_none(), "and so did the execution point");
+    // The request really went out, with the thread the adapter named.
+    let stepped = harness.state_mut().debug.as_mut().expect("a session").requested();
+    let next = stepped.iter().find(|frame| frame["command"] == "next").expect("a next request");
+    assert_eq!(next["arguments"]["threadId"], 1);
+
+    // Stepping again while it runs is refused with a sentence rather than sent into the dark.
+    assert_eq!(refused(&mut harness, "debug step-over"), "not-applicable");
+}
+
+#[test]
+fn a_breakpoint_moves_with_the_text_and_an_edit_is_not_a_reason_to_re_send_it() {
+    let mut harness = paused_harness("moved");
+    let path = debug_folder("moved").join("main.rs");
+    did(&mut harness, &format!("debug breakpoint add {} 4", path.display()));
+    harness.state_mut().debug.as_mut().expect("a session").requested();
+
+    // A line typed at the top of the file, which moves every byte below it.
+    harness.state_mut().document_mut().apply(Command::PlaceCaret { offset: 0, extend: false });
+    harness.state_mut().document_mut().apply(Command::Insert("// a note\n".to_owned()));
+    harness.run();
+    // The dot followed the text: the same line of the program, one further down the file.
+    let listed = did(&mut harness, "debug breakpoint list");
+    let rows = listed["breakpoints"].as_array().expect("the list");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["line"], 5, "it moved with the text: {rows:#?}");
+
+    // **Editing text during a session does not re-send**: the running program's code has not
+    // changed, so the adapter's positions stand — which is what every surveyed editor does.
+    let asked = harness.state_mut().debug.as_mut().expect("a session").requested();
+    assert!(
+        !asked.iter().any(|frame| frame["command"] == "setBreakpoints"),
+        "an edit is not a reason to tell the debugger anything: {asked:#?}"
+    );
+
+    // Toggling one **is**, and it goes out with the lines the file has now.
+    did(&mut harness, &format!("debug breakpoint add {} 2", path.display()));
+    let asked = harness.state_mut().debug.as_mut().expect("a session").requested();
+    let sent = asked
+        .iter()
+        .find(|frame| frame["command"] == "setBreakpoints")
+        .expect("the file was re-sent");
+    let lines: Vec<i64> = sent["arguments"]["breakpoints"]
+        .as_array()
+        .expect("the breakpoints")
+        .iter()
+        .map(|one| one["line"].as_i64().unwrap_or(0))
+        .collect();
+    assert_eq!(lines, vec![2, 5]);
+}
+
+#[test]
+fn a_file_whose_language_names_no_debugger_has_no_debug_controls_at_all() {
+    // Quill's rule for a control that can never apply: absent, not dimmed. A stylesheet has nothing
+    // to step through and never will.
+    let mut harness = harness_in(&sample_folder());
+    harness.get_by_label_contains("notes.txt").click();
+    harness.run();
+    let state = harness.state().menu_state();
+    assert!(!state.debug_applies, "nothing claims a .txt");
+    let entries = quill_app::app::actions::gutter_menu(&state);
+    let names: Vec<String> = entries
+        .iter()
+        .filter_map(|entry| match entry {
+            quill_app::app::actions::Entry::Item { name, .. } => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(!names.iter().any(|name| name.contains("Breakpoint")), "{names:?}");
+    // And asking anyway is a sentence rather than a dot no debugger would ever honour.
+    choose(&mut harness, Action::Debug(DebugAction::ToggleBreakpoint));
+    assert!(harness.state().document().breakpoints().is_empty());
+}
+
+#[test]
+fn setting_a_value_shows_what_the_debugger_now_holds_rather_than_what_was_typed() {
+    let mut harness = paused_harness("set-value");
+    did(&mut harness, "debug set-value Locals/attempts 9");
+    let asked = asked_for(&mut harness, "setVariable");
+    // A debugger that rounded a float, or interned a string, is telling the truth about what the
+    // program holds — so its answer is what the row shows.
+    feed_debug(
+        &mut harness,
+        answer(asked, "setVariable", serde_json::json!({ "value": "9", "type": "i32" })),
+    );
+    let debug = harness.state().debug.as_ref().expect("a session");
+    let row = debug.rows.iter().find(|row| row.key == "Locals/attempts").expect("the row");
+    assert_eq!(row.value, "9");
+}
+
+#[test]
+fn the_command_line_can_set_a_breakpoint_read_the_stack_and_read_a_variable() {
+    // The sequence the whole feature is an acceptance test of, and its second customer: an agent
+    // driving Quill can observe a program's actual state instead of reasoning about it.
+    let mut harness = paused_harness("cli");
+    let path = debug_folder("cli").join("main.rs");
+    did(&mut harness, &format!("debug breakpoint add {} 4", path.display()));
+
+    let status = did(&mut harness, "debug status");
+    assert_eq!(status["paused"], true);
+    assert_eq!(status["line"], 4);
+    assert_eq!(status["adapter"], "lldb");
+
+    let frames = did(&mut harness, "debug frames");
+    let listed = frames["lines"].as_array().expect("the frames");
+    assert_eq!(listed.len(), 2);
+    assert!(listed[0].as_str().expect("a line").contains("app::main"));
+
+    let variables = did(&mut harness, "debug variables");
+    let printed = variables["lines"].as_array().expect("the rows");
+    assert!(
+        printed.iter().any(|line| line.as_str().expect("a line").contains("attempts: i32 = 3")),
+        "{printed:#?}"
+    );
+
+    // `evaluate` waits for the debugger's answer rather than reporting the question, which is what
+    // its own `--timeout` flag promises. The answer arrives on a later frame, so the request is held
+    // — which is what `run_command_line` returning `None` means.
+    let ctx = harness.ctx.clone();
+    let held = harness.state_mut().run_command_line("debug evaluate attempts", &ctx);
+    assert!(held.is_none(), "an evaluation is answered on a later frame");
+    let asked = asked_for(&mut harness, "evaluate");
+    feed_debug(
+        &mut harness,
+        answer(asked, "evaluate", serde_json::json!({ "result": "3", "type": "i32" })),
+    );
+
+    // And the tile is reachable from the command line too, which is the fourth rule of the CLI.
+    did(&mut harness, "action run toggle-debug-tile");
+    assert!(!harness.state().debug_panel.visible);
+}
+
+/// The one debug test that starts a **real** adapter, and it earns it.
+///
+/// Everything above is a scripted session: the pictures have to be the same on every run, so they are
+/// taken of a state machine that was handed fixed messages. That proves Quill's half of the
+/// conversation and nothing about the other half. This is the other half — a real program, built
+/// here, stopped at a real breakpoint by a real debugger, with a real value read out of it.
+///
+/// **Skipped with a message on a machine that has no adapter**, which is `task-1687` §12's own rule:
+/// a skipped test that says why is honest, and a red one that lies about Quill is not. `lldb-dap`
+/// ships inside every LLVM distribution and `winget install LLVM.LLVM` is how this machine got one.
+///
+/// It waits with `pump` and a deadline rather than `Harness::run`, which gives the window four steps
+/// to go quiet and panics otherwise — right for a settled window and wrong while a debugger is
+/// loading a binary's debug information. `task-1654`'s rule about waiting loops, once more.
+#[test]
+fn a_real_debugger_stops_at_a_breakpoint_and_reads_a_variable() {
+    // `QUILL_LLDB_ADAPTER` first, which is the test's own spelling of the `debug.lldb` setting: an
+    // adapter unpacked somewhere rather than installed is the ordinary case on a machine that has
+    // not got LLVM, and a test that could only find one on `PATH` would skip on a machine that
+    // plainly has one.
+    let Some(adapter) = std::env::var_os("QUILL_LLDB_ADAPTER")
+        .map(std::path::PathBuf::from)
+        .filter(|path| path.is_file())
+        .or_else(|| quill_app::services::debuggers::on_path("codelldb"))
+        .or_else(|| quill_app::services::debuggers::on_path("lldb-dap"))
+    else {
+        eprintln!(
+            "skipped: no lldb adapter on this machine. `debug start` would say so too — \
+             lldb-dap ships with LLVM (`winget install LLVM.LLVM`), and CodeLLDB's own \
+             `codelldb.exe` is inside its .vsix. Point QUILL_LLDB_ADAPTER at either one."
+        );
+        return;
+    };
+
+    // A ten-line program, built here, so the test carries no binary and nothing is checked in.
+    let folder = std::env::temp_dir().join("quill-real-debug");
+    std::fs::remove_dir_all(&folder).ok();
+    std::fs::create_dir_all(&folder).expect("make the project");
+    let source = folder.join("counter.rs");
+    std::fs::write(
+        &source,
+        "fn main() {\n\
+        \x20   let mut total: i64 = 0;\n\
+        \x20   for step in 1..=4 {\n\
+        \x20       total += step;\n\
+        \x20   }\n\
+        \x20   let answer = total;\n\
+        \x20   println!(\"{answer}\");\n\
+         }\n",
+    )
+    .expect("write counter.rs");
+    let binary = folder.join(if cfg!(windows) { "counter.exe" } else { "counter" });
+    // `-g` for debug information and `-C opt-level=0` so the locals are really there: an optimised
+    // build has no `answer` to read, which would make this test fail for a reason that is not Quill.
+    let built = std::process::Command::new("rustc")
+        .arg("-g")
+        .arg("-C")
+        .arg("opt-level=0")
+        .arg("-o")
+        .arg(&binary)
+        .arg(&source)
+        .output()
+        .expect("run rustc");
+    assert!(
+        built.status.success(),
+        "the fixture would not build: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let mut harness = harness_in(&folder);
+    let ctx = harness.ctx.clone();
+    // The adapter is named explicitly rather than looked for again, so the test debugs the one it
+    // decided to skip on the absence of.
+    harness.state_mut().settings.debug_adapters =
+        vec![("lldb".to_owned(), adapter.to_string_lossy().to_string())];
+    harness.state_mut().open_path_permanently(&source);
+    harness.run();
+
+    // Line 6, `let answer = total;` — after the loop, so `total` is 10 by the time it is reached.
+    let set = harness
+        .state_mut()
+        .run_command_line(
+            &format!("debug breakpoint add {} 6", source.display()),
+            &ctx,
+        )
+        .expect("answered at once");
+    assert!(set.ok, "{}", set.message);
+
+    harness.state_mut().run_configurations.add_permanent(configuration(
+        "counter",
+        &quill_app::services::run_configurations::quote_part(&binary.to_string_lossy()),
+    ));
+    harness.state_mut().run_selected = Some("counter".to_owned());
+    choose(&mut harness, Action::Debug(DebugAction::Start(None)));
+    assert!(
+        harness.state().debug.is_some(),
+        "the session should have started: {:?}",
+        harness.state().message
+    );
+
+    // Sixty seconds, which is far past what lldb takes to load a ten-line binary and short enough
+    // that a machine where the adapter never answers says so rather than hanging the suite.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        harness.step();
+        let debug = harness.state().debug.as_ref().expect("the session");
+        // Stopped **and** the stack read, which is what there being something to look at means.
+        if debug.is_ready() {
+            break;
+        }
+        assert!(
+            debug.is_alive(),
+            "the session ended without stopping: {:?}",
+            harness.state().message
+        );
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the program did not stop in sixty seconds; it is {}",
+            debug.where_it_is()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+
+    // Where it stopped, as the debugger says it — asserted on text, which is the only thing about a
+    // real adapter that is the same on every machine.
+    let status = harness
+        .state_mut()
+        .run_command_line("debug status", &ctx)
+        .expect("answered at once");
+    assert!(status.ok, "{}", status.message);
+    assert_eq!(status.result["paused"], true);
+    assert_eq!(status.result["line"], 6, "{}", status.message);
+
+    let frames = harness
+        .state_mut()
+        .run_command_line("debug frames", &ctx)
+        .expect("answered at once");
+    let listed = frames.result["lines"].as_array().expect("the frames");
+    assert!(
+        listed
+            .iter()
+            .any(|line| line.as_str().expect("a line").contains("counter.rs:6")),
+        "the top frame should be the line it stopped on: {listed:#?}"
+    );
+
+    // And the value the program really computed. `total` is 1+2+3+4.
+    let variables = harness
+        .state_mut()
+        .run_command_line("debug variables", &ctx)
+        .expect("answered at once");
+    let printed: Vec<String> = variables.result["lines"]
+        .as_array()
+        .expect("the rows")
+        .iter()
+        .map(|line| line.as_str().unwrap_or_default().to_owned())
+        .collect();
+    assert!(
+        printed.iter().any(|line| line.contains("total") && line.contains("10")),
+        "the debugger should have read `total` as 10: {printed:#?}"
+    );
+
+    // Stepping over the assignment makes `answer` the same number, which is the other half of the
+    // feature: the program really moved.
+    let stepped = harness
+        .state_mut()
+        .run_command_line("debug step-over", &ctx)
+        .expect("answered at once");
+    assert!(stepped.ok, "{}", stepped.message);
+    loop {
+        harness.step();
+        let debug = harness.state().debug.as_ref().expect("the session");
+        // Ready, not merely paused: the same distinction the first wait draws, and the reason
+        // `DebugState::is_ready` exists.
+        if debug.is_ready() && debug.location().map(|(_, line)| line) == Some(7) {
+            break;
+        }
+        assert!(debug.is_alive(), "the session ended while stepping");
+        assert!(std::time::Instant::now() < deadline, "the step did not land in time");
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let variables = harness
+        .state_mut()
+        .run_command_line("debug variables", &ctx)
+        .expect("answered at once");
+    let printed: Vec<String> = variables.result["lines"]
+        .as_array()
+        .expect("the rows")
+        .iter()
+        .map(|line| line.as_str().unwrap_or_default().to_owned())
+        .collect();
+    assert!(
+        printed.iter().any(|line| line.contains("answer") && line.contains("10")),
+        "stepping over the assignment should have made `answer` 10: {printed:#?}"
+    );
+
+    // Nothing ever orphans a child on purpose, which for a debugger is two of them: the adapter and
+    // the program it is holding.
+    harness.state_mut().stop_debugging();
+    harness.state_mut().run.kill_everything();
+    std::fs::remove_dir_all(&folder).ok();
+}
+
+/// A breakpoint set in one window is there in the next one, which is the whole point of writing them
+/// beside the project.
+///
+/// This is the half a unit test cannot reach. `services::breakpoint_store` proves the file
+/// round-trips and `quill_core::breakpoints` proves the offsets move with the text, and both passed
+/// while **the reading half was not wired up at all**: `.quill/breakpoints.conf` was written
+/// faithfully and never read back. It was found by driving a real window, which is what the fourth
+/// layer of tests is for — so this is that walk, kept.
+#[test]
+fn a_breakpoint_is_still_there_when_the_project_is_opened_again() {
+    let folder = std::env::temp_dir().join("quill-breakpoints-persist");
+    std::fs::remove_dir_all(&folder).ok();
+    std::fs::create_dir_all(&folder).expect("make the project");
+    let source = folder.join("main.rs");
+    std::fs::write(&source, "fn main() {\n    let a = 1;\n    let b = a + 1;\n}\n")
+        .expect("write main.rs");
+
+    {
+        let mut harness = harness_in(&folder);
+        let ctx = harness.ctx.clone();
+        // `restore_project` is what turns the writing on: a test neither reads nor writes a person's
+        // files unless it says so, which is the rule the project state and the marks already keep.
+        harness.state_mut().restore_project();
+        harness.state_mut().open_path_permanently(&source);
+        harness.run();
+        let set = harness
+            .state_mut()
+            .run_command_line(&format!("debug breakpoint add {} 3", source.display()), &ctx)
+            .expect("answered at once");
+        assert!(set.ok, "{}", set.message);
+        // Written once the pointer is up and something has changed, which is the same terms the
+        // marks are written on — so the window is run until it has settled.
+        for _ in 0..8 {
+            harness.step();
+        }
+    }
+
+    let written = std::fs::read_to_string(folder.join(".quill/breakpoints.conf"))
+        .expect("the file should have been written");
+    assert!(written.contains("breakpoint.1.path = main.rs"), "{written}");
+
+    // A second window on the same folder, which is what opening the project again is.
+    let mut harness = harness_in(&folder);
+    let ctx = harness.ctx.clone();
+    harness.state_mut().restore_project();
+    harness.run();
+    let listed = harness
+        .state_mut()
+        .run_command_line("debug breakpoint list", &ctx)
+        .expect("answered at once");
+    let rows = listed.result["breakpoints"].as_array().expect("the list");
+    assert_eq!(rows.len(), 1, "the breakpoint should have come back: {listed:?}");
+    assert_eq!(rows[0]["line"], 3);
+
+    // And the open document holds it, not just the store — which is the ownership rule's other half:
+    // a file that is open is owned by its `Document`.
+    harness.state_mut().open_path_permanently(&source);
+    harness.run();
+    assert_eq!(
+        harness.state().document().breakpoints().len(),
+        1,
+        "the tab should have come up with its dot already there"
+    );
+    let marks = harness.state().breakpoint_marks(harness.state().files.active_index());
+    assert_eq!(marks.len(), 1);
+    assert_eq!(marks[0].0, 2, "paragraph 2 is the third line");
+
+    std::fs::remove_dir_all(&folder).ok();
+}

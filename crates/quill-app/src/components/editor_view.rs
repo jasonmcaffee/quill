@@ -18,6 +18,13 @@ const BADGE_GAP: f32 = 6.0;
 /// How large the badge standing for a collapsed block is.
 const BADGE_WIDTH: f32 = 26.0;
 const BADGE_HEIGHT: f32 = 14.0;
+/// The gap between the end of a line and the value painted after it while the program is paused.
+///
+/// Wide enough that the value plainly is not part of the code — an inline value that touched the
+/// last character would read as text somebody had typed, which is the one thing it must not do.
+const INLINE_GAP: f32 = 22.0;
+/// How large an inline value is set. Smaller than the code, in the quiet colour, for the same reason.
+const INLINE_SIZE: f32 = 11.0;
 
 /// What the window worked out about the symbol under the pointer, before any click.
 ///
@@ -264,7 +271,7 @@ pub fn handle_pointer(
 /// How the editing surface is painted: the two colours it needs, whether the caret is shown, and
 /// the word the modifier is hovering over.
 #[derive(Debug, Clone, Default)]
-pub struct PaintStyle {
+pub struct PaintStyle<'a> {
     /// Behind selected text.
     pub selection: Color32,
     /// The caret itself.
@@ -277,6 +284,19 @@ pub struct PaintStyle {
     /// appears and goes on a modifier being held, and a widget that came and went sixty times a
     /// second would be a widget egui had to lay out sixty times a second.
     pub underline: Option<std::ops::Range<usize>>,
+    /// The paragraph the program is stopped on, when it is stopped in this file.
+    ///
+    /// Painted as a band behind the whole line, in a colour of its own so it cannot be mistaken for
+    /// a passage somebody marked — the four highlight colours are all at one alpha and this is
+    /// deliberately not one of them.
+    pub execution_point: Option<usize>,
+    /// Values to paint after the end of the lines they belong to, while the program is paused.
+    ///
+    /// `(paragraph, text)`, sorted by paragraph. **Painted decoration, never text in the document**:
+    /// it does not select, it does not copy, and no byte offset crosses it. The window works out
+    /// which name is on which line and this draws the answer, which is the rule every component in
+    /// Quill follows.
+    pub inline_values: &'a [(usize, String)],
 }
 
 pub fn paint(
@@ -285,13 +305,25 @@ pub fn paint(
     document: &Document,
     layout: &Layout,
     text_origin: Pos2,
-    style: PaintStyle,
+    style: PaintStyle<'_>,
 ) {
-    let PaintStyle { selection: selection_color, caret: caret_color, show_caret, underline } =
-        style;
+    let PaintStyle {
+        selection: selection_color,
+        caret: caret_color,
+        show_caret,
+        underline,
+        execution_point,
+        inline_values,
+    } = style;
     let painter = ui.painter();
     let to_screen = |x: f32, y: f32| Pos2::new(text_origin.x + x, text_origin.y + y);
     let visible = visible_lines(ui, layout, text_origin);
+
+    // The band behind the stopped line, first of all: under the selection, under the marks and under
+    // the glyphs, because it is the furthest back thing on the line.
+    if let Some(paragraph) = execution_point {
+        paint_execution_point(ui, layout, text_origin, visible.clone(), paragraph);
+    }
 
     for rect in layout.selection_rects_in(visible.clone(), document.selection().range()) {
         painter.rect_filled(
@@ -326,6 +358,83 @@ pub fn paint(
             Rect::from_min_size(to_screen(caret.x, caret.y), Vec2::new(CARET_WIDTH, caret.height)),
             0.0,
             caret_color,
+        );
+    }
+
+    // Last of all, because they are painted **over** the text at the end of its own line and must
+    // never be hidden by a glyph — and because a value is decoration rather than something the
+    // caret can be put into.
+    paint_inline_values(ui, layout, text_origin, visible, inline_values);
+}
+
+/// The band behind the line the program is stopped on.
+///
+/// The whole width of the editing area rather than the width of the text, which is what makes it read
+/// as "the program is here" rather than as a passage somebody marked: a highlight is the shape of the
+/// words it covers and this is the shape of the line.
+fn paint_execution_point(
+    ui: &egui::Ui,
+    layout: &Layout,
+    text_origin: Pos2,
+    lines: std::ops::Range<usize>,
+    paragraph: usize,
+) {
+    let clip = ui.painter().clip_rect();
+    for line in &layout.lines[lines.start..lines.end.min(layout.lines.len())] {
+        if line.paragraph != paragraph {
+            continue;
+        }
+        ui.painter().rect_filled(
+            Rect::from_min_size(
+                Pos2::new(clip.left(), text_origin.y + line.y),
+                Vec2::new(clip.width(), line.height),
+            ),
+            0.0,
+            crate::theme::color::EXECUTION_POINT,
+        );
+    }
+}
+
+/// The values painted after the ends of the lines they belong to.
+///
+/// A value is put after the **last visual line** of its paragraph, because that is where the line
+/// ends on the screen — a wrapped paragraph would otherwise have its value drawn over its own second
+/// row. A line that fills the pane is left alone rather than having a value drawn off the edge of it.
+fn paint_inline_values(
+    ui: &egui::Ui,
+    layout: &Layout,
+    text_origin: Pos2,
+    lines: std::ops::Range<usize>,
+    values: &[(usize, String)],
+) {
+    if values.is_empty() {
+        return;
+    }
+    let painter = ui.painter();
+    let right = painter.clip_rect().right();
+    let last = lines.end.min(layout.lines.len());
+    for (index, line) in layout.lines[lines.start..last].iter().enumerate() {
+        // The last visual row of the paragraph, which is the one whose end is the end of the line.
+        let next = layout.lines.get(lines.start + index + 1);
+        if next.is_some_and(|after| after.paragraph == line.paragraph) {
+            continue;
+        }
+        let Ok(at) = values.binary_search_by_key(&line.paragraph, |(paragraph, _)| *paragraph) else {
+            continue;
+        };
+        let x = text_origin.x + line.right() + INLINE_GAP;
+        if x > right - 24.0 {
+            continue;
+        }
+        let galley = painter.layout_no_wrap(
+            values[at].1.clone(),
+            egui::FontId::monospace(INLINE_SIZE),
+            crate::theme::color::INLINE_VALUE,
+        );
+        painter.galley(
+            Pos2::new(x, text_origin.y + line.y + (line.height - galley.size().y) / 2.0),
+            galley,
+            crate::theme::color::INLINE_VALUE,
         );
     }
 }

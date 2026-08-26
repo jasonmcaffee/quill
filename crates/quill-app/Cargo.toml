@@ -17,6 +17,7 @@ path = "src/main.rs"
 
 [dependencies]
 quill-core.workspace = true
+quill-dap.workspace = true
 quill-git.workspace = true
 quill-terminal.workspace = true
 # The catalogue of command line commands and the wire format, shared with the client so that the
@@ -89,5 +90,6 @@ path = "examples/frame_cost.rs"
 
 [dev-dependencies]
 egui_kittest.workspace = true
+quill-dap.workspace = true
 quill-git.workspace = true
 image.workspace = true

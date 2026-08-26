@@ -344,6 +344,16 @@ impl FileSymbols {
     }
 
     /// What this file defines, in the order the definitions appear in it.
+    /// Every identifier-shaped token in the file, in order.
+    ///
+    /// What the inline values are matched against: `task-1687` §8.5 paints a paused frame's locals at
+    /// the ends of the lines that name them, and DAP has no request for that — it is the client
+    /// matching names. The list is already here and already sorted, which is what makes the match a
+    /// walk over the visible lines rather than a second reading of the file.
+    pub fn word_ranges(&self) -> &[Range<usize>] {
+        &self.words
+    }
+
     pub fn definitions(&self) -> &[Definition] {
         &self.definitions
     }

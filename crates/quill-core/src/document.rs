@@ -8,6 +8,7 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use crate::cursor::{self, Selection};
+use crate::breakpoints::Breakpoints;
 use crate::folding::Folds;
 use crate::highlights::{Highlights, Rgba};
 use crate::layout::Layout;
@@ -86,6 +87,8 @@ struct Snapshot {
     highlights: Highlights,
     /// Which blocks are collapsed, for exactly the same reason. `task-1686`.
     folds: Folds,
+    /// Where the program is to stop, for exactly the same reason again. `task-1687`.
+    breakpoints: Breakpoints,
 }
 
 const UNDO_LIMIT: usize = 256;
@@ -103,6 +106,10 @@ pub struct Document {
     /// shifted by the same two places for the same reason. What is *foldable* is derived from the
     /// text by `crate::folding::regions` and is not state; this is the half that is.
     folds: Folds,
+    /// Where a debugger is to stop, held as the byte offset of each line's start and shifted by the
+    /// same two places for the same reason: `insert` and `remove_range` are the only two functions in
+    /// Quill that know a range of bytes moved. See `crate::breakpoints`.
+    breakpoints: Breakpoints,
     selection: Selection,
     /// Formatting chosen while nothing was selected, applied to the next text typed.
     pending: StyleChange,
@@ -151,6 +158,7 @@ impl Document {
             paragraphs: ParagraphStyles::new(1),
             highlights: Highlights::new(),
             folds: Folds::new(),
+            breakpoints: Breakpoints::new(),
             selection: Selection::caret(0),
             pending: StyleChange::default(),
             desired_x: None,
@@ -458,6 +466,94 @@ impl Document {
         self.set_folds(Folds::new())
     }
 
+    // ------------------------------------------------------------------------------ the breakpoints
+
+    /// Where a debugger is to stop in this file.
+    pub fn breakpoints(&self) -> &Breakpoints {
+        &self.breakpoints
+    }
+
+    /// Put a whole set back, which is what opening a file that has been debugged before does.
+    ///
+    /// The offsets are clamped to the text for `set_highlights`' reason: they were written against
+    /// the bytes the file had when it was closed, and something outside Quill may have rewritten it
+    /// since. A dot in the wrong place is a dot in the wrong place — and the adapter's `verified`
+    /// answer then says so honestly — where an offset past the end of the rope is a panic.
+    pub fn set_breakpoints(&mut self, mut breakpoints: Breakpoints) -> bool {
+        breakpoints.clamp(self.text.len_bytes());
+        if breakpoints == self.breakpoints {
+            return false;
+        }
+        self.breakpoints = breakpoints;
+        self.revision += 1;
+        true
+    }
+
+    /// Put a breakpoint on the line `offset` is in, or take away the one that is there.
+    ///
+    /// The offset is snapped to the **start of its line**, so clicking anywhere in the gutter row and
+    /// putting the caret anywhere in the line mean the same thing — and so a line can never end up
+    /// with two.
+    ///
+    /// **Not an edit**, which is the rule the marked passages, the folds and the editor's font all
+    /// follow: nothing goes on the undo history and the file is not marked as having unsaved changes,
+    /// because what Quill saves is plain text and a breakpoint is not in it. The revision moves,
+    /// because the gutter has to be drawn again.
+    pub fn toggle_breakpoint(&mut self, offset: usize) -> bool {
+        let start = self.line_start_of(offset);
+        let now = self.breakpoints.toggle(start);
+        self.revision += 1;
+        now
+    }
+
+    /// Change the breakpoint on the line `offset` is in, which is what the edit modal and
+    /// `Disable Breakpoint` both do. True when there was one to change.
+    pub fn change_breakpoint(&mut self, offset: usize, change: impl FnOnce(&mut crate::breakpoints::Breakpoint)) -> bool {
+        let start = self.line_start_of(offset);
+        let Some(breakpoint) = self.breakpoints.at_mut(start) else {
+            return false;
+        };
+        let before = breakpoint.clone();
+        change(breakpoint);
+        if *breakpoint == before {
+            return false;
+        }
+        self.revision += 1;
+        true
+    }
+
+    /// Take every breakpoint out of this file. True when there were any.
+    pub fn clear_breakpoints(&mut self) -> bool {
+        let cleared = self.breakpoints.clear();
+        if cleared {
+            self.revision += 1;
+        }
+        cleared
+    }
+
+    /// The byte offset the line holding `offset` starts at.
+    ///
+    /// The one conversion, so the gutter, the command line and the adapter's answers all snap the
+    /// same way. An offset past the end of the text is the last line's, which is what clamping a set
+    /// read from disk needs.
+    pub fn line_start_of(&self, offset: usize) -> usize {
+        let offset = offset.min(self.text.len_bytes());
+        self.text.line_to_byte(self.text.byte_to_line(offset))
+    }
+
+    /// Which **one-based** line `offset` is on, which is what the protocol takes and what the gutter
+    /// draws. `quill-core` counts paragraphs from zero everywhere else, so the conversion is here
+    /// rather than at each of the places that need it.
+    pub fn line_number_of(&self, offset: usize) -> usize {
+        self.text.byte_to_line(offset.min(self.text.len_bytes())) + 1
+    }
+
+    /// The byte offset a **one-based** line starts at: the other direction, for an adapter's answer
+    /// and for `debug breakpoint add <path> <line>`.
+    pub fn offset_of_line_number(&self, line: usize) -> usize {
+        self.text.line_to_byte(line.saturating_sub(1))
+    }
+
     /// The paragraph formatting of the paragraph the caret is in.
     pub fn active_paragraph_style(&self) -> ParagraphStyle {
         self.paragraphs.get(self.text.byte_to_line(self.selection.head))
@@ -635,6 +731,7 @@ impl Document {
             selection: self.selection,
             highlights: self.highlights.clone(),
             folds: self.folds.clone(),
+            breakpoints: self.breakpoints.clone(),
         });
         if self.undo.len() > UNDO_LIMIT {
             self.undo.remove(0);
@@ -650,6 +747,7 @@ impl Document {
             selection: self.selection,
             highlights: self.highlights.clone(),
             folds: self.folds.clone(),
+            breakpoints: self.breakpoints.clone(),
         }
     }
 
@@ -664,6 +762,8 @@ impl Document {
         // again: the text has changed underneath the folds.
         self.folds = snapshot.folds;
         self.fold_revision += 1;
+        // And which lines the program was to stop on, for the third time and the same reason.
+        self.breakpoints = snapshot.breakpoints;
     }
 
     fn undo(&mut self) {
@@ -714,6 +814,7 @@ impl Document {
         // knows the text moved.
         self.highlights.insert(at, text.len());
         self.folds.insert(at, text.len());
+        self.breakpoints.insert(at, text.len());
         self.chars.set(at..at + text.len(), &style_as_change(&style));
         self.paragraphs.split(paragraph, line_breaks);
 
@@ -781,6 +882,7 @@ impl Document {
             self.chars.insert(at, replacement.len());
             self.highlights.insert(at, replacement.len());
             self.folds.insert(at, replacement.len());
+            self.breakpoints.insert(at, replacement.len());
             self.chars.set(at..at + replacement.len(), &style_as_change(&style));
             self.paragraphs.split(paragraph, line_breaks);
             self.selection.set_caret(at + replacement.len());
@@ -800,6 +902,7 @@ impl Document {
         self.chars.remove(range.clone());
         self.highlights.remove(range.clone());
         self.folds.remove(range.clone());
+        self.breakpoints.remove(range.clone());
         self.paragraphs.join(first, last);
         self.selection.set_caret(range.start);
     }
@@ -1119,6 +1222,122 @@ mod tests {
             document.highlights().iter().next().expect("the mark").range,
             at..at + 5,
             "and undo restored where it was"
+        );
+    }
+
+    // ------------------------------------------------------------------------------ the breakpoints
+
+    /// The whole reason breakpoints are byte offsets rather than line numbers: a line typed at the
+    /// top of the file moves them, in the one place that knows the text moved.
+    #[test]
+    fn a_breakpoint_stays_on_its_line_while_the_file_is_edited_above_it() {
+        let mut document = Document::from_text("one
+two
+three
+");
+        let two = document.text().to_string().find("two").expect("two");
+        assert!(document.toggle_breakpoint(two + 1), "a caret anywhere in the line means the line");
+        assert_eq!(document.line_number_of(document.breakpoints().all()[0].offset), 2);
+        document.apply(Command::MoveDocumentStart { extend: false });
+        document.apply(Command::Insert("zero
+".to_owned()));
+        assert_eq!(
+            document.line_number_of(document.breakpoints().all()[0].offset),
+            3,
+            "the same line of the program, one further down the file"
+        );
+        let at = document.breakpoints().all()[0].offset;
+        assert_eq!(&document.text().to_string()[at..at + 3], "two");
+    }
+
+    /// Toggling one is not an edit, which is the rule the marked passages and the folds follow: the
+    /// window repaints, the file is not modified, and there is nothing to undo.
+    #[test]
+    fn putting_a_breakpoint_on_a_line_is_not_an_edit() {
+        let mut document = Document::from_text("one
+two
+");
+        let revision = document.revision();
+        let text_revision = document.text_revision();
+        assert!(document.toggle_breakpoint(4));
+        assert!(document.revision() > revision, "the gutter has to be drawn again");
+        assert_eq!(document.text_revision(), text_revision, "nothing was laid out again");
+        assert!(!document.is_modified(), "what Quill saves is plain text, and a dot is not in it");
+        assert!(!document.can_undo());
+    }
+
+    /// It does ride the undo snapshot, because undo restores a state.
+    #[test]
+    fn undoing_an_edit_brings_the_breakpoints_back_where_they_were() {
+        let mut document = Document::from_text("one
+two
+three
+");
+        document.toggle_breakpoint(document.offset_of_line_number(3));
+        let before = document.breakpoints().clone();
+        document.apply(Command::MoveDocumentStart { extend: false });
+        document.apply(Command::Insert("zero
+minus
+".to_owned()));
+        assert_ne!(document.breakpoints(), &before, "the edit moved it");
+        document.apply(Command::Undo);
+        assert_eq!(document.breakpoints(), &before, "and undo restored where it was");
+    }
+
+    #[test]
+    fn a_second_click_on_a_line_takes_the_breakpoint_away() {
+        let mut document = Document::from_text("one
+two
+");
+        assert!(document.toggle_breakpoint(5));
+        // A different byte of the same line is the same line, which is what makes the gutter's row
+        // and the caret's position one question.
+        assert!(!document.toggle_breakpoint(6));
+        assert!(document.breakpoints().is_empty());
+    }
+
+    #[test]
+    fn the_two_line_conversions_are_each_others_inverse() {
+        let document = Document::from_text("one
+two
+three
+");
+        for line in 1..=3 {
+            let at = document.offset_of_line_number(line);
+            assert_eq!(document.line_number_of(at), line);
+            assert_eq!(document.line_start_of(at + 1), at, "any byte of the line snaps to its start");
+        }
+    }
+
+    /// A set read from a file that was rewritten outside Quill is brought inside the text rather
+    /// than left to panic the layout engine.
+    #[test]
+    fn a_set_put_back_is_clamped_to_the_text_it_lands_in() {
+        let mut document = Document::from_text("short
+");
+        assert!(document.set_breakpoints(crate::breakpoints::Breakpoints::from_list([
+            crate::breakpoints::Breakpoint::at(0),
+            crate::breakpoints::Breakpoint::at(9000),
+        ])));
+        assert!(document.breakpoints().check());
+        assert!(document
+            .breakpoints()
+            .all()
+            .iter()
+            .all(|one| one.offset <= document.text().len_bytes()));
+    }
+
+    #[test]
+    fn changing_a_breakpoint_that_is_not_there_changes_nothing() {
+        let mut document = Document::from_text("one
+");
+        assert!(!document.change_breakpoint(0, |one| one.enabled = false));
+        document.toggle_breakpoint(0);
+        assert!(document.change_breakpoint(0, |one| one.enabled = false));
+        assert!(!document.breakpoints().at(0).expect("still there").enabled);
+        assert!(
+            !document.change_breakpoint(0, |one| one.enabled = false),
+            "setting it to what it already is changes nothing"
         );
     }
 

@@ -158,6 +158,11 @@ pub struct OpenFile {
     /// makes keeping the store up to date one integer comparison a tab a frame rather than a
     /// comparison of two lists.
     pub marked_revision: Option<u64>,
+    /// The revision this file's breakpoints were last pushed into `services::breakpoint_store` at.
+    ///
+    /// The same integer comparison for the same reason, one line below the marks it copies: a
+    /// document that has not changed since it was last pushed cannot have gained a breakpoint.
+    pub breakpoints_at: Option<u64>,
     /// The revision this file was last coloured at, so a plugin's syntax colouring is not run twice
     /// for one revision. One per file rather than one for the window, so the file in the second pane
     /// is coloured too.
@@ -193,6 +198,7 @@ impl OpenFile {
             git_asked: false,
             picture: None,
             marked_revision: None,
+            breakpoints_at: None,
             coloured_revision: None,
             diagram: crate::components::diagram_view::View::default(),
             pane: 0,

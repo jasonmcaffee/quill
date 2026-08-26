@@ -9,9 +9,10 @@
 //! explorer, then git. The terminal lives along the bottom of the window, so its button is at the bottom
 //! of the rail, which is where `task-1658`'s reference capture puts it.
 //!
-//! `task-1683` added a second button to the bottom group, `Run tile`, **above** `Terminal tile`. The
-//! bottom of the window shows one or the other and never both stacked, so pressing either one shows
-//! its own tile and puts the other away — which the window settles, not this file.
+//! `task-1683` added a second button to the bottom group, `Run tile`, **above** `Terminal tile`, and
+//! `task-1687` a third, `Debug tile`, above that. The bottom of the window shows **one** of the three
+//! and never two stacked, so pressing any of them shows its own tile and puts the others away —
+//! which the window settles, not this file.
 //!
 //! A button that is on is the pill every list in Quill draws for its chosen row — `SELECTED_ROW`, the row
 //! inset and rounded — rather than a filled `ACCENT` square. Three bright blue squares in a rail that is
@@ -49,6 +50,8 @@ pub struct RailState {
     pub terminal_visible: bool,
     /// True when the run tile is the one showing at the bottom of the window.
     pub run_visible: bool,
+    /// True when the debug tile is the one showing along the bottom.
+    pub debug_visible: bool,
 }
 
 /// Draw the rail into `area`, and report what was pressed.
@@ -93,15 +96,21 @@ pub fn show(ui: &mut egui::Ui, area: Rect, state: RailState, opacity: f32) -> Op
         }
     }
 
-    // The two tiles that live along the bottom of the window, so their buttons are at the bottom of
-    // the rail, counted **up** from it so the last one is always in the corner however many there
-    // are. `Terminal tile` rather than `Terminal`, because `Edit -> Settings` has a page called
-    // `Terminal` and the `View` menu has an entry called `Terminal`, and no two controls in one
-    // window may share a name; `Run tile` is named to match, and for the same reason — the `Run`
-    // menu is a control too.
-    let bottom: [(&str, fn(&egui::Painter, Pos2, egui::Color32), bool, Action); 2] = [
+    // The three tiles that live along the bottom of the window, so their buttons are at the bottom
+    // of the rail, counted **up** from it so the last one is always in the corner however many there
+    // are — which is what made adding the third one free. `Terminal tile` rather than `Terminal`,
+    // because `Edit -> Settings` has a page called `Terminal` and the `View` menu has an entry
+    // called `Terminal`, and no two controls in one window may share a name; `Run tile` and
+    // `Debug tile` are named to match, and for the same reason — the `Run` menu is a control too.
+    // **The terminal stays in the corner.** The list is read bottom upwards, so the first entry is
+    // the one in the corner of the window — which `task-1658`'s capture put the terminal in and
+    // which a dozen accepted screenshots are of. The design's §9 says the debug button goes "below
+    // the run tile's", and that would have taken the corner; the corner is the older promise, so the
+    // new button goes above the run one instead.
+    let bottom: [(&str, fn(&egui::Painter, Pos2, egui::Color32), bool, Action); 3] = [
         ("Terminal tile", icon::terminal, state.terminal_visible, Action::ToggleTerminal),
         ("Run tile", icon::run, state.run_visible, Action::ToggleRunTile),
+        ("Debug tile", icon::bug, state.debug_visible, Action::ToggleDebugTile),
     ];
     for (index, (name, draw, on, action)) in bottom.into_iter().enumerate() {
         let centre =

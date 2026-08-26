@@ -28,6 +28,12 @@ pub const TERMINAL_MIN: f32 = 90.0;
 pub const RUN_HEIGHT: f32 = TERMINAL_HEIGHT;
 pub const RUN_MIN: f32 = TERMINAL_MIN;
 
+/// And the same again for the debug tile, the third of the three, for the same reason: a stack and a
+/// tree of variables are read at a different height from a log, and somebody who wants a tall one
+/// and a short shell should get both.
+pub const DEBUG_HEIGHT: f32 = 300.0;
+pub const DEBUG_MIN: f32 = 120.0;
+
 /// How opaque the background is when Quill starts. Not fully opaque, so the transparency is visible
 /// without opening the settings. The design shows 83 per cent.
 pub const DEFAULT_OPACITY: f32 = 0.83;
@@ -199,6 +205,12 @@ pub struct Settings {
     pub mcp_port: u16,
     /// How many tools the catalogue is cut into for an agent. See `quill_cli::mcp::tools`.
     pub mcp_tools: quill_cli::mcp::Shape,
+    /// Where each debug adapter lives, when this machine keeps one somewhere Quill would not look.
+    ///
+    /// `debug.lldb`, `debug.node` — one entry per name in `plugins::DEBUGGERS`, and empty meaning
+    /// "whatever this machine has", which is `Settings::shell()`'s sentence made once more. It is a
+    /// path rather than a preference, so a settings file copied to another machine names nothing.
+    pub debug_adapters: Vec<(String, String)>,
 }
 
 impl Settings {
@@ -230,6 +242,9 @@ impl Settings {
             mcp_enabled: false,
             mcp_port: quill_cli::mcp::DEFAULT_PORT,
             mcp_tools: quill_cli::mcp::Shape::default(),
+            // Empty, for `terminal_shell`'s reason: where `lldb-dap` lives is a question about this
+            // machine, and the settings file is copied between machines.
+            debug_adapters: Vec::new(),
         }
     }
 
@@ -267,6 +282,13 @@ impl Settings {
         {
             settings.mcp_tools = shape;
         }
+        for name in crate::services::plugins::DEBUGGERS {
+            if let Some(path) =
+                values.text(&format!("debug.{name}")).map(str::trim).filter(|path| !path.is_empty())
+            {
+                settings.debug_adapters.push(((*name).to_owned(), path.to_owned()));
+            }
+        }
         settings
     }
 
@@ -287,6 +309,23 @@ impl Settings {
         values.set("mcp.enabled", if self.mcp_enabled { "true" } else { "false" });
         values.set("mcp.port", self.mcp_port.to_string());
         values.set("mcp.tools", self.mcp_tools.name());
+        // Written only once one has been chosen, exactly as the shell is, so a settings file does
+        // not name a path that exists on one machine and not on the next.
+        for (name, path) in &self.debug_adapters {
+            values.set(&format!("debug.{name}"), path.clone());
+        }
+    }
+
+    /// The path this machine's settings give for the debug adapter called `name`, or nothing when
+    /// they name none and Quill should look for it itself.
+    ///
+    /// [`Settings::shell`]'s sentence, made once more and in one function rather than the same
+    /// `is_empty` test wherever an adapter is started.
+    pub fn debug_adapter(&self, name: &str) -> Option<&str> {
+        self.debug_adapters
+            .iter()
+            .find(|(known, _)| known == name)
+            .map(|(_, path)| path.as_str())
     }
 
     /// The program a new terminal should run, or nothing when this machine's own default is wanted.
@@ -332,6 +371,8 @@ pub struct Panes {
     pub terminal_height: f32,
     /// How tall the run tile is. Its own measurement — see [`RUN_HEIGHT`].
     pub run_height: f32,
+    /// How tall the debug tile is. Its own too — see [`DEBUG_HEIGHT`].
+    pub debug_height: f32,
     /// How much of the editing area the source takes in the side by side view, from 0.15 to 0.85.
     pub preview_fraction: f32,
     /// How much of the `Find in Files` modal the results take, the rest going to the preview of the
@@ -350,6 +391,7 @@ impl Panes {
             explorer_width: EXPLORER_WIDTH,
             terminal_height: TERMINAL_HEIGHT,
             run_height: RUN_HEIGHT,
+            debug_height: DEBUG_HEIGHT,
             preview_fraction: 0.5,
             find_split: crate::components::find_in_files::SPLIT,
             references_split: crate::components::references::SPLIT,
@@ -366,6 +408,9 @@ impl Panes {
         }
         if let Some(height) = values.number("panes.run.height") {
             panes.run_height = height.max(RUN_MIN);
+        }
+        if let Some(height) = values.number("panes.debug.height") {
+            panes.debug_height = height.max(DEBUG_MIN);
         }
         if let Some(fraction) = values.number("panes.preview.fraction") {
             panes.preview_fraction = fraction.clamp(0.15, 0.85);
@@ -389,6 +434,7 @@ impl Panes {
         values.set("panes.explorer.width", format!("{:.0}", self.explorer_width));
         values.set("panes.terminal.height", format!("{:.0}", self.terminal_height));
         values.set("panes.run.height", format!("{:.0}", self.run_height));
+        values.set("panes.debug.height", format!("{:.0}", self.debug_height));
         values.set("panes.preview.fraction", format!("{:.3}", self.preview_fraction));
         values.set("panes.find.split", format!("{:.3}", self.find_split));
         values.set("panes.references.split", format!("{:.3}", self.references_split));
@@ -432,10 +478,30 @@ mod tests {
             mcp_enabled: true,
             mcp_port: 9001,
             mcp_tools: quill_cli::mcp::Shape::Every,
+            debug_adapters: vec![("lldb".to_owned(), r"C:\tools\codelldb.exe".to_owned())],
         };
         let mut values = Values::new();
         settings.write_into(&mut values);
         assert_eq!(Settings::read_from(&values), settings);
+    }
+
+    /// The adapter paths follow `terminal.shell`'s rule exactly: nothing is written until one has
+    /// been chosen, because a settings file is copied between machines and a path that exists on one
+    /// of them is worse than no line at all.
+    #[test]
+    fn an_adapter_path_is_only_written_once_it_has_been_chosen() {
+        let mut values = Values::new();
+        Settings::new().write_into(&mut values);
+        assert_eq!(values.text("debug.lldb"), None);
+        assert_eq!(values.text("debug.node"), None);
+        assert!(Settings::new().debug_adapter("lldb").is_none(), "empty means what this machine has");
+
+        let chosen = Settings::read_from(&Values::parse(r"debug.lldb = C:\tools\codelldb.exe"));
+        assert_eq!(chosen.debug_adapter("lldb"), Some(r"C:\tools\codelldb.exe"));
+        assert_eq!(chosen.debug_adapter("node"), None);
+
+        let blank = Settings::read_from(&Values::parse("debug.lldb =    "));
+        assert!(blank.debug_adapter("lldb").is_none(), "a blank line is not a path");
     }
 
     #[test]
@@ -541,6 +607,7 @@ mod tests {
             explorer_width: 320.0,
             terminal_height: 400.0,
             run_height: 300.0,
+            debug_height: 340.0,
             preview_fraction: 0.3,
             find_split: 0.6,
             references_split: 0.4,

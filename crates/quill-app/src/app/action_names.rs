@@ -18,7 +18,7 @@
 
 use std::path::PathBuf;
 
-use crate::app::actions::{Action, FoldAction, GitAction, HighlightColor, RunAction};
+use crate::app::actions::{Action, DebugAction, FoldAction, GitAction, HighlightColor, RunAction};
 use crate::app::ViewMode;
 
 impl Action {
@@ -58,7 +58,9 @@ impl Action {
             Action::ResetFontSize => "reset-font-size".to_owned(),
             Action::ToggleTerminal => "toggle-terminal".to_owned(),
             Action::ToggleRunTile => "toggle-run-tile".to_owned(),
+            Action::ToggleDebugTile => "toggle-debug-tile".to_owned(),
             Action::Run(what) => format!("run-{}", what.name()),
+            Action::Debug(what) => format!("debug-{}", what.name()),
             Action::CloseTab => "close-tab".to_owned(),
             Action::NextTab => "next-tab".to_owned(),
             Action::PreviousTab => "previous-tab".to_owned(),
@@ -112,6 +114,13 @@ impl Action {
             let named = path.as_ref().map(|named| named.to_string_lossy().to_string());
             return RunAction::from_name(rest, named).map(Action::Run);
         }
+        if let Some(rest) = name.strip_prefix("debug-") {
+            // The argument names a **configuration** here rather than a file, exactly as it does for
+            // the `run-` family and for the same reason: `debug start <name>` is what anybody would
+            // type, and this is the escape hatch `action run` gives every menu entry.
+            let named = path.as_ref().map(|named| named.to_string_lossy().to_string());
+            return DebugAction::from_name(rest, named).map(Action::Debug);
+        }
         if let Some(rest) = name.strip_prefix("fold-") {
             return FoldAction::from_name(rest).map(Action::Fold);
         }
@@ -156,6 +165,7 @@ impl Action {
             "reset-font-size" => Action::ResetFontSize,
             "toggle-terminal" => Action::ToggleTerminal,
             "toggle-run-tile" => Action::ToggleRunTile,
+            "toggle-debug-tile" => Action::ToggleDebugTile,
             "close-tab" => Action::CloseTab,
             "next-tab" => Action::NextTab,
             "previous-tab" => Action::PreviousTab,
@@ -346,6 +356,9 @@ mod tests {
             run_selected: Some("Dev server".to_owned()),
             run_names: vec!["Dev server".to_owned()],
             run_file_applies: true,
+            // And the same for the debug half: it is absent for a language that names no debugger,
+            // so a state with it off would leave a dozen entries unwalked.
+            debug_applies: true,
             ..MenuState::default()
         };
         let mut out = Vec::new();
@@ -386,6 +399,9 @@ mod tests {
                 // The one entry whose argument names a configuration rather than a file. It goes
                 // down the same channel, which is why `from_name` says what that channel now holds.
                 Action::Run(what) => what.configuration().map(PathBuf::from),
+                // The second of the two, and for the same reason: `debug start <name>` names a
+                // configuration rather than a file, down the same channel.
+                Action::Debug(what) => what.configuration().map(PathBuf::from),
                 _ => None,
             };
             assert_eq!(
@@ -458,6 +474,41 @@ mod tests {
         assert_eq!(Action::from_name("run-edit", None), Some(Action::Run(RunAction::Edit)));
         assert_eq!(Action::from_name("run-nonsense", None), None);
         assert_eq!(Action::from_name("toggle-run-tile", None), Some(Action::ToggleRunTile));
+    }
+
+    /// The debug half of the Run menu, which reads back the same way and for the same reason.
+    #[test]
+    fn every_entry_on_the_debug_half_reads_back_as_the_entry_it_names() {
+        let started = Action::Debug(DebugAction::Start(Some("Dev server".to_owned())));
+        assert_eq!(started.name(), "debug-start");
+        assert_eq!(
+            Action::from_name("debug-start", Some(PathBuf::from("Dev server"))),
+            Some(started)
+        );
+        assert_eq!(
+            Action::from_name("debug-start", None),
+            Some(Action::Debug(DebugAction::Start(None)))
+        );
+        for (name, what) in [
+            ("debug-resume", DebugAction::Resume),
+            ("debug-step-over", DebugAction::StepOver),
+            ("debug-step-into", DebugAction::StepInto),
+            ("debug-step-out", DebugAction::StepOut),
+            ("debug-run-to-cursor", DebugAction::RunToCursor),
+            ("debug-toggle-breakpoint", DebugAction::ToggleBreakpoint),
+            ("debug-toggle-breakpoint-enabled", DebugAction::ToggleBreakpointEnabled),
+            ("debug-edit-breakpoint", DebugAction::EditBreakpoint),
+            ("debug-evaluate", DebugAction::EvaluateExpression),
+            ("debug-toggle-tile", DebugAction::ToggleTile),
+            ("debug-stop", DebugAction::Stop),
+            ("debug-current-file", DebugAction::CurrentFile),
+            ("debug-pause", DebugAction::Pause),
+        ] {
+            assert_eq!(Action::from_name(name, None), Some(Action::Debug(what.clone())), "{name}");
+            assert_eq!(Action::Debug(what).name(), name);
+        }
+        assert_eq!(Action::from_name("debug-nonsense", None), None);
+        assert_eq!(Action::from_name("toggle-debug-tile", None), Some(Action::ToggleDebugTile));
     }
 
     #[test]

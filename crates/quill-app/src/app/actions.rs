@@ -93,8 +93,15 @@ pub enum Action {
     /// away and the other way round — two grids stacked take the editing area below the fold of
     /// anything, which is the choice IntelliJ's bottom tool windows make too.
     ToggleRunTile,
+    /// Show or hide the debug tile along the bottom.
+    ///
+    /// The third of the three tiles the bottom of the window can hold, on exactly the same terms as
+    /// the other two: showing one puts the other two away.
+    ToggleDebugTile,
     /// Anything on the Run menu, or on the run widget in the title bar.
     Run(RunAction),
+    /// Anything on the Run menu's debug half, the debug tile or the gutter's own menu.
+    Debug(DebugAction),
     /// Close the file tab that is showing.
     CloseTab,
     /// Show the next file tab in this pane, wrapping round at the end.
@@ -383,6 +390,103 @@ impl RunAction {
             }
             RunAction::Select(named) => Some(named),
             RunAction::CurrentFile | RunAction::Edit => None,
+        }
+    }
+}
+
+/// Everything the Run menu's debug half, the debug tile and the gutter's menu can ask for.
+///
+/// A group of its own for [`RunAction`]'s reason: they all go to one place, and a menu's worth of
+/// entries reads better as a list than as twelve more lines in an enum shared with `Save`.
+///
+/// [`DebugAction::Start`] takes `None` to mean **the configuration the widget has chosen**, exactly
+/// as `RunAction::Start` does, so one entry serves the menu, the keyboard and the command line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DebugAction {
+    /// Start a configuration under its debugger. **Debug is Run, under a debugger**: the same
+    /// configuration the play button starts, which is IntelliJ's own model.
+    Start(Option<String>),
+    /// Debug the file that is showing, through its language's `run.file`. Offered only where
+    /// `Run Current File` is offered **and** the language names an adapter.
+    CurrentFile,
+    /// End the session: politely the first time, and for good the second.
+    Stop,
+    /// Run to the next breakpoint. IntelliJ's `F9`.
+    Resume,
+    /// Run this line and stop on the next. `F8`.
+    StepOver,
+    /// Go into the call on this line. `F7`.
+    StepInto,
+    /// Finish this function and stop in the caller. `Shift+F8`.
+    StepOut,
+    /// Stop a program that is running, which is the one of the five that is not a step.
+    Pause,
+    /// Run to the line the caret is on. `Alt+F9`. DAP has no request for it: it is a temporary
+    /// breakpoint, a resume, and the breakpoint taken away at the next stop.
+    RunToCursor,
+    /// Put a breakpoint on the line in question, or take away the one that is there. `Ctrl+F8`.
+    ToggleBreakpoint,
+    /// Open the modal that edits a breakpoint's condition, its log message and whether it is on.
+    EditBreakpoint,
+    /// Switch the breakpoint on the line in question off without taking it away, or back on again.
+    /// IntelliJ's `Disable Breakpoint`, which is a different thing from removing one: a disabled
+    /// breakpoint keeps its condition and is drawn hollow.
+    ToggleBreakpointEnabled,
+    /// Open the expression box. `Alt+F8`.
+    EvaluateExpression,
+    /// Show the debug tile along the bottom, or put it away.
+    ToggleTile,
+}
+
+impl DebugAction {
+    /// The name the command line calls this entry, after the `debug-` that [`Action::name`] puts in
+    /// front of it.
+    pub fn name(&self) -> &'static str {
+        match self {
+            DebugAction::Start(_) => "start",
+            DebugAction::CurrentFile => "current-file",
+            DebugAction::Stop => "stop",
+            DebugAction::Resume => "resume",
+            DebugAction::StepOver => "step-over",
+            DebugAction::StepInto => "step-into",
+            DebugAction::StepOut => "step-out",
+            DebugAction::Pause => "pause",
+            DebugAction::RunToCursor => "run-to-cursor",
+            DebugAction::ToggleBreakpoint => "toggle-breakpoint",
+            DebugAction::EditBreakpoint => "edit-breakpoint",
+            DebugAction::ToggleBreakpointEnabled => "toggle-breakpoint-enabled",
+            DebugAction::EvaluateExpression => "evaluate",
+            DebugAction::ToggleTile => "toggle-tile",
+        }
+    }
+
+    /// The entry of this name. `named` is the configuration it is about, and `None` means the one
+    /// the widget has chosen.
+    pub fn from_name(name: &str, named: Option<String>) -> Option<DebugAction> {
+        Some(match name {
+            "start" => DebugAction::Start(named),
+            "current-file" => DebugAction::CurrentFile,
+            "stop" => DebugAction::Stop,
+            "resume" => DebugAction::Resume,
+            "step-over" => DebugAction::StepOver,
+            "step-into" => DebugAction::StepInto,
+            "step-out" => DebugAction::StepOut,
+            "pause" => DebugAction::Pause,
+            "run-to-cursor" => DebugAction::RunToCursor,
+            "toggle-breakpoint" => DebugAction::ToggleBreakpoint,
+            "edit-breakpoint" => DebugAction::EditBreakpoint,
+            "toggle-breakpoint-enabled" => DebugAction::ToggleBreakpointEnabled,
+            "evaluate" => DebugAction::EvaluateExpression,
+            "toggle-tile" => DebugAction::ToggleTile,
+            _ => return None,
+        })
+    }
+
+    /// The configuration this entry names, if it names one.
+    pub fn configuration(&self) -> Option<&str> {
+        match self {
+            DebugAction::Start(named) => named.as_deref(),
+            _ => None,
         }
     }
 }
@@ -725,6 +829,21 @@ pub struct MenuState {
     pub run_file_applies: bool,
     /// True when the run tile is the one showing along the bottom.
     pub run_tile_visible: bool,
+    /// True when the open file's language names a debugger, which is what puts the whole debug half
+    /// of the Run menu and the two gutter entries in front of it. **Absent** rather than dimmed when
+    /// it is false, like the code-navigation entries: a stylesheet has nothing to step through.
+    pub debug_applies: bool,
+    /// True while a session exists at all, which is what un-dims `Stop Debugging`.
+    pub debug_active: bool,
+    /// True while the program is stopped somewhere, which is what un-dims the stepping entries.
+    pub debug_paused: bool,
+    /// True when the debug tile is the one showing along the bottom.
+    pub debug_tile_visible: bool,
+    /// True when the line the gutter's menu was opened over already has a breakpoint, which is what
+    /// decides whether that menu offers to remove one or to set one.
+    pub on_a_breakpoint: bool,
+    /// True when that breakpoint is switched on, which is what `Disable Breakpoint` says.
+    pub breakpoint_enabled: bool,
 }
 
 /// The whole menu bar: `Quill`, `File`, `Edit` and `View`, in that order.
@@ -762,6 +881,29 @@ pub fn stop_shortcut() -> Shortcut {
     } else {
         Shortcut::control(egui::Key::F2)
     }
+}
+
+/// What starts a configuration under its debugger: `Shift+F9` on Windows, `Ctrl+D` on macOS.
+///
+/// IntelliJ's own, and the ticket says mimic IntelliJ. As with [`run_shortcut`] the two platforms
+/// differ because the platforms do, not because Quill has an opinion.
+pub fn debug_shortcut() -> Shortcut {
+    if cfg!(target_os = "macos") {
+        Shortcut::control(egui::Key::D)
+    } else {
+        Shortcut { key: egui::Key::F9, command: false, shift: true, alt: false, ctrl: false }
+    }
+}
+
+/// A bare function key, which is what the four stepping shortcuts are.
+///
+/// They are IntelliJ's exactly — `F9`, `F8`, `F7`, `Shift+F8` — because the ticket says mimic
+/// IntelliJ and because these are the keys a person's hands already know. A bare key is safe here
+/// where it would not be for `Delete`: a function key types nothing, and every one of these entries
+/// is **dimmed** unless a session is stopped, so `F8` in an editor with no debugger running matches
+/// no entry and costs nothing.
+const fn function_key(key: egui::Key) -> Shortcut {
+    Shortcut::plain(key)
 }
 
 /// The `Run` menu, between `View` and `Git`, because that is where IntelliJ has one and where
@@ -807,7 +949,88 @@ pub fn run_menu(state: &MenuState) -> Menu {
     }
     entries.push(Entry::Separator);
     entries.push(Entry::item("Edit Configurations...", Action::Run(RunAction::Edit)));
+    entries.extend(debug_entries(state, &chosen));
     Menu { name: "Run".to_owned(), entries }
+}
+
+/// The Run menu's debug half.
+///
+/// **Absent altogether when the file's language names no debugger**, which is Quill's rule for a
+/// control that can never apply and is the same answer `Go to Definition` gets for a picture: a
+/// stylesheet has nothing to step through and never will, so it gets no half-menu of dimmed entries
+/// explaining that.
+///
+/// Within it, the entries are **dimmed** rather than absent when they cannot apply this instant —
+/// stepping while the program is running — because "in a moment" is exactly what dimming means.
+fn debug_entries(state: &MenuState, chosen: &Option<String>) -> Vec<Entry> {
+    if !state.debug_applies {
+        return Vec::new();
+    }
+    let named = |verb: &str| match chosen {
+        Some(name) => format!("{verb} {name}"),
+        None => verb.to_owned(),
+    };
+    let mut entries = vec![
+        Entry::Separator,
+        Entry::with_shortcut(
+            &named("Debug"),
+            Action::Debug(DebugAction::Start(None)),
+            debug_shortcut(),
+        )
+        .enabled(chosen.is_some()),
+    ];
+    if state.run_file_applies {
+        entries.push(Entry::item("Debug Current File", Action::Debug(DebugAction::CurrentFile)));
+    }
+    entries.push(
+        Entry::item("Stop Debugging", Action::Debug(DebugAction::Stop)).enabled(state.debug_active),
+    );
+    entries.push(Entry::Separator);
+    entries.push(
+        Entry::with_shortcut("Resume", Action::Debug(DebugAction::Resume), function_key(egui::Key::F9))
+            .enabled(state.debug_paused),
+    );
+    entries.push(
+        Entry::with_shortcut("Step Over", Action::Debug(DebugAction::StepOver), function_key(egui::Key::F8))
+            .enabled(state.debug_paused),
+    );
+    entries.push(
+        Entry::with_shortcut("Step Into", Action::Debug(DebugAction::StepInto), function_key(egui::Key::F7))
+            .enabled(state.debug_paused),
+    );
+    entries.push(
+        Entry::with_shortcut(
+            "Step Out",
+            Action::Debug(DebugAction::StepOut),
+            Shortcut { key: egui::Key::F8, command: false, shift: true, alt: false, ctrl: false },
+        )
+        .enabled(state.debug_paused),
+    );
+    entries.push(
+        Entry::with_shortcut(
+            "Run to Cursor",
+            Action::Debug(DebugAction::RunToCursor),
+            Shortcut { key: egui::Key::F9, command: false, shift: false, alt: true, ctrl: false },
+        )
+        .enabled(state.debug_paused),
+    );
+    entries.push(Entry::Separator);
+    entries.push(
+        Entry::with_shortcut(
+            "Toggle Breakpoint",
+            Action::Debug(DebugAction::ToggleBreakpoint),
+            Shortcut::control(egui::Key::F8),
+        ),
+    );
+    entries.push(
+        Entry::with_shortcut(
+            "Evaluate Expression...",
+            Action::Debug(DebugAction::EvaluateExpression),
+            Shortcut { key: egui::Key::F8, command: false, shift: false, alt: true, ctrl: false },
+        )
+        .enabled(state.debug_paused),
+    );
+    entries
 }
 
 /// The Git menu, which holds what the reference capture in `tasks/quill-ide-tdd.md` holds.
@@ -1203,6 +1426,11 @@ fn view_menu(state: &MenuState) -> Menu {
                 Action::ToggleRunTile,
             )
             .checked(state.run_tile_visible),
+            Entry::item(
+                if state.debug_tile_visible { "Hide Debug Tile" } else { "Debug Tile" },
+                Action::ToggleDebugTile,
+            )
+            .checked(state.debug_tile_visible),
             Entry::item("New Terminal Tab", Action::NewTerminalTab),
             Entry::item("Close Terminal Tab", Action::CloseTerminalTab)
                 .enabled(state.terminal_tabs > 0),
@@ -1451,7 +1679,43 @@ pub fn gutter_menu(state: &MenuState) -> Vec<Entry> {
             Action::ToggleLineNumbers,
         ),
     ];
-    // The arrows are drawn in this strip, so this is where somebody asking about them right clicks.
+    // The dot is drawn in this strip, so this is where somebody asking about it right clicks. The
+    // entries are about the **row under the pointer** rather than about the caret, which is the rule
+    // the text menu and the terminal tab menu already follow; `QuillApp::gutter_menu_line` is what
+    // remembers which row that was.
+    if state.debug_applies {
+        entries.push(Entry::Separator);
+        match state.on_a_breakpoint {
+            true => {
+                entries.push(Entry::item(
+                    "Edit Breakpoint...",
+                    Action::Debug(DebugAction::EditBreakpoint),
+                ));
+                entries.push(Entry::item(
+                    match state.breakpoint_enabled {
+                        true => "Disable Breakpoint",
+                        false => "Enable Breakpoint",
+                    },
+                    Action::Debug(DebugAction::ToggleBreakpointEnabled),
+                ));
+                entries.push(Entry::item(
+                    "Remove Breakpoint",
+                    Action::Debug(DebugAction::ToggleBreakpoint),
+                ));
+            }
+            false => {
+                entries.push(Entry::item(
+                    "Set Breakpoint",
+                    Action::Debug(DebugAction::ToggleBreakpoint),
+                ));
+                entries.push(Entry::item(
+                    "Add Conditional Breakpoint...",
+                    Action::Debug(DebugAction::EditBreakpoint),
+                ));
+            }
+        }
+    }
+    // The arrows are drawn in this strip too, so the same is true of them.
     let folding = folding_menu(state);
     if !folding.is_empty() {
         entries.push(Entry::Separator);
@@ -1585,6 +1849,117 @@ mod tests {
         assert_eq!(run[2], "Rerun");
         assert!(run.contains(&"cargo run".to_owned()), "and each configuration is an entry: {run:?}");
         assert_eq!(run.last(), Some(&"Edit Configurations...".to_owned()));
+    }
+
+    /// The debug half is **absent** for a language that names no debugger, which is Quill's rule for
+    /// a control that can never apply — the same answer `Go to Definition` gets for a picture.
+    #[test]
+    fn a_file_whose_language_names_no_debugger_gets_no_debug_entries_at_all() {
+        let state = MenuState {
+            run_selected: Some("Dev server".to_owned()),
+            debug_applies: false,
+            ..MenuState::default()
+        };
+        let run = names(&run_menu(&state).entries);
+        assert!(
+            !run.iter().any(|name| name.contains("Debug") || name.contains("Step")),
+            "a stylesheet has nothing to step through: {run:?}"
+        );
+        assert_eq!(run.last(), Some(&"Edit Configurations...".to_owned()));
+    }
+
+    /// And within it the entries are **dimmed** rather than absent while they cannot apply this
+    /// instant, because "in a moment" is exactly what dimming means.
+    #[test]
+    fn the_stepping_entries_are_dimmed_until_the_program_is_stopped() {
+        let running = MenuState {
+            run_selected: Some("Dev server".to_owned()),
+            debug_applies: true,
+            debug_active: true,
+            debug_paused: false,
+            ..MenuState::default()
+        };
+        let enabled = |state: &MenuState, wanted: &str| {
+            run_menu(state)
+                .entries
+                .iter()
+                .find_map(|entry| match entry {
+                    Entry::Item { name, enabled, .. } if name == wanted => Some(*enabled),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{wanted} should be on the menu"))
+        };
+        for entry in ["Resume", "Step Over", "Step Into", "Step Out", "Run to Cursor"] {
+            assert!(!enabled(&running, entry), "{entry} cannot apply while the program runs");
+        }
+        assert!(enabled(&running, "Stop Debugging"), "stopping always can");
+        // Toggling a breakpoint needs no session at all: a breakpoint set now is one the next
+        // session will be told about.
+        assert!(enabled(&running, "Toggle Breakpoint"));
+
+        let paused = MenuState { debug_paused: true, ..running.clone() };
+        for entry in ["Resume", "Step Over", "Step Into", "Step Out", "Run to Cursor"] {
+            assert!(enabled(&paused, entry), "{entry} applies once it has stopped");
+        }
+        assert!(enabled(&paused, "Evaluate Expression..."));
+    }
+
+    /// IntelliJ's keys, kept exactly, because the ticket says mimic IntelliJ and these are the keys
+    /// a person's hands already know.
+    #[test]
+    fn the_stepping_keys_are_intellijs_own() {
+        let state = MenuState {
+            run_selected: Some("Dev server".to_owned()),
+            debug_applies: true,
+            debug_paused: true,
+            ..MenuState::default()
+        };
+        let shortcut = |wanted: &str| {
+            run_menu(&state)
+                .entries
+                .iter()
+                .find_map(|entry| match entry {
+                    Entry::Item { name, shortcut, .. } if name == wanted => *shortcut,
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{wanted} should have a key"))
+        };
+        assert_eq!(shortcut("Resume").key, egui::Key::F9);
+        assert!(!shortcut("Resume").shift);
+        assert_eq!(shortcut("Step Over").key, egui::Key::F8);
+        assert!(!shortcut("Step Over").shift);
+        assert_eq!(shortcut("Step Into").key, egui::Key::F7);
+        assert_eq!(shortcut("Step Out").key, egui::Key::F8);
+        assert!(shortcut("Step Out").shift, "which is what keeps it apart from Step Over");
+        assert!(shortcut("Run to Cursor").alt);
+        assert_eq!(shortcut("Run to Cursor").key, egui::Key::F9);
+        assert_eq!(shortcut("Toggle Breakpoint").key, egui::Key::F8);
+        assert!(shortcut("Evaluate Expression...").alt);
+    }
+
+    /// The gutter's own menu is about the row under the pointer, and it offers the opposite thing
+    /// depending on what is there — which is what makes one entry serve both.
+    #[test]
+    fn the_gutters_menu_offers_to_set_a_breakpoint_or_to_remove_one() {
+        let empty = MenuState { debug_applies: true, ..MenuState::default() };
+        let rows = names(&gutter_menu(&empty));
+        assert!(rows.contains(&"Set Breakpoint".to_owned()), "{rows:?}");
+        assert!(rows.contains(&"Add Conditional Breakpoint...".to_owned()));
+
+        let on_one =
+            MenuState { on_a_breakpoint: true, breakpoint_enabled: true, ..empty.clone() };
+        let rows = names(&gutter_menu(&on_one));
+        assert!(rows.contains(&"Remove Breakpoint".to_owned()), "{rows:?}");
+        assert!(rows.contains(&"Disable Breakpoint".to_owned()));
+        assert!(rows.contains(&"Edit Breakpoint...".to_owned()));
+
+        let off = MenuState { breakpoint_enabled: false, ..on_one };
+        assert!(names(&gutter_menu(&off)).contains(&"Enable Breakpoint".to_owned()));
+
+        // And nothing at all for a file that cannot be debugged, which is the same rule again.
+        let css = MenuState { debug_applies: false, ..MenuState::default() };
+        let rows = names(&gutter_menu(&css));
+        assert!(!rows.iter().any(|name| name.contains("Breakpoint")), "{rows:?}");
     }
 
     #[test]

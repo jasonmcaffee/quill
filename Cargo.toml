@@ -1,6 +1,6 @@
 ﻿[workspace]
 resolver = "2"
-members = ["crates/quill-core", "crates/quill-git", "crates/quill-terminal", "crates/quill-app", "quill-cli"]
+members = ["crates/quill-core", "crates/quill-dap", "crates/quill-git", "crates/quill-terminal", "crates/quill-app", "quill-cli"]
 
 [workspace.package]
 version = "0.13.0"
@@ -10,6 +10,7 @@ license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 quill-core = { path = "crates/quill-core" }
+quill-dap = { path = "crates/quill-dap" }
 quill-git = { path = "crates/quill-git" }
 quill-terminal = { path = "crates/quill-terminal" }
 # The command catalogue and the wire format the CLI and the window share. It lives beside the client

@@ -301,6 +301,21 @@ pub fn split_command(command: &str) -> Vec<String> {
     parts
 }
 
+/// The other direction: a program and its arguments back into one command line.
+///
+/// [`split_command`]'s inverse, and it has to be exactly that — a debug adapter's `runInTerminal`
+/// hands over a program and its arguments **already split**, and the run tile takes a command line,
+/// so a part with a space in it that came back unquoted would be run as two programs. Every part
+/// goes through [`quote_part`], which is the one place that question is answered.
+pub fn join_command(program: &str, args: &[String]) -> String {
+    let mut line = quote_part(program);
+    for argument in args {
+        line.push(' ');
+        line.push_str(&quote_part(argument));
+    }
+    line
+}
+
 /// Write a part back as it would have to be typed, which is what a detector does with a path.
 ///
 /// Only what has to be quoted is quoted, so `cargo run` stays `cargo run` rather than becoming

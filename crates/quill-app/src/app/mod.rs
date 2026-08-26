@@ -29,6 +29,7 @@ pub mod action_names;
 pub mod actions;
 pub mod cli;
 pub mod completion;
+pub mod debug;
 pub mod files;
 pub mod folding;
 pub mod git;
@@ -45,6 +46,8 @@ use quill_core::{layout, relayout, Command, Document, Highlights, Layout, Rgba};
 use crate::components::about_dialog::{self, About};
 use crate::components::activity_bar;
 use crate::components::context_menu;
+use crate::components::debug_dialogs::{self, BreakpointDialog, EvaluateDialog};
+use crate::components::debug_panel::{self, DebugPanel};
 use crate::components::diagram_view;
 use crate::components::editor_view;
 use crate::components::explorer;
@@ -69,6 +72,9 @@ use crate::components::terminal_panel::{self, TerminalPanel};
 use crate::components::text_menu;
 use crate::components::text_tools;
 use crate::components::title_bar::{self, MenuPlacement};
+use crate::app::debug::DebugState;
+use crate::services::breakpoint_store::BreakpointStore;
+use crate::services::debuggers;
 use crate::services::file_kind;
 use crate::services::file_marks::FileMarks;
 use crate::services::file_move;
@@ -91,7 +97,7 @@ use crate::services::text_renderer::TextRenderer;
 use crate::settings::{self, Panes, Settings};
 use crate::theme::{self, color, size};
 
-use actions::{Action, GitAction, MenuState, RunAction};
+use actions::{Action, DebugAction, GitAction, MenuState, RunAction};
 use git::GitState;
 use files::OpenFiles;
 
@@ -466,6 +472,22 @@ pub struct QuillApp {
     pub plugins: Plugins,
     /// The plugins' icons, decoded once each.
     icons: Icons,
+    /// The debug tile along the bottom, which is the run tile's sibling as the run tile is the
+    /// terminal's: the window shows **one** of the three and never two, because two grids stacked
+    /// take the editing area below the fold.
+    pub debug_panel: DebugPanel,
+    /// The session that is running, when one is. **One at most**: IntelliJ runs several and the
+    /// first version of this does not, which is what keeps every pane of the tile free of a session
+    /// chooser above it. See `app::debug`.
+    pub debug: Option<DebugState>,
+    /// The project's breakpoints, as `.quill/breakpoints.conf` holds them. The authority for every
+    /// file that is **not** open; a file that is open is owned by its document and pushed in here
+    /// whenever it changes — the highlights' rule, unchanged. See `services::breakpoint_store`.
+    pub breakpoints: BreakpointStore,
+    /// The `Evaluate Expression` modal, when it is open.
+    pub evaluate: Option<EvaluateDialog>,
+    /// The `Edit Breakpoint` modal, when it is open.
+    pub breakpoint_dialog: Option<BreakpointDialog>,
     /// The repository the project is in, when it is in one, and the thread that runs git.
     pub git: Option<GitState>,
     /// Set once the folder has been looked at, so a folder that is not in a repository is not
@@ -538,6 +560,19 @@ pub struct QuillApp {
     /// Where the gutter's own menu is open, when it is. Held here rather than in egui's memory so
     /// that a test can open it: a screenshot test cannot press the right mouse button.
     pub gutter_menu: Option<Pos2>,
+    /// Which paragraph that menu was opened over, so its breakpoint entries are about the row under
+    /// the pointer rather than about the caret — the rule the text menu and the terminal tab menu
+    /// already follow. `None` means the caret's line, which is what the keyboard and the command
+    /// line mean.
+    pub gutter_menu_line: Option<usize>,
+    /// The values painted at the ends of lines, worked out once per stop. See
+    /// [`QuillApp::inline_values`].
+    pub(crate) inline_cache: Option<InlineValues>,
+    /// The temporary breakpoint `Run to Cursor` made, and where. Taken away at the next stop.
+    ///
+    /// Held here rather than on the session because it is a **breakpoint**, and every breakpoint in
+    /// Quill lives where the text is — this is only the note that says which one to take back.
+    pub(crate) run_to: Option<(PathBuf, usize)>,
     /// Where a tab's own menu is open, and which pane's strip it was opened on. Held here for the
     /// same reason the gutter's is.
     ///
@@ -611,6 +646,11 @@ impl QuillApp {
             run_selected: None,
             run_dialog: RunDialog::default(),
             unsaved_run_configurations: false,
+            debug_panel: DebugPanel::new(),
+            debug: None,
+            breakpoints: BreakpointStore::new(),
+            evaluate: None,
+            breakpoint_dialog: None,
             menu_placement: MenuPlacement::for_this_platform(),
             recent: Vec::new(),
             focus: Focus::Editor,
@@ -658,6 +698,9 @@ impl QuillApp {
             about: None,
             reveal_caret: false,
             gutter_menu: None,
+            gutter_menu_line: None,
+            inline_cache: None,
+            run_to: None,
             text_menu: None,
             tab_menu: None,
             terminal_menu: None,
@@ -780,6 +823,9 @@ impl QuillApp {
         // Read before the files are opened, so each tab comes up with its passages already marked
         // rather than having them appear a frame later.
         self.marks = FileMarks::load(self.tree.root());
+        // And where the program is to stop, on exactly the same terms and for the same reason: a
+        // breakpoint that appeared a frame after its file did would be a dot that arrived late.
+        self.breakpoints = BreakpointStore::load(self.tree.root());
         let state = project_state::load(self.tree.root());
         for folder in &state.expanded_folders {
             self.tree.expand(folder);
@@ -1088,6 +1134,14 @@ impl QuillApp {
                 .is_some_and(run_panel::Run::is_running),
             run_file_applies: self.run_file_template().is_some(),
             run_tile_visible: self.run.visible,
+            debug_applies: self.debug_applies_here(),
+            debug_active: self.debug.is_some(),
+            debug_paused: self.debug.as_ref().is_some_and(DebugState::is_paused),
+            debug_tile_visible: self.debug_panel.visible,
+            on_a_breakpoint: self.breakpoint_in_question().is_some(),
+            breakpoint_enabled: self
+                .breakpoint_in_question()
+                .is_none_or(|breakpoint| breakpoint.enabled),
         }
     }
 
@@ -1355,6 +1409,11 @@ impl QuillApp {
                     None => self.message = Some("There is no terminal tab to rename.".to_owned()),
                 }
             }
+            Action::ToggleDebugTile => {
+                let showing = self.debug_panel.visible;
+                self.show_the_debug_tile(!showing);
+            }
+            Action::Debug(what) => self.debug_a_configuration(what),
             Action::ToggleRunTile => {
                 let showing = !self.run.visible;
                 self.show_the_run_tile(showing);
@@ -1610,17 +1669,719 @@ impl QuillApp {
         self.plugins.run_file(path).map(str::to_owned)
     }
 
+    // ------------------------------------------------------------------------------- debugging
+
+    /// Everything on the Run menu's debug half, and the tile's own buttons.
+    ///
+    /// **The one place a debug action turns into a change**, which is `run_action`'s rule applied
+    /// within the family: the menu, the keyboard, the tile and the command line all come through
+    /// here, so a thing done from a script and the same thing done by hand are the same thing,
+    /// including what it says about it.
+    pub fn debug_a_configuration(&mut self, what: DebugAction) {
+        match what {
+            DebugAction::Start(named) => match self.configuration_named(named.as_deref()) {
+                Some(configuration) => self.start_debugging(configuration, None),
+                None => self.no_such_configuration(named.as_deref()),
+            },
+            DebugAction::CurrentFile => self.debug_the_current_file(),
+            DebugAction::Stop => match self.debug.as_mut() {
+                Some(debug) => {
+                    debug.stop();
+                    self.message = debug.message.clone();
+                }
+                None => self.message = Some("Nothing is being debugged.".to_owned()),
+            },
+            DebugAction::Resume => self.step(quill_dap::Step::Resume),
+            DebugAction::StepOver => self.step(quill_dap::Step::Over),
+            DebugAction::StepInto => self.step(quill_dap::Step::Into),
+            DebugAction::StepOut => self.step(quill_dap::Step::Out),
+            DebugAction::Pause => self.step(quill_dap::Step::Pause),
+            DebugAction::RunToCursor => self.run_to_cursor(),
+            DebugAction::ToggleBreakpoint => self.toggle_breakpoint_here(),
+            DebugAction::EditBreakpoint => self.open_the_breakpoint_dialog(),
+            DebugAction::ToggleBreakpointEnabled => self.toggle_the_breakpoint_enabled(),
+            DebugAction::EvaluateExpression => self.open_the_expression_box(),
+            DebugAction::ToggleTile => {
+                let showing = self.debug_panel.visible;
+                self.show_the_debug_tile(!showing);
+            }
+        }
+    }
+
+    /// Start a configuration under its debugger.
+    ///
+    /// **Debug is Run, under a debugger** — the same `Configuration` the play button starts, same
+    /// command, same folder, same environment, which is IntelliJ's own model. A second session
+    /// replaces the first, because there is one at a time.
+    ///
+    /// `for_file` names the file the session was started for, which is what decides which language's
+    /// debugger to use when the configuration is a temporary made from `run.file`.
+    fn start_debugging(&mut self, configuration: Configuration, for_file: Option<PathBuf>) {
+        let path = for_file.or_else(|| self.document().path().map(Path::to_path_buf));
+        let Some(adapter) = path.as_deref().and_then(|path| self.plugins.debugger_for(path)) else {
+            self.message = Some(
+                "This file's language has not said which debugger to use, so there is nothing to start."
+                    .to_owned(),
+            );
+            return;
+        };
+        let adapter = adapter.to_owned();
+        let root = self.tree.root().to_path_buf();
+        let override_path = self.settings.debug_adapter(&adapter).map(str::to_owned);
+        // The refusal is one sentence naming what was looked for and where it comes from, built by
+        // the registry entry that knew — never an error dialog and never a dead button.
+        let prepared = match debuggers::prepare(
+            &adapter,
+            &configuration,
+            &root,
+            override_path.as_deref(),
+        ) {
+            Ok(prepared) => prepared,
+            Err(refusal) => {
+                self.message = Some(refusal.message());
+                return;
+            }
+        };
+        // The one that was there is stopped and thrown away first, so its adapter does not outlive
+        // the session that replaced it. Nothing ever orphans a child on purpose.
+        self.stop_debugging();
+        let name = configuration.name.clone();
+        if self.run_configurations.find(&name).is_none() {
+            self.run_configurations.add_temporary(configuration.clone());
+        }
+        self.run_selected = Some(name.clone());
+        let waker = self.waker();
+        match DebugState::start(
+            &adapter,
+            &prepared.adapter,
+            prepared.body,
+            prepared.caveat,
+            configuration,
+            waker,
+        ) {
+            Ok(state) => {
+                self.debug = Some(state);
+                self.send_every_breakpoint();
+                self.show_the_debug_tile(true);
+                self.message = Some(match prepared.caveat.is_empty() {
+                    true => format!("Debugging {name}"),
+                    // The adapter's own limits reach the person rather than being discovered as
+                    // wrong-looking values later. §5.3.
+                    false => format!("Debugging {name}. {}", prepared.caveat),
+                });
+            }
+            Err(problem) => self.message = Some(problem),
+        }
+    }
+
+    /// `Debug Current File`: the open file's language's own command, under its own debugger.
+    ///
+    /// It exists exactly where `Run Current File` exists **and** the language names an adapter, so a
+    /// `.rs` file offers neither — Rust deliberately has no `run.file`, because running one file of
+    /// a Cargo project is not a thing cargo does — and a `.css` file offers nothing.
+    fn debug_the_current_file(&mut self) {
+        let Some(template) = self.run_file_template() else {
+            self.message =
+                Some("This file's language has not said how one file of it is run.".to_owned());
+            return;
+        };
+        let Some(path) = self.document().path().map(Path::to_path_buf) else {
+            self.message = Some("Save the file first, so there is something to debug.".to_owned());
+            return;
+        };
+        let root = self.tree.root().to_path_buf();
+        let configuration = run_configurations::for_file(&template, &root, &path);
+        self.start_debugging(configuration, Some(path));
+    }
+
+    /// One of the five stepping requests, with the adapter's own refusal if it will not.
+    fn step(&mut self, step: quill_dap::Step) {
+        let Some(debug) = self.debug.as_mut() else {
+            self.message = Some("Nothing is being debugged.".to_owned());
+            return;
+        };
+        // What every row showed, remembered before the program goes on, so the next stop can mark
+        // what moved: "changed" means "different from the last time you looked".
+        debug.remember_the_values();
+        match debug.step(step) {
+            Ok(()) => self.message = debug.message.clone(),
+            Err(problem) => self.message = Some(problem),
+        }
+        self.debug_panel.stop_editing();
+    }
+
+    /// `Run to Cursor`: a breakpoint on the caret's line for the length of one resume.
+    ///
+    /// DAP has no request for it and every client builds it the same way — a temporary breakpoint,
+    /// a `continue`, and the breakpoint taken away at the next stop. It is done through the ordinary
+    /// breakpoint path rather than a second one, so the dot is real while it lasts and the adapter is
+    /// told about it exactly as it is told about any other.
+    fn run_to_cursor(&mut self) {
+        if self.debug.as_ref().is_none_or(|debug| !debug.is_paused()) {
+            self.message = Some("The program is not stopped.".to_owned());
+            return;
+        }
+        let Some(path) = self.document().path().map(Path::to_path_buf) else {
+            self.message = Some("Save the file first, so there is a line to run to.".to_owned());
+            return;
+        };
+        let caret = self.document().selection().head;
+        let line = self.document_mut().line_start_of(caret);
+        // A line that already has one needs no temporary: resuming will stop there anyway.
+        let temporary = self.document().breakpoints().at(line).is_none();
+        if temporary {
+            self.document_mut().toggle_breakpoint(line);
+            self.run_to = Some((path.clone(), line));
+            self.send_the_breakpoints_of(&path);
+        }
+        self.step(quill_dap::Step::Resume);
+    }
+
+    /// Take away the temporary breakpoint `Run to Cursor` made, once the program has stopped again.
+    fn clear_the_run_to_breakpoint(&mut self) {
+        let Some((path, offset)) = self.run_to.take() else {
+            return;
+        };
+        self.change_breakpoints(&path, |breakpoints| {
+            breakpoints.remove_at(offset);
+        });
+        self.send_the_breakpoints_of(&path);
+    }
+
+    /// Put a breakpoint on the caret's line, or take away the one that is there.
+    fn toggle_breakpoint_here(&mut self) {
+        let caret = self.document().selection().head;
+        let line = self.document_mut().line_start_of(caret);
+        self.toggle_breakpoint_at_offset(line);
+    }
+
+    /// The same, from a click in the gutter, which names a paragraph rather than an offset.
+    fn toggle_breakpoint_at_line(&mut self, paragraph: usize) {
+        let offset = self.document().text().line_to_byte(paragraph);
+        self.toggle_breakpoint_at_offset(offset);
+    }
+
+    /// The one place a breakpoint is put on or taken off the file that is showing.
+    ///
+    /// **Absent rather than refused** for a file whose language names no debugger: the gutter takes
+    /// no click there at all, and this says so for the keyboard and the menu, which can still ask.
+    fn toggle_breakpoint_at_offset(&mut self, offset: usize) {
+        if !self.debug_applies_here() {
+            self.message =
+                Some("This file's language has not said which debugger to use.".to_owned());
+            return;
+        }
+        let Some(path) = self.document().path().map(Path::to_path_buf) else {
+            self.message = Some("Save the file first, so a breakpoint has somewhere to live.".to_owned());
+            return;
+        };
+        let now = self.document_mut().toggle_breakpoint(offset);
+        let line = self.document().line_number_of(offset);
+        self.message = Some(match now {
+            true => format!("Breakpoint on line {line}"),
+            false => format!("Breakpoint removed from line {line}"),
+        });
+        self.send_the_breakpoints_of(&path);
+    }
+
+    /// Which line the gutter's menu and the breakpoint entries are about: the row it was opened
+    /// over, or the caret's line when the question came from the keyboard or the command line.
+    fn breakpoint_line_in_question(&self) -> usize {
+        match self.gutter_menu_line {
+            Some(paragraph) => self.document().text().line_to_byte(paragraph),
+            None => {
+                let caret = self.document().selection().head;
+                self.document().line_start_of(caret)
+            }
+        }
+    }
+
+    /// The breakpoint on that line, if there is one. What the gutter's menu asks to decide whether
+    /// it offers to set one or to remove one.
+    fn breakpoint_in_question(&self) -> Option<&quill_core::Breakpoint> {
+        self.document().breakpoints().at(self.breakpoint_line_in_question())
+    }
+
+    /// Switch the breakpoint in question off without taking it away, or back on again.
+    ///
+    /// A disabled breakpoint keeps its condition and its log message and is drawn hollow; it is
+    /// simply not sent to the adapter, because `enabled` is Quill's own idea and the protocol has no
+    /// field for it.
+    fn toggle_the_breakpoint_enabled(&mut self) {
+        let Some(path) = self.document().path().map(Path::to_path_buf) else {
+            return;
+        };
+        let offset = self.breakpoint_line_in_question();
+        let Some(was) = self.document().breakpoints().at(offset).map(|one| one.enabled) else {
+            self.message = Some("There is no breakpoint on that line.".to_owned());
+            return;
+        };
+        self.document_mut().change_breakpoint(offset, |breakpoint| breakpoint.enabled = !was);
+        let line = self.document().line_number_of(offset);
+        self.message = Some(match was {
+            true => format!("Breakpoint on line {line} disabled"),
+            false => format!("Breakpoint on line {line} enabled"),
+        });
+        self.send_the_breakpoints_of(&path);
+    }
+
+    /// Open `Edit Breakpoint...` on the line in question, putting one there if there is none.
+    fn open_the_breakpoint_dialog(&mut self) {
+        if !self.debug_applies_here() {
+            self.message =
+                Some("This file's language has not said which debugger to use.".to_owned());
+            return;
+        }
+        let Some(path) = self.document().path().map(Path::to_path_buf) else {
+            self.message = Some("Save the file first, so a breakpoint has somewhere to live.".to_owned());
+            return;
+        };
+        let offset = self.breakpoint_line_in_question();
+        let created = self.document().breakpoints().at(offset).is_none();
+        if created {
+            self.document_mut().toggle_breakpoint(offset);
+        }
+        let breakpoint = self.document().breakpoints().at(offset).cloned().unwrap_or_default();
+        // A field whose capability is absent is absent. With **no session running** both are offered,
+        // because a breakpoint edited now is one a debugger will be asked about later and refusing to
+        // let somebody type a condition before they have pressed Debug would be absurd.
+        let (conditions, log_points) = match self.debug.as_ref() {
+            Some(debug) => (
+                debug.capabilities().conditional_breakpoints,
+                debug.capabilities().log_points,
+            ),
+            None => (true, true),
+        };
+        self.close_every_modal();
+        self.breakpoint_dialog = Some(BreakpointDialog {
+            path,
+            offset,
+            line: self.document().line_number_of(offset),
+            enabled: breakpoint.enabled,
+            condition: breakpoint.condition.clone().unwrap_or_default(),
+            log_message: breakpoint.log_message.clone().unwrap_or_default(),
+            conditions,
+            log_points,
+            created,
+        });
+    }
+
+    /// Open `Evaluate Expression`, seeded with the selection when there is one.
+    fn open_the_expression_box(&mut self) {
+        let seed = match self.document().selection().is_empty() {
+            true => String::new(),
+            false => {
+                let range = self.document().selection().range();
+                self.document().text().byte_slice(range)
+            }
+        };
+        self.close_every_modal();
+        self.evaluate = Some(EvaluateDialog {
+            expression: seed.trim().to_owned(),
+            result: None,
+            asking: false,
+        });
+    }
+
+    /// End the session, killing the adapter. What closing the window, closing the project and
+    /// starting a second session all do.
+    pub fn stop_debugging(&mut self) {
+        if let Some(mut debug) = self.debug.take() {
+            debug.kill();
+        }
+        self.debug_panel.stop_editing();
+        self.run_to = None;
+    }
+
+    /// Change what is set in any file of this project, whether it is open or not.
+    ///
+    /// **The one place that choice is made**, so no caller has to think about it: a file that is
+    /// open is owned by its `Document`, and every other file is owned by `services::breakpoint_store`.
+    /// It is `change_highlights` with one word changed, deliberately — the rule is the same rule and
+    /// a second answer to it would be a second thing to keep in step.
+    pub fn change_breakpoints(
+        &mut self,
+        path: &Path,
+        change: impl FnOnce(&mut quill_core::Breakpoints),
+    ) -> bool {
+        if let Some(index) = self.files.index_of(path) {
+            let mut breakpoints = self.files.at(index).document.breakpoints().clone();
+            let before = breakpoints.clone();
+            change(&mut breakpoints);
+            if before == breakpoints {
+                return false;
+            }
+            self.files.at_mut(index).document.set_breakpoints(breakpoints);
+            return true;
+        }
+        self.breakpoints.change(path, change)
+    }
+
+    /// What is set in one file, whether it is open or not.
+    pub fn breakpoints_of(&self, path: &Path) -> quill_core::Breakpoints {
+        if let Some(index) = self.files.index_of(path) {
+            return self.files.at(index).document.breakpoints().clone();
+        }
+        self.breakpoints.breakpoints(path).cloned().unwrap_or_default()
+    }
+
+    /// Every file in this project that has a breakpoint in it, open or not, in path order.
+    pub fn every_breakpoint(&self) -> Vec<(PathBuf, quill_core::Breakpoints)> {
+        let mut files: Vec<(PathBuf, quill_core::Breakpoints)> = Vec::new();
+        for (path, breakpoints) in self.breakpoints.files() {
+            files.push((path.clone(), breakpoints.clone()));
+        }
+        for index in 0..self.files.len() {
+            let Some(path) = self.files.at(index).path().map(Path::to_path_buf) else {
+                continue;
+            };
+            let breakpoints = self.files.at(index).document.breakpoints().clone();
+            // The document owns an open file, so its set replaces whatever the store had.
+            files.retain(|(known, _)| *known != path);
+            if !breakpoints.is_empty() {
+                files.push((path, breakpoints));
+            }
+        }
+        files.sort_by(|left, right| left.0.cmp(&right.0));
+        files
+    }
+
+    /// Push what every open document holds into the store, and write the store if it changed.
+    ///
+    /// Called every frame and does almost nothing: an integer comparison for each open tab, because
+    /// a document that has not changed since it was last pushed cannot have new breakpoints in it.
+    /// `remember_the_marks`'s arrangement exactly, keyed on the same revision.
+    fn remember_the_breakpoints(&mut self, settled: bool) {
+        for index in 0..self.files.len() {
+            let Some(path) = self.files.at(index).path().map(Path::to_path_buf) else {
+                continue;
+            };
+            let revision = self.files.at(index).document.revision();
+            if self.files.at(index).breakpoints_at == Some(revision) {
+                continue;
+            }
+            let breakpoints = self.files.at(index).document.breakpoints().clone();
+            self.breakpoints.set(&path, breakpoints);
+            self.files.at_mut(index).breakpoints_at = Some(revision);
+        }
+        if self.remembers_this_project() && settled {
+            let root = self.tree.root().to_path_buf();
+            self.breakpoints.save(&root);
+        }
+    }
+
+    /// Tell the adapter what one file's breakpoints are now.
+    ///
+    /// A disabled breakpoint is **not sent**: `enabled` is Quill's own idea and the protocol has no
+    /// field for it, so switching one off means taking it out of the set the adapter holds. The dot
+    /// stays, drawn hollow.
+    fn send_the_breakpoints_of(&mut self, path: &Path) {
+        let breakpoints = self.breakpoints_of(path);
+        let (conditions, logs) = match self.debug.as_ref() {
+            Some(debug) => (
+                debug.capabilities().conditional_breakpoints,
+                debug.capabilities().log_points,
+            ),
+            None => return,
+        };
+        let document_index = self.files.index_of(path);
+        let lines: Vec<(usize, quill_dap::SourceBreakpoint)> = breakpoints
+            .iter()
+            .filter(|breakpoint| breakpoint.enabled)
+            .map(|breakpoint| {
+                let line = match document_index {
+                    Some(index) => {
+                        self.files.at(index).document.line_number_of(breakpoint.offset)
+                    }
+                    // A file that is not open has no laid-out text to count lines in, so its own
+                    // bytes are read at the moment of use — the ownership rule's disk half, and the
+                    // same "re-read rather than watch" `open_the_match` already does.
+                    None => line_number_in_file(path, breakpoint.offset),
+                };
+                let carried = quill_dap::SourceBreakpoint {
+                    line,
+                    // Never sent to an adapter that did not offer it, which is the rule every
+                    // optional feature here follows.
+                    condition: conditions.then(|| breakpoint.condition.clone()).flatten(),
+                    log_message: logs.then(|| breakpoint.log_message.clone()).flatten(),
+                };
+                (breakpoint.offset, carried)
+            })
+            .collect();
+        if let Some(debug) = self.debug.as_mut() {
+            debug.set_breakpoints(path, lines);
+        }
+    }
+
+    /// Tell the adapter about every file that has one, which is what a session start does.
+    fn send_every_breakpoint(&mut self) {
+        for (path, _) in self.every_breakpoint() {
+            self.send_the_breakpoints_of(&path);
+        }
+    }
+
+    /// Everything the debug tile reported this frame.
+    ///
+    /// One function rather than twelve arms in the middle of `ui`, for the reason the run tile's
+    /// outcome is settled in one place: the tile decides nothing and this decides everything, so
+    /// pressing `Step Over` in the tile and pressing `F8` are the same call.
+    fn act_on_the_debug_tile(&mut self, outcome: debug_panel::DebugOutcome) {
+        if outcome.hide {
+            self.show_the_debug_tile(false);
+        }
+        if outcome.console {
+            // One press, both directions: the debuggee's terminal is the run tile, and two grids
+            // cannot show at once.
+            self.show_the_run_tile(true);
+        }
+        if let Some(step) = outcome.step {
+            self.step(step);
+        }
+        if outcome.stop {
+            self.debug_a_configuration(DebugAction::Stop);
+        }
+        if let Some(frame) = outcome.show_frame {
+            if let Some(debug) = self.debug.as_mut() {
+                debug.show_frame(frame);
+            }
+            // Clicking a frame moves the execution point to it without resuming, which is
+            // IntelliJ's own behaviour.
+            self.follow_the_execution_point();
+        }
+        if let Some(key) = outcome.toggle_row {
+            if let Some(debug) = self.debug.as_mut() {
+                debug.toggle_row(&key);
+            }
+        }
+        if let Some((key, value)) = outcome.set_value {
+            if let Some(debug) = self.debug.as_mut() {
+                if let Err(problem) = debug.set_value(&key, &value) {
+                    self.message = Some(problem);
+                }
+            }
+        }
+        if let Some(expression) = outcome.add_watch {
+            if let Some(debug) = self.debug.as_mut() {
+                debug.add_watch(&expression);
+            }
+        }
+        if let Some(expression) = outcome.remove_watch {
+            if let Some(debug) = self.debug.as_mut() {
+                debug.remove_watch(&expression);
+            }
+        }
+        if let Some(filters) = outcome.filters {
+            if let Some(debug) = self.debug.as_mut() {
+                debug.set_filters(filters);
+            }
+        }
+    }
+
+    /// The two debug modals, drawn after the panes so they sit over everything.
+    fn show_the_debug_modals(&mut self, ctx: &egui::Context) {
+        if let Some(mut dialog) = self.breakpoint_dialog.take() {
+            let outcome = debug_dialogs::breakpoint(ctx, &mut dialog);
+            match (outcome.confirmed, outcome.removed, outcome.cancelled) {
+                (true, _, _) => {
+                    let condition = dialog.condition();
+                    let log = dialog.log();
+                    let enabled = dialog.enabled;
+                    let path = dialog.path.clone();
+                    self.change_breakpoints(&path, |breakpoints| {
+                        if let Some(breakpoint) = breakpoints.at_mut(dialog.offset) {
+                            breakpoint.enabled = enabled;
+                            breakpoint.condition = condition;
+                            breakpoint.log_message = log;
+                        }
+                    });
+                    self.send_the_breakpoints_of(&path);
+                    self.message = Some(format!("Breakpoint on line {} saved", dialog.line));
+                }
+                (_, true, _) => {
+                    let path = dialog.path.clone();
+                    self.change_breakpoints(&path, |breakpoints| {
+                        breakpoints.remove_at(dialog.offset);
+                    });
+                    self.send_the_breakpoints_of(&path);
+                    self.message = Some(format!("Breakpoint removed from line {}", dialog.line));
+                }
+                // Cancelling takes back only a breakpoint this modal put there: somebody who right
+                // clicked an empty line, chose `Add Conditional Breakpoint...` and then thought
+                // better of it has not asked for a plain one. One that was already there is left
+                // exactly as it was, which is what Cancel means everywhere else.
+                (_, _, true) if dialog.created => {
+                    let path = dialog.path.clone();
+                    self.change_breakpoints(&path, |breakpoints| {
+                        breakpoints.remove_at(dialog.offset);
+                    });
+                    self.send_the_breakpoints_of(&path);
+                }
+                _ => {}
+            }
+            if !outcome.confirmed && !outcome.removed && !outcome.cancelled {
+                self.breakpoint_dialog = Some(dialog);
+            }
+        }
+        if let Some(mut dialog) = self.evaluate.take() {
+            let paused = self.debug.as_ref().is_some_and(DebugState::is_paused);
+            let outcome = debug_dialogs::evaluate(ctx, &mut dialog, paused);
+            if outcome.confirmed {
+                let expression = dialog.expression.clone();
+                dialog.asking = true;
+                dialog.result = None;
+                if let Some(debug) = self.debug.as_mut() {
+                    debug.evaluate(&expression);
+                }
+            }
+            // The answer, once the adapter has sent one. Read here rather than pushed, because a
+            // modal is drawn every frame anyway and one place reading is one place to get right.
+            if let Some((_, _, Some(answer))) =
+                self.debug.as_ref().and_then(|debug| debug.evaluated.clone())
+            {
+                dialog.asking = false;
+                dialog.result = Some(match answer {
+                    Ok(value) => Ok(value.value),
+                    Err(problem) => Err(problem),
+                });
+            }
+            if !outcome.cancelled {
+                self.evaluate = Some(dialog);
+            }
+        }
+    }
+
+    /// Take everything the adapter has said and act on it.
+    ///
+    /// Called once a frame, beside the git worker's own poll and the run tile's `settle`, which is
+    /// where every other thread's replies are already taken.
+    fn take_the_debug_replies(&mut self, ctx: &egui::Context) {
+        let Some(debug) = self.debug.as_mut() else {
+            return;
+        };
+        let asked = debug.take_replies();
+        let paused = debug.is_paused();
+        let ended = !debug.is_alive();
+        if let Some(said) = debug.message.take() {
+            self.message = Some(said);
+        }
+        for event in asked {
+            if let quill_dap::Event::RunInTerminal { seq, title, cwd, args, env } = event {
+                self.run_the_debuggee(seq, &title, &cwd, args, env);
+            }
+        }
+        if paused {
+            // The temporary breakpoint `Run to Cursor` made has done its job.
+            self.clear_the_run_to_breakpoint();
+            self.follow_the_execution_point();
+        }
+        if ended {
+            self.debug_panel.stop_editing();
+        }
+        // A polite stop has to actually run out, and an idle window draws nothing — so it is woken
+        // once, when the grace ends, rather than kept drawing for the whole two seconds.
+        if let Some(left) = self.debug.as_ref().and_then(DebugState::stopping_in) {
+            ctx.request_repaint_after(left);
+        }
+    }
+
+    /// Answer the adapter's `runInTerminal` by starting the command in the run tile.
+    ///
+    /// **This is what puts a real ConPTY behind the debuggee** — its colours, its interactivity, and
+    /// the run tile's own rules about opening at final size and never resizing while starting. It
+    /// *is* a run, so it goes through `RunPanel::start` rather than through a second path.
+    fn run_the_debuggee(
+        &mut self,
+        seq: i64,
+        title: &str,
+        cwd: &str,
+        args: Vec<String>,
+        env: Vec<(String, String)>,
+    ) {
+        let Some((program, rest)) = args.split_first() else {
+            if let Some(debug) = self.debug.as_mut() {
+                debug.answer_run_in_terminal(seq, false, None);
+            }
+            return;
+        };
+        let name = self
+            .debug
+            .as_ref()
+            .map(|debug| debug.configuration.name.clone())
+            .unwrap_or_else(|| title.to_owned());
+        // A configuration built from what the adapter asked for rather than from what was chosen:
+        // the adapter often wraps the program in one of its own, which is exactly how lldb-dap's
+        // comm-file scheme works, and running the chosen command instead would run the wrong thing.
+        let configuration = Configuration {
+            name,
+            command: run_configurations::join_command(program, rest),
+            directory: String::new(),
+            env: env
+                .iter()
+                .map(|(name, value)| format!("{name}={value}"))
+                .collect::<Vec<String>>()
+                .join("; "),
+        };
+        let folder = match cwd.trim().is_empty() {
+            true => self.tree.root().to_path_buf(),
+            false => PathBuf::from(cwd),
+        };
+        let size = self.run_grid_size();
+        let waker = self.waker();
+        let started = self.run.start(configuration, &folder, size, waker);
+        if let Some(problem) = started.as_ref().err() {
+            self.message = Some(problem.clone());
+        }
+        if let Some(debug) = self.debug.as_mut() {
+            // No process id: a pseudoconsole hands back a console rather than a child, and the
+            // specification makes the id optional for exactly this reason. `started` is what the
+            // adapter needs to know.
+            debug.answer_run_in_terminal(seq, started.is_ok(), None);
+        }
+    }
+
+    /// Open the file the program stopped in, scroll the least amount that shows the line, and put
+    /// the caret on it.
+    ///
+    /// `open_the_match`'s path, which is what `Find in Files` and `Go to Definition` already use, so
+    /// a jump from a stop and a jump from a search are the same jump.
+    fn follow_the_execution_point(&mut self) {
+        let Some(debug) = self.debug.as_ref() else {
+            return;
+        };
+        let Some((path, line)) = debug.location() else {
+            return;
+        };
+        if !path.exists() {
+            // A frame in a library Quill has no source for. The tile still lists it; there is simply
+            // nowhere to jump to, and saying nothing is better than saying something wrong.
+            return;
+        }
+        self.open_path_permanently(&path);
+        let offset = self.document().offset_of_line_number(line);
+        // The caret is **placed** rather than the line selected, which is what `open_the_match` does
+        // for a search hit. A stop already marks its line with a band across the whole width of the
+        // pane, and a selection over the same line would be two decorations saying one thing — and
+        // the wrong one of the two, since nothing about a stop is selected. IntelliJ places the
+        // caret here too.
+        self.document_mut().apply(Command::PlaceCaret { offset, extend: false });
+        self.reveal_caret = true;
+        // The layout may not have been worked out at this width yet, so the scroll is asked for on
+        // the next frame rather than computed here — `reveal_caret`'s own arrangement.
+        self.files.at_mut(self.files.active_index()).forget_what_was_worked_out();
+    }
+
     /// Show the run tile, or put it away.
     ///
-    /// **The bottom of the window holds one tile**, so showing this one puts the terminal tile
-    /// away — and [`Self::show_the_terminal_tile`] does the same in the other direction. Every path
-    /// that shows either tile goes through one of these two, which is what stops the pair from
-    /// drifting apart: `terminal show` from the command line used to leave both `visible`, and the
-    /// two grids were then drawn into the same rectangle, one over the other.
+    /// **The bottom of the window holds one tile**, so showing this one puts the other two away —
+    /// and its two siblings do the same in the other directions. Every path that shows any of the
+    /// three goes through one of them, which is what stops them drifting apart: `terminal show` from
+    /// the command line used to leave both `visible`, and the two grids were then drawn into the
+    /// same rectangle, one over the other. `task-1687` made the pair a trio, on the same terms.
     pub fn show_the_run_tile(&mut self, showing: bool) {
         self.run.visible = showing;
         if showing {
             self.terminal.visible = false;
+            self.debug_panel.visible = false;
             self.focus = Focus::Terminal;
         } else if self.focus == Focus::Terminal {
             self.focus = Focus::Editor;
@@ -1629,15 +2390,33 @@ impl QuillApp {
 
     /// Show the terminal tile, or put it away, opening a shell if there is not one already.
     ///
-    /// The other half of [`Self::show_the_run_tile`]; see there for why there is a function at all.
+    /// The second of the three; see [`Self::show_the_run_tile`] for why there is a function at all.
     pub fn show_the_terminal_tile(&mut self, showing: bool) {
         self.terminal.visible = showing;
         if showing {
             self.run.visible = false;
+            self.debug_panel.visible = false;
             self.open_terminal_tab();
             self.focus = Focus::Terminal;
         } else if self.focus == Focus::Terminal {
             self.focus = Focus::Editor;
+        }
+    }
+
+    /// Show the debug tile, or put it away.
+    ///
+    /// The third of the three. It does **not** take the keyboard: the tile holds a list and a tree
+    /// rather than a grid a program is being typed into, and taking the keyboard away from the
+    /// editor to look at a variable would mean pressing `F8` moved the caret rather than the
+    /// program. The stepping keys work wherever the keyboard is, because they are menu entries.
+    pub fn show_the_debug_tile(&mut self, showing: bool) {
+        self.debug_panel.visible = showing;
+        if showing {
+            self.run.visible = false;
+            self.terminal.visible = false;
+            if self.focus == Focus::Terminal {
+                self.focus = Focus::Editor;
+            }
         }
     }
 
@@ -1724,6 +2503,25 @@ impl QuillApp {
         self.terminal.visible = false;
         self.run.visible = true;
         self.run.start_detached(configuration, size)
+    }
+
+    /// A debug session with no adapter behind it, fed messages directly.
+    ///
+    /// The third of the family, and it exists for the same reason [`Self::new_detached_run`] and
+    /// [`Self::new_detached_terminal_tab`] do: when a real debugger answers is not something a test
+    /// can know, so a picture of a paused program is taken of a session that was handed fixed
+    /// messages. It goes through the same path a real session does — `begin`, and then every
+    /// breakpoint in the project — so what a test drives is what the window really does.
+    pub fn new_detached_debug_session(&mut self, adapter: &str, configuration: Configuration) {
+        self.stop_debugging();
+        if self.run_configurations.find(&configuration.name).is_none() {
+            self.run_configurations.add_temporary(configuration.clone());
+        }
+        self.run_selected = Some(configuration.name.clone());
+        let mut state = DebugState::detached(adapter, configuration);
+        state.begin();
+        self.debug = Some(state);
+        self.send_every_breakpoint();
     }
 
     /// How many rows the terminal tile holds at its current height.
@@ -1819,8 +2617,15 @@ impl QuillApp {
                 if let Some(marks) = self.marks.highlights(path).cloned() {
                     self.document_mut().set_highlights(marks);
                 }
+                // And wherever it was to stop. The document clamps these too, so a file rewritten
+                // outside Quill gives a dot on the wrong line — which the adapter's `verified`
+                // answer then says so about — rather than a panic in the layout engine.
+                if let Some(breakpoints) = self.breakpoints.breakpoints(path).cloned() {
+                    self.document_mut().set_breakpoints(breakpoints);
+                }
                 let revision = self.document().revision();
                 self.files.active_mut().marked_revision = Some(revision);
+                self.files.active_mut().breakpoints_at = Some(revision);
                 self.message = None;
                 // A file that is not Markdown has nothing to preview, so the raw source is shown.
                 if !file_kind::is_markdown(Some(path)) {
@@ -3382,6 +4187,9 @@ impl QuillApp {
         // painted and therefore in the next screenshot.
         self.pump_control(ui.ctx());
         self.ask_git_about_the_open_file();
+        // Everything the adapter has said since the last frame, taken beside git's own replies
+        // because it is the same kind of thing: a thread has answered and the window has to draw it.
+        self.take_the_debug_replies(ui.ctx());
         self.colour_the_open_file();
         // The project's definitions, read on a thread. Beside the colouring because it is the same
         // kind of thing — what the files say, worked out from what they hold — and because both are
@@ -3441,6 +4249,10 @@ impl QuillApp {
             self.panes
                 .run_height
                 .clamp(settings::RUN_MIN, (panes.height() - 120.0).max(settings::RUN_MIN))
+        } else if self.debug_panel.visible {
+            self.panes
+                .debug_height
+                .clamp(settings::DEBUG_MIN, (panes.height() - 120.0).max(settings::DEBUG_MIN))
         } else {
             0.0
         };
@@ -3462,6 +4274,24 @@ impl QuillApp {
                             .panes
                             .run_height
                             .clamp(settings::RUN_MIN, (panes.height() - 120.0).max(settings::RUN_MIN)),
+                ),
+                panes.max,
+            ),
+        };
+
+        // Where the debug tile is, recorded whether it is showing or not, for the reason the run
+        // tile's rectangle is recorded: a session started while it is put away still has to know how
+        // much room its tree will have.
+        self.debug_panel.tile = match self.debug_panel.visible {
+            true => terminal_rect,
+            false => Rect::from_min_max(
+                Pos2::new(
+                    panes.left(),
+                    panes.bottom()
+                        - self.panes.debug_height.clamp(
+                            settings::DEBUG_MIN,
+                            (panes.height() - 120.0).max(settings::DEBUG_MIN),
+                        ),
                 ),
                 panes.max,
             ),
@@ -3560,6 +4390,7 @@ impl QuillApp {
                 in_repository: self.git.is_some(),
                 terminal_visible: self.terminal.visible,
                 run_visible: self.run.visible,
+                debug_visible: self.debug_panel.visible,
             };
             let opacity = self.settings.opacity;
             let chosen = {
@@ -3976,6 +4807,30 @@ impl QuillApp {
                 self.show_the_run_tile(false);
             }
         }
+        // The debug tile, in the same place and never at the same time as either of the other two.
+        if self.debug_panel.visible {
+            let outcome = {
+                let mut panel_ui = ui.new_child(egui::UiBuilder::new().max_rect(terminal_rect));
+                panel_ui.set_clip_rect(terminal_rect);
+                let opacity = self.settings.opacity;
+                // The panel and the session are borrowed apart, which is what lets a component take
+                // its own state mutably and what it draws immutably — the shape every component in
+                // Quill has.
+                let DebugSplit { panel, debug } = split_the_debug(self);
+                debug_panel::show(&mut panel_ui, terminal_rect, panel, debug, opacity)
+            };
+            if outcome.drag != 0.0 {
+                let limit = (body.height() - 120.0).max(settings::DEBUG_MIN);
+                self.panes.debug_height =
+                    (self.panes.debug_height - outcome.drag).clamp(settings::DEBUG_MIN, limit);
+                self.unsaved_settings = true;
+            }
+            if outcome.reset_height {
+                self.panes.debug_height = settings::DEBUG_HEIGHT;
+                self.unsaved_settings = true;
+            }
+            self.act_on_the_debug_tile(outcome);
+        }
         // What every program has said since the last frame, and the hard kill that follows a polite
         // stop nobody answered. Outside the `visible` test on purpose: a program that is running
         // has to be read whether or not anybody is looking at it, or its output would arrive in a
@@ -4129,6 +4984,10 @@ impl QuillApp {
             }
         }
 
+        // The two debug modals, beside the other project-wide dialogs and for the same reason: only
+        // one is ever open, so where they are drawn among the others decides nothing.
+        self.show_the_debug_modals(ui.ctx());
+
         // The `Run Configurations` modal, drawn beside the other project-wide dialogs.
         {
             let running: Vec<String> = self
@@ -4236,6 +5095,8 @@ impl QuillApp {
         // And what is marked in its files, on exactly the same terms.
         let settled = !ui.input(|input| input.pointer.any_down());
         self.remember_the_marks(settled);
+        // And where it stops, on the same terms again.
+        self.remember_the_breakpoints(settled);
 
         // Settings are written once the pointer is up, so that dragging a divider or a slider writes the
         // file once at the end rather than on every frame of the drag.
@@ -5111,7 +5972,11 @@ impl QuillApp {
     }
 
     /// What the gutter is showing for the file that is open.
-    fn gutter<'a>(&'a self, folds: &'a [(usize, bool)]) -> Gutter<'a> {
+    fn gutter<'a>(
+        &'a self,
+        folds: &'a [(usize, bool)],
+        breakpoints: &'a [(usize, gutter::BreakpointMark)],
+    ) -> Gutter<'a> {
         let file = self.files.active();
         Gutter {
             numbers: self.settings.line_numbers,
@@ -5120,7 +5985,135 @@ impl QuillApp {
             // Worked out before this is called rather than here, because reading a file for what it
             // could fold wants `&mut self` for the cache and a component is handed what it draws.
             folds,
+            breakpoints,
+            can_debug: self.debug_applies_to(file.path()),
+            execution_point: self.execution_paragraph(file.path()),
         }
+    }
+
+    /// True when the file at `path` has a language that names a debugger, which is what decides
+    /// whether the gutter takes a click at all.
+    ///
+    /// **The one question the menus, the title bar, the gutter and the command line all ask**, so
+    /// none of them can disagree about whether a file can be debugged — `Plugins::debugger_for`, one
+    /// reading, exactly as `file_kind::definitions_apply` is one reading.
+    pub(crate) fn debug_applies_to(&self, path: Option<&Path>) -> bool {
+        path.is_some_and(|path| self.plugins.debugger_for(path).is_some())
+    }
+
+    /// The same question about the file that is showing.
+    pub(crate) fn debug_applies_here(&self) -> bool {
+        self.debug_applies_to(self.document().path())
+    }
+
+    /// Which paragraph of `path` the program is stopped on, when it is stopped in that file.
+    ///
+    /// Zero-based, which is what `quill-core` calls a source line everywhere and is one less than
+    /// the number the gutter draws — the adapter's answer is one-based, so the conversion happens
+    /// here rather than at each of the places that read it.
+    fn execution_paragraph(&self, path: Option<&Path>) -> Option<usize> {
+        let (stopped_in, line) = self.debug.as_ref()?.location()?;
+        let path = path?;
+        (same_file(path, &stopped_in)).then(|| line.saturating_sub(1))
+    }
+
+    /// The values to paint at the ends of the lines that name them, while the program is paused.
+    ///
+    /// **DAP has no request for this; it is the client matching names**, and Quill already owns both
+    /// halves of the machinery: `FileSymbols` has the file's identifiers sorted by position, and the
+    /// paused frame's first level of variables has already been fetched because the tile shows it.
+    /// So the match is a walk over the file's words against one map.
+    ///
+    /// Worked out **once per stop** and cached, keyed on the text revision and the frame that is
+    /// showing, which is `symbols::Hover`'s own key made once more: a frame in which neither moved
+    /// costs two comparisons. It is only ever computed for the file the program is stopped in, so a
+    /// project with fifty tabs open pays for one of them.
+    fn inline_values(&mut self, index: usize) -> Vec<(usize, String)> {
+        let Some(debug) = self.debug.as_ref() else {
+            return Vec::new();
+        };
+        if !debug.is_paused() {
+            return Vec::new();
+        }
+        let Some(path) = self.files.at(index).path().map(Path::to_path_buf) else {
+            return Vec::new();
+        };
+        // Only the file the program is stopped in: a local of the paused frame means nothing at the
+        // end of a line of another file that happens to use the same word.
+        let stopped_in = debug.location().map(|(path, _)| path);
+        if !stopped_in.is_some_and(|stopped| same_file(&path, &stopped)) {
+            return Vec::new();
+        }
+        let revision = self.files.at(index).document.text_revision();
+        let frame = debug.frame;
+        if let Some(cached) = self.inline_cache.as_ref() {
+            if cached.revision == revision && cached.frame == frame && cached.path == path {
+                return cached.values.clone();
+            }
+        }
+        let values = debug.top_frame_values();
+        let text = self.files.at(index).document.text().to_string();
+        let read = &self.tab_symbols(index).read;
+        let mut rows: Vec<(usize, String)> = Vec::new();
+        for word in read.word_ranges() {
+            let Some(value) = values.get(&text[word.clone()]) else {
+                continue;
+            };
+            let paragraph = text[..word.start].bytes().filter(|byte| *byte == b'\n').count();
+            // One value a line, the **first** name on it: a line that names three locals would
+            // otherwise carry three values and be unreadable, and the first is the one the line is
+            // most about.
+            if rows.last().is_some_and(|(known, _)| *known == paragraph) {
+                continue;
+            }
+            rows.push((paragraph, format!("{} = {}", &text[word.clone()], elide_value(value))));
+        }
+        self.inline_cache = Some(InlineValues { revision, frame, path, values: rows.clone() });
+        rows
+    }
+
+    /// What the gutter draws for each breakpoint in one file: which paragraph it is on, and how.
+    ///
+    /// The document is the authority for **where** they are and the session for **whether the
+    /// debugger agreed to stop there**, which is the two-authority split §6.3 asks for: Quill draws
+    /// the adapter's answer rather than its own hope. With no session running there is nobody to have
+    /// said a breakpoint is unbound, so every one of them is drawn solid.
+    pub fn breakpoint_marks(&self, index: usize) -> Vec<(usize, gutter::BreakpointMark)> {
+        let file = self.files.at(index);
+        let document = &file.document;
+        if document.breakpoints().is_empty() {
+            return Vec::new();
+        }
+        let path = file.path().map(Path::to_path_buf);
+        let mut rows: Vec<(usize, gutter::BreakpointMark)> = document
+            .breakpoints()
+            .iter()
+            .map(|breakpoint| {
+                let answered = path
+                    .as_deref()
+                    .and_then(|path| self.debug.as_ref()?.verified(path, breakpoint.offset));
+                let mark = gutter::BreakpointMark {
+                    enabled: breakpoint.enabled,
+                    verified: answered.map(|answer| answer.verified).unwrap_or(true),
+                    conditional: breakpoint.is_conditional(),
+                };
+                // The adapter's own line wins where it gave one: a breakpoint it moved to the next
+                // statement is drawn where the program will really stop, for the life of the session.
+                let paragraph = match answered.and_then(|answer| answer.line) {
+                    Some(line) => line.saturating_sub(1),
+                    None => document.text().byte_to_line(breakpoint.offset),
+                };
+                (paragraph, mark)
+            })
+            .collect();
+        // The gutter binary searches this list, so it has to be sorted — and it may not be, because
+        // an adapter is free to move a breakpoint to the next statement and two that were in offset
+        // order can come back out of it. Two on one line would break the search as well, so the
+        // later of them gives way, which is the rule `Breakpoints` itself keeps about two at one
+        // offset.
+        rows.sort_by_key(|(paragraph, _)| *paragraph);
+        rows.dedup_by_key(|(paragraph, _)| *paragraph);
+        rows
     }
 
     /// Draw the source of the file that is showing into `area`.
@@ -5167,10 +6160,21 @@ impl QuillApp {
         // frame — a fold changes the layout, and changing it half way through drawing this pane
         // would leave the rest of the frame drawing from a layout that no longer matches.
         let mut folded: Option<usize> = None;
+        // What the gutter draws for each breakpoint, read here for the reason the folds are: it asks
+        // the session what the adapter said, and a component is handed what it draws.
+        let breakpoint_marks = self.breakpoint_marks(index);
+        // The line the program is stopped on, and the values to paint at the ends of the lines that
+        // bind them. Both worked out before anything is drawn, for the same reason again.
+        let execution_point = self.execution_paragraph(self.files.at(index).path());
+        let inline_values = self.inline_values(index);
+        // Set by a click in the gutter's breakpoint column, and acted on at the end of the frame for
+        // the reason a fold is: changing the document half way through drawing this pane would leave
+        // the rest of the frame drawing from a layout that no longer matches.
+        let mut toggled_breakpoint: Option<usize> = None;
         // The gutter takes the left of the editing area, and the text starts after it. With no
         // gutter the text keeps the padding it always had, so putting the numbers away leaves the
         // window looking exactly as it did before there were any.
-        let gutter = self.gutter(&fold_marks);
+        let gutter = self.gutter(&fold_marks, &breakpoint_marks);
         let lines = self.document().text().len_lines();
         let gutter_width = gutter::width(ui, &gutter, lines);
         let gutter_rect =
@@ -5383,16 +6387,22 @@ impl QuillApp {
             let outcome = gutter::show(
                 ui,
                 gutter_rect,
-                &self.gutter(&fold_marks),
+                &self.gutter(&fold_marks, &breakpoint_marks),
                 self.layout(),
                 origin.y,
                 self.document().text().byte_to_line(self.document().selection().head),
             );
             if let Some(at) = outcome.context_menu {
                 self.gutter_menu = Some(at);
+                // Which row it was over, so the menu's breakpoint entries are about the line under
+                // the pointer rather than about the caret — the rule the text menu already follows.
+                self.gutter_menu_line = outcome.menu_paragraph;
             }
             if let Some(line) = outcome.toggle_fold {
                 folded = Some(line);
+            }
+            if let Some(line) = outcome.toggle_breakpoint {
+                toggled_breakpoint = Some(line);
             }
         }
 
@@ -5409,6 +6419,8 @@ impl QuillApp {
                 caret: color::ACCENT,
                 show_caret: has_keyboard,
                 underline: symbol.word.clone(),
+                execution_point,
+                inline_values: &inline_values,
             },
         );
         // The badge standing for each collapsed block, over the text and after the end of its head
@@ -5428,6 +6440,9 @@ impl QuillApp {
         }
         if let Some(line) = folded {
             self.toggle_fold_at_line(line);
+        }
+        if let Some(line) = toggled_breakpoint {
+            self.toggle_breakpoint_at_line(line);
         }
         took_the_keyboard
     }
@@ -5488,6 +6503,89 @@ fn write_the_edits(path: &Path, edits: &[(std::ops::Range<usize>, String)]) -> R
 ///
 /// The same three colours the change bars in the gutter and the markers in the commit panel use, so
 /// a modified file is one colour wherever it is shown.
+/// The inline values worked out for one file at one stop, and what they were worked out from.
+///
+/// `symbols::Hover`'s key made once more: a frame in which the text has not changed and the frame
+/// that is showing has not changed costs two comparisons rather than a walk of the file's words.
+pub(crate) struct InlineValues {
+    revision: u64,
+    frame: Option<i64>,
+    path: PathBuf,
+    values: Vec<(usize, String)>,
+}
+
+/// A value painted at the end of a line, cut to something a line can hold.
+///
+/// Far shorter than the tile's own limit: a value at the end of a line of code is a glance, and one
+/// that ran off the edge of the pane would be worse than none. The tile shows the whole of it.
+fn elide_value(value: &str) -> String {
+    const LIMIT: usize = 48;
+    let flat = value.replace('\n', " ");
+    match flat.chars().count() > LIMIT {
+        true => format!("{}\u{2026}", flat.chars().take(LIMIT).collect::<String>()),
+        false => flat,
+    }
+}
+
+/// The two halves of the debug tile's state, borrowed apart.
+///
+/// A component takes its own state mutably and what it draws immutably, which is the shape every
+/// component in Quill has — and the borrow checker will not hand out both halves of one `&mut self`
+/// through two method calls. One struct with two fields is what makes the split explicit rather than
+/// something the caller has to spell out at each site.
+struct DebugSplit<'a> {
+    panel: &'a mut DebugPanel,
+    debug: Option<&'a DebugState>,
+}
+
+fn split_the_debug(app: &mut QuillApp) -> DebugSplit<'_> {
+    DebugSplit { panel: &mut app.debug_panel, debug: app.debug.as_ref() }
+}
+
+/// Whether two paths name the same file.
+///
+/// An adapter answers with whatever spelling the debug information holds, which on Windows is very
+/// often a different case from the one the explorer opened — and a comparison that missed that would
+/// leave the execution point invisible in a file that is plainly open. So the names are compared
+/// without case there and exactly everywhere else, which is what each platform's file system means.
+/// `canonicalize` is deliberately not used: it touches the disk, this is asked at every stop, and a
+/// verbatim path is a thing `paths::plain` exists to stop travelling.
+fn same_file(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    // Through `paths::plain` first, because a path Quill wrote down may be **verbatim** —
+    // `\\?\C:\jason\dev\quill` — while the one an adapter answers with never is. That module records
+    // where a verbatim path comes from and why one must not be allowed to travel; this is the second
+    // place two of them have to be compared.
+    let left = quill_terminal::paths::plain(left);
+    let right = quill_terminal::paths::plain(right);
+    if left == right {
+        return true;
+    }
+    match cfg!(windows) {
+        true => {
+            let flatten = |path: &Path| path.to_string_lossy().to_lowercase().replace('/', "\\");
+            flatten(&left) == flatten(&right)
+        }
+        false => false,
+    }
+}
+
+/// Which **one-based** line an offset is on in a file that is not open.
+///
+/// The ownership rule's disk half: a file that is open is owned by its `Document` and every other
+/// file is owned by the store, so a closed file's line numbers come from its own bytes, read at the
+/// moment of use rather than watched — which is what `open_the_match` already does before jumping
+/// into one. A file that cannot be read answers line one, which the adapter will then decline to
+/// bind and say so about.
+fn line_number_in_file(path: &Path, offset: usize) -> usize {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return 1;
+    };
+    text.as_bytes()[..offset.min(text.len())].iter().filter(|byte| **byte == b'\n').count() + 1
+}
+
 fn git_colour(state: quill_git::State) -> Color32 {
     match state {
         quill_git::State::Untracked => color::GIT_UNTRACKED,

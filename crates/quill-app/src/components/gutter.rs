@@ -1,5 +1,5 @@
-//! The strip down the left of the editing area: the line numbers, the change bars, and the column
-//! that annotates each line with git blame.
+//! The strip down the left of the editing area: the breakpoint dots, the line numbers, the folding
+//! arrows, the change bars, and the column that annotates each line with git blame.
 //!
 //! It draws from the `Layout` rather than from the text, because it has to line up with rows on
 //! screen and only the layout knows where those are. That also settles what a line number counts.
@@ -13,6 +13,19 @@
 //! for exactly that when this file was written, and `task-1686` spent it: the gutter is the same
 //! width with folding as it was without, so the text did not move a point when the arrows arrived.
 //! Right clicking anywhere in the gutter still opens its menu.
+//!
+//! `task-1687` then wanted a breakpoint column, and the gap was gone. So the dot is drawn **over the
+//! line number** — which is what IntelliJ itself does, and which costs the gutter nothing: the text
+//! does not move, no accepted screenshot shifts sideways, and only a line that really has a
+//! breakpoint looks any different. The number gives way rather than being drawn round the dot,
+//! because a red circle with a numeral showing through it reads as neither. With the numbers
+//! switched off there is nothing to draw over, so a column of [`BREAKPOINT_COLUMN`] points is
+//! reserved in that configuration — and reserved **whether or not anything is set**, so the first
+//! breakpoint never moves the text under the pointer.
+//!
+//! A **left click** in that column toggles one, which is new behaviour: until now the gutter took
+//! only `secondary_clicked` over the whole of itself, so nothing was taken away from anything. It is
+//! taken per row, the way the blame cell already takes one.
 
 use egui::{Color32, CornerRadius, Pos2, Rect, Sense, Vec2};
 use quill_core::Layout;
@@ -37,6 +50,18 @@ const BLAME_SIZE: f32 = 10.5;
 /// target is as large as the space allows — a five point arrow with a five point target is a control
 /// nobody can hit.
 const ARROW: f32 = GAP;
+/// How wide the column the breakpoint dot is drawn in is, **when the line numbers are switched off**.
+///
+/// With them on the dot is drawn **over the number**, which is what IntelliJ does and what costs the
+/// gutter nothing: the text does not move a point, no accepted screenshot shifts sideways, and only
+/// a line that really has a breakpoint looks any different. The 12 points `GAP` reserves — which
+/// §6.2 of the design names — were spent by `task-1686` on the folding arrows, and a second control
+/// cannot share twelve points with one that already fills them.
+///
+/// It is added **whenever the numbers are off**, whether or not anything is set, rather than when the
+/// first breakpoint appears: a column that arrived with the first dot would move the text sideways
+/// under the pointer, which is the fault `task-1658` moved the text tools into the title bar to stop.
+const BREAKPOINT_COLUMN: f32 = 14.0;
 
 /// One line's worth of blame, as the gutter draws it.
 ///
@@ -87,13 +112,65 @@ pub struct Gutter<'a> {
     /// is, which is the rule every component in Quill follows. `quill_core::folding` works it out
     /// and the window hands the answer down.
     pub folds: &'a [(usize, bool)],
+    /// Which paragraphs have a breakpoint on them, and how each is drawn, sorted by paragraph.
+    ///
+    /// Told rather than asked, exactly as the folds are: this file knows nothing about offsets, about
+    /// what a debugger is, or about whether one is running. The window turns the document's
+    /// breakpoints and the adapter's answers into this list.
+    pub breakpoints: &'a [(usize, BreakpointMark)],
+    /// True when this file's language names a debugger at all, which is what decides whether a click
+    /// in the gutter can put a breakpoint anywhere.
+    ///
+    /// **Absent rather than dimmed**, which is Quill's rule for a control that can never apply: a
+    /// stylesheet has nothing to step through and never will, so clicking its gutter does nothing at
+    /// all rather than making a dot no debugger would ever honour.
+    pub can_debug: bool,
+    /// The paragraph the program is stopped on, when it is stopped in this file. Drawn as an arrow
+    /// over the breakpoint column, which is IntelliJ's own mark.
+    pub execution_point: Option<usize>,
+}
+
+/// How one breakpoint is drawn, which is the whole of what the gutter knows about it.
+///
+/// **Quill draws the adapter's answer rather than its own hope**, which is `task-1675`'s honesty rule
+/// applied to a protocol that was designed for it: a breakpoint the debugger has agreed to stop at is
+/// solid, and one it could not bind stays hollow for the life of the session rather than being drawn
+/// as though it worked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BreakpointMark {
+    /// False for one that has been switched off without being taken away, which is drawn hollow.
+    pub enabled: bool,
+    /// False while a session is running and the adapter has not bound this one. **True when no
+    /// session is running at all**: an unbound breakpoint is a thing a debugger says, and with no
+    /// debugger there is nobody to have said it.
+    pub verified: bool,
+    /// True when it carries a condition or a log message, which puts a small mark on the dot.
+    pub conditional: bool,
+}
+
+impl BreakpointMark {
+    /// An ordinary one, as it is drawn with no session running.
+    pub fn plain() -> Self {
+        Self { enabled: true, verified: true, conditional: false }
+    }
+
+    /// Solid, or a ring. Off and unbound are both hollow, because both mean the program will not
+    /// stop here.
+    fn is_filled(self) -> bool {
+        self.enabled && self.verified
+    }
 }
 
 impl Gutter<'_> {
     /// True when there is anything to draw at all, which is what decides whether the editing area
     /// gives up any width.
     pub fn showing(&self) -> bool {
-        self.numbers || self.blame.is_some() || !self.changes.is_empty() || !self.folds.is_empty()
+        self.numbers
+            || self.blame.is_some()
+            || !self.changes.is_empty()
+            || !self.folds.is_empty()
+            || !self.breakpoints.is_empty()
+            || self.execution_point.is_some()
     }
 
     /// Whether this paragraph heads a region, and whether that region is collapsed.
@@ -102,6 +179,19 @@ impl Gutter<'_> {
             .binary_search_by_key(&paragraph, |(at, _)| *at)
             .ok()
             .map(|index| self.folds[index].1)
+    }
+
+    /// The breakpoint on this paragraph, if there is one.
+    fn breakpoint_at(&self, paragraph: usize) -> Option<BreakpointMark> {
+        self.breakpoints
+            .binary_search_by_key(&paragraph, |(at, _)| *at)
+            .ok()
+            .map(|index| self.breakpoints[index].1)
+    }
+
+    /// True when the numbers are not there to be drawn over, so the dot needs a column of its own.
+    fn needs_a_breakpoint_column(&self) -> bool {
+        !self.numbers && (self.can_debug || !self.breakpoints.is_empty())
     }
 }
 
@@ -115,6 +205,13 @@ pub struct GutterOutcome {
     /// A folding arrow was pressed, so the region headed by this paragraph should be collapsed or
     /// expanded. The component decides nothing about which.
     pub toggle_fold: Option<usize>,
+    /// The breakpoint column was clicked on this paragraph, so a breakpoint should be put there or
+    /// taken away. The component decides nothing about which, and knows nothing about offsets.
+    pub toggle_breakpoint: Option<usize>,
+    /// Which paragraph a right click was over, so the menu can be about the row under the pointer
+    /// rather than about the caret — which is the rule the text menu and the terminal tab menu
+    /// already follow.
+    pub menu_paragraph: Option<usize>,
 }
 
 /// How many digits the largest line number takes.
@@ -141,6 +238,11 @@ pub fn width(ui: &egui::Ui, gutter: &Gutter, lines: usize) -> f32 {
         let font = egui::FontId::monospace(NUMBER_SIZE);
         let digit = ui.ctx().fonts_mut(|fonts| fonts.glyph_width(&font, '0'));
         width += digit * digits(lines) as f32 + NUMBER_MARGIN * 2.0;
+    } else if gutter.needs_a_breakpoint_column() {
+        // With the numbers on there is nothing to add: the dot is drawn over the number. This is
+        // the other configuration, and the column is reserved whether or not anything is set so
+        // that the first breakpoint never moves the text sideways.
+        width += BREAKPOINT_COLUMN;
     }
     if gutter.blame.is_some() {
         width += BLAME_WIDTH;
@@ -182,6 +284,22 @@ pub fn show(
         pen += width;
         rect
     });
+    // Where the dot goes: over the number column when there is one, and in the column reserved for
+    // it when there is not. One rectangle either way, so the drawing and the click target cannot
+    // come apart — which is what `width` above is the other half of.
+    let breakpoint_rect = match numbers_rect {
+        Some(rect) => Some(rect),
+        None if gutter.needs_a_breakpoint_column() => {
+            let rect = Rect::from_min_size(
+                Pos2::new(pen, area.top()),
+                Vec2::new(BREAKPOINT_COLUMN, area.height()),
+            );
+            // Nothing else is laid out from the pen after this — the change bar is measured from the
+            // right hand edge and the fold arrow from the change bar — so it is not advanced here.
+            Some(rect)
+        }
+        None => None,
+    };
     let change_x = area.right() - CHANGE_BAR - 2.0;
 
     // Clipped to the gutter, so a line scrolled above the editing area does not paint over the
@@ -202,11 +320,39 @@ pub fn show(
             Pos2::new(area.left(), y),
             Vec2::new(area.width(), line.height),
         );
+        // The paragraph a right click was over, so the menu can be about the row under the pointer.
+        // Taken from the row loop rather than worked out from the position afterwards, because only
+        // the loop knows where each paragraph ended up on the screen.
+        if let Some(at) = outcome.context_menu {
+            if row.y_range().contains(at.y) {
+                outcome.menu_paragraph = Some(line.paragraph);
+            }
+        }
         if let (Some(rect), true) = (blame_rect, first_row) {
             draw_blame(&mut inner, rect, row, gutter.blame, line.paragraph, &mut outcome);
         }
-        if let (Some(rect), true) = (numbers_rect, first_row) {
+        let mark = gutter.breakpoint_at(line.paragraph);
+        let stopped = gutter.execution_point == Some(line.paragraph);
+        // The dot is drawn **instead of** the number rather than over it, which is what IntelliJ
+        // does: a red circle with a numeral showing round its edge reads as neither. The number is
+        // the thing that gives way, because a line with a breakpoint on it is being pointed at by
+        // its dot and can be counted from the lines above.
+        let covered = numbers_rect.is_some() && (mark.is_some() || stopped);
+        if let (Some(rect), true, false) = (numbers_rect, first_row, covered) {
             draw_number(&inner, rect, row, line.paragraph + 1, line.paragraph == caret_line);
+        }
+        if let (Some(rect), true) = (breakpoint_rect, first_row) {
+            if draw_breakpoint(
+                &mut inner,
+                rect,
+                row,
+                line.paragraph,
+                mark,
+                stopped,
+                gutter.can_debug,
+            ) {
+                outcome.toggle_breakpoint = Some(line.paragraph);
+            }
         }
         if let (Some(collapsed), true) = (gutter.fold_at(line.paragraph), first_row) {
             let centre = Pos2::new(change_x - ARROW / 2.0, y + line.height / 2.0);
@@ -246,6 +392,90 @@ fn draw_arrow(ui: &mut egui::Ui, centre: Pos2, paragraph: usize, collapsed: bool
         egui::WidgetInfo::selected(egui::WidgetType::Button, true, collapsed, &name)
     });
     response.clicked()
+}
+
+/// The breakpoint column for one row: the dot if there is one, the execution-point arrow if the
+/// program is stopped here, and the click that toggles one.
+///
+/// Returns true when the row was clicked. **Left click**, which is new behaviour: until now the
+/// gutter took only `secondary_clicked` over the whole of itself, so nothing is being taken away
+/// from anything. The click is taken **per row**, the way the blame cell already takes one, because
+/// one interaction over the whole column could not say which line it was about.
+///
+/// A file whose language names no debugger takes no click at all — Quill's rule for a control that
+/// can never apply — and draws nothing, so its gutter looks exactly as it did.
+fn draw_breakpoint(
+    ui: &mut egui::Ui,
+    column: Rect,
+    row: Rect,
+    paragraph: usize,
+    mark: Option<BreakpointMark>,
+    stopped: bool,
+    can_debug: bool,
+) -> bool {
+    // The dot sits at the left of the column with the numbers on — over the margin the number's
+    // right alignment leaves — and in the middle of its own column with them off.
+    let centre = Pos2::new(
+        column.left() + (column.width() / 2.0).min(NUMBER_MARGIN + icon::BREAKPOINT_RADIUS),
+        row.center().y,
+    );
+    if stopped {
+        // The execution point's own mark, drawn behind the dot so a breakpoint that is also where
+        // the program stopped still reads as a breakpoint. IntelliJ's arrow, drawn.
+        execution_arrow(ui.painter(), centre, color::ACCENT);
+    }
+    if let Some(mark) = mark {
+        // Both hollow, because both mean the program will not stop here — but they are not the same
+        // thing and are not drawn the same. A breakpoint **switched off** is somebody's own decision
+        // and is dimmed to say so; one the debugger could not **bind** is still asking to be
+        // honoured, so its ring is at full strength. §6.2's "dimmed hollow" and "hollow with a quiet
+        // ring", which are two states rather than one.
+        let tint = match mark.enabled {
+            true => color::BREAKPOINT,
+            false => color::BREAKPOINT.gamma_multiply(0.45),
+        };
+        icon::breakpoint(ui.painter(), centre, mark.is_filled(), tint);
+        if mark.conditional {
+            icon::breakpoint_badge(ui.painter(), centre, tint);
+        }
+    }
+    if !can_debug {
+        return false;
+    }
+    let target = Rect::from_min_size(
+        Pos2::new(column.left(), row.top()),
+        Vec2::new(column.width().min(BREAKPOINT_COLUMN + NUMBER_MARGIN), row.height()),
+    );
+    let name = match mark {
+        Some(_) => format!("Remove breakpoint on line {}", paragraph + 1),
+        None => format!("Set breakpoint on line {}", paragraph + 1),
+    };
+    let response = ui.interact(target, ui.id().with(("breakpoint", paragraph)), Sense::click());
+    // A hovered row with nothing on it shows where the dot would go, which is how a person finds a
+    // control that is otherwise invisible until it is used — VS Code's own hint.
+    if response.hovered() && mark.is_none() {
+        icon::breakpoint(ui.painter(), centre, false, color::BREAKPOINT.gamma_multiply(0.45));
+    }
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Button, true, mark.is_some(), &name)
+    });
+    response.clicked()
+}
+
+/// The mark on the line the program is stopped on: a filled arrow pointing at the code.
+///
+/// Drawn rather than lettered, in the manner of every other mark in the gutter, and it is IntelliJ's
+/// own shape.
+fn execution_arrow(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            Pos2::new(centre.x - 5.0, centre.y - 5.0),
+            Pos2::new(centre.x + 5.0, centre.y),
+            Pos2::new(centre.x - 5.0, centre.y + 5.0),
+        ],
+        color,
+        egui::Stroke::NONE,
+    ));
 }
 
 /// One line number, right aligned in its column.
@@ -335,21 +565,21 @@ mod tests {
 
     #[test]
     fn a_gutter_showing_nothing_takes_no_width() {
-        let gutter = Gutter { numbers: false, blame: None, changes: &[], folds: &[] };
+        let gutter = Gutter { numbers: false, blame: None, changes: &[], folds: &[], ..Gutter::default() };
         assert!(!gutter.showing());
     }
 
     #[test]
     fn a_change_bar_alone_is_enough_to_show_the_gutter() {
         let changes = [(3, Change::Modified)];
-        let gutter = Gutter { numbers: false, blame: None, changes: &changes, folds: &[] };
+        let gutter = Gutter { numbers: false, blame: None, changes: &changes, folds: &[], ..Gutter::default() };
         assert!(gutter.showing(), "a file with changes shows its change bars even with numbers off");
     }
 
     #[test]
     fn a_folding_arrow_alone_is_enough_to_show_the_gutter() {
         let folds = [(4usize, false)];
-        let gutter = Gutter { numbers: false, blame: None, changes: &[], folds: &folds };
+        let gutter = Gutter { numbers: false, blame: None, changes: &[], folds: &folds, ..Gutter::default() };
         assert!(gutter.showing(), "a file with something to fold shows the arrows");
         assert_eq!(gutter.fold_at(4), Some(false));
         assert_eq!(gutter.fold_at(3), None, "no region is headed by that line");
@@ -360,6 +590,60 @@ mod tests {
     #[test]
     fn the_arrows_take_no_width_of_their_own() {
         assert_eq!(ARROW, GAP);
+    }
+
+    #[test]
+    fn a_breakpoint_alone_is_enough_to_show_the_gutter() {
+        let breakpoints = [(2usize, BreakpointMark::plain())];
+        let gutter = Gutter { breakpoints: &breakpoints, ..Gutter::default() };
+        assert!(gutter.showing(), "a file with a breakpoint in it shows its dot");
+        assert_eq!(gutter.breakpoint_at(2), Some(BreakpointMark::plain()));
+        assert_eq!(gutter.breakpoint_at(1), None);
+    }
+
+    #[test]
+    fn the_line_the_program_is_stopped_on_is_enough_on_its_own() {
+        let gutter = Gutter { execution_point: Some(4), ..Gutter::default() };
+        assert!(gutter.showing());
+    }
+
+    /// The dot is drawn over the number, so with the numbers on it costs the gutter nothing at all —
+    /// which is the whole reason no accepted screenshot had to move.
+    #[test]
+    fn the_dot_takes_no_width_of_its_own_while_the_numbers_are_showing() {
+        let breakpoints = [(0usize, BreakpointMark::plain())];
+        let with = Gutter { numbers: true, breakpoints: &breakpoints, can_debug: true, ..Gutter::default() };
+        let without = Gutter { numbers: true, can_debug: true, ..Gutter::default() };
+        assert!(!with.needs_a_breakpoint_column());
+        assert!(!without.needs_a_breakpoint_column());
+    }
+
+    /// And with them off it gets a column, reserved whether or not anything is set: a column that
+    /// arrived with the first dot would move the text sideways under the pointer.
+    #[test]
+    fn with_the_numbers_off_the_column_is_reserved_before_anything_is_set() {
+        let empty = Gutter { numbers: false, can_debug: true, ..Gutter::default() };
+        assert!(empty.needs_a_breakpoint_column(), "reserved before the first breakpoint");
+        let breakpoints = [(0usize, BreakpointMark::plain())];
+        let one = Gutter { numbers: false, breakpoints: &breakpoints, can_debug: true, ..Gutter::default() };
+        assert!(one.needs_a_breakpoint_column(), "and still reserved with one");
+    }
+
+    /// A file whose language names no debugger gets no column and no click, which is Quill's rule
+    /// for a control that can never apply — so a stylesheet's gutter is exactly what it was.
+    #[test]
+    fn a_file_that_cannot_be_debugged_gets_no_breakpoint_column() {
+        let css = Gutter { numbers: false, can_debug: false, ..Gutter::default() };
+        assert!(!css.needs_a_breakpoint_column());
+        assert!(!css.showing(), "and nothing else about it changed either");
+    }
+
+    /// Off and unbound are both hollow, because both mean the program will not stop here.
+    #[test]
+    fn a_breakpoint_is_solid_only_when_it_is_on_and_the_debugger_agreed_to_it() {
+        assert!(BreakpointMark::plain().is_filled());
+        assert!(!BreakpointMark { enabled: false, ..BreakpointMark::plain() }.is_filled());
+        assert!(!BreakpointMark { verified: false, ..BreakpointMark::plain() }.is_filled());
     }
 
     #[test]

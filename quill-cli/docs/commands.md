@@ -1471,6 +1471,245 @@ quill-cli run status --json
 quill-cli run status "Dev server" --json
 ```
 
+## debug
+
+
+
+### debug start
+
+```
+quill-cli debug start [name] [--wait-for-pause] [--timeout <milliseconds>]
+```
+
+Run a configuration under its debugger, showing the debug tile. The file that is open decides which debugger: its language names one, or the session refuses with a sentence saying what to install. Starting one replaces the session that was running.
+
+- `name` (optional) — The configuration. The chosen one when it is left out.
+
+- `--wait-for-pause` — Wait until the program stops somewhere before answering, so a script can set a breakpoint, start, and read a variable in three commands.
+- `--timeout <milliseconds>` — How long to wait for --wait-for-pause. 30000 by default.
+
+```sh
+quill-cli debug start
+quill-cli debug start "Dev server" --wait-for-pause
+```
+
+### debug stop
+
+```
+quill-cli debug stop
+```
+
+End the session: the polite request first, and a hard disconnect on a second stop or two seconds later. The debuggee's tab in the run tile stays, holding what it wrote.
+
+```sh
+quill-cli debug stop
+```
+
+### debug continue
+
+```
+quill-cli debug continue [--wait-for-pause] [--timeout <milliseconds>]
+```
+
+Let the program run on to the next breakpoint.
+
+- `--wait-for-pause` — Wait until it stops again before answering.
+- `--timeout <milliseconds>` — How long to wait. 30000 by default.
+
+```sh
+quill-cli debug continue --wait-for-pause
+```
+
+### debug step-over
+
+```
+quill-cli debug step-over [--wait-for-pause] [--timeout <milliseconds>]
+```
+
+Run the current line and stop on the next one, without going into any call it makes.
+
+- `--wait-for-pause` — Wait until it stops again before answering.
+- `--timeout <milliseconds>` — How long to wait. 30000 by default.
+
+```sh
+quill-cli debug step-over --wait-for-pause
+```
+
+### debug step-into
+
+```
+quill-cli debug step-into [--wait-for-pause] [--timeout <milliseconds>]
+```
+
+Go into the call on the current line and stop at its first line.
+
+- `--wait-for-pause` — Wait until it stops again before answering.
+- `--timeout <milliseconds>` — How long to wait. 30000 by default.
+
+```sh
+quill-cli debug step-into --wait-for-pause
+```
+
+### debug step-out
+
+```
+quill-cli debug step-out [--wait-for-pause] [--timeout <milliseconds>]
+```
+
+Finish the function the program is in and stop in whatever called it.
+
+- `--wait-for-pause` — Wait until it stops again before answering.
+- `--timeout <milliseconds>` — How long to wait. 30000 by default.
+
+```sh
+quill-cli debug step-out --wait-for-pause
+```
+
+### debug run-to
+
+```
+quill-cli debug run-to <path> <line> [--wait-for-pause] [--timeout <milliseconds>]
+```
+
+Run until the program reaches a line, then stop there. A temporary breakpoint, a resume, and the breakpoint taken away again — which is how every debugger builds this.
+
+- `path` — The file, relative to the project or absolute.
+- `line` — The line, counting from 1.
+
+- `--wait-for-pause` — Wait until it stops before answering.
+- `--timeout <milliseconds>` — How long to wait. 30000 by default.
+
+```sh
+quill-cli debug run-to src/main.rs 42 --wait-for-pause
+```
+
+### debug breakpoint
+
+```
+quill-cli debug breakpoint <action> [path] [line] [--condition <expression>] [--log <message>]
+```
+
+Where the program is to stop. `add` and `remove` take a file and a line; `list` prints every one in the project, with what the debugger said about it while a session is running. Breakpoints are kept in .quill/breakpoints.conf and move with the text as the file is edited.
+
+- `action` — add, remove, enable, disable, list, or clear.
+- `path` (optional) — The file. Not needed for list or clear.
+- `line` (optional) — The line, counting from 1.
+
+- `--condition <expression>` — Stop only while this is true. The debugger evaluates it, in the program's own language.
+- `--log <message>` — Print this instead of stopping, which is what other editors call a logpoint. The debugger formats it, so {name} reads a variable.
+
+```sh
+quill-cli debug breakpoint add src/main.rs 42
+quill-cli debug breakpoint add src/main.rs 42 --condition "attempts > 3"
+quill-cli debug breakpoint list --json
+quill-cli debug breakpoint remove src/main.rs 42
+```
+
+### debug frames
+
+```
+quill-cli debug frames
+```
+
+The call stack of the stopped thread, one frame a line: the function, the file and the line. Answered from what the debugger has already been asked, so it costs nothing.
+
+```sh
+quill-cli debug frames --json
+```
+
+### debug variables
+
+```
+quill-cli debug variables [--frame <number>] [--expand <path>]
+```
+
+The variables of the frame that is showing. Only what has been read is printed, because a debugger reads a structure's contents only when somebody opens it; --expand asks for one row's children by name.
+
+- `--frame <number>` — Which frame, counting from 0 at the top. The one that is showing when it is left out.
+- `--expand <path>` — Read the children of this row and print them, naming it the way `variables` prints it — Locals/items.
+
+```sh
+quill-cli debug variables --json
+quill-cli debug variables --expand Locals/items
+```
+
+### debug set-value
+
+```
+quill-cli debug set-value <path> <value>
+```
+
+Change a variable in the running program. The answer is the value as the debugger now sees it, which is not always what was typed.
+
+- `path` — The row, as `variables` names it — Locals/count.
+- `value` — The new value, in the program's own language. Everything after it on the line belongs to it.
+
+```sh
+quill-cli debug set-value Locals/count 7
+```
+
+### debug evaluate
+
+```
+quill-cli debug evaluate <expression> [--timeout <milliseconds>]
+```
+
+Evaluate an expression in the frame that is showing. The debugger's own answer, or its own refusal.
+
+- `expression` — The expression. Everything after the verb is taken as it was typed, so it needs no quotes. Everything after it on the line belongs to it.
+
+- `--timeout <milliseconds>` — How long to wait for the answer. 10000 by default.
+
+```sh
+quill-cli debug evaluate items.len()
+```
+
+### debug watch
+
+```
+quill-cli debug watch <action> [expression]
+```
+
+Expressions re-evaluated at every stop. `add` and `remove` take one; `list` prints them with their last answers.
+
+- `action` — add, remove, or list.
+- `expression` (optional) — The expression, for add and remove. Everything after it on the line belongs to it.
+
+```sh
+quill-cli debug watch add attempts
+quill-cli debug watch list --json
+```
+
+### debug output
+
+```
+quill-cli debug output [--tail <number>]
+```
+
+What the debugger itself has said: what it loaded, what it could not find, and why it refused something. Not the program's own output, which goes to the run tile and is read with `run output`.
+
+- `--tail <number>` — Only the last so many lines.
+
+```sh
+quill-cli debug output --tail 20
+```
+
+### debug status
+
+```
+quill-cli debug status [--wait-for-pause] [--timeout <milliseconds>]
+```
+
+Whether a session is running and what it is doing: starting, running, paused with the file and line it stopped at, or ended with the code the program chose.
+
+- `--wait-for-pause` — Wait until the program stops before answering, which is how a script waits for a breakpoint it has already set.
+- `--timeout <milliseconds>` — How long to wait. 30000 by default.
+
+```sh
+quill-cli debug status --json
+quill-cli debug status --wait-for-pause
+```
+
 ## explorer — the file tree down the left
 
 `explorer files` is the list Quill searches, which leaves out `target`, `node_modules` and `__pycache__`.

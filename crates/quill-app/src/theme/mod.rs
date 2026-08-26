@@ -103,6 +103,31 @@ pub mod color {
     pub const HIGHLIGHT_BLUE: Rgba = Rgba::new(0x48, 0x9F, 0xF8, HIGHLIGHT_ALPHA);
     pub const HIGHLIGHT_PINK: Rgba = Rgba::new(0xB4, 0x58, 0x8C, HIGHLIGHT_ALPHA);
 
+    /// The breakpoint dot in the gutter.
+    ///
+    /// The palette is closed and this does not open it: it is [`CLOSE`]'s red, which is the one red
+    /// the design already has, and a breakpoint is red in every editor there has ever been. A
+    /// breakpoint that is switched off, or one the adapter could not bind, is drawn as a ring in the
+    /// same colour rather than in a second one — what is different about it is that it is hollow,
+    /// not that it is another colour.
+    pub const BREAKPOINT: Color32 = CLOSE;
+
+    /// The band behind the line the program is stopped on.
+    ///
+    /// The accent, at an alpha of its own so it cannot be mistaken for a passage somebody marked:
+    /// the four highlight colours are all at `HIGHLIGHT_ALPHA` and this is deliberately not one of
+    /// them. It is painted under the glyphs, where `paint_highlights` paints.
+    pub const EXECUTION_POINT: Color32 = Color32::from_rgba_premultiplied(0x1C, 0x3C, 0x5E, 0x9E);
+
+    /// A value painted at the end of a line while the program is paused, and the tint a variable
+    /// that has just changed wears.
+    ///
+    /// [`TEXT_FAINT`] for the value, because an inline value is decoration over somebody's code and
+    /// must never be mistaken for text in the document; the unsaved amber for a change, which is
+    /// what stepping is for and is the one thing on the tree worth looking at twice.
+    pub const INLINE_VALUE: Color32 = TEXT_FAINT;
+    pub const VALUE_CHANGED: Color32 = UNSAVED;
+
     /// The three window buttons.
     pub const CLOSE: Color32 = Color32::from_rgb(0xFF, 0x5F, 0x57);
     pub const MINIMISE: Color32 = Color32::from_rgb(0xFE, 0xBC, 0x2E);

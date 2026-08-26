@@ -175,6 +175,33 @@ pub fn regions_from(text: &str, reading: Reading<'_>, read: &Tokens) -> Vec<Regi
     tidy(found)
 }
 
+/// What each part of [`regions`] costs, for `examples/folding_cost.rs`. Temporary measurement aid.
+pub fn breakdown(text: &str, reading: Reading<'_>) -> Vec<(&'static str, f64)> {
+    use std::time::Instant;
+    let mut out = Vec::new();
+    let start = Instant::now();
+    let lines = LineIndex::new(text);
+    out.push(("line index", start.elapsed().as_secs_f64() * 1000.0));
+    if let Reading::Code(grammar) = reading {
+        let start = Instant::now();
+        let quiet = tokens(text, grammar);
+        out.push(("scan", start.elapsed().as_secs_f64() * 1000.0));
+        let start = Instant::now();
+        let _ = block_regions(text, &lines, &quiet);
+        out.push(("brackets", start.elapsed().as_secs_f64() * 1000.0));
+        let start = Instant::now();
+        let _ = comment_regions(text, &lines, &quiet, grammar);
+        out.push(("comments", start.elapsed().as_secs_f64() * 1000.0));
+    }
+    let start = Instant::now();
+    let found = indent_regions(text, &lines);
+    out.push(("indent", start.elapsed().as_secs_f64() * 1000.0));
+    let start = Instant::now();
+    let _ = tidy(found);
+    out.push(("tidy", start.elapsed().as_secs_f64() * 1000.0));
+    out
+}
+
 /// Put the regions in order and drop the ones that are no use.
 ///
 /// Sorted by head and then **widest first**, so that a caret looking for the innermost region it is

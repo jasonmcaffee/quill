@@ -1,6 +1,8 @@
 //! Everything the window needs that is not drawing.
 
+pub mod breakpoint_store;
 pub mod control;
+pub mod debuggers;
 pub mod file_clipboard;
 pub mod file_kind;
 pub mod file_marks;

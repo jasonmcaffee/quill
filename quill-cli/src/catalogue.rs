@@ -12,8 +12,8 @@
 //! `dotnet tool install` are, which is the more common of the two orders and the one the .NET
 //! guidance asks for: a command holding subcommands is a **grouping**, and the verb underneath it
 //! is the action. Areas are what the window is made of, so somebody who can see Quill can guess the
-//! area: `tab`, `pane`, `editor`, `fold`, `terminal`, `run`, `explorer`, `modal`, `settings`,
-//! `plugins`,
+//! area: `tab`, `pane`, `editor`, `fold`, `terminal`, `run`, `debug`, `explorer`, `modal`,
+//! `settings`, `plugins`,
 //! `git`, `window`, `project`, `action`. Six commands have no area, because they are about the CLI
 //! or about a whole Quill: `status`, `instances`, `launch`, `quit`, `commands` and `version`.
 //!
@@ -1059,6 +1059,193 @@ pub const COMMANDS: &[Command] = &[
         arguments: &[argument("name", false, "The configuration. The chosen one when it is left out.")],
         flags: NO_FLAGS,
         examples: &["quill-cli run status --json", "quill-cli run status \"Dev server\" --json"],
+        local: false,
+    },
+    // ---------------------------------------------------------------------------- the debugger
+    Command {
+        area: "debug",
+        verb: "start",
+        summary: "Run a configuration under its debugger, showing the debug tile. The file that is open decides which debugger: its language names one, or the session refuses with a sentence saying what to install. Starting one replaces the session that was running.",
+        arguments: &[argument("name", false, "The configuration. The chosen one when it is left out.")],
+        flags: &[
+            switch("wait-for-pause", "Wait until the program stops somewhere before answering, so a script can set a breakpoint, start, and read a variable in three commands."),
+            option("timeout", "milliseconds", "How long to wait for --wait-for-pause. 30000 by default."),
+        ],
+        examples: &[
+            "quill-cli debug start",
+            "quill-cli debug start \"Dev server\" --wait-for-pause",
+        ],
+        local: false,
+    },
+    Command {
+        area: "debug",
+        verb: "stop",
+        summary: "End the session: the polite request first, and a hard disconnect on a second stop or two seconds later. The debuggee's tab in the run tile stays, holding what it wrote.",
+        arguments: NO_ARGUMENTS,
+        flags: NO_FLAGS,
+        examples: &["quill-cli debug stop"],
+        local: false,
+    },
+    Command {
+        area: "debug",
+        verb: "continue",
+        summary: "Let the program run on to the next breakpoint.",
+        arguments: NO_ARGUMENTS,
+        flags: &[
+            switch("wait-for-pause", "Wait until it stops again before answering."),
+            option("timeout", "milliseconds", "How long to wait. 30000 by default."),
+        ],
+        examples: &["quill-cli debug continue --wait-for-pause"],
+        local: false,
+    },
+    Command {
+        area: "debug",
+        verb: "step-over",
+        summary: "Run the current line and stop on the next one, without going into any call it makes.",
+        arguments: NO_ARGUMENTS,
+        flags: &[
+            switch("wait-for-pause", "Wait until it stops again before answering."),
+            option("timeout", "milliseconds", "How long to wait. 30000 by default."),
+        ],
+        examples: &["quill-cli debug step-over --wait-for-pause"],
+        local: false,
+    },
+    Command {
+        area: "debug",
+        verb: "step-into",
+        summary: "Go into the call on the current line and stop at its first line.",
+        arguments: NO_ARGUMENTS,
+        flags: &[
+            switch("wait-for-pause", "Wait until it stops again before answering."),
+            option("timeout", "milliseconds", "How long to wait. 30000 by default."),
+        ],
+        examples: &["quill-cli debug step-into --wait-for-pause"],
+        local: false,
+    },
+    Command {
+        area: "debug",
+        verb: "step-out",
+        summary: "Finish the function the program is in and stop in whatever called it.",
+        arguments: NO_ARGUMENTS,
+        flags: &[
+            switch("wait-for-pause", "Wait until it stops again before answering."),
+            option("timeout", "milliseconds", "How long to wait. 30000 by default."),
+        ],
+        examples: &["quill-cli debug step-out --wait-for-pause"],
+        local: false,
+    },
+    Command {
+        area: "debug",
+        verb: "run-to",
+        summary: "Run until the program reaches a line, then stop there. A temporary breakpoint, a resume, and the breakpoint taken away again — which is how every debugger builds this.",
+        arguments: &[
+            argument("path", true, "The file, relative to the project or absolute."),
+            argument("line", true, "The line, counting from 1."),
+        ],
+        flags: &[
+            switch("wait-for-pause", "Wait until it stops before answering."),
+            option("timeout", "milliseconds", "How long to wait. 30000 by default."),
+        ],
+        examples: &["quill-cli debug run-to src/main.rs 42 --wait-for-pause"],
+        local: false,
+    },
+    Command {
+        area: "debug",
+        verb: "breakpoint",
+        summary: "Where the program is to stop. `add` and `remove` take a file and a line; `list` prints every one in the project, with what the debugger said about it while a session is running. Breakpoints are kept in .quill/breakpoints.conf and move with the text as the file is edited.",
+        arguments: &[
+            argument("action", true, "add, remove, enable, disable, list, or clear."),
+            argument("path", false, "The file. Not needed for list or clear."),
+            argument("line", false, "The line, counting from 1."),
+        ],
+        flags: &[
+            option("condition", "expression", "Stop only while this is true. The debugger evaluates it, in the program's own language."),
+            option("log", "message", "Print this instead of stopping, which is what other editors call a logpoint. The debugger formats it, so {name} reads a variable."),
+        ],
+        examples: &[
+            "quill-cli debug breakpoint add src/main.rs 42",
+            "quill-cli debug breakpoint add src/main.rs 42 --condition \"attempts > 3\"",
+            "quill-cli debug breakpoint list --json",
+            "quill-cli debug breakpoint remove src/main.rs 42",
+        ],
+        local: false,
+    },
+    Command {
+        area: "debug",
+        verb: "frames",
+        summary: "The call stack of the stopped thread, one frame a line: the function, the file and the line. Answered from what the debugger has already been asked, so it costs nothing.",
+        arguments: NO_ARGUMENTS,
+        flags: NO_FLAGS,
+        examples: &["quill-cli debug frames --json"],
+        local: false,
+    },
+    Command {
+        area: "debug",
+        verb: "variables",
+        summary: "The variables of the frame that is showing. Only what has been read is printed, because a debugger reads a structure's contents only when somebody opens it; --expand asks for one row's children by name.",
+        arguments: NO_ARGUMENTS,
+        flags: &[
+            option("frame", "number", "Which frame, counting from 0 at the top. The one that is showing when it is left out."),
+            option("expand", "path", "Read the children of this row and print them, naming it the way `variables` prints it — Locals/items."),
+        ],
+        examples: &[
+            "quill-cli debug variables --json",
+            "quill-cli debug variables --expand Locals/items",
+        ],
+        local: false,
+    },
+    Command {
+        area: "debug",
+        verb: "set-value",
+        summary: "Change a variable in the running program. The answer is the value as the debugger now sees it, which is not always what was typed.",
+        arguments: &[
+            argument("path", true, "The row, as `variables` names it — Locals/count."),
+            rest("value", true, "The new value, in the program's own language."),
+        ],
+        flags: NO_FLAGS,
+        examples: &["quill-cli debug set-value Locals/count 7"],
+        local: false,
+    },
+    Command {
+        area: "debug",
+        verb: "evaluate",
+        summary: "Evaluate an expression in the frame that is showing. The debugger's own answer, or its own refusal.",
+        arguments: &[rest("expression", true, "The expression. Everything after the verb is taken as it was typed, so it needs no quotes.")],
+        flags: &[option("timeout", "milliseconds", "How long to wait for the answer. 10000 by default.")],
+        examples: &["quill-cli debug evaluate items.len()"],
+        local: false,
+    },
+    Command {
+        area: "debug",
+        verb: "watch",
+        summary: "Expressions re-evaluated at every stop. `add` and `remove` take one; `list` prints them with their last answers.",
+        arguments: &[
+            argument("action", true, "add, remove, or list."),
+            rest("expression", false, "The expression, for add and remove."),
+        ],
+        flags: NO_FLAGS,
+        examples: &["quill-cli debug watch add attempts", "quill-cli debug watch list --json"],
+        local: false,
+    },
+    Command {
+        area: "debug",
+        verb: "output",
+        summary: "What the debugger itself has said: what it loaded, what it could not find, and why it refused something. Not the program's own output, which goes to the run tile and is read with `run output`.",
+        arguments: NO_ARGUMENTS,
+        flags: &[option("tail", "number", "Only the last so many lines.")],
+        examples: &["quill-cli debug output --tail 20"],
+        local: false,
+    },
+    Command {
+        area: "debug",
+        verb: "status",
+        summary: "Whether a session is running and what it is doing: starting, running, paused with the file and line it stopped at, or ended with the code the program chose.",
+        arguments: NO_ARGUMENTS,
+        flags: &[
+            switch("wait-for-pause", "Wait until the program stops before answering, which is how a script waits for a breakpoint it has already set."),
+            option("timeout", "milliseconds", "How long to wait. 30000 by default."),
+        ],
+        examples: &["quill-cli debug status --json", "quill-cli debug status --wait-for-pause"],
         local: false,
     },
     // ----------------------------------------------------------------------------- the explorer

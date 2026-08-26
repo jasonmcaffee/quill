@@ -2932,6 +2932,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "quill-cli",
  "quill-core",
+ "quill-dap",
  "quill-git",
  "quill-terminal",
  "rfd",
@@ -2953,6 +2954,13 @@ name = "quill-core"
 version = "0.13.0"
 dependencies = [
  "unicode-segmentation",
+]
+
+[[package]]
+name = "quill-dap"
+version = "0.13.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]

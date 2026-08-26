@@ -44,7 +44,8 @@ use serde_json::{json, Map, Value};
 
 use quill_cli::protocol::{code, Reply, Request};
 
-use crate::app::actions::{Action, GitAction, HighlightColor, RunAction};
+use crate::app::actions::{Action, DebugAction, GitAction, HighlightColor, RunAction};
+use crate::app::debug::DebugState;
 use crate::app::{QuillApp, ViewMode};
 use quill_core::symbols::Role;
 
@@ -109,6 +110,20 @@ pub enum Waiting {
     References { until: Instant, code_only: bool, rename: Option<CliRename> },
     /// Git, which is on a thread of its own.
     Git { until: Instant },
+    /// A debug session stopping somewhere, which is what makes `debug start --wait-for-pause` and
+    /// the four stepping verbs answerable from a script.
+    ///
+    /// **This is the sequence the whole feature is an acceptance test of**: set a breakpoint, start,
+    /// wait for the stop and read a variable — four commands, and an agent driving Quill can then
+    /// observe a program's actual state instead of reasoning about it.
+    DebugPause { command: String, until: Instant },
+    /// An expression the debugger is still evaluating.
+    ///
+    /// `evaluate` is a request like any other, so its answer arrives on a later frame — and a
+    /// command that reported the question rather than the answer would be useless to the one caller
+    /// it exists for. The id is what the session labelled the question with, so an answer that lands
+    /// after another was asked cannot be mistaken for this one.
+    DebugEvaluate { expression: String, id: u64, until: Instant },
 }
 
 /// A rename a command asked for, waiting for the search that will find what it changes.
@@ -131,7 +146,9 @@ impl Waiting {
             | Waiting::RunOutput { until, .. }
             | Waiting::ModalResults { until, .. }
             | Waiting::References { until, .. }
-            | Waiting::Git { until } => *until,
+            | Waiting::Git { until }
+            | Waiting::DebugPause { until, .. }
+            | Waiting::DebugEvaluate { until, .. } => *until,
         }
     }
 }
@@ -283,6 +300,40 @@ impl QuillApp {
                 let git = self.git.as_ref()?;
                 (git.running().is_none()).then(|| self.git_status_reply(request))
             }
+            Waiting::DebugEvaluate { expression, id, .. } => {
+                let debug = self.debug.as_ref()?;
+                let (asked, _, answer) = debug.evaluated.as_ref()?;
+                if asked != id {
+                    return None;
+                }
+                // A session that ended is an answer too: nothing is going to evaluate anything now.
+                let answered = answer.clone().or_else(|| {
+                    (!debug.is_alive())
+                        .then(|| Err("The session ended before it answered.".to_owned()))
+                })?;
+                Some(match answered {
+                    Ok(value) => Reply::done(
+                        &request.command,
+                        format!("{expression} = {}", value.value),
+                        json!({
+                            "expression": expression,
+                            "value": value.value,
+                            "type": value.kind,
+                            "expandable": value.reference != 0,
+                        }),
+                    ),
+                    // The debugger's own refusal, shown as it was written: it explains a bad
+                    // expression far better than Quill could.
+                    Err(problem) => Reply::failed(&request.command, code::NOT_APPLICABLE, problem),
+                })
+            }
+            Waiting::DebugPause { .. } => {
+                let debug = self.debug.as_ref()?;
+                // An ended session is an answer too, and a better one than waiting out the timeout:
+                // a program that ran to completion is never going to stop, and saying so at once is
+                // what stops a script sitting there for thirty seconds.
+                (debug.is_ready() || !debug.is_alive()).then(|| self.debug_status_reply(request))
+            }
         }
     }
 
@@ -332,6 +383,27 @@ impl QuillApp {
             ),
             Waiting::Git { .. } => {
                 ("git.action", "Git was still running when the time ran out.".to_owned())
+            }
+            Waiting::DebugEvaluate { expression, .. } => {
+                let expression = expression.clone();
+                return Reply::failed(
+                    "debug.evaluate",
+                    code::TIMED_OUT,
+                    format!("The debugger did not answer {expression} in time."),
+                );
+            }
+            Waiting::DebugPause { command, .. } => {
+                let command = command.clone();
+                return Reply {
+                    ok: false,
+                    command: command.clone(),
+                    message: "The program did not stop in time.".to_owned(),
+                    result: self.debug_value(),
+                    error: Some(quill_cli::protocol::Failure {
+                        code: code::TIMED_OUT.to_owned(),
+                        message: "The program did not stop in time.".to_owned(),
+                    }),
+                };
             }
         };
         Reply::failed(command, code::TIMED_OUT, message)
@@ -391,6 +463,7 @@ impl QuillApp {
             "fold" => self.cli_fold(request, verb),
             "terminal" => self.cli_terminal(request, verb),
             "run" => self.cli_run(request, verb),
+            "debug" => self.cli_debug(request, verb),
             "explorer" => self.cli_explorer(request, verb),
             "modal" => self.cli_modal(request, verb, ctx),
             "settings" => self.cli_settings(request, verb),
@@ -538,6 +611,19 @@ impl QuillApp {
     /// The status bar message a fold command left behind, which is why it refused.
     fn take_the_message(&mut self) -> String {
         self.message.take().unwrap_or_else(|| "There is nothing to fold here.".to_owned())
+    }
+
+    /// What a breakpoint command did, in the past tense, so its sentence reads like one.
+    ///
+    /// Here rather than four `format!`s at the call site: the four verbs differ only in this word,
+    /// and four sentences that almost agreed would be four chances for one of them to read oddly.
+    fn breakpoint_verbed(action: &str) -> &'static str {
+        match action {
+            "add" => "Breakpoint on",
+            "remove" => "Breakpoint removed from",
+            "enable" => "Breakpoint enabled on",
+            _ => "Breakpoint disabled on",
+        }
     }
 
     /// A relative path is relative to the project. See the note at the top of this file.
@@ -3189,6 +3275,548 @@ impl QuillApp {
         })
     }
 
+    // ------------------------------------------------------------------------------- the debugger
+
+    /// How long a stepping verb waits for the program to stop again.
+    ///
+    /// Longer than [`DEFAULT_WAIT`], because a `continue` runs to the next breakpoint and how long
+    /// that takes is a fact about the program rather than about Quill.
+    const DEBUG_WAIT: Duration = Duration::from_millis(30_000);
+
+    fn cli_debug(&mut self, request: &Request, verb: &str) -> Outcome {
+        match verb {
+            "start" => self.cli_debug_start(request),
+            "stop" => self.cli_debug_stop(request),
+            "continue" => self.cli_debug_step(request, quill_dap::Step::Resume),
+            "step-over" => self.cli_debug_step(request, quill_dap::Step::Over),
+            "step-into" => self.cli_debug_step(request, quill_dap::Step::Into),
+            "step-out" => self.cli_debug_step(request, quill_dap::Step::Out),
+            "run-to" => self.cli_debug_run_to(request),
+            "breakpoint" => self.cli_debug_breakpoint(request),
+            "frames" => self.cli_debug_frames(request),
+            "variables" => self.cli_debug_variables(request),
+            "set-value" => self.cli_debug_set_value(request),
+            "evaluate" => self.cli_debug_evaluate(request),
+            "watch" => self.cli_debug_watch(request),
+            "output" => self.cli_debug_output(request),
+            "status" => self.cli_debug_status(request),
+            _ => unknown(request),
+        }
+    }
+
+    fn cli_debug_start(&mut self, request: &Request) -> Outcome {
+        let named = request.text("name");
+        if let Some(name) = &named {
+            if self.configuration_named(Some(name)).is_none() {
+                return no(
+                    request,
+                    code::NOT_FOUND,
+                    format!("There is no run configuration called {name}."),
+                );
+            }
+        } else if self.run_selected.is_none() {
+            return no(
+                request,
+                code::NOT_APPLICABLE,
+                "No run configuration is chosen. `run select <name>` chooses one.",
+            );
+        }
+        self.message = None;
+        self.debug_a_configuration(DebugAction::Start(named));
+        // A session that could not be started said why, and `debug` holds nothing — which is a
+        // refusal rather than something to wait for.
+        let Some(said) = self.message.clone() else {
+            return ok(request, "Debugging", self.debug_value());
+        };
+        if self.debug.is_none() {
+            return no(request, code::NOT_APPLICABLE, said);
+        }
+        self.wait_for_a_pause(request, said)
+    }
+
+    fn cli_debug_stop(&mut self, request: &Request) -> Outcome {
+        if self.debug.is_none() {
+            return no(request, code::NOT_APPLICABLE, "Nothing is being debugged.");
+        }
+        self.debug_a_configuration(DebugAction::Stop);
+        ok(request, "Stopping the debugger", self.debug_value())
+    }
+
+    /// The four that ask the program to go on. One arm rather than four, because all four go through
+    /// `QuillApp::step`, which is the one place a stepping request turns into a change — so a thing
+    /// done from a script and the same thing done from the tile are the same thing.
+    fn cli_debug_step(&mut self, request: &Request, step: quill_dap::Step) -> Outcome {
+        let Some(debug) = self.debug.as_ref() else {
+            return no(request, code::NOT_APPLICABLE, "Nothing is being debugged.");
+        };
+        if !debug.is_paused() {
+            return no(request, code::NOT_APPLICABLE, "The program is not stopped.");
+        }
+        self.message = None;
+        self.step(step);
+        let said = self.message.clone().unwrap_or_else(|| step.label().to_owned());
+        self.wait_for_a_pause(request, said)
+    }
+
+    fn cli_debug_run_to(&mut self, request: &Request) -> Outcome {
+        let Some(path) = request.text("path") else {
+            return no(request, code::USAGE, "Say which file.");
+        };
+        let Some(line) = request.whole("line").filter(|line| *line > 0) else {
+            return no(request, code::USAGE, "Say which line, counting from 1.");
+        };
+        if self.debug.as_ref().is_none_or(|debug| !debug.is_paused()) {
+            return no(request, code::NOT_APPLICABLE, "The program is not stopped.");
+        }
+        let path = self.cli_path(&path);
+        // The caret is moved to the line first, and then the ordinary `Run to Cursor` runs — so the
+        // command line and the menu entry are the same path rather than two that have to agree.
+        self.open_path_permanently(&path);
+        let offset = self.document().offset_of_line_number(line);
+        self.document_mut().apply(quill_core::Command::PlaceCaret { offset, extend: false });
+        self.message = None;
+        self.debug_a_configuration(DebugAction::RunToCursor);
+        let said = self
+            .message
+            .clone()
+            .unwrap_or_else(|| format!("Running to {}:{line}", path.display()));
+        self.wait_for_a_pause(request, said)
+    }
+
+    /// Answer now, or hold the request until the program stops — which is what `--wait-for-pause` is
+    /// and what makes the whole feature scriptable.
+    fn wait_for_a_pause(&mut self, request: &Request, said: String) -> Outcome {
+        if !request.switch("wait-for-pause") {
+            return ok(request, said, self.debug_value());
+        }
+        if self.debug.as_ref().is_some_and(DebugState::is_ready) {
+            return ok(request, said, self.debug_value());
+        }
+        Outcome::Hold(Waiting::DebugPause {
+            command: request.command.clone(),
+            until: waits_for(request, "timeout", Self::DEBUG_WAIT),
+        })
+    }
+
+    fn cli_debug_breakpoint(&mut self, request: &Request) -> Outcome {
+        let Some(action) = request.text("action") else {
+            return no(request, code::USAGE, "Say add, remove, enable, disable, list or clear.");
+        };
+        match action.as_str() {
+            "list" => self.cli_breakpoint_list(request),
+            "clear" => {
+                let cleared = self.clear_every_breakpoint();
+                ok(request, format!("{cleared} breakpoints cleared"), self.breakpoints_value())
+            }
+            "add" | "remove" | "enable" | "disable" => {
+                let Some(path) = request.text("path") else {
+                    return no(request, code::USAGE, "Say which file.");
+                };
+                let Some(line) = request.whole("line").filter(|line| *line > 0) else {
+                    return no(request, code::USAGE, "Say which line, counting from 1.");
+                };
+                let path = self.cli_path(&path);
+                if !self.debug_applies_to(Some(&path)) {
+                    return no(
+                        request,
+                        code::NOT_APPLICABLE,
+                        format!(
+                            "{}'s language has not said which debugger to use.",
+                            path.display()
+                        ),
+                    );
+                }
+                let condition = request.text("condition");
+                let log = request.text("log");
+                let offset = self.offset_of_line(&path, line);
+                let changed = match action.as_str() {
+                    "add" => self.change_breakpoints(&path, |breakpoints| {
+                        breakpoints.set(quill_core::Breakpoint {
+                            offset,
+                            enabled: true,
+                            condition,
+                            log_message: log,
+                        });
+                    }),
+                    "remove" => self.change_breakpoints(&path, |breakpoints| {
+                        breakpoints.remove_at(offset);
+                    }),
+                    on => {
+                        let enabled = on == "enable";
+                        self.change_breakpoints(&path, |breakpoints| {
+                            breakpoints.set_enabled(offset, enabled);
+                        })
+                    }
+                };
+                if !changed && action == "remove" {
+                    return no(
+                        request,
+                        code::NOT_FOUND,
+                        format!("There is no breakpoint on line {line} of {}.", path.display()),
+                    );
+                }
+                self.send_the_breakpoints_of(&path);
+                ok(
+                    request,
+                    format!("{} line {line} of {}", Self::breakpoint_verbed(&action), path.display()),
+                    self.breakpoints_value(),
+                )
+            }
+            other => no(
+                request,
+                code::USAGE,
+                format!("`{other}` is not one of add, remove, enable, disable, list or clear."),
+            ),
+        }
+    }
+
+    fn cli_breakpoint_list(&mut self, request: &Request) -> Outcome {
+        let root = self.tree.root().to_path_buf();
+        let mut rows: Vec<String> = Vec::new();
+        for (path, breakpoints) in self.every_breakpoint() {
+            let shown = crate::services::project_state::relative(&root, &path);
+            for breakpoint in breakpoints.iter() {
+                let line = self.offset_line_number(&path, breakpoint.offset);
+                // What the debugger said, while one is running. `-` rather than a guess when there
+                // is nobody to have said anything, which is the honesty rule the gutter keeps too.
+                let verified = match self.debug.as_ref().and_then(|debug| debug.verified(&path, breakpoint.offset))
+                {
+                    Some(answered) => match answered.verified {
+                        true => "verified",
+                        false => "unverified",
+                    },
+                    None => "-",
+                };
+                rows.push(format!(
+                    "{}{}:{line:<6} {:<11} {}",
+                    if breakpoint.enabled { " " } else { "-" },
+                    shown.display(),
+                    verified,
+                    breakpoint.condition.clone().unwrap_or_default(),
+                ));
+            }
+        }
+        let count = rows.len();
+        lines(request, format!("{count} breakpoints"), rows, self.breakpoints_value())
+    }
+
+    fn cli_debug_frames(&mut self, request: &Request) -> Outcome {
+        let Some(debug) = self.debug.as_ref() else {
+            return no(request, code::NOT_APPLICABLE, "Nothing is being debugged.");
+        };
+        let rows: Vec<String> = debug
+            .frames
+            .iter()
+            .map(|frame| match &frame.path {
+                Some(path) => format!("{:<28} {path}:{}", frame.name, frame.line),
+                None => frame.name.clone(),
+            })
+            .collect();
+        let count = rows.len();
+        lines(request, format!("{count} frames"), rows, self.debug_value())
+    }
+
+    fn cli_debug_variables(&mut self, request: &Request) -> Outcome {
+        if self.debug.is_none() {
+            return no(request, code::NOT_APPLICABLE, "Nothing is being debugged.");
+        }
+        // A frame was named, so the variables are read from that one. The whole of the read is
+        // through `show_frame`, which is what the tile's own click goes through.
+        if let Some(index) = request.whole("frame") {
+            let frame = self.debug.as_ref().and_then(|debug| debug.frames.get(index).map(|frame| frame.id));
+            let Some(frame) = frame else {
+                return no(request, code::NOT_FOUND, format!("There is no frame {index}."));
+            };
+            if let Some(debug) = self.debug.as_mut() {
+                debug.show_frame(frame);
+            }
+        }
+        // Opening a row asks the debugger for its children, which is the tile's own laziness: the
+        // answer arrives on a later frame, so the row is printed as it is now and again next time.
+        if let Some(key) = request.text("expand") {
+            if let Some(debug) = self.debug.as_mut() {
+                debug.toggle_row(&key);
+            }
+        }
+        let debug = self.debug.as_ref().expect("still there");
+        if !debug.is_paused() {
+            return no(request, code::NOT_APPLICABLE, "The program is not stopped.");
+        }
+        let rows: Vec<String> = debug
+            .rows
+            .iter()
+            .map(|row| {
+                let indent = "  ".repeat(row.depth);
+                match (&row.kind, row.is_scope) {
+                    (_, true) => format!("{indent}{}", row.name),
+                    (Some(kind), _) => format!("{indent}{}: {kind} = {}", row.name, row.value),
+                    (None, _) => format!("{indent}{} = {}", row.name, row.value),
+                }
+            })
+            .collect();
+        let count = rows.len();
+        lines(request, format!("{count} rows"), rows, self.debug_value())
+    }
+
+    fn cli_debug_set_value(&mut self, request: &Request) -> Outcome {
+        let Some(key) = request.text("path") else {
+            return no(request, code::USAGE, "Say which row, as `debug variables` names it.");
+        };
+        let Some(value) = request.text("value") else {
+            return no(request, code::USAGE, "Say what to set it to.");
+        };
+        let Some(debug) = self.debug.as_mut() else {
+            return no(request, code::NOT_APPLICABLE, "Nothing is being debugged.");
+        };
+        match debug.set_value(&key, &value) {
+            Ok(()) => ok(request, format!("Setting {key} to {value}"), self.debug_value()),
+            Err(problem) => no(request, code::NOT_APPLICABLE, problem),
+        }
+    }
+
+    fn cli_debug_evaluate(&mut self, request: &Request) -> Outcome {
+        let Some(expression) = request.text("expression") else {
+            return no(request, code::USAGE, "Say what to evaluate.");
+        };
+        let Some(debug) = self.debug.as_mut() else {
+            return no(request, code::NOT_APPLICABLE, "Nothing is being debugged.");
+        };
+        if !debug.is_paused() {
+            return no(request, code::NOT_APPLICABLE, "The program is not stopped.");
+        }
+        debug.evaluate(&expression);
+        let id = debug.evaluated.as_ref().map(|(id, _, _)| *id).unwrap_or_default();
+        Outcome::Hold(Waiting::DebugEvaluate {
+            expression,
+            id,
+            until: waits_for(request, "timeout", DEFAULT_WAIT),
+        })
+    }
+
+    fn cli_debug_watch(&mut self, request: &Request) -> Outcome {
+        let Some(action) = request.text("action") else {
+            return no(request, code::USAGE, "Say add, remove or list.");
+        };
+        let Some(debug) = self.debug.as_mut() else {
+            return no(request, code::NOT_APPLICABLE, "Nothing is being debugged.");
+        };
+        match action.as_str() {
+            "list" => {
+                let rows: Vec<String> = debug
+                    .watches
+                    .iter()
+                    .map(|watch| {
+                        let said = match &watch.result {
+                            Some(Ok(value)) => value.value.clone(),
+                            Some(Err(problem)) => problem.clone(),
+                            None => "\u{2014}".to_owned(),
+                        };
+                        format!("{:<28} {said}", watch.expression)
+                    })
+                    .collect();
+                let count = rows.len();
+                lines(request, format!("{count} watches"), rows, self.debug_value())
+            }
+            "add" | "remove" => {
+                let Some(expression) = request.text("expression") else {
+                    return no(request, code::USAGE, "Say which expression.");
+                };
+                match action.as_str() {
+                    "add" => {
+                        debug.add_watch(&expression);
+                        ok(request, format!("Watching {expression}"), self.debug_value())
+                    }
+                    _ => match debug.remove_watch(&expression) {
+                        true => ok(
+                            request,
+                            format!("{expression} is no longer watched"),
+                            self.debug_value(),
+                        ),
+                        false => no(
+                            request,
+                            code::NOT_FOUND,
+                            format!("{expression} is not being watched."),
+                        ),
+                    },
+                }
+            }
+            other => no(request, code::USAGE, format!("`{other}` is not one of add, remove or list.")),
+        }
+    }
+
+    /// What the adapter itself has said, which is the one place a debugger's own explanation lands.
+    ///
+    /// **Not the program's output** — that goes to the run tile through `runInTerminal` and is read
+    /// with `run output`. This is the adapter talking about itself: what it loaded, what it could not
+    /// find, and the traceback it printed instead of answering. Nothing here is invented; it is
+    /// carried whole, which is `quill-git`'s rule about git's standard error.
+    fn cli_debug_output(&mut self, request: &Request) -> Outcome {
+        let Some(debug) = self.debug.as_ref() else {
+            return no(request, code::NOT_APPLICABLE, "Nothing is being debugged.");
+        };
+        let mut rows: Vec<String> = debug
+            .output
+            .iter()
+            .flat_map(|line| line.lines().map(str::to_owned).collect::<Vec<String>>())
+            .collect();
+        if let Some(tail) = request.whole("tail") {
+            let from = rows.len().saturating_sub(tail);
+            rows = rows[from..].to_vec();
+        }
+        let count = rows.len();
+        lines(request, format!("{count} lines"), rows, Value::Null)
+    }
+
+    fn cli_debug_status(&mut self, request: &Request) -> Outcome {
+        if self.debug.is_none() {
+            return ok(
+                request,
+                "Nothing is being debugged.",
+                json!({ "running": false, "state": "none" }),
+            );
+        }
+        if request.switch("wait-for-pause") && !self.debug.as_ref().is_some_and(DebugState::is_ready)
+        {
+            return Outcome::Hold(Waiting::DebugPause {
+                command: request.command.clone(),
+                until: waits_for(request, "timeout", Self::DEBUG_WAIT),
+            });
+        }
+        Outcome::Reply(self.debug_status_reply(request))
+    }
+
+    /// One sentence and the whole state, which is what a `--wait-for-pause` answers with when the
+    /// program stops and what `debug status` answers with straight away.
+    fn debug_status_reply(&self, request: &Request) -> Reply {
+        let said = match self.debug.as_ref() {
+            Some(debug) => format!("{} is {}", debug.configuration.name, debug.where_it_is()),
+            None => "Nothing is being debugged.".to_owned(),
+        };
+        Reply::done(&request.command, said, self.debug_value())
+    }
+
+    /// Everything a debug command answers with, so a script never has to ask twice.
+    fn debug_value(&self) -> Value {
+        let Some(debug) = self.debug.as_ref() else {
+            return json!({ "running": false, "state": "none", "visible": self.debug_panel.visible });
+        };
+        let location = debug.location();
+        json!({
+            "running": true,
+            "configuration": debug.configuration.name,
+            "adapter": debug.adapter,
+            "state": debug.state().label(),
+            "where": debug.where_it_is(),
+            "paused": debug.is_paused(),
+            "exitCode": debug.exit_code(),
+            "visible": self.debug_panel.visible,
+            "path": location.as_ref().map(|(path, _)| path.to_string_lossy()),
+            "line": location.as_ref().map(|(_, line)| *line),
+            "frames": debug
+                .frames
+                .iter()
+                .map(|frame| json!({
+                    "name": frame.name,
+                    "path": frame.path,
+                    "line": frame.line,
+                    "subtle": frame.subtle,
+                }))
+                .collect::<Vec<Value>>(),
+            "variables": debug
+                .rows
+                .iter()
+                .map(|row| json!({
+                    "path": row.key,
+                    "name": row.name,
+                    "value": row.value,
+                    "type": row.kind,
+                    "expandable": row.has_children(),
+                    "expanded": row.expanded,
+                    "changed": row.changed,
+                }))
+                .collect::<Vec<Value>>(),
+            "watches": debug
+                .watches
+                .iter()
+                .map(|watch| json!({
+                    "expression": watch.expression,
+                    "value": watch.result.as_ref().and_then(|result| result.as_ref().ok()).map(|value| value.value.clone()),
+                    "error": watch.result.as_ref().and_then(|result| result.as_ref().err()).cloned(),
+                }))
+                .collect::<Vec<Value>>(),
+        })
+    }
+
+    /// Every breakpoint in the project, as a command answers with it.
+    fn breakpoints_value(&self) -> Value {
+        let root = self.tree.root().to_path_buf();
+        let rows: Vec<Value> = self
+            .every_breakpoint()
+            .into_iter()
+            .flat_map(|(path, breakpoints)| {
+                let shown = crate::services::project_state::relative(&root, &path);
+                breakpoints
+                    .iter()
+                    .map(|breakpoint| {
+                        let answered =
+                            self.debug.as_ref().and_then(|debug| debug.verified(&path, breakpoint.offset));
+                        json!({
+                            "path": shown.to_string_lossy(),
+                            "line": self.offset_line_number(&path, breakpoint.offset),
+                            "enabled": breakpoint.enabled,
+                            "condition": breakpoint.condition,
+                            "log": breakpoint.log_message,
+                            "verified": answered.map(|answer| answer.verified),
+                        })
+                    })
+                    .collect::<Vec<Value>>()
+            })
+            .collect();
+        json!({ "breakpoints": rows })
+    }
+
+    /// Take every breakpoint out of the project, open files and closed ones alike.
+    fn clear_every_breakpoint(&mut self) -> usize {
+        let files = self.every_breakpoint();
+        let cleared = files.iter().map(|(_, set)| set.len()).sum();
+        for (path, _) in files {
+            self.change_breakpoints(&path, |breakpoints| {
+                breakpoints.clear();
+            });
+            self.send_the_breakpoints_of(&path);
+        }
+        cleared
+    }
+
+    /// The byte offset of the start of a **one-based** line in a file, open or not.
+    ///
+    /// The ownership rule, once more: an open file's own text answers, and a closed file's bytes are
+    /// read at the moment of use.
+    fn offset_of_line(&self, path: &Path, line: usize) -> usize {
+        if let Some(index) = self.files.index_of(path) {
+            return self.files.at(index).document.offset_of_line_number(line);
+        }
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return 0;
+        };
+        text.split_inclusive('\n')
+            .take(line.saturating_sub(1))
+            .map(str::len)
+            .sum::<usize>()
+            .min(text.len())
+    }
+
+    /// And the other direction, on the same terms.
+    fn offset_line_number(&self, path: &Path, offset: usize) -> usize {
+        if let Some(index) = self.files.index_of(path) {
+            return self.files.at(index).document.line_number_of(offset);
+        }
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return 1;
+        };
+        text.as_bytes()[..offset.min(text.len())].iter().filter(|byte| **byte == b'\n').count() + 1
+    }
+
     // ------------------------------------------------------------------------------- the explorer
 
     fn cli_explorer(&mut self, request: &Request, verb: &str) -> Outcome {
@@ -4026,6 +4654,8 @@ impl QuillApp {
         self.settings_window.open = false;
         self.prompt = None;
         self.confirmation = None;
+        self.breakpoint_dialog = None;
+        self.evaluate = None;
         if let Some(git) = self.git.as_mut() {
             git.panel.open = false;
             git.dialogs.open = None;
@@ -4212,6 +4842,8 @@ impl QuillApp {
             "mcp.enabled" => self.settings.mcp_enabled.to_string(),
             "mcp.port" => self.settings.mcp_port.to_string(),
             "mcp.tools" => self.settings.mcp_tools.name().to_owned(),
+            "debug.lldb" => self.settings.debug_adapter("lldb").unwrap_or_default().to_owned(),
+            "debug.node" => self.settings.debug_adapter("node").unwrap_or_default().to_owned(),
             "panes.explorer.width" => format!("{:.0}", self.panes.explorer_width),
             "panes.terminal.height" => format!("{:.0}", self.panes.terminal_height),
             "panes.preview.fraction" => format!("{:.3}", self.panes.preview_fraction),
@@ -4265,6 +4897,25 @@ impl QuillApp {
                 settings.suggestions = crate::settings::Suggestions::parse(value).ok_or_else(|| {
                     format!("{name} wants automatic or manual, and {value} is neither.")
                 })?
+            }
+            // Not checked against the machine, for `terminal.shell`'s reason: a path may name
+            // something installed a moment from now, and when it is wrong the status bar says so in
+            // the adapter's own words, which is a better message than one made up here.
+            "debug.lldb" | "debug.node" => {
+                let entry = name.trim_start_matches("debug.").to_owned();
+                settings.debug_adapters.retain(|(known, _)| *known != entry);
+                let path = value.trim();
+                if !path.is_empty() {
+                    settings.debug_adapters.push((entry, path.to_owned()));
+                }
+                // Kept in the order `plugins::DEBUGGERS` names them, so the settings file is written
+                // the same way whichever order they were set in.
+                settings.debug_adapters.sort_by_key(|(known, _)| {
+                    crate::services::plugins::DEBUGGERS
+                        .iter()
+                        .position(|name| name == known)
+                        .unwrap_or(usize::MAX)
+                });
             }
             "mcp.enabled" => settings.mcp_enabled = flag()?,
             "mcp.port" => settings.mcp_port = crate::settings::clamp_port(number()?),
@@ -4772,6 +5423,16 @@ const SETTINGS: &[SettingKey] = &[
         name: "mcp.tools",
         accepts: "grouped or every",
         help: "One tool an area, or one tool a command. `mcp tools --count` says what each costs.",
+    },
+    SettingKey {
+        name: "debug.lldb",
+        accepts: "a path to lldb-dap or codelldb, or empty for whatever is on PATH",
+        help: "Where the LLDB adapter lives, for Rust and native code. Empty means Quill looks for codelldb then lldb-dap on PATH. `tools/get-debug-adapter.ps1` fetches one and prints the line.",
+    },
+    SettingKey {
+        name: "debug.node",
+        accepts: "a path to js-debug's dapDebugServer.js",
+        help: "Where js-debug lives, for JavaScript and TypeScript. There is no default: js-debug is a script rather than a program, so Quill has nothing to look for until it is told.",
     },
     SettingKey {
         name: "panes.explorer.width",

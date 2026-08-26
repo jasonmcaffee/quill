@@ -29,6 +29,7 @@ token from the credential helper git already uses, so there is no second credent
 | `quill-core` | The editor: the text buffer, the character and paragraph formatting, the caret, layout, undo, the Markdown parser, the syntax tokeniser, and the Mermaid reader and diagram layout. | Any user interface dependency. Its tests run with no window, no graphics card and no fonts. |
 | `quill-terminal` | The terminal: the session over a pseudoterminal, the screen the painter reads, the colour palette, the key encoding, the mouse reports, and which shell to start and in what folder. | Any user interface dependency, for the same reason. |
 | `quill-git` | Reading and changing a git repository: the status, blame, the log, diffs, branches, and every operation on the Git menu, plus the thread they run on. | Any user interface dependency, and any decision about what a dialog looks like. Its tests build real repositories in a temporary folder and ask git what happened. |
+| `quill-dap` | The Debug Adapter Protocol: the `Content-Length` framing, the typed messages, the session state machine, and the thread an adapter is spoken to on. | Any user interface dependency, and any knowledge of *which* adapter to start — where `lldb-dap` lives on this machine is knowledge about the machine, and it lives in `quill-app`. Its tests run against scripted adapters with no process. |
 | `quill-app` | The window: drawing, input, real fonts, the settings on disk, the menus, and the plugin registry. | Editor behaviour, terminal emulation or git plumbing. Those belong in the crates above. |
 | `quill-cli` | The command line: the catalogue of commands, the wire format, and the client program. It lives in `quill-cli/` beside its own documentation rather than under `crates/`, because the two are read together. | Anything that depends on `quill-app`. The dependency points one way, so the client stays a small program with no window, no graphics card and no fonts behind it. |
 
@@ -368,6 +369,149 @@ Deliberately not here, each with its reason in §12 of the TDD: **auto-import** 
 with a different risk, since it edits a part of the file the caret is not in), **bare package
 specifiers** (`node_modules` is out of the walk and `task-1659` measured what putting it back would
 cost), **`tsconfig` path aliases**, and **following re-exports**.
+
+## A debugger is a separate program, and Quill speaks its protocol
+
+Click the gutter to put a red dot on a line, press `Shift+F9` to start the configuration the play
+button starts *under a debugger*, and the program stops there: the line is marked, the call stack and
+the variables are in the debug tile along the bottom, and `F8`, `F7`, `Shift+F8` and `F9` step. The
+values of the paused frame's locals are painted at the ends of the lines that name them.
+`task-1687` is the design, `task-1688` the plan and `task-1689` the implementation.
+
+**One client, every language.** `quill-dap` speaks the Debug Adapter Protocol, and a *debug adapter*
+is a separate program that speaks DAP on one side and drives a real debugger on the other. The
+debuggers have already made this choice themselves — lldb ships `lldb-dap` inside every LLVM
+distribution, Python's debugpy *is* an adapter, Microsoft's js-debug publishes a standalone DAP
+server, Go's delve serves it natively — so speaking DAP is not adding a translation layer, it is
+speaking the native protocol of the programs that already exist. Driving gdb's MI, the V8
+inspector's CDP and pydevd's own wire would have been three clients, three test rigs and three sets
+of faults, and the fourth language would have cost a fourth.
+
+`task-1675` refused a language server and it is worth saying why that verdict does not carry over.
+Go to definition had a cheaper tier that answers instantly from the token stream. Debugging has no
+such tier: there is no syntactic way to pause a running process. So the costs that made a language
+server unattractive — a program per language, found on the machine, answering when it pleases — are
+not costs DAP adds; they are the nature of the feature. What **is** kept from `task-1675` is the
+testing answer: the protocol client is tested against scripted adapters with fixed messages, exactly
+as the terminal's screenshot tests feed a session with no shell behind it.
+
+**Which debugger a language uses is data in the plugin, and the debugger itself is code in Quill** —
+the rule `language.renders` and `run.project` already follow, made a third time. `debug.adapter =
+lldb` is checked against `plugins::DEBUGGERS` and refused with the house message; Rust names `lldb`,
+JavaScript and TypeScript name `node`, and CSS and Mermaid name nothing, so **every debug control is
+absent** for their files. `services::debuggers` is the code half: which programs to look for on
+`PATH`, the `debug.lldb` / `debug.node` settings that override the lot, and how a run configuration
+becomes that adapter's own launch request. **Nothing is fetched, ever** — Zed downloads its adapters
+and Quill does not, because the rule that keeps a document from making a network request keeps the
+editor from making one too. Pressing Debug with nothing installed is one sentence in the status bar
+naming what was looked for and where it comes from, built by the registry entry that knew.
+
+**Debug is Run, under a debugger.** The same `Configuration` the play button starts — same command,
+same folder, same environment — which is IntelliJ's own model. The debuggee runs **in the run tile**,
+through the `runInTerminal` reverse request, so it gets a real ConPTY with its colours and its
+interactivity and all of the run tile's own rules. Quill answers that request with `success` and
+**no process id**: a pseudoconsole hands back a console rather than a child, the specification makes
+the id optional for exactly that reason, and it is what lldb-dap's comm-file scheme and js-debug both
+expect.
+
+A configuration whose program is `cargo` runs a build tool rather than the program, and handing
+`cargo` to lldb would debug cargo. Rather than being cleverly wrong, that is **refused with a
+sentence** saying to name the built binary instead. Zed's locators — deriving the artifact from the
+build system — are the right eventual answer and are a design of their own.
+
+**Breakpoints live where the marked passages live**, in `quill_core::breakpoints` inside the
+`Document`, as the byte offset of each line's start — so `insert` and `remove_range`, the only two
+functions in Quill that know a range of bytes moved, shift them in the same two lines that already
+shift the highlights and the folds. That is what makes a breakpoint stay on its line while the file
+is edited above it, with no watcher anywhere. They ride the undo `Snapshot`, because undo restores a
+state; toggling one is **not an edit**, which is the rule the marked passages and the editor's font
+already follow. They persist in `.quill/breakpoints.conf` in the numbered form
+`run-configurations.conf` established, written by the released binary only, and the ownership rule is
+the highlights' rule verbatim: **a file that is open is owned by its `Document`, and every other file
+is owned by the store.** `QuillApp::change_breakpoints` is the one place that choice is made.
+
+**Quill draws the adapter's answer rather than its own hope.** `setBreakpoints` is full replacement
+per file and the adapter says where each one really landed and whether it is `verified`; one it moved
+is drawn where it put it, and one it could not bind stays **hollow** for the life of the session.
+That is `task-1675`'s honesty rule applied to a protocol that was designed for it. A breakpoint
+switched off is hollow too, and **dimmed**, because a person's own decision and a debugger's refusal
+are not the same thing. Editing text during a session does **not** re-send: the running program's
+code has not changed, so the adapter's positions stand, which is what every surveyed editor does.
+
+**The dot is drawn over the line number**, which is what IntelliJ does and what costs the gutter no
+width at all — the 12 points `components::gutter` reserved were spent by `task-1686` on the folding
+arrows, and a second control cannot share twelve points with one that already fills them. The number
+gives way rather than being drawn round the dot, because a red circle with a numeral showing through
+it reads as neither. With the line numbers switched off there is nothing to draw over, so a column of
+its own is reserved in that configuration — **whether or not anything is set**, so the first
+breakpoint never moves the text under the pointer.
+
+**Every optional feature asks the capabilities first.** `initialize` is where an adapter says what it
+can do, so Quill never sends what it did not offer and a control whose capability is absent is
+absent — the rule the `F` button already follows. A condition and a log message are **data in the
+request**: the adapter compiles the expression and formats the message, so Quill's whole cost for two
+of IntelliJ's features is two optional strings and the modal that edits them. The exception filters
+are the adapter's own list, and an adapter that offers none gets no control.
+
+**Every `variablesReference` dies on resume.** The protocol says so and Zed says so, and
+`quill_dap::Request::resumes` is where the five spellings of "the program is going again" are written
+down once. What is **not** thrown away is which rows were open: they are remembered by their path of
+names rather than by their reference, so stepping through a loop does not re-collapse the structure
+being watched. Nothing deeper than what is on the screen is ever fetched.
+
+**The bottom of the window holds one of three tiles now** — terminal, run, debug — and never two,
+because two grids stacked take the editing area below the fold. `show_the_debug_tile` and its two
+siblings are what settle that, and every path that shows any of the three goes through one of them.
+The debuggee's console **is** the run tile, so the debug tile's header ends with a `Console` button
+that swaps to it and back.
+
+**"Stopped" and "there is something to look at" are not the same instant**, and `DebugState::is_ready`
+is the difference. A `stopped` event is one thing; the four requests it causes — `threads`,
+`stackTrace`, `scopes`, `variables` — are another, so there is a window of a few round trips in which
+the session is paused and knows nothing. Measured against a real CodeLLDB, `debug status` in that
+window answers with a null line and `debug variables` with an empty list, both of which look exactly
+like a program that stopped somewhere uninteresting. `--wait-for-pause` therefore waits until the
+adapter has answered everything outstanding, which is right for every shape of frame — one with no
+locals, one whose scopes are all expensive, one still fetching a watch.
+
+**Inline values are the client's own work**; DAP has no request for them. `FileSymbols` already has
+the file's identifiers sorted by position and the paused frame's locals have already been fetched
+because the tile shows them, so the match is a walk over the file's words against one map, computed
+once per stop and cached on the same key `symbols::Hover` uses. It is painted decoration, never text
+in the document.
+
+`quill-cli debug` is the command line half, thirteen verbs, and the sequence the whole feature is an
+acceptance test of is four of them: `debug breakpoint add`, `debug start --wait-for-pause`,
+`debug variables`, `debug step-over`. That is also the feature's second customer — an agent driving
+Quill can now observe a program's actual state instead of reasoning about it.
+
+**Two things measured about CodeLLDB 1.12.3**, recorded in `services::debuggers` so they are not
+rediscovered. It reads the protocol's `repl` context as an **LLDB command line** rather than as an
+expression — it says so on its own console — so `Evaluate Expression` asks in the `watch` context,
+which is what its name says it does. And an expression that does not resolve ends the session, with a
+Python traceback and nothing on the protocol channel to say why; that is CodeLLDB's fault rather than
+Quill's, and what Quill does about it is what it should — the session ends, `debug status` says so,
+`debug output` carries the adapter's own words, and starting another session works at once.
+
+That last one is why `DebugState::is_ready` counts **the stop's own requests** rather than every
+outstanding one: an adapter that never answers something is a real thing, and a readiness rule that
+waited for everything would be wedged for the rest of the session by one bad watch expression. It is
+also why the adapter's standard error is read rather than swallowed — that is the only place any of
+this appeared at all, and swallowing it is exactly what `quill-git`'s rule about git's stderr says
+never to do.
+
+**One honesty that belongs on the page rather than hidden**: with the MSVC toolchain rustup installs
+by default on Windows, LLDB reads PDB debug information incompletely. Breakpoints and stepping work,
+and some enums and collections render poorly. The registry entry says so, the session says it once
+when it starts, and the variables tree shows what the adapter says rather than pretending. The GNU
+toolchain's DWARF is fully readable, and Rust 1.85+ ships LLDB formatters that improve the MSVC case.
+
+Deliberately not here, each with its reason in §13 of the TDD: **attach** (launch only; the protocol
+work is attach-ready and attach is its own ticket), **more than one session**, **deriving a Cargo
+project's binary**, **Python** (no Python plugin ships, so a `python` entry no manifest could name
+would be dead code), **Smart Step Into**, **Force variants**, **stepping filters**, **Reset Frame**,
+**data breakpoints**, **memory and disassembly views**, **hot code replace**, and **downloading
+adapters**.
 
 ## A block is collapsed by hiding its lines, and the line numbers do not move
 
@@ -929,11 +1073,12 @@ true of a temporary.
 
 **The run tile is the terminal tile's sibling**, not a second tile that resembles it: the same
 header, the same padding, the same splitter, and the grid itself is `terminal_panel::grid`, shared
-rather than copied. **The bottom of the window holds one of the two** — two grids stacked take the
-editing area below the fold — so every path that shows either goes through
-`show_the_run_tile` or `show_the_terminal_tile`. That pair exists because leaving it to each caller
-did not survive first contact: `quill-cli terminal show` set its own flag, left the run tile up, and
-drew both grids into the same rectangle.
+rather than copied. **The bottom of the window holds one of the three** — the terminal tile, the run
+tile, and since `task-1687` the debug tile — never two stacked, because two grids stacked take the
+editing area below the fold. So every path that shows any of them goes through
+`show_the_run_tile`, `show_the_terminal_tile` or `show_the_debug_tile`. That family exists because
+leaving it to each caller did not survive first contact: `quill-cli terminal show` set its own flag,
+left the run tile up, and drew both grids into the same rectangle.
 
 **A run records what it ended with rather than re-reading it.** `Session::exit_code` is the source
 and `Run::ended` is where the answer is kept the moment it arrives: a program Quill killed has no
@@ -1487,6 +1632,13 @@ string look like, and a colour per kind of token. **Nothing is run.** A dynamic 
 unstable interface across a `dlopen` boundary and a plugin crash taking the editor with it;
 WebAssembly answers both and costs a runtime and a host interface that has to be designed first.
 
+Four data keys name something built into the binary rather than describing a language:
+`language.renders` names a renderer from `plugins::RENDERERS`, `run.project` a detector from
+`PROJECT_RUNNERS`, and `debug.adapter` a debugger from `DEBUGGERS`. Each is **checked**, and a
+manifest naming one this version does not have is refused with a message rather than loading as a
+language whose files quietly never draw, are never noticed, or offer a Debug button that never works.
+The most a third-party manifest can do is name something that shipped in the binary, visibly.
+
 `plugin.kind` is the seam a later version widens, and it is checked: a manifest asking for anything
 but `language` is refused with a message rather than half-loaded. Do not quietly widen it.
 
@@ -1603,6 +1755,12 @@ trade that away to be a shade nearer a screenshot.
   lines rather than a shadow document being laid out, where the collapsed set lives so it survives
   an edit, why the `…` badge is painted rather than typed, and what `Collapse All But Highlighted`
   keeps.
+- `tasks/task-1687-debugging-tdd.md` — breakpoints, stepping and inspection: what IntelliJ, VS Code,
+  Zed and Helix each do, why the Debug Adapter Protocol is one client instead of one per language and
+  why `task-1675`'s refusal of a language server does not carry over, the crate that speaks the
+  protocol and the thread it runs on, where a breakpoint lives so it moves with the text, why Debug
+  is Run under a debugger, the lazy `variablesReference` model and when it is thrown away, and the
+  eleven things left out with the reason for each. `task-1689` is the implementation of it.
 - `tasks/task-1685-markdown-tdd.md` — the Markdown preview: the twenty-eight things the
   line-at-a-time parser could not express and why they were all one fault, why a Markdown crate was
   weighed and refused, the block tree and the delimiter stack that replaced it, the three ways of
