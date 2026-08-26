@@ -11,6 +11,7 @@
 pub mod completion;
 pub mod cursor;
 pub mod document;
+pub mod folding;
 pub mod highlights;
 pub mod imports;
 pub mod layout;
@@ -26,6 +27,7 @@ pub mod syntax;
 pub use completion::{Candidate, Row as CompletionRow, Source as CompletionSource};
 pub use cursor::Selection;
 pub use document::{Command, Document};
+pub use folding::{Kind as FoldKind, Folds, Hidden, Reading as FoldReading, Region as FoldRegion};
 pub use highlights::{Highlight, Highlights, Rgba};
 pub use imports::Context as ImportContext;
 pub use layout::{

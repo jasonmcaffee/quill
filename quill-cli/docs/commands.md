@@ -1075,6 +1075,84 @@ quill-cli highlight apply --from-file marks.json
 quill-cli highlight apply --json-text '[{"path":"src/main.rs","fromLine":1,"toLine":3}]'
 ```
 
+## fold — the blocks collapsed in the tab that is showing
+
+A block that can be collapsed is a function, an `if`, a bracket that spans lines, a run of comments, an indented section, or a Markdown heading — worked out from the file itself, so nothing has to be written into it. Collapsing one hides its lines; the line numbers of everything still showing are unchanged, so `fold list` and `editor caret --line` speak the same language whatever is folded. `fold others` is the one to notice: it collapses everything that does not hold a marked passage, which is how to leave only the four places you care about on the screen.
+
+### fold list
+
+```
+quill-cli fold list
+```
+
+Every block in the tab that is showing that can be collapsed: which line it starts on, which line it ends on, how many lines it hides, what kind of block it is, and whether it is collapsed now.
+
+```sh
+quill-cli fold list --json
+```
+
+### fold toggle
+
+```
+quill-cli fold toggle [--line <number>]
+```
+
+Collapse a block that is showing, or expand one that is collapsed. The block at the caret when no line is given.
+
+- `--line <number>` — The line the block starts on, counting from 1. `fold list` says which lines those are.
+
+```sh
+quill-cli fold toggle
+quill-cli fold toggle --line 42
+```
+
+### fold collapse
+
+```
+quill-cli fold collapse [--line <number>] [--all]
+```
+
+Collapse one block, or every block in the file.
+
+- `--line <number>` — The line the block starts on, counting from 1.
+- `--all` — Collapse every block in the file.
+
+```sh
+quill-cli fold collapse --all
+quill-cli fold collapse --line 42
+```
+
+### fold expand
+
+```
+quill-cli fold expand [--line <number>] [--all]
+```
+
+Expand one block, or show all again.
+
+- `--line <number>` — The line the block starts on, counting from 1.
+- `--all` — Expand every block in the file.
+
+```sh
+quill-cli fold expand --all
+quill-cli fold expand --line 42
+```
+
+### fold others
+
+```
+quill-cli fold others [--selection]
+```
+
+Collapse everything that does not hold a marked passage, so only the marked parts of the file are left showing. Falls back to the selection when nothing is marked.
+
+- `--selection` — Keep what is selected rather than what is marked, even when there are marks.
+
+```sh
+quill-cli fold others
+quill-cli fold others --selection
+```
+
 ## terminal — the shells along the bottom
 
 `terminal send` types into the shell and presses Enter; `terminal read --wait-for` is how to wait for what it did.

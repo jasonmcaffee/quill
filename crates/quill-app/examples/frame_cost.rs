@@ -185,6 +185,7 @@ fn main() {
             document.paragraphs(),
             &renderer,
             width,
+            &quill_core::folding::Hidden::none(),
         );
         std::hint::black_box(collect_visible_glyphs(&renderer, &carried, 0.0, view_height));
     });
@@ -210,6 +211,7 @@ fn main() {
                 document.paragraphs(),
                 &renderer,
                 width,
+                &quill_core::folding::Hidden::none(),
             );
             std::hint::black_box(collect_visible_glyphs(&renderer, &carried, 0.0, view_height));
         });

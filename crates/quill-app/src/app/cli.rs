@@ -388,6 +388,7 @@ impl QuillApp {
             "pane" => self.cli_pane(request, verb),
             "editor" => self.cli_editor(request, verb, ctx),
             "highlight" => self.cli_highlight(request, verb),
+            "fold" => self.cli_fold(request, verb),
             "terminal" => self.cli_terminal(request, verb),
             "run" => self.cli_run(request, verb),
             "explorer" => self.cli_explorer(request, verb),
@@ -404,6 +405,139 @@ impl QuillApp {
                 format!("There is no command called {}.", request.command),
             ),
         }
+    }
+
+
+    /// `fold` — the blocks collapsed in the tab that is showing.
+    ///
+    /// What can be collapsed is worked out from the file, so `fold list` is the command to run
+    /// first: nothing else here can be aimed anywhere until a caller knows which lines head a block.
+    /// Lines count from 1 everywhere, as they do throughout `editor`, and they are the file's own
+    /// numbers rather than the numbers of what happens to be showing — folding hides lines and
+    /// renumbers nothing.
+    fn cli_fold(&mut self, request: &Request, verb: &str) -> Outcome {
+        if !crate::services::file_kind::folding_applies(self.document().path()) {
+            return no(
+                request,
+                code::NOT_APPLICABLE,
+                "There is nothing to fold in this tab.",
+            );
+        }
+        // A line the caller gave, turned into the paragraph number everything inside Quill counts in.
+        let asked = request.number("line").filter(|line| *line >= 1.0).map(|line| line as usize - 1);
+        match verb {
+            "list" => {
+                let regions = self.fold_report();
+                let rows: Vec<String> = regions
+                    .iter()
+                    .map(|region| {
+                        format!(
+                            "{}{:>6}  to {:>6}  {:>5} lines  {}",
+                            if region["collapsed"] == json!(true) { "*" } else { " " },
+                            region["line"],
+                            region["lastLine"],
+                            region["hiddenLines"],
+                            region["kind"].as_str().unwrap_or_default(),
+                        )
+                    })
+                    .collect();
+                let collapsed = regions.iter().filter(|it| it["collapsed"] == json!(true)).count();
+                lines(
+                    request,
+                    format!("{} block{} that can be collapsed, {collapsed} collapsed", regions.len(), if regions.len() == 1 { "" } else { "s" }),
+                    rows,
+                    json!({ "regions": regions }),
+                )
+            }
+            "toggle" => {
+                let line = match asked {
+                    Some(line) => line,
+                    None => {
+                        if !self.toggle_fold_at_caret() {
+                            return no(request, code::NOT_APPLICABLE, self.take_the_message());
+                        }
+                        return self.fold_answer(request);
+                    }
+                };
+                if !self.toggle_fold_at_line(line) {
+                    return no(request, code::NOT_APPLICABLE, self.take_the_message());
+                }
+                self.fold_answer(request)
+            }
+            "collapse" | "expand" => {
+                let collapse = verb == "collapse";
+                if request.switch("all") {
+                    let changed =
+                        if collapse { self.collapse_all_folds() } else { self.expand_all_folds() };
+                    if !changed {
+                        return no(
+                            request,
+                            code::NOT_APPLICABLE,
+                            format!(
+                                "There is nothing to {verb}{}.",
+                                if collapse { "" } else { ": nothing is collapsed" }
+                            ),
+                        );
+                    }
+                    return self.fold_answer(request);
+                }
+                let Some(line) = asked else {
+                    return no(
+                        request,
+                        code::USAGE,
+                        format!("Say which block with --line, or --all to {verb} every one."),
+                    );
+                };
+                // Asked for what it already is, this is a no-op rather than the opposite of what was
+                // wanted: `fold collapse --line 40` twice must not expand line 40.
+                let index = self.files.active_index();
+                let already = self
+                    .fold_marks(index)
+                    .iter()
+                    .find(|(head, _)| *head == line)
+                    .map(|(_, shut)| *shut);
+                match already {
+                    None => no(
+                        request,
+                        code::NOT_APPLICABLE,
+                        format!("Nothing at line {} heads a block. Run `fold list`.", line + 1),
+                    ),
+                    Some(shut) if shut == collapse => self.fold_answer(request),
+                    Some(_) => {
+                        self.toggle_fold_at_line(line);
+                        self.fold_answer(request)
+                    }
+                }
+            }
+            "others" => {
+                if !self.collapse_all_but_kept(request.switch("selection")) {
+                    return no(request, code::NOT_APPLICABLE, self.take_the_message());
+                }
+                self.fold_answer(request)
+            }
+            _ => no(
+                request,
+                code::UNKNOWN_COMMAND,
+                format!("There is no command called {}.", request.command),
+            ),
+        }
+    }
+
+    /// What every fold command that changed something answers with: how many blocks there are and
+    /// how many are now collapsed, and the list itself for a caller reading JSON.
+    fn fold_answer(&mut self, request: &Request) -> Outcome {
+        let regions = self.fold_report();
+        let collapsed = regions.iter().filter(|it| it["collapsed"] == json!(true)).count();
+        ok(
+            request,
+            format!("{collapsed} of {} blocks collapsed", regions.len()),
+            json!({ "regions": regions }),
+        )
+    }
+
+    /// The status bar message a fold command left behind, which is why it refused.
+    fn take_the_message(&mut self) -> String {
+        self.message.take().unwrap_or_else(|| "There is nothing to fold here.".to_owned())
     }
 
     /// A relative path is relative to the project. See the note at the top of this file.

@@ -369,6 +369,100 @@ with a different risk, since it edits a part of the file the caret is not in), *
 specifiers** (`node_modules` is out of the walk and `task-1659` measured what putting it back would
 cost), **`tsconfig` path aliases**, and **following re-exports**.
 
+## A block is collapsed by hiding its lines, and the line numbers do not move
+
+`task-1686` asks for IntelliJ's fold arrows: a chevron beside the line number against a function, an
+`if` or a large block, a way to put everything but the passages you have marked out of sight, and —
+the sentence that decides the whole design — **the line numbers stay correct**.
+
+That last one rules out the cheap answer, which is to lay out a second document holding only the
+visible lines. Every offset in Quill is a byte offset into the real file — the caret, the selection,
+the marked passages, the syntax spans, the search hits, the definitions index — and a shadow
+document would need every one of them translated at every seam. So it is the real document, laid
+out with some of its paragraphs left out.
+
+**A hidden paragraph produces no lines and keeps its place in `starts`.** That is all of it.
+`layout_with` takes a `folding::Hidden` — sorted paragraph ranges — and skips those paragraphs; the
+gutter goes on numbering each line by `line.paragraph + 1`, so the numbers of what is still showing
+are unchanged **by construction rather than by arithmetic**, and the painter's pair of binary
+searches over what is left does not know the difference. Two things inside `layout.rs` had to change
+with it, and both are a silent wrong answer rather than a crash if they are missed: the fingerprint
+carries the hidden flag, or `relayout` would keep a paragraph that has just been hidden complete
+with its lines; and `relayout`'s byte shift comes from the first paragraph in the suffix that
+actually produced a line rather than from `after[0]`, which were the same thing only while every
+paragraph produced one.
+
+**What is foldable is derived from the file; which of them are collapsed is state.**
+`quill_core::folding::regions` reads brackets that span lines, block comments and runs of line
+comments, VS Code's indentation rule, and Markdown headings. The tier is the syntactic one
+`task-1675` and `task-1680` already chose, and one more reason is added to theirs: a fold arrow that
+is silently absent because no language server happened to be installed looks like a fault rather
+than like a missing feature. `Reading` is the seam — `Code(&Grammar)`, `Markdown`, `Plain` — so this
+module holds no list of languages and the window, which already asks `services::file_kind` and
+`services::plugins`, picks.
+
+**The collapsed set lives in the `Document` as byte offsets**, beside the marked passages and for
+exactly the same reason: `insert` and `remove_range` are the only two places in Quill that know a
+range of bytes moved, and a third line there shifts the folds. It rides the undo `Snapshot`, because
+undo restores a state. Folding is **not an edit** — no undo step, no unsaved-changes flag — which is
+the rule the editor's font and the marked passages already follow. An offset is snapped to its head
+**line** rather than to its first byte, so typing at the start of a folded head does not pop it open,
+and every fold command rebuilds the whole set from the regions as they are now, which is what stops
+an offset that no longer names a head being kept for ever.
+
+**A third revision counter, and it is the second one's argument made once more.** Folding changes
+the layout and nothing else. Keyed on `text_revision` a fold would re-colour the file and rebuild
+the Markdown preview; keyed on `revision` the layout would be rebuilt on every frame of a drag. So
+`Document::fold_revision` exists, `refresh_layout` is keyed on the pair, and nothing else reads it.
+
+**The arrow went in the gap that was left for it.** `components/gutter.rs` has said since it was
+written that the 12 point space between the numbers and the text is where a folding arrow would go
+if Quill ever grew folding — so the gutter is exactly as wide as it was and the text did not move a
+point. It is drawn rather than lettered, and it is `icon::disclosure`, the same triangle the
+explorer's folders use, so a triangle means one thing in both places.
+
+**The `…` badge after a collapsed head line is painted over the text, not put into it.** This is the
+one place the Markdown preview's rule — everything on the screen is real text in a real document —
+is deliberately not followed: three characters in the layout that are not in the file would have to
+be hidden from the caret, the selection, the clipboard and every byte offset that crosses them, and
+a rectangle painted on top is hidden from all of them for nothing. So the badge does not select, and
+**copying across a fold copies the hidden text**, because the selection is a byte range in the real
+document — which is what IntelliJ does and what a person means.
+
+**A caret is never inside a hidden paragraph**, and the two halves of that are separate.
+`reveal_the_caret_from_a_fold` opens whatever is hiding it, asked once in `show_editor` off the
+`reveal_caret` flag rather than at each of the places that jump — `follow_the_open_file`'s rule, that
+the next one added would be the one that forgot. And `keep_the_caret_visible` moves the caret out
+onto the head line when a block it is inside is collapsed, which is IntelliJ's own answer: expanding
+it again would make `Collapse All` do nothing whenever somebody was in the middle of a function.
+
+**`Collapse All But Highlighted` is VS Code's `foldAllExcept` over `task-1663`'s marks**: collapse
+everything, then keep open every region that holds a marked passage **and every region holding one of
+those** — a marked line inside a method inside a class is only visible if both are open. With nothing
+marked it falls back to the selection, and with neither it says so in the status bar rather than
+collapsing the whole file, which is what a person would read as the command having gone wrong.
+
+The keyboard is `Ctrl/Cmd+.` to toggle, `Ctrl/Cmd+Shift+.` for all, `Ctrl/Cmd+Shift+,` for none and
+`Ctrl/Cmd+Alt+.` for all-but-highlighted. Not IntelliJ's numeric keypad, which half the keyboards
+here have not got, but its `Ctrl+.` — the key it folds a selection with — with the other three built
+round it. The four are on `View -> Folding` and on the gutter's right click menu; the editing area's
+own menu holds the two the ticket named, and **not** `Edit -> Highlight`, because that submenu is
+drawn *inline* and three more rows there made the Edit menu taller than the window and pushed
+`Settings` out of reach. They are **absent** for a file that cannot fold, which is Quill's rule for a
+control that can never apply.
+
+**The cost is one reading of the file, shared with the colouring.** `colour_the_file` already runs
+`syntax::scan` over the same text at the same revision, so it now collects `folding::Tokens` — the
+comments and the strings, which is the only thing reading brackets needs a tokeniser for — and
+`fold_regions` uses them. A second pass was 2.5 ms of every keystroke on `app/mod.rs`. Measured
+there, 274 kilobytes and 5,554 lines: **1.25 ms to read its 1,276 blocks** with the scan shared, and
+3.8 ms for a whole keystroke with a fold closed. `cargo run --release -p quill-app --example
+folding_cost` is how those are measured again. A file past `COLOUR_LIMIT` loses its arrows as it
+loses its colours, and for the same reason.
+
+`quill-cli fold list | toggle | collapse | expand | others` is the command line half, and the MCP
+tools come from the catalogue with no further work.
+
 ## A frame costs what is on the screen, not what is in the file
 
 `task-1666` reported that selecting text, scrolling and dragging the window were jagged on Windows
@@ -1503,6 +1597,12 @@ trade that away to be a shade nearer a screenshot.
   references and rename modals, and the fifty-scenario battery the implementation is held to.
   `task-1676` is the implementation of it; `cargo run --release -p quill-app --example symbol_cost`
   is how its budgets are measured again.
+- `tasks/task-1686-folding-tdd.md` — collapsing and expanding blocks: what IntelliJ, VS Code,
+  CodeMirror and the Language Server Protocol each do about folding, the three tiers for deciding
+  what is foldable and why the syntactic one is chosen again, why a hidden paragraph produces no
+  lines rather than a shadow document being laid out, where the collapsed set lives so it survives
+  an edit, why the `…` badge is painted rather than typed, and what `Collapse All But Highlighted`
+  keeps.
 - `tasks/task-1685-markdown-tdd.md` — the Markdown preview: the twenty-eight things the
   line-at-a-time parser could not express and why they were all one fault, why a Markdown crate was
   weighed and refused, the block tree and the delimiter stack that replaced it, the three ways of

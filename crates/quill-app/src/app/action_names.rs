@@ -18,7 +18,7 @@
 
 use std::path::PathBuf;
 
-use crate::app::actions::{Action, GitAction, HighlightColor, RunAction};
+use crate::app::actions::{Action, FoldAction, GitAction, HighlightColor, RunAction};
 use crate::app::ViewMode;
 
 impl Action {
@@ -88,6 +88,7 @@ impl Action {
             }
             Action::ClearHighlight => "clear-highlight".to_owned(),
             Action::ClearHighlights => "clear-highlights".to_owned(),
+            Action::Fold(what) => format!("fold-{}", what.name()),
             Action::About => "about".to_owned(),
             Action::Quit => "quit".to_owned(),
         }
@@ -110,6 +111,9 @@ impl Action {
             // entry, and it would be a worse escape hatch if it could not name the thing to run.
             let named = path.as_ref().map(|named| named.to_string_lossy().to_string());
             return RunAction::from_name(rest, named).map(Action::Run);
+        }
+        if let Some(rest) = name.strip_prefix("fold-") {
+            return FoldAction::from_name(rest).map(Action::Fold);
         }
         if let Some(rest) = name.strip_prefix("highlight-") {
             return HighlightColor::ALL

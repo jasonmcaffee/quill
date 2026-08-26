@@ -9,14 +9,15 @@
 //! every other editor, and counting rows on screen instead would make the numbers change when the
 //! window is made narrower.
 //!
-//! The 12 point gap to the right of the numbers is deliberate empty space. Right clicking anywhere in
-//! the gutter opens its menu, and the gap is where a folding arrow would go if Quill ever grows
-//! folding, so adding one later would not move the text.
+//! The 12 point gap to the right of the numbers is where the folding arrows go. It was left empty
+//! for exactly that when this file was written, and `task-1686` spent it: the gutter is the same
+//! width with folding as it was without, so the text did not move a point when the arrows arrived.
+//! Right clicking anywhere in the gutter still opens its menu.
 
 use egui::{Color32, CornerRadius, Pos2, Rect, Sense, Vec2};
 use quill_core::Layout;
 
-use crate::theme::color;
+use crate::theme::{color, icon};
 
 /// The empty strip between the numbers and the text.
 pub const GAP: f32 = 12.0;
@@ -32,6 +33,10 @@ const CHANGE_BAR: f32 = 3.0;
 const NUMBER_SIZE: f32 = 11.5;
 /// The size the blame column is set at.
 const BLAME_SIZE: f32 = 10.5;
+/// How wide the square a folding arrow is drawn and clicked in is. The whole of [`GAP`], so the
+/// target is as large as the space allows — a five point arrow with a five point target is a control
+/// nobody can hit.
+const ARROW: f32 = GAP;
 
 /// One line's worth of blame, as the gutter draws it.
 ///
@@ -75,13 +80,28 @@ pub struct Gutter<'a> {
     pub blame: Option<&'a [BlameRow]>,
     /// Which paragraphs differ from the version git has, in order.
     pub changes: &'a [(usize, Change)],
+    /// Which paragraphs head something that can be collapsed, and whether it is collapsed, sorted
+    /// by paragraph.
+    ///
+    /// The gutter is told rather than asked: it has no text, no grammar and no idea what a block
+    /// is, which is the rule every component in Quill follows. `quill_core::folding` works it out
+    /// and the window hands the answer down.
+    pub folds: &'a [(usize, bool)],
 }
 
 impl Gutter<'_> {
     /// True when there is anything to draw at all, which is what decides whether the editing area
     /// gives up any width.
     pub fn showing(&self) -> bool {
-        self.numbers || self.blame.is_some() || !self.changes.is_empty()
+        self.numbers || self.blame.is_some() || !self.changes.is_empty() || !self.folds.is_empty()
+    }
+
+    /// Whether this paragraph heads a region, and whether that region is collapsed.
+    fn fold_at(&self, paragraph: usize) -> Option<bool> {
+        self.folds
+            .binary_search_by_key(&paragraph, |(at, _)| *at)
+            .ok()
+            .map(|index| self.folds[index].1)
     }
 }
 
@@ -92,6 +112,9 @@ pub struct GutterOutcome {
     pub context_menu: Option<Pos2>,
     /// A blame row was clicked, so the window should show that commit.
     pub show_commit: Option<String>,
+    /// A folding arrow was pressed, so the region headed by this paragraph should be collapsed or
+    /// expanded. The component decides nothing about which.
+    pub toggle_fold: Option<usize>,
 }
 
 /// How many digits the largest line number takes.
@@ -185,6 +208,12 @@ pub fn show(
         if let (Some(rect), true) = (numbers_rect, first_row) {
             draw_number(&inner, rect, row, line.paragraph + 1, line.paragraph == caret_line);
         }
+        if let (Some(collapsed), true) = (gutter.fold_at(line.paragraph), first_row) {
+            let centre = Pos2::new(change_x - ARROW / 2.0, y + line.height / 2.0);
+            if draw_arrow(&mut inner, centre, line.paragraph, collapsed) {
+                outcome.toggle_fold = Some(line.paragraph);
+            }
+        }
         if let Some((_, change)) = gutter.changes.iter().find(|(at, _)| *at == line.paragraph) {
             inner.painter().rect_filled(
                 Rect::from_min_size(Pos2::new(change_x, y), Vec2::new(CHANGE_BAR, line.height)),
@@ -194,6 +223,29 @@ pub fn show(
         }
     }
     outcome
+}
+
+/// The folding arrow against one line: down while the block is showing, right while it is
+/// collapsed.
+///
+/// Drawn rather than lettered, which is what `design/style-guide.md` asks for and what the
+/// explorer's own disclosure triangles already are — and it is the same shape, so a triangle means
+/// the same thing in both places. A collapsed block's arrow is never faint: it is the only thing on
+/// the screen saying that a stretch of the file is missing.
+fn draw_arrow(ui: &mut egui::Ui, centre: Pos2, paragraph: usize, collapsed: bool) -> bool {
+    let area = Rect::from_center_size(centre, Vec2::splat(ARROW));
+    let name = if collapsed {
+        format!("Expand block at line {}", paragraph + 1)
+    } else {
+        format!("Collapse block at line {}", paragraph + 1)
+    };
+    let response = ui.interact(area, ui.id().with(("fold", paragraph)), Sense::click());
+    let tint = if collapsed || response.hovered() { color::TEXT_CONTROL } else { color::TEXT_FAINT };
+    icon::disclosure(ui.painter(), centre, !collapsed, tint);
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Button, true, collapsed, &name)
+    });
+    response.clicked()
 }
 
 /// One line number, right aligned in its column.
@@ -283,15 +335,31 @@ mod tests {
 
     #[test]
     fn a_gutter_showing_nothing_takes_no_width() {
-        let gutter = Gutter { numbers: false, blame: None, changes: &[] };
+        let gutter = Gutter { numbers: false, blame: None, changes: &[], folds: &[] };
         assert!(!gutter.showing());
     }
 
     #[test]
     fn a_change_bar_alone_is_enough_to_show_the_gutter() {
         let changes = [(3, Change::Modified)];
-        let gutter = Gutter { numbers: false, blame: None, changes: &changes };
+        let gutter = Gutter { numbers: false, blame: None, changes: &changes, folds: &[] };
         assert!(gutter.showing(), "a file with changes shows its change bars even with numbers off");
+    }
+
+    #[test]
+    fn a_folding_arrow_alone_is_enough_to_show_the_gutter() {
+        let folds = [(4usize, false)];
+        let gutter = Gutter { numbers: false, blame: None, changes: &[], folds: &folds };
+        assert!(gutter.showing(), "a file with something to fold shows the arrows");
+        assert_eq!(gutter.fold_at(4), Some(false));
+        assert_eq!(gutter.fold_at(3), None, "no region is headed by that line");
+    }
+
+    /// The arrows go in the gap that was left for them, so the gutter is exactly as wide with
+    /// folding as it was without — which is why no accepted screenshot moved sideways.
+    #[test]
+    fn the_arrows_take_no_width_of_their_own() {
+        assert_eq!(ARROW, GAP);
     }
 
     #[test]

@@ -75,6 +75,25 @@ pub struct Cached {
     /// Keyed on `text_revision`, the same key `colour_the_file` is keyed on, so a caret move
     /// recomputes nothing.
     pub symbols: Option<crate::app::symbols::TabSymbols>,
+    /// What in this file could be collapsed, read from its live text and kept until that text
+    /// changes. Keyed on `text_revision`, the same key the two above are keyed on.
+    ///
+    /// Which of them *are* collapsed is not here: that is state rather than a reading, so it lives
+    /// in the `Document` where the two functions that move bytes can move it.
+    pub fold_regions: Option<crate::app::folding::TabRegions>,
+    /// This file's comments and strings, and the `text_revision` they were read at.
+    ///
+    /// A by-product of `colour_the_file`, which already runs `syntax::scan` over the same text at
+    /// the same revision. Reading the blocks that could be collapsed needs exactly that and nothing
+    /// else from a tokeniser, and a second pass over a 273 kilobyte file is 2.5 ms of every
+    /// keystroke — `task-1666`'s rule, applied to the pass `task-1686` would otherwise have added.
+    pub fold_tokens: Option<(u64, quill_core::folding::Tokens)>,
+    /// The `fold_revision` the layout was built at, beside the text revision it was built at.
+    ///
+    /// A second key rather than folding into the first, because collapsing a block changes the
+    /// layout and nothing else: keyed on `text_revision` a fold would re-colour the file and rebuild
+    /// the Markdown preview. See `tasks/task-1686-folding-tdd.md` section 5.1.
+    pub laid_out_folds: u64,
 }
 
 impl Cached {

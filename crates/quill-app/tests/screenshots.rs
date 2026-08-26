@@ -23,7 +23,7 @@ use egui_kittest::wgpu::WgpuTestRenderer;
 use egui_kittest::{Harness, SnapshotResults};
 use quill_app::QuillApp;
 use quill_app::app::ViewMode;
-use quill_app::app::actions::{Action, HighlightColor, RunAction};
+use quill_app::app::actions::{Action, FoldAction, HighlightColor, RunAction};
 use quill_app::components::about_dialog::About;
 use quill_app::components::title_bar::MenuPlacement;
 use quill_app::settings;
@@ -7854,4 +7854,211 @@ fn every_run_command_reaches_the_window() {
             "`run {verb}` is in the catalogue and the window does not know it"
         );
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// task-1686: collapsing and expanding blocks.
+
+/// A folder holding one real Rust file with blocks worth folding in it.
+///
+/// A folder of its own rather than an addition to `sample_folder`: that fixture's file count is in
+/// the status bar of a dozen accepted screenshots, and a tenth file would change every one of them.
+fn folding_folder(name: &str) -> std::path::PathBuf {
+    let root = std::env::temp_dir().join("quill-screenshot-folding").join(name);
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::create_dir_all(&root).expect("make the folder");
+    std::fs::write(
+        root.join("source.rs"),
+        "/// Adds two numbers together.\n\
+         /// The second line of the comment.\n\
+         fn add(left: usize, right: usize) -> usize {\n\
+        \x20   let total = left + right;\n\
+        \x20   if total > 100 {\n\
+        \x20       return 100;\n\
+        \x20   }\n\
+        \x20   total\n\
+         }\n\
+         \n\
+         fn subtract(left: usize, right: usize) -> usize {\n\
+        \x20   left - right\n\
+         }\n\
+         \n\
+         fn main() {\n\
+        \x20   println!(\"{}\", add(1, 2));\n\
+        \x20   println!(\"{}\", subtract(4, 3));\n\
+         }\n",
+    )
+    .expect("write source.rs");
+    root
+}
+
+/// Open `source.rs` in a window on a folder of its own.
+fn folding_harness(name: &str) -> Harness<'static, QuillApp> {
+    let folder = folding_folder(name);
+    let mut harness = harness_in(&folder);
+    harness.get_by_label_contains("source.rs").click();
+    harness.run();
+    harness.run();
+    harness
+}
+
+/// How many lines of the file are on the page, which is what folding changes.
+fn laid_out_paragraphs(harness: &Harness<'static, QuillApp>) -> Vec<usize> {
+    harness.state().layout().lines.iter().map(|line| line.paragraph).collect()
+}
+
+#[test]
+fn a_function_can_be_collapsed_from_the_gutter_and_the_line_numbers_stay_right() {
+    let mut harness = folding_harness("gutter");
+    // Line 3 is `fn add(...) {`, which is where the arrow goes. The numbers a person reads are one
+    // more than the paragraph numbers Quill counts in.
+    let before = laid_out_paragraphs(&harness);
+    assert!(before.contains(&5), "the body of `add` is on the page to start with");
+
+    harness.get_by_label("Collapse block at line 3").click();
+    harness.run();
+    harness.run();
+
+    let after = laid_out_paragraphs(&harness);
+    assert!(after.contains(&2), "the line the function starts on is still there");
+    assert!(!after.contains(&5), "the body of `add` is not");
+    assert!(after.contains(&10), "and `fn subtract` still is");
+    // The whole of the ticket's sixth point: the numbers of what is still showing are unchanged.
+    assert_eq!(
+        after.iter().filter(|paragraph| **paragraph >= 9).copied().collect::<Vec<_>>(),
+        before.iter().filter(|paragraph| **paragraph >= 9).copied().collect::<Vec<_>>(),
+        "every line below the fold keeps the number it had"
+    );
+    // Two rows say so: the arrow in the gutter, and the badge drawn after the head line's text.
+    assert_eq!(harness.get_all_by_label("Expand block at line 3").count(), 2);
+    harness.snapshot(shot("folding_collapsed"));
+}
+
+#[test]
+fn the_badge_on_a_collapsed_block_expands_it_again() {
+    let mut harness = folding_harness("badge");
+    harness.get_by_label("Collapse block at line 3").click();
+    harness.run();
+    harness.run();
+    assert!(!laid_out_paragraphs(&harness).contains(&5));
+    // Two rows now say `Expand block at line 3`: the arrow in the gutter and the badge in the text.
+    // The badge is the one a person reaches for first, so it has to be the affordance it looks like.
+    assert_eq!(harness.get_all_by_label("Expand block at line 3").count(), 2);
+    harness.get_all_by_label("Expand block at line 3").last().expect("the badge").click();
+    harness.run();
+    harness.run();
+    assert!(laid_out_paragraphs(&harness).contains(&5), "the body came back");
+}
+
+#[test]
+fn collapse_all_then_expand_all_puts_the_file_back_exactly_as_it_was() {
+    let mut harness = folding_harness("all");
+    let before = laid_out_paragraphs(&harness);
+    let ctx = harness.ctx.clone();
+    harness.state_mut().run_action(Action::Fold(FoldAction::All), &ctx);
+    harness.run();
+    harness.run();
+    let collapsed = laid_out_paragraphs(&harness);
+    assert!(collapsed.len() < before.len(), "collapsing everything hides lines");
+    assert!(collapsed.contains(&2) && collapsed.contains(&10), "every head line is still there");
+    harness.snapshot(shot("folding_all_collapsed"));
+
+    harness.state_mut().run_action(Action::Fold(FoldAction::None_), &ctx);
+    harness.run();
+    harness.run();
+    assert_eq!(laid_out_paragraphs(&harness), before, "show all again gives back what was there");
+}
+
+#[test]
+fn collapse_all_but_highlighted_leaves_the_marked_passage_showing() {
+    let mut harness = folding_harness("marked");
+    // Mark the `if` inside `add`, which is line 5 and is inside two blocks.
+    let start = harness.state().document().text().line_to_byte(4);
+    let end = harness.state().document().text().line_to_byte(6);
+    harness.state_mut().document_mut().highlight(start..end, quill_core::Rgba::new(0xC9, 0xA2, 0x27, 0x66));
+    harness.run();
+
+    let ctx = harness.ctx.clone();
+    harness.state_mut().run_action(Action::Fold(FoldAction::Others), &ctx);
+    harness.run();
+    harness.run();
+
+    let showing = laid_out_paragraphs(&harness);
+    assert!(showing.contains(&4), "the marked line is showing");
+    // Its parents had to stay open for it to be: the function, and the `if` it is the head of.
+    assert!(showing.contains(&2), "the function that holds it is open");
+    assert!(!showing.contains(&15), "and `fn main`, which holds nothing marked, is collapsed");
+    harness.snapshot(shot("folding_all_but_marked"));
+}
+
+#[test]
+fn a_caret_put_inside_a_collapsed_block_expands_it() {
+    // The rule that makes everything else safe: a caret is never inside a hidden paragraph, so a
+    // jump into one — go to definition, a search hit, `editor caret --line` — opens it first.
+    let mut harness = folding_harness("reveal");
+    harness.get_by_label("Collapse block at line 3").click();
+    harness.run();
+    harness.run();
+    assert!(!laid_out_paragraphs(&harness).contains(&5));
+
+    let offset = harness.state().document().text().line_to_byte(5);
+    harness
+        .state_mut()
+        .document_mut()
+        .apply(quill_core::Command::PlaceCaret { offset, extend: false });
+    harness.state_mut().reveal_the_caret_from_a_fold();
+    harness.run();
+    harness.run();
+    assert!(laid_out_paragraphs(&harness).contains(&5), "the block opened for the caret");
+}
+
+#[test]
+fn collapsing_the_block_the_caret_is_in_moves_the_caret_to_its_head() {
+    // The other half of the same rule. Collapsing what the caret is inside must not expand it
+    // again, or `Collapse All` would do nothing whenever somebody was in the middle of a function.
+    let mut harness = folding_harness("caret");
+    let offset = harness.state().document().text().line_to_byte(5);
+    harness
+        .state_mut()
+        .document_mut()
+        .apply(quill_core::Command::PlaceCaret { offset, extend: false });
+    harness.run();
+    let ctx = harness.ctx.clone();
+    harness.state_mut().run_action(Action::Fold(FoldAction::All), &ctx);
+    harness.run();
+    harness.run();
+    let caret = harness.state().document().selection().head;
+    let line = harness.state().document().text().byte_to_line(caret);
+    assert_eq!(line, 2, "the caret came out onto the line the function starts on");
+    assert!(!laid_out_paragraphs(&harness).contains(&5), "and the block stayed collapsed");
+}
+
+#[test]
+fn a_fold_stays_on_its_block_when_a_line_is_typed_above_it() {
+    let mut harness = folding_harness("edited");
+    harness.get_by_label("Collapse block at line 3").click();
+    harness.run();
+    harness.run();
+    // A line typed at the very top of the file, which moves every byte below it.
+    harness.state_mut().document_mut().apply(quill_core::Command::PlaceCaret { offset: 0, extend: false });
+    harness.state_mut().document_mut().apply(quill_core::Command::Insert("// a new line\n".to_owned()));
+    harness.run();
+    harness.run();
+    // The same function, now one line further down, and still collapsed: the arrow and the badge.
+    assert_eq!(harness.get_all_by_label("Expand block at line 4").count(), 2);
+    let showing = laid_out_paragraphs(&harness);
+    assert!(showing.contains(&3), "the function's own line is still showing");
+    assert!(!showing.contains(&6), "and its body is still hidden");
+}
+
+#[test]
+fn a_picture_has_no_folding_entries_at_all() {
+    // Quill's rule for a control that can never apply: absent, not dimmed.
+    let mut harness = harness("");
+    harness.get_by_label_contains("picture.png").click();
+    harness.run();
+    let state = harness.state().menu_state();
+    assert!(!state.folding_applies);
+    assert!(quill_app::app::actions::folding_menu(&state).is_empty());
+    assert!(quill_app::app::actions::folding_here_menu(&state).is_empty());
 }

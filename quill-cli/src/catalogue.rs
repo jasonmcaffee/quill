@@ -12,7 +12,8 @@
 //! `dotnet tool install` are, which is the more common of the two orders and the one the .NET
 //! guidance asks for: a command holding subcommands is a **grouping**, and the verb underneath it
 //! is the action. Areas are what the window is made of, so somebody who can see Quill can guess the
-//! area: `tab`, `pane`, `editor`, `terminal`, `run`, `explorer`, `modal`, `settings`, `plugins`,
+//! area: `tab`, `pane`, `editor`, `fold`, `terminal`, `run`, `explorer`, `modal`, `settings`,
+//! `plugins`,
 //! `git`, `window`, `project`, `action`. Six commands have no area, because they are about the CLI
 //! or about a whole Quill: `status`, `instances`, `launch`, `quit`, `commands` and `version`.
 //!
@@ -156,6 +157,7 @@ pub fn area_title(area: &'static str) -> &'static str {
         "pane" => "pane — the editing area split into panes",
         "editor" => "editor — the text in the tab that is showing",
         "highlight" => "highlight — the passages marked in the project's files",
+        "fold" => "fold — the blocks collapsed in the tab that is showing",
         "terminal" => "terminal — the shells along the bottom",
         "run" => "run — the named commands the project is started with",
         "explorer" => "explorer — the file tree down the left",
@@ -179,6 +181,7 @@ pub fn area_note(area: &'static str) -> &'static str {
         "tab" => "A tab holds a file. A relative path is resolved against the project folder, and every reply says which absolute path it used.",
         "pane" => "The editing area can be split into panes side by side, each with its own tabs, which is IntelliJ's split view. `pane split` moves the tab that is showing into a new pane on the right — it moves rather than copies, because two tabs on one file would be two documents over one path. A pane holding only that tab keeps it and the new pane opens empty, ready for the next file: opening a file always lands in the pane that has the keyboard.",
         "editor" => "These are about the tab that is showing. Lines and columns count from 1, which is what the status bar shows.",
+        "fold" => "A block that can be collapsed is a function, an `if`, a bracket that spans lines, a run of comments, an indented section, or a Markdown heading — worked out from the file itself, so nothing has to be written into it. Collapsing one hides its lines; the line numbers of everything still showing are unchanged, so `fold list` and `editor caret --line` speak the same language whatever is folded. `fold others` is the one to notice: it collapses everything that does not hold a marked passage, which is how to leave only the four places you care about on the screen.",
         "highlight" => "A highlight is a colour behind a passage of text. It stays there until it is cleared, in this file and next time the project is opened, and it moves with the text as the file is edited. These work on a file whether it is open or not, so `highlight apply` can mark twenty passages across twenty files in one call.",
         "terminal" => "`terminal send` types into the shell and presses Enter; `terminal read --wait-for` is how to wait for what it did.",
         "run" => "A run configuration is a named command line, a folder and some environment variables, kept in the project. Starting one runs the program in a pseudoterminal, so `run output` is what it would have printed to a terminal — which is how to start a dev server, read the port out of its log, use it, and stop it, with nobody watching.",
@@ -779,6 +782,58 @@ pub const COMMANDS: &[Command] = &[
             "quill-cli highlight apply --from-file marks.json",
             "quill-cli highlight apply --json-text '[{\"path\":\"src/main.rs\",\"fromLine\":1,\"toLine\":3}]'",
         ],
+        local: false,
+    },
+    // ------------------------------------------------------------------ the collapsed blocks
+    Command {
+        area: "fold",
+        verb: "list",
+        summary: "Every block in the tab that is showing that can be collapsed: which line it starts on, which line it ends on, how many lines it hides, what kind of block it is, and whether it is collapsed now.",
+        arguments: NO_ARGUMENTS,
+        flags: NO_FLAGS,
+        examples: &["quill-cli fold list --json"],
+        local: false,
+    },
+    Command {
+        area: "fold",
+        verb: "toggle",
+        summary: "Collapse a block that is showing, or expand one that is collapsed. The block at the caret when no line is given.",
+        arguments: NO_ARGUMENTS,
+        flags: &[option("line", "number", "The line the block starts on, counting from 1. `fold list` says which lines those are.")],
+        examples: &["quill-cli fold toggle", "quill-cli fold toggle --line 42"],
+        local: false,
+    },
+    Command {
+        area: "fold",
+        verb: "collapse",
+        summary: "Collapse one block, or every block in the file.",
+        arguments: NO_ARGUMENTS,
+        flags: &[
+            option("line", "number", "The line the block starts on, counting from 1."),
+            switch("all", "Collapse every block in the file."),
+        ],
+        examples: &["quill-cli fold collapse --all", "quill-cli fold collapse --line 42"],
+        local: false,
+    },
+    Command {
+        area: "fold",
+        verb: "expand",
+        summary: "Expand one block, or show all again.",
+        arguments: NO_ARGUMENTS,
+        flags: &[
+            option("line", "number", "The line the block starts on, counting from 1."),
+            switch("all", "Expand every block in the file."),
+        ],
+        examples: &["quill-cli fold expand --all", "quill-cli fold expand --line 42"],
+        local: false,
+    },
+    Command {
+        area: "fold",
+        verb: "others",
+        summary: "Collapse everything that does not hold a marked passage, so only the marked parts of the file are left showing. Falls back to the selection when nothing is marked.",
+        arguments: NO_ARGUMENTS,
+        flags: &[switch("selection", "Keep what is selected rather than what is marked, even when there are marks.")],
+        examples: &["quill-cli fold others", "quill-cli fold others --selection"],
         local: false,
     },
     // ----------------------------------------------------------------------------- the terminal

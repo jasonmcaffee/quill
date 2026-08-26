@@ -8,6 +8,7 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use crate::cursor::{self, Selection};
+use crate::folding::Folds;
 use crate::highlights::{Highlights, Rgba};
 use crate::layout::Layout;
 use crate::rope::Rope;
@@ -83,6 +84,8 @@ struct Snapshot {
     /// undo restores a state, and the marks are part of the state the text was in. Undoing back past
     /// the moment a passage was marked therefore unmarks it, and redoing marks it again.
     highlights: Highlights,
+    /// Which blocks are collapsed, for exactly the same reason. `task-1686`.
+    folds: Folds,
 }
 
 const UNDO_LIMIT: usize = 256;
@@ -96,6 +99,10 @@ pub struct Document {
     /// The passages somebody has marked with a colour. Sparse, unlike `chars`, and shifted by the
     /// same two places that shift `chars`: see `insert` and `remove_range`.
     highlights: Highlights,
+    /// Which blocks are collapsed, held as the byte offset of each collapsed region's head line and
+    /// shifted by the same two places for the same reason. What is *foldable* is derived from the
+    /// text by `crate::folding::regions` and is not state; this is the half that is.
+    folds: Folds,
     selection: Selection,
     /// Formatting chosen while nothing was selected, applied to the next text typed.
     pending: StyleChange,
@@ -120,6 +127,14 @@ pub struct Document {
     /// laid the whole document out again. See `tasks/task-1666-performance-tdd.md` section 2, and
     /// the test that says a layout which changed means this moved.
     text_revision: u64,
+    /// Bumped only when a block is collapsed or expanded.
+    ///
+    /// The third counter, and it is the second one's argument made once more. Folding changes the
+    /// layout and changes nothing else: keyed on `text_revision` it would re-colour the file and
+    /// rebuild the Markdown preview for a fold, and keyed on `revision` the layout would be built
+    /// again on every frame of a drag. So `refresh_layout` is keyed on the pair and nothing else
+    /// reads this. See `tasks/task-1686-folding-tdd.md` section 5.1.
+    fold_revision: u64,
 }
 
 impl Default for Document {
@@ -135,6 +150,7 @@ impl Document {
             chars: StyleSpans::new(0, CharStyle::default()),
             paragraphs: ParagraphStyles::new(1),
             highlights: Highlights::new(),
+            folds: Folds::new(),
             selection: Selection::caret(0),
             pending: StyleChange::default(),
             desired_x: None,
@@ -145,6 +161,7 @@ impl Document {
             modified: false,
             revision: 1,
             text_revision: 1,
+            fold_revision: 1,
         }
     }
 
@@ -403,6 +420,44 @@ impl Document {
         cleared
     }
 
+    // --------------------------------------------------------------------- the collapsed blocks
+
+    /// Which blocks are collapsed.
+    pub fn folds(&self) -> &Folds {
+        &self.folds
+    }
+
+    /// How many times a block has been collapsed or expanded, which is what the layout cache is
+    /// keyed on beside [`Self::text_revision`].
+    pub fn fold_revision(&self) -> u64 {
+        self.fold_revision
+    }
+
+    /// Put a whole set back. True when anything changed.
+    ///
+    /// Every fold command rebuilds the set from the regions as the text has them now and hands the
+    /// answer here, which is what keeps an offset that no longer names any head from being kept for
+    /// ever.
+    ///
+    /// **Not an edit**, which is the rule the marked passages and the editor's font already follow:
+    /// nothing goes on the undo history and the file is not marked as having unsaved changes,
+    /// because what Quill saves is plain text and a fold is not in it.
+    pub fn set_folds(&mut self, mut folds: Folds) -> bool {
+        folds.clamp(self.text.len_bytes());
+        if folds == self.folds {
+            return false;
+        }
+        self.folds = folds;
+        self.revision += 1;
+        self.fold_revision += 1;
+        true
+    }
+
+    /// Expand everything. True when anything was collapsed.
+    pub fn expand_all_folds(&mut self) -> bool {
+        self.set_folds(Folds::new())
+    }
+
     /// The paragraph formatting of the paragraph the caret is in.
     pub fn active_paragraph_style(&self) -> ParagraphStyle {
         self.paragraphs.get(self.text.byte_to_line(self.selection.head))
@@ -579,6 +634,7 @@ impl Document {
             paragraphs: self.paragraphs.clone(),
             selection: self.selection,
             highlights: self.highlights.clone(),
+            folds: self.folds.clone(),
         });
         if self.undo.len() > UNDO_LIMIT {
             self.undo.remove(0);
@@ -593,6 +649,7 @@ impl Document {
             paragraphs: self.paragraphs.clone(),
             selection: self.selection,
             highlights: self.highlights.clone(),
+            folds: self.folds.clone(),
         }
     }
 
@@ -602,6 +659,11 @@ impl Document {
         self.paragraphs = snapshot.paragraphs;
         self.selection = snapshot.selection;
         self.highlights = snapshot.highlights;
+        // Restoring a state restores which blocks were collapsed, exactly as it restores which
+        // passages were marked. `fold_revision` moves because the layout has to be worked out
+        // again: the text has changed underneath the folds.
+        self.folds = snapshot.folds;
+        self.fold_revision += 1;
     }
 
     fn undo(&mut self) {
@@ -648,8 +710,10 @@ impl Document {
 
         self.text.insert(at, text);
         self.chars.insert(at, text.len());
-        // The marked passages move with the text, in the one place that knows the text moved.
+        // The marked passages and the collapsed blocks move with the text, in the one place that
+        // knows the text moved.
         self.highlights.insert(at, text.len());
+        self.folds.insert(at, text.len());
         self.chars.set(at..at + text.len(), &style_as_change(&style));
         self.paragraphs.split(paragraph, line_breaks);
 
@@ -716,6 +780,7 @@ impl Document {
             self.text.insert(at, &replacement);
             self.chars.insert(at, replacement.len());
             self.highlights.insert(at, replacement.len());
+            self.folds.insert(at, replacement.len());
             self.chars.set(at..at + replacement.len(), &style_as_change(&style));
             self.paragraphs.split(paragraph, line_breaks);
             self.selection.set_caret(at + replacement.len());
@@ -734,6 +799,7 @@ impl Document {
         self.text.remove(range.clone());
         self.chars.remove(range.clone());
         self.highlights.remove(range.clone());
+        self.folds.remove(range.clone());
         self.paragraphs.join(first, last);
         self.selection.set_caret(range.start);
     }
@@ -1821,4 +1887,50 @@ the fourth line");
         assert!(document.highlights().is_empty());
         assert!(!document.clear_highlights(), "there is nothing left to clear");
     }
+    /// Collapsing a block is not an edit: nothing goes on the undo history and the file is not
+    /// marked as having unsaved changes. The same rule the marked passages follow.
+    #[test]
+    fn collapsing_a_block_is_not_an_edit() {
+        let mut document = Document::from_text("one\ntwo\nthree\n");
+        let undo = document.can_undo();
+        let text = document.text_revision();
+        let mut folds = crate::folding::Folds::new();
+        folds.add(4);
+        assert!(document.set_folds(folds));
+        assert!(!document.is_modified(), "a fold is not an unsaved change");
+        assert_eq!(document.can_undo(), undo, "and it is not on the undo history");
+        assert_eq!(document.text_revision(), text, "the text did not change");
+        assert!(document.fold_revision() > 1, "but the layout has to be worked out again");
+    }
+
+    /// The collapsed blocks move with the text, in the two places that already move the marked
+    /// passages.
+    #[test]
+    fn a_collapsed_block_moves_with_the_text() {
+        let mut document = Document::from_text("one\ntwo\nthree\n");
+        let mut folds = crate::folding::Folds::new();
+        folds.add(4);
+        document.set_folds(folds);
+        document.apply(Command::PlaceCaret { offset: 0, extend: false });
+        document.apply(Command::Insert("zero\n".to_owned()));
+        assert_eq!(document.folds().offsets(), &[9], "the head line moved down the file");
+        document.apply(Command::PlaceCaret { offset: 0, extend: false });
+        document.apply(Command::Insert("!".to_owned()));
+        assert_eq!(document.folds().offsets(), &[10]);
+    }
+
+    /// Undo restores a state, and which blocks were collapsed is part of the state.
+    #[test]
+    fn undo_puts_the_collapsed_blocks_back_as_they_were() {
+        let mut document = Document::from_text("one\ntwo\nthree\n");
+        let mut folds = crate::folding::Folds::new();
+        folds.add(4);
+        document.set_folds(folds);
+        document.apply(Command::PlaceCaret { offset: 0, extend: false });
+        document.apply(Command::Insert("zero\n".to_owned()));
+        assert_eq!(document.folds().offsets(), &[9]);
+        document.apply(Command::Undo);
+        assert_eq!(document.folds().offsets(), &[4], "back where it was before the edit");
+    }
+
 }

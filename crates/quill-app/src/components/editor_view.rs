@@ -13,6 +13,11 @@ use crate::services::text_renderer::TextRenderer;
 pub const PADDING: f32 = 16.0;
 /// Width of the caret.
 const CARET_WIDTH: f32 = 2.0;
+/// The gap between the end of a collapsed head line and its badge.
+const BADGE_GAP: f32 = 6.0;
+/// How large the badge standing for a collapsed block is.
+const BADGE_WIDTH: f32 = 26.0;
+const BADGE_HEIGHT: f32 = 14.0;
 
 /// What the window worked out about the symbol under the pointer, before any click.
 ///
@@ -364,6 +369,69 @@ fn paint_highlights(
             );
         }
     }
+}
+
+/// Draw the badge that stands for a collapsed block, and say whether one was pressed.
+///
+/// IntelliJ's `{...}`, Sublime's `⋯`: a small rounded rectangle after the end of the head line with
+/// three dots in it, and pressing it expands the block. It is the affordance a person reaches for
+/// before they think about the gutter.
+///
+/// **Drawn over the line rather than put into the text**, which is the one place Quill's Markdown
+/// preview's rule — everything on the screen is real text in a real document — is deliberately not
+/// followed. Three characters in the layout that are not in the file would have to be hidden from
+/// the caret, the selection, the clipboard and every byte offset that crosses them; a rectangle
+/// painted on top is hidden from all of them for free. So the badge is not selectable, and copying
+/// the head line copies the head line.
+///
+/// `folds` is what the gutter draws its arrows from — every head and whether it is collapsed,
+/// sorted. Only the lines on the screen are looked at, which is the same range the painter drew.
+pub fn fold_badges(
+    ui: &mut egui::Ui,
+    layout: &Layout,
+    text_origin: Pos2,
+    folds: &[(usize, bool)],
+    lines: std::ops::Range<usize>,
+) -> Option<usize> {
+    if folds.is_empty() || lines.is_empty() {
+        return None;
+    }
+    let collapsed = |paragraph: usize| {
+        folds
+            .binary_search_by_key(&paragraph, |(at, _)| *at)
+            .map(|at| folds[at].1)
+            .unwrap_or(false)
+    };
+    let mut pressed = None;
+    for line in &layout.lines[lines] {
+        if !line.last_in_paragraph || !collapsed(line.paragraph) {
+            continue;
+        }
+        let area = Rect::from_min_size(
+            Pos2::new(text_origin.x + line.right() + BADGE_GAP, text_origin.y + line.y + (line.height - BADGE_HEIGHT) / 2.0),
+            Vec2::new(BADGE_WIDTH, BADGE_HEIGHT),
+        );
+        let name = format!("Expand block at line {}", line.paragraph + 1);
+        let response = ui.interact(area, ui.id().with(("fold-badge", line.paragraph)), Sense::click());
+        let painter = ui.painter();
+        painter.rect(
+            area,
+            egui::CornerRadius::same(4),
+            crate::theme::color::CONTROL,
+            Stroke::new(1.0, if response.hovered() { crate::theme::color::ACCENT } else { crate::theme::color::CONTROL_BORDER }),
+            egui::StrokeKind::Inside,
+        );
+        let tint = crate::theme::color::TEXT_CONTROL;
+        for step in 0..3 {
+            let x = area.left() + BADGE_WIDTH / 4.0 + step as f32 * BADGE_WIDTH / 4.0;
+            painter.circle_filled(Pos2::new(x, area.center().y), 1.1, tint);
+        }
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &name));
+        if response.clicked() {
+            pressed = Some(line.paragraph);
+        }
+    }
+    pressed
 }
 
 /// Paint a laid out text, with no selection and no caret.

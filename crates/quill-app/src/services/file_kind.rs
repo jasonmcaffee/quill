@@ -286,6 +286,34 @@ pub fn completion_applies(path: Option<&Path>, grammars: &Grammars) -> bool {
     path.is_some_and(|path| !is_image(path) && grammars.for_path(path).is_some())
 }
 
+/// True when blocks in this file can be collapsed.
+///
+/// Everything with text in it, which is every tab but a picture — because the weakest of the three
+/// readings, indentation, needs nothing from a language at all. That is deliberately wider than
+/// [`definitions_apply`] and [`completion_applies`]: a folded YAML file is useful and a plugin for
+/// YAML is not going to be written this week.
+///
+/// The fourth question of the same shape as [`formatting_applies`], [`preview_applies`] and
+/// [`definitions_apply`], asked by the fold menus, the gutter and the command line, so none of them
+/// can come to a different answer about the same file.
+pub fn folding_applies(path: Option<&Path>) -> bool {
+    !path.is_some_and(is_image)
+}
+
+/// How a file is read for the blocks in it that can be collapsed.
+///
+/// The window knows which plugin claims a file and whether it is Markdown; `quill_core::folding`
+/// deliberately holds no list of languages, so this is where the two are put together.
+pub fn folding_reading<'a>(path: Option<&Path>, grammars: &'a Grammars) -> quill_core::folding::Reading<'a> {
+    if let Some(grammar) = path.and_then(|path| grammars.for_path(path)) {
+        return quill_core::folding::Reading::Code(grammar);
+    }
+    if is_markdown(path) || path.is_none() {
+        return quill_core::folding::Reading::Markdown;
+    }
+    quill_core::folding::Reading::Plain
+}
+
 /// True for the files the Markdown preview is meant for.
 pub fn is_markdown(path: Option<&Path>) -> bool {
     matches!(
@@ -341,6 +369,40 @@ mod tests {
         std::fs::remove_dir_all(&folder).ok();
         std::fs::create_dir_all(&folder).expect("make the folder");
         folder
+    }
+
+    #[test]
+    fn everything_with_text_in_it_can_be_folded_and_a_picture_cannot() {
+        // Deliberately wider than `definitions_apply` and `completion_applies`: the weakest of the
+        // three readings is indentation, which needs nothing from a language at all, so a YAML file
+        // nobody has written a plugin for still folds.
+        for name in ["main.rs", "notes.md", "todo.txt", "config.yaml", "styles.css"] {
+            assert!(folding_applies(Some(Path::new(name))), "{name} should fold");
+        }
+        assert!(folding_applies(None), "and so should a document with no path yet");
+        assert!(!folding_applies(Some(Path::new("picture.png"))));
+    }
+
+    #[test]
+    fn how_a_file_is_read_for_its_blocks_follows_the_plugin_and_then_the_extension() {
+        let rust = quill_core::Grammar { language: "rust".to_owned(), ..Default::default() };
+        let grammars = Grammars::of(vec![("rs".to_owned(), rust)]);
+        assert!(matches!(
+            folding_reading(Some(Path::new("main.rs")), &grammars),
+            quill_core::folding::Reading::Code(_)
+        ));
+        assert!(matches!(
+            folding_reading(Some(Path::new("notes.md")), &grammars),
+            quill_core::folding::Reading::Markdown
+        ));
+        assert!(matches!(
+            folding_reading(None, &grammars),
+            quill_core::folding::Reading::Markdown,
+        ), "an untitled document is very often the beginning of a Markdown file");
+        assert!(matches!(
+            folding_reading(Some(Path::new("config.yaml")), &grammars),
+            quill_core::folding::Reading::Plain
+        ));
     }
 
     #[test]

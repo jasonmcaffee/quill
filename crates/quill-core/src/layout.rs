@@ -17,6 +17,7 @@ use std::ops::Range;
 
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::folding::Hidden;
 use crate::metrics::FontMetrics;
 use crate::rope::Rope;
 use crate::style::{Align, CharStyle, ParagraphStyle, ParagraphStyles, StyleSpans};
@@ -279,6 +280,24 @@ pub fn layout(
     metrics: &dyn FontMetrics,
     width: f32,
 ) -> Layout {
+    layout_with(text, chars, paragraphs, metrics, width, &Hidden::none())
+}
+
+/// Lay `text` out with some of its paragraphs folded away.
+///
+/// A paragraph in `hidden` produces **no lines at all**, and its two entries in `starts` are
+/// therefore equal. That is the whole of how `task-1686`'s folding is drawn: the gutter walks the
+/// lines and numbers each one by its own paragraph, so the numbers of what is still showing are
+/// unchanged by construction rather than by arithmetic, and the painter's binary searches over what
+/// is left do not know the difference. See `tasks/task-1686-folding-tdd.md` section 6.
+pub fn layout_with(
+    text: &Rope,
+    chars: &StyleSpans,
+    paragraphs: &ParagraphStyles,
+    metrics: &dyn FontMetrics,
+    width: f32,
+    hidden: &Hidden,
+) -> Layout {
     let width = width.max(1.0);
     // The spans, read once with their absolute positions, so each paragraph can find its own with a
     // binary search. Asking `runs_in` per paragraph walked the list from byte zero every time, which
@@ -292,8 +311,17 @@ pub fn layout(
         // The fingerprint comes back from laying the paragraph out rather than being worked out
         // beforehand, because the two want the same text and the same runs and there is no reason to
         // read them twice.
-        let mark =
-            lay_out_paragraph(paragraph, text, &spans, paragraphs, metrics, width, &mut buffers, &mut work);
+        let mark = lay_out_paragraph(
+            paragraph,
+            text,
+            &spans,
+            paragraphs,
+            metrics,
+            width,
+            hidden.contains(paragraph),
+            &mut buffers,
+            &mut work,
+        );
         work.fingerprints.push(mark);
     }
     work.finish(width)
@@ -325,17 +353,27 @@ pub fn relayout(
     paragraphs: &ParagraphStyles,
     metrics: &dyn FontMetrics,
     width: f32,
+    hidden: &Hidden,
 ) -> Layout {
     let width = width.max(1.0);
     // A layout from before this existed, or one at another width, is not something to build on.
     if previous.width != width || previous.starts.len() != previous.fingerprints.len() + 1 {
-        return layout(text, chars, paragraphs, metrics, width);
+        return layout_with(text, chars, paragraphs, metrics, width, hidden);
     }
     let spans: Vec<(Range<usize>, &CharStyle)> = chars.spans().collect();
     let count = text.len_lines();
     let mut buffers = Buffers::default();
     let fingerprints: Vec<u64> = (0..count)
-        .map(|paragraph| fingerprint_of(paragraph, text, &spans, paragraphs, &mut buffers))
+        .map(|paragraph| {
+            fingerprint_of(
+                paragraph,
+                text,
+                &spans,
+                paragraphs,
+                hidden.contains(paragraph),
+                &mut buffers,
+            )
+        })
         .collect();
 
     let Layout { mut lines, starts: was, fingerprints: old, .. } = previous;
@@ -362,18 +400,34 @@ pub fn relayout(
         // The fingerprint it gives back is thrown away: this already has all of them, from the pass
         // that decided which paragraphs these are.
         let _ = lay_out_paragraph(
-            paragraph, text, &spans, paragraphs, metrics, width, &mut buffers, &mut work,
+            paragraph,
+            text,
+            &spans,
+            paragraphs,
+            metrics,
+            width,
+            hidden.contains(paragraph),
+            &mut buffers,
+            &mut work,
         );
     }
     // The paragraphs after the change: the same lines, moved. Their contents and their heights are by
     // definition unchanged, so only where they sit, which bytes they cover and which paragraph they
     // belong to have to be worked out again.
-    let byte_shift = if suffix > 0 {
-        text.line_range(count - suffix).start as isize - after[0].bytes.start as isize
-    } else {
-        0
-    };
     let paragraph_shift = count as isize - old.len() as isize;
+    // Taken from the first paragraph in the suffix that actually produced a line, rather than from
+    // `after[0]`. Those were the same thing while every paragraph produced at least one line; a
+    // suffix that begins with **folded** paragraphs makes them different, and the difference is
+    // every byte range in the second half of the file being wrong.
+    let byte_shift =
+        match (first_after..old.len()).find(|paragraph| was[*paragraph] < was[paragraph + 1]) {
+            Some(paragraph) => {
+                let line = &after[was[paragraph] - was[first_after]];
+                let moved = (paragraph as isize + paragraph_shift) as usize;
+                text.line_range(moved).start as isize - line.bytes.start as isize
+            }
+            None => 0,
+        };
     let mut moving = after.into_iter();
     for paragraph in first_after..old.len() {
         work.starts.push(work.lines.len());
@@ -481,12 +535,13 @@ fn fingerprint_of<'a>(
     text: &Rope,
     spans: &[(Range<usize>, &'a CharStyle)],
     paragraphs: &ParagraphStyles,
+    hidden: bool,
     buffers: &mut Buffers<'a>,
 ) -> u64 {
     let bytes = text.line_range(paragraph);
     text.slice_into(bytes.clone(), &mut buffers.source);
     runs_over(spans, &bytes, &mut buffers.runs);
-    fingerprint(&buffers.source, &bytes, &buffers.runs, spans, paragraphs.get(paragraph))
+    fingerprint(&buffers.source, &bytes, &buffers.runs, spans, paragraphs.get(paragraph), hidden)
 }
 
 /// The fingerprint of a paragraph whose text and runs have already been read.
@@ -500,6 +555,7 @@ fn fingerprint(
     runs: &[(Range<usize>, &CharStyle)],
     spans: &[(Range<usize>, &CharStyle)],
     paragraph_style: ParagraphStyle,
+    hidden: bool,
 ) -> u64 {
     let mut hash = Fingerprint::default();
     hash.write(source.as_bytes());
@@ -518,6 +574,10 @@ fn fingerprint(
     hash.number(paragraph_style.align as u64);
     hash.float(paragraph_style.line_spacing);
     hash.float(paragraph_style.min_height);
+    // Whether it is folded away, because a paragraph that has just been hidden has to fingerprint
+    // differently or `relayout` would keep it, complete with the lines it is no longer supposed to
+    // have.
+    hash.number(u64::from(hidden));
     hash.0
 }
 
@@ -576,6 +636,7 @@ fn lay_out_paragraph<'a>(
     paragraphs: &ParagraphStyles,
     metrics: &dyn FontMetrics,
     width: f32,
+    hidden: bool,
     buffers: &mut Buffers<'a>,
     work: &mut Work,
 ) -> u64 {
@@ -583,8 +644,13 @@ fn lay_out_paragraph<'a>(
     let bytes = text.line_range(paragraph);
     text.slice_into(bytes.clone(), &mut buffers.source);
     runs_over(spans, &bytes, &mut buffers.runs);
-    let mark = fingerprint(&buffers.source, &bytes, &buffers.runs, spans, paragraph_style);
+    let mark = fingerprint(&buffers.source, &bytes, &buffers.runs, spans, paragraph_style, hidden);
     work.starts.push(work.lines.len());
+    // Folded away: it keeps its place in `starts`, so every paragraph after it is still numbered
+    // from where it really is, and it produces no line for anything to draw.
+    if hidden {
+        return mark;
+    }
 
     // Flatten the paragraph into clusters, each carrying the index of the run it came from.
     buffers.clusters.clear();
@@ -800,6 +866,11 @@ impl Layout {
     pub fn paragraph_band(&self, paragraph: usize) -> Option<(f32, f32)> {
         let start = *self.starts.get(paragraph)?;
         let end = *self.starts.get(paragraph + 1)?;
+        // A paragraph that is folded away has no lines and so has no band. Reading the line before
+        // it and the line after it would report a band between two other paragraphs.
+        if start == end {
+            return None;
+        }
         let first = self.lines.get(start)?;
         let last = self.lines.get(end.saturating_sub(1))?;
         Some((first.y, (last.bottom() - first.y).max(0.0)))
@@ -1209,6 +1280,7 @@ mod tests {
                 document.paragraphs(),
                 &FixedMetrics::default(),
                 200.0,
+                &Hidden::none(),
             );
             assert_eq!(incremental, fresh, "after {what}");
         }
@@ -1220,7 +1292,8 @@ mod tests {
     fn relayout_at_another_width_lays_the_whole_thing_out_again() {
         let (rope, spans, paragraphs) = a_document_of_every_shape();
         let narrow = layout(&rope, &spans, &paragraphs, &FixedMetrics::default(), 200.0);
-        let wide = relayout(narrow, &rope, &spans, &paragraphs, &FixedMetrics::default(), 600.0);
+        let wide =
+            relayout(narrow, &rope, &spans, &paragraphs, &FixedMetrics::default(), 600.0, &Hidden::none());
         let fresh = layout(&rope, &spans, &paragraphs, &FixedMetrics::default(), 600.0);
         assert_eq!(wide, fresh);
     }
@@ -1293,6 +1366,7 @@ mod tests {
             document.paragraphs(),
             &metrics,
             2000.0,
+            &Hidden::none(),
         );
         let touched = metrics.since();
         assert!(
@@ -1310,6 +1384,7 @@ mod tests {
             document.paragraphs(),
             &metrics,
             2000.0,
+            &Hidden::none(),
         );
         let touched = metrics.since();
         assert!(
@@ -1326,7 +1401,7 @@ mod tests {
     fn relayout_from_nothing_is_a_full_layout() {
         let (rope, spans, paragraphs) = a_document_of_every_shape();
         let built =
-            relayout(Layout::default(), &rope, &spans, &paragraphs, &FixedMetrics::default(), 200.0);
+            relayout(Layout::default(), &rope, &spans, &paragraphs, &FixedMetrics::default(), 200.0, &Hidden::none());
         let fresh = layout(&rope, &spans, &paragraphs, &FixedMetrics::default(), 200.0);
         assert_eq!(built, fresh);
     }
@@ -1357,6 +1432,7 @@ mod tests {
             document.paragraphs(),
             &FixedMetrics::default(),
             2000.0,
+            &Hidden::none(),
         );
         assert_eq!(after.lines.len(), 4);
         assert_eq!(after.lines[0], before.lines[0], "the paragraph above is untouched");
@@ -1881,4 +1957,114 @@ def");
         let result = layout(&rope, &spans, &paragraphs, &FixedMetrics::default(), 1000.0);
         assert_eq!(result.visible_bytes(0.0, 100.0).len(), 0);
     }
+    /// A folded paragraph produces no lines, and every other paragraph keeps its own number.
+    ///
+    /// That is the whole of `task-1686`'s sixth point — "the line numbers should remain correct" —
+    /// and it is settled here rather than in the gutter, which numbers a line by the paragraph it
+    /// belongs to and knows nothing about folding.
+    #[test]
+    fn a_folded_paragraph_produces_no_lines_and_the_numbers_of_the_rest_are_unchanged() {
+        let rope = Rope::from_str("one\ntwo\nthree\nfour\nfive");
+        let spans = StyleSpans::new(rope.len_bytes(), CharStyle::default());
+        let paragraphs = ParagraphStyles::new(rope.len_lines());
+        let hidden = Hidden::of([1..3]);
+        let laid =
+            layout_with(&rope, &spans, &paragraphs, &FixedMetrics::default(), 2000.0, &hidden);
+        let numbers: Vec<usize> = laid.lines.iter().map(|line| line.paragraph).collect();
+        assert_eq!(numbers, vec![0, 3, 4], "two and three are away; four is still paragraph 3");
+        assert_eq!(laid.paragraph_count(), 5, "the paragraphs are all still there");
+        assert_eq!(laid.paragraph_band(1), None, "a folded paragraph has no band");
+        assert_eq!(laid.paragraph_band(2), None);
+        assert!(laid.paragraph_band(3).is_some());
+        // The lines that are left are stacked with no gap where the folded ones were.
+        assert_eq!(laid.lines[1].y, laid.lines[0].bottom());
+    }
+
+    /// The bytes of a folded paragraph are still in the document, so a selection over the fold
+    /// carries them — which is what makes copying across a collapsed block copy what is inside it.
+    #[test]
+    fn folding_hides_lines_and_moves_no_bytes() {
+        let rope = Rope::from_str("one\ntwo\nthree\nfour");
+        let spans = StyleSpans::new(rope.len_bytes(), CharStyle::default());
+        let paragraphs = ParagraphStyles::new(rope.len_lines());
+        let open = layout(&rope, &spans, &paragraphs, &FixedMetrics::default(), 2000.0);
+        let shut = layout_with(
+            &rope,
+            &spans,
+            &paragraphs,
+            &FixedMetrics::default(),
+            2000.0,
+            &Hidden::of([1..3]),
+        );
+        assert_eq!(open.lines[3].bytes, shut.lines[1].bytes, "the last line covers the same bytes");
+    }
+
+    /// `relayout` with a fold has to agree with `layout` with the same fold, exactly, for a fold in
+    /// every position — and for an edit made while one is closed.
+    ///
+    /// This is the test that catches the byte shift: a suffix that begins with folded paragraphs has
+    /// no line at `after[0]` belonging to it, and taking the shift from there put every byte range
+    /// in the second half of the document out by the length of the fold.
+    #[test]
+    fn relayout_with_a_fold_agrees_with_layout_with_the_same_fold() {
+        let source: String =
+            (0..40).map(|i| format!("paragraph number {i}, with words in it\n")).collect();
+        let folds = [
+            ("at the top", Hidden::of([1..5])),
+            ("in the middle", Hidden::of([20..25])),
+            ("at the end", Hidden::of([35..40])),
+            ("two at once", Hidden::of([2..6, 30..34])),
+            ("nothing", Hidden::none()),
+        ];
+        for (what, hidden) in folds {
+            let mut document = Document::from_text(&source);
+            let before = layout_with(
+                document.text(),
+                document.chars(),
+                document.paragraphs(),
+                &FixedMetrics::default(),
+                600.0,
+                &hidden,
+            );
+            // An edit above the fold, which is the case that renumbers everything below it.
+            document.apply(Command::PlaceCaret { offset: 3, extend: false });
+            document.apply(Command::Insert("X".to_owned()));
+            let fresh = layout_with(
+                document.text(),
+                document.chars(),
+                document.paragraphs(),
+                &FixedMetrics::default(),
+                600.0,
+                &hidden,
+            );
+            let incremental = relayout(
+                before,
+                document.text(),
+                document.chars(),
+                document.paragraphs(),
+                &FixedMetrics::default(),
+                600.0,
+                &hidden,
+            );
+            assert_eq!(incremental, fresh, "an edit above a fold {what}");
+        }
+    }
+
+    /// Closing a fold and opening it again are both `relayout`, and both have to give what a full
+    /// layout gives — which is what the hidden flag in the fingerprint is for.
+    #[test]
+    fn closing_and_opening_a_fold_is_a_relayout_that_agrees() {
+        let source: String = (0..30).map(|i| format!("line number {i}\n")).collect();
+        let rope = Rope::from_str(&source);
+        let spans = StyleSpans::new(rope.len_bytes(), CharStyle::default());
+        let paragraphs = ParagraphStyles::new(rope.len_lines());
+        let metrics = FixedMetrics::default();
+        let open = layout(&rope, &spans, &paragraphs, &metrics, 600.0);
+        let hidden = Hidden::of([5..12]);
+        let shut = relayout(open.clone(), &rope, &spans, &paragraphs, &metrics, 600.0, &hidden);
+        assert_eq!(shut, layout_with(&rope, &spans, &paragraphs, &metrics, 600.0, &hidden));
+        let again = relayout(shut, &rope, &spans, &paragraphs, &metrics, 600.0, &Hidden::none());
+        assert_eq!(again, open, "opening it again gives back exactly what was there before");
+    }
+
 }

@@ -30,6 +30,7 @@ pub mod actions;
 pub mod cli;
 pub mod completion;
 pub mod files;
+pub mod folding;
 pub mod git;
 pub mod symbols;
 
@@ -1069,6 +1070,9 @@ impl QuillApp {
             unfinished: self.git.as_ref().and_then(|git| git.snapshot.in_progress),
             highlights: self.document().highlights().len(),
             on_a_highlight: self.marks_under_the_caret(),
+            folding_applies: file_kind::folding_applies(self.document().path()),
+            foldable: self.fold_counts().0,
+            folded: self.fold_counts().1,
             definitions_apply: self.definitions_apply_here(),
             symbols_apply: self.symbols_apply_here(),
             completion_applies: self.completion_applies_here(),
@@ -1411,6 +1415,15 @@ impl QuillApp {
                 if !self.clear_highlight_here() {
                     self.message = Some("There is no highlight at the caret.".to_owned());
                 }
+            }
+            Action::Fold(what) => {
+                use crate::app::actions::FoldAction;
+                match what {
+                    FoldAction::Toggle => self.toggle_fold_at_caret(),
+                    FoldAction::All => self.collapse_all_folds(),
+                    FoldAction::None_ => self.expand_all_folds(),
+                    FoldAction::Others => self.collapse_all_but_marked(),
+                };
             }
             Action::ClearHighlights => {
                 let cleared = self.document().highlights().len();
@@ -1873,7 +1886,7 @@ impl QuillApp {
     /// very large file it is a pause a person can feel while typing. Two megabytes is where it is
     /// switched off, and the status bar says so rather than leaving the colours quietly missing.
     /// It is a number to be measured rather than a law: change it, and change this comment.
-    const COLOUR_LIMIT: usize = 2 * 1024 * 1024;
+    pub(crate) const COLOUR_LIMIT: usize = 2 * 1024 * 1024;
 
     /// Colour the open file by what its text is, if a plugin claims it.
     ///
@@ -1916,16 +1929,32 @@ impl QuillApp {
             return;
         }
         let theme = plugin.theme.clone();
-        let spans: Vec<(std::ops::Range<usize>, quill_core::Color)> =
-            quill_core::syntax::highlight(&text, &plugin.grammar)
-                .into_iter()
-                .filter_map(|(range, token)| theme.colour(token).map(|colour| (range, colour)))
-                .collect();
+        // **One** reading of the file, answering two questions. Colouring it and reading it for the
+        // blocks that could be collapsed both want `syntax::scan` over the same text at the same
+        // revision, and a second pass was worth 2.5 ms a keystroke on the largest file in this
+        // repository. `quill_core::folding::Tokens` is the second answer, kept beside the first.
+        let mut spans: Vec<(std::ops::Range<usize>, quill_core::Color)> = Vec::new();
+        let mut tokens = quill_core::folding::Tokens::default();
+        quill_core::syntax::scan(&text, &plugin.grammar, |range, token| {
+            match token {
+                quill_core::Token::Comment => tokens.note(range.clone(), true),
+                quill_core::Token::String => tokens.note(range.clone(), false),
+                _ => {}
+            }
+            if token != quill_core::Token::Text {
+                if let Some(colour) = theme.colour(token) {
+                    spans.push((range, colour));
+                }
+            }
+        });
         let file = self.files.at_mut(index);
         file.document.set_syntax(base, &spans);
         // `set_syntax` bumps the revision, so what is remembered is the revision *after* it, or the
-        // next frame would colour it all over again for ever.
-        file.coloured_revision = Some(file.document.text_revision());
+        // next frame would colour it all over again for ever. The tokens are keyed on that same
+        // number, which is what lets `fold_regions` use them instead of reading the file again.
+        let now = file.document.text_revision();
+        file.coloured_revision = Some(now);
+        file.cached.fold_tokens = Some((now, tokens));
         file.cached.stale = true;
     }
 
@@ -3295,13 +3324,20 @@ impl QuillApp {
         // a frame on a file the size of `app/mod.rs`. See `tasks/task-1666-performance-tdd.md`
         // section 2.
         let revision = self.document().text_revision();
+        // And the fold revision beside it, because collapsing a block changes the layout without
+        // changing a byte of the text. It is a counter of its own so that a fold does not re-colour
+        // the file or rebuild the preview — `tasks/task-1686-folding-tdd.md` section 5.1.
+        let folded = self.document().fold_revision();
         let cached = &self.files.active().cached;
         if !cached.stale
             && revision == cached.laid_out_revision
+            && folded == cached.laid_out_folds
             && (width - cached.laid_out_width).abs() < 0.5
         {
             return;
         }
+        let index = self.files.active_index();
+        let hidden = self.hidden_paragraphs(index);
         // What was laid out last time is handed over rather than thrown away: `relayout` keeps every
         // paragraph whose text and formatting are unchanged, so typing a letter costs the paragraph
         // it was typed into instead of the file.
@@ -3313,11 +3349,13 @@ impl QuillApp {
             self.document().paragraphs(),
             &self.renderer,
             width,
+            &hidden,
         );
         let cached = &mut self.files.active_mut().cached;
         cached.stale = false;
         cached.layout = laid;
         cached.laid_out_revision = revision;
+        cached.laid_out_folds = folded;
         cached.laid_out_width = width;
     }
 
@@ -3805,7 +3843,15 @@ impl QuillApp {
         if let Some(menu) = self.text_menu.clone() {
             let state = self.menu_state();
             let above = actions::text_menu(&state);
-            let below = actions::clear_highlight_menu(&state);
+            let mut below = actions::clear_highlight_menu(&state);
+            // The ticket's own two rows, under the marks they are about: `Collapse All But
+            // Highlighted` is worth something only to somebody who has just marked a passage, and
+            // this is where they are already pointing.
+            let folding = actions::folding_here_menu(&state);
+            if !folding.is_empty() {
+                below.push(actions::Entry::Separator);
+                below.extend(folding);
+            }
             let last = self.last_highlight;
             let outcome =
                 text_menu::show(ui, &menu, &above, &below, state.has_selection, last);
@@ -5065,12 +5111,15 @@ impl QuillApp {
     }
 
     /// What the gutter is showing for the file that is open.
-    fn gutter(&self) -> Gutter<'_> {
+    fn gutter<'a>(&'a self, folds: &'a [(usize, bool)]) -> Gutter<'a> {
         let file = self.files.active();
         Gutter {
             numbers: self.settings.line_numbers,
             blame: file.blame.as_deref(),
             changes: &file.line_changes,
+            // Worked out before this is called rather than here, because reading a file for what it
+            // could fold wants `&mut self` for the cache and a component is handed what it draws.
+            folds,
         }
     }
 
@@ -5110,10 +5159,18 @@ impl QuillApp {
     }
 
     fn show_editor(&mut self, ui: &mut egui::Ui, area: Rect, focused: bool) -> bool {
+        // What this file could fold and what of it is folded, read before anything is drawn: the
+        // cache wants `&mut self` and every component here is handed what it draws.
+        let index = self.files.active_index();
+        let fold_marks: Vec<(usize, bool)> = self.fold_marks(index).to_vec();
+        // Set by an arrow in the gutter or a badge in the text, and acted on at the end of the
+        // frame — a fold changes the layout, and changing it half way through drawing this pane
+        // would leave the rest of the frame drawing from a layout that no longer matches.
+        let mut folded: Option<usize> = None;
         // The gutter takes the left of the editing area, and the text starts after it. With no
         // gutter the text keeps the padding it always had, so putting the numbers away leaves the
         // window looking exactly as it did before there were any.
-        let gutter = self.gutter();
+        let gutter = self.gutter(&fold_marks);
         let lines = self.document().text().len_lines();
         let gutter_width = gutter::width(ui, &gutter, lines);
         let gutter_rect =
@@ -5148,6 +5205,14 @@ impl QuillApp {
         }
         let has_keyboard = self.focus == Focus::Editor && focused;
         let text_width = (area.width() - padding - size::EDITOR_PADDING_X).max(50.0);
+        // A caret is never inside a hidden paragraph. `reveal_caret` is set by everything that puts
+        // the caret somewhere without a click — a jump to a definition, a search hit, `quill-cli
+        // editor caret --line`, `Navigate Back` — so asking here is one place rather than one per
+        // jump, which is `follow_the_open_file`'s rule: the next jump added would be the one that
+        // forgot. Before the layout, so the frame that reveals it is the frame that draws it.
+        if self.reveal_caret && focused {
+            self.reveal_the_caret_from_a_fold();
+        }
         self.refresh_layout(text_width);
         let view_height = area.height() - size::EDITOR_PADDING_Y * 2.0;
         // Straight after the layout, so the rest of the frame — the wheel, the caret, the painter
@@ -5318,13 +5383,16 @@ impl QuillApp {
             let outcome = gutter::show(
                 ui,
                 gutter_rect,
-                &self.gutter(),
+                &self.gutter(&fold_marks),
                 self.layout(),
                 origin.y,
                 self.document().text().byte_to_line(self.document().selection().head),
             );
             if let Some(at) = outcome.context_menu {
                 self.gutter_menu = Some(at);
+            }
+            if let Some(line) = outcome.toggle_fold {
+                folded = Some(line);
             }
         }
 
@@ -5343,10 +5411,23 @@ impl QuillApp {
                 underline: symbol.word.clone(),
             },
         );
+        // The badge standing for each collapsed block, over the text and after the end of its head
+        // line. It takes clicks, so it is added after the editing area rather than before it: egui
+        // hands a point to the last widget that asked for it and the editing area asks for all of
+        // its rectangle, which is the same ordering the scrollbar and the pane dividers follow.
+        let visible = editor_view::visible_lines(&painter_ui, self.layout(), origin);
+        if let Some(line) =
+            editor_view::fold_badges(&mut painter_ui, self.layout(), origin, &fold_marks, visible)
+        {
+            folded = Some(line);
+        }
         // Drawn last, at the position the frame settled on rather than the one it opened with, or
         // the thumb is a frame behind the writing — which on a fast scroll can be seen.
         if let Some(bar) = scrollbar::Bar::new(area, scroll, self.layout().height, view_height) {
             scrollbar::paint(ui, &bar, &bar_name, grab.active || (scroll - was).abs() > 0.01);
+        }
+        if let Some(line) = folded {
+            self.toggle_fold_at_line(line);
         }
         took_the_keyboard
     }

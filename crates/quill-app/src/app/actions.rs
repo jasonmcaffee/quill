@@ -166,9 +166,73 @@ pub enum Action {
     ClearHighlight,
     /// Take away every mark in the file that is showing.
     ClearHighlights,
+    /// Anything on the `View -> Folding` menu.
+    Fold(FoldAction),
     /// Quill's own about box, which is a line in the status bar rather than a window.
     About,
     Quit,
+}
+
+/// The four things that can be done to the blocks of the file that is showing.
+///
+/// All four are about **the file that is showing** and take nothing, which is what makes them
+/// ordinary parameterless actions the View menu, the right click menus, the keyboard and
+/// `quill-cli action run` can all ask for. `tasks/task-1686-folding-tdd.md` section 8.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FoldAction {
+    /// Collapse or expand the innermost block the caret is in.
+    Toggle,
+    /// Collapse every block in the file.
+    All,
+    /// Show all again.
+    None_,
+    /// Collapse every block that does not hold a marked passage — the ticket's `Collapse All But
+    /// Highlighted`. With nothing marked it falls back to the selection.
+    Others,
+}
+
+impl FoldAction {
+    pub const ALL: [FoldAction; 4] =
+        [FoldAction::Toggle, FoldAction::All, FoldAction::None_, FoldAction::Others];
+
+    /// What the command line calls it, after the `fold-` prefix.
+    pub fn name(self) -> &'static str {
+        match self {
+            FoldAction::Toggle => "toggle",
+            FoldAction::All => "all",
+            FoldAction::None_ => "none",
+            FoldAction::Others => "others",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|action| action.name() == name)
+    }
+
+    /// What the menu row says.
+    pub fn label(self) -> &'static str {
+        match self {
+            FoldAction::Toggle => "Collapse or Expand Block",
+            FoldAction::All => "Collapse All",
+            FoldAction::None_ => "Expand All",
+            FoldAction::Others => "Collapse All But Highlighted",
+        }
+    }
+
+    /// The key it is on.
+    ///
+    /// IntelliJ puts folding on the numeric keypad, which half the keyboards in this house have not
+    /// got, so its `Ctrl+.` — the key it folds a selection with — is the one taken here and the
+    /// other three are built round it. The full stop is next to the comma that already opens
+    /// Settings, which is what makes a set of four worth remembering.
+    pub fn shortcut(self) -> Shortcut {
+        match self {
+            FoldAction::Toggle => Shortcut::command(egui::Key::Period),
+            FoldAction::All => Shortcut::command_shift(egui::Key::Period),
+            FoldAction::None_ => Shortcut::command_shift(egui::Key::Comma),
+            FoldAction::Others => Shortcut { alt: true, ..Shortcut::command(egui::Key::Period) },
+        }
+    }
 }
 
 /// The four colours the editor's right click menu offers as blocks.
@@ -482,6 +546,9 @@ impl Shortcut {
 pub fn key_name(key: egui::Key) -> &'static str {
     match key {
         egui::Key::Comma => ",",
+        // The full stop beside it, spelled the same way, or one menu would read `Ctrl+Shift+,` and
+        // the row under it `Ctrl+Shift+Period`. egui's own name for it is the word.
+        egui::Key::Period => ".",
         egui::Key::Backtick => "`",
         egui::Key::Num0 => "0",
         egui::Key::Num1 => "1",
@@ -622,6 +689,13 @@ pub struct MenuState {
     pub highlights: usize,
     /// True when the caret is inside a marked passage, so there is one to clear.
     pub on_a_highlight: bool,
+    /// True when blocks in the open file can be collapsed at all, which is everything but a
+    /// picture. **Absent** rather than dimmed when it is false, like the code navigation entries.
+    pub folding_applies: bool,
+    /// How many blocks the open file has, which is what dims `Collapse All`.
+    pub foldable: usize,
+    /// How many of them are collapsed, which is what dims `Expand All`.
+    pub folded: usize,
     /// True when the open file's language has said what a definition looks like, which is what puts
     /// `Go to Definition` on the menu. **Absent** rather than dimmed when it is false: a control
     /// that can never apply to this kind of file is not a control that is unavailable just now.
@@ -1116,6 +1190,7 @@ fn view_menu(state: &MenuState) -> Menu {
             // real menu at all so that `quill-cli action list` finds them, because that list is built
             // by walking the menus and a context menu is not one of them.
             Entry::Submenu { name: "Split".to_owned(), entries: split_menu(state) },
+            Entry::Submenu { name: "Folding".to_owned(), entries: folding_menu(state) },
             Entry::Separator,
             Entry::with_shortcut(
                 "Terminal",
@@ -1270,6 +1345,58 @@ pub fn highlight_menu(state: &MenuState) -> Vec<Entry> {
     entries
 }
 
+/// The `Folding` submenu of `View`, and the four entries every other menu takes from it.
+///
+/// Absent altogether for a file that cannot fold, which is Quill's rule for a control that can never
+/// apply — the `F` button is not drawn for a `.rs` file either. Dimmed rather than absent when there
+/// is simply nothing to collapse just now, which is the other half of the same rule.
+pub fn folding_menu(state: &MenuState) -> Vec<Entry> {
+    if !state.folding_applies {
+        return Vec::new();
+    }
+    FoldAction::ALL
+        .iter()
+        .map(|what| {
+            let enabled = match what {
+                FoldAction::Toggle | FoldAction::All | FoldAction::Others => state.foldable > 0,
+                FoldAction::None_ => state.folded > 0,
+            };
+            Entry::with_shortcut(what.label(), Action::Fold(*what), what.shortcut()).enabled(enabled)
+        })
+        .collect()
+}
+
+/// The two entries the editing area's own right click menu holds: the ticket's own words.
+///
+/// `Collapse All But Highlighted` and `Expand All` — the pair somebody who has just marked four
+/// passages is reaching for. The other two are on the View menu and on the gutter's menu, which is
+/// where a person who has just right clicked the arrows is asking about folding.
+///
+/// **Not added to `clear_highlight_menu`**, tempting as that was: the Edit menu's `Highlight`
+/// submenu is drawn *inline* rather than as a flyout — `controls::menu_rows` puts a heading and
+/// then the rows, indented — so three more rows there make the whole Edit menu taller, and a menu
+/// past the height of the window turns into a scrolling one whose last entry is `Settings`. Two
+/// rows on a right click menu must not be able to move `Settings` out of reach.
+pub fn folding_here_menu(state: &MenuState) -> Vec<Entry> {
+    if !state.folding_applies {
+        return Vec::new();
+    }
+    vec![
+        Entry::with_shortcut(
+            FoldAction::Others.label(),
+            Action::Fold(FoldAction::Others),
+            FoldAction::Others.shortcut(),
+        )
+        .enabled(state.foldable > 0),
+        Entry::with_shortcut(
+            FoldAction::None_.label(),
+            Action::Fold(FoldAction::None_),
+            FoldAction::None_.shortcut(),
+        )
+        .enabled(state.folded > 0),
+    ]
+}
+
 /// The two ways of taking a mark away, which the Edit menu and the editing area's own menu both
 /// hold. Split out because the right click menu draws the four colours as blocks rather than as
 /// rows, so it needs these two on their own.
@@ -1311,7 +1438,7 @@ pub fn text_menu(state: &MenuState) -> Vec<Entry> {
 /// [`Action`] with one arm in `run_action`, so the gutter's `Show Line Numbers` and the View menu's
 /// are the same thing rather than two things that agree today.
 pub fn gutter_menu(state: &MenuState) -> Vec<Entry> {
-    vec![
+    let mut entries = vec![
         Entry::item(
             if state.annotated { "Close Annotations" } else { "Annotate with Git Blame" },
             Action::Git(GitAction::Annotate),
@@ -1323,7 +1450,14 @@ pub fn gutter_menu(state: &MenuState) -> Vec<Entry> {
             if state.line_numbers { "Hide Line Numbers" } else { "Show Line Numbers" },
             Action::ToggleLineNumbers,
         ),
-    ]
+    ];
+    // The arrows are drawn in this strip, so this is where somebody asking about them right clicks.
+    let folding = folding_menu(state);
+    if !folding.is_empty() {
+        entries.push(Entry::Separator);
+        entries.extend(folding);
+    }
+    entries
 }
 
 /// The action a key press asks for, if any menu entry claims it.
@@ -1841,4 +1975,68 @@ mod tests {
         }
         assert!(seen.len() > 10, "there should be a shortcut on most entries, found {}", seen.len());
     }
+    #[test]
+    fn every_folding_entry_is_reachable_from_the_keyboard() {
+        // A shortcut that passes its test and does nothing in the real window is the fault
+        // `a_shortcut_the_platform_really_sends_is_matched` records, so these are asked with the
+        // modifiers a platform really sends.
+        let state = MenuState { folding_applies: true, foldable: 3, folded: 1, ..MenuState::default() };
+        assert_eq!(
+            action_for_key(&state, egui::Key::Period, &pressing_command()),
+            Some(Action::Fold(FoldAction::Toggle))
+        );
+        assert_eq!(
+            action_for_key(&state, egui::Key::Period, &egui::Modifiers { shift: true, ..pressing_command() }),
+            Some(Action::Fold(FoldAction::All))
+        );
+        assert_eq!(
+            action_for_key(&state, egui::Key::Comma, &egui::Modifiers { shift: true, ..pressing_command() }),
+            Some(Action::Fold(FoldAction::None_))
+        );
+        assert_eq!(
+            action_for_key(&state, egui::Key::Comma, &pressing_command()),
+            Some(Action::Settings),
+            "the comma on its own still opens Settings"
+        );
+        assert_eq!(
+            action_for_key(&state, egui::Key::Period, &egui::Modifiers { alt: true, ..pressing_command() }),
+            Some(Action::Fold(FoldAction::Others))
+        );
+    }
+
+    #[test]
+    fn a_file_that_cannot_fold_has_no_folding_entries_and_no_folding_keys() {
+        // Quill's rule for a control that can never apply: absent, not dimmed.
+        let state = MenuState { folding_applies: false, ..MenuState::default() };
+        assert!(folding_menu(&state).is_empty());
+        assert!(folding_here_menu(&state).is_empty());
+        assert_eq!(action_for_key(&state, egui::Key::Period, &pressing_command()), None);
+        assert!(!names(&gutter_menu(&state)).contains(&"Collapse All".to_owned()));
+    }
+
+    #[test]
+    fn a_file_with_nothing_to_fold_dims_the_folding_entries_rather_than_hiding_them() {
+        // The other half of the rule: a control that could be used in a moment is dimmed.
+        let state = MenuState { folding_applies: true, foldable: 0, folded: 0, ..MenuState::default() };
+        let entries = folding_menu(&state);
+        assert_eq!(entries.len(), 4);
+        assert!(entries.iter().all(|entry| matches!(entry, Entry::Item { enabled: false, .. })));
+    }
+
+    #[test]
+    fn expand_all_is_the_only_folding_entry_that_needs_something_collapsed() {
+        let state = MenuState { folding_applies: true, foldable: 3, folded: 0, ..MenuState::default() };
+        let usable: Vec<String> = folding_menu(&state)
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Item { name, enabled: true, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            usable,
+            vec!["Collapse or Expand Block", "Collapse All", "Collapse All But Highlighted"]
+        );
+    }
+
 }
