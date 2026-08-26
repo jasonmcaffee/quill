@@ -5,7 +5,7 @@
 //! glyph out of the atlas, so the whole visible document is a single mesh.
 
 use egui::{Color32, Mesh, Pos2, Rect, Sense, Shape, Stroke, Vec2};
-use quill_core::{Align, Command, Document, Layout, StyleChange};
+use quill_core::{Align, Command, Document, Layout, Rope, Selection, StyleChange};
 
 use crate::services::text_renderer::TextRenderer;
 
@@ -389,9 +389,13 @@ pub fn paint_text(ui: &egui::Ui, renderer: &TextRenderer, layout: &Layout, text_
     // collected. When that happens the whole pass is repeated, because the alternative is drawing from
     // positions that no longer hold those glyphs.
     let mut placed: Vec<(Rect, egui::Rect, Color32)> = Vec::new();
+    // The strokes of the box-drawing characters, which are drawn rather than lettered. See
+    // `box_rules`.
+    let mut rules: Vec<(Rect, Color32)> = Vec::new();
     for _ in 0..3 {
         let generation = renderer.generation();
         placed.clear();
+        rules.clear();
         for line in &layout.lines[visible.clone()] {
             let baseline = line.y + line.baseline;
             for run in &line.runs {
@@ -400,6 +404,25 @@ pub fn paint_text(ui: &egui::Ui, renderer: &TextRenderer, layout: &Layout, text_
                 let color = Color32::from_rgb(run.style.color.r, run.style.color.g, run.style.color.b);
                 for cluster in &run.clusters {
                     for character in cluster.text.chars() {
+                        // A rule is drawn rather than lettered, which is what
+                        // `design/style-guide.md` already says about an icon. A box-drawing glyph
+                        // cannot tile: its ink is an em box, the line it sits on is taller than
+                        // that, and its bitmap is a whole pixel wider than its advance. So a rule
+                        // made of them came out dotted across, and a column of them came out as a
+                        // row of ticks. Drawn into the cell instead, a table's grid and a quote's
+                        // bar join up exactly at any size and any line height. See `box_rules`.
+                        if let Some(cell) = box_rules(character) {
+                            let at = to_screen(cluster.x, line.y);
+                            paint_a_box_cell(
+                                &mut rules,
+                                cell,
+                                at,
+                                cluster.advance,
+                                line.height,
+                                color,
+                            );
+                            continue;
+                        }
                         let Some(glyph) = renderer.glyph(character, &run.style) else {
                             continue; // a space, or a character this font has no shape for
                         };
@@ -416,6 +439,10 @@ pub fn paint_text(ui: &egui::Ui, renderer: &TextRenderer, layout: &Layout, text_
         if renderer.generation() == generation {
             break;
         }
+    }
+
+    for (rect, colour) in &rules {
+        painter.rect_filled(*rect, 0.0, *colour);
     }
 
     let texture = renderer.texture(ui.ctx());
@@ -436,6 +463,197 @@ pub fn paint_text(ui: &egui::Ui, renderer: &TextRenderer, layout: &Layout, text_
         );
     }
     count
+}
+
+/// What the pointer did in a page that can be read but not typed into.
+///
+/// The Markdown preview is the one such page. It is a real `Layout` over a real rope — the same two
+/// things the editing area has — so selecting in it is the same arithmetic; what it does not have is
+/// a `Document`, because it is worked out from the source rather than edited. So this returns the
+/// selection it would make and changes nothing, which is the rule every component in Quill follows.
+///
+/// A press puts the anchor down and clears what was selected, a drag extends it, a double click
+/// takes the word and a triple click the line. `None` means the pointer did nothing this frame.
+pub fn read_pointer(
+    response: &egui::Response,
+    layout: &Layout,
+    text: &Rope,
+    text_origin: Pos2,
+    selection: Selection,
+) -> Option<Selection> {
+    let pointer = response.interact_pointer_pos()?;
+    let local = pointer - text_origin;
+    let offset = layout.offset_at(local.x, local.y);
+    if response.triple_clicked() {
+        let line = text.line_range(text.byte_to_line(offset));
+        return Some(Selection::new(line.start, line.end.min(text.len_bytes())));
+    }
+    if response.double_clicked() {
+        let word = word_at(text, offset);
+        return Some(Selection::new(word.start, word.end));
+    }
+    if response.drag_started() {
+        // Where the **press** was, not where the pointer is now. egui does not call a press a drag
+        // until it has moved a few points, so by the frame that says a drag started the pointer has
+        // already left the letter it was put down on — and the anchor belongs on that letter.
+        let press = response.ctx.input(|input| input.pointer.press_origin()).unwrap_or(pointer);
+        let from = press - text_origin;
+        return Some(Selection::new(layout.offset_at(from.x, from.y), offset));
+    }
+    if response.dragged() {
+        return Some(Selection { anchor: selection.anchor, head: offset });
+    }
+    if response.clicked() {
+        return Some(Selection::caret(offset));
+    }
+    None
+}
+
+/// The word `offset` falls in, for a double click.
+///
+/// Word characters are letters, digits and the underscore, which is the same rule the editing area's
+/// own word movement follows. The search is inside the line rather than the whole rope, because a
+/// preview is one long rope and a line is the most a word can span.
+pub fn word_at(text: &Rope, offset: usize) -> std::ops::Range<usize> {
+    let line = text.line_range(text.byte_to_line(offset));
+    let body = text.byte_slice(line.clone());
+    let at = offset.saturating_sub(line.start).min(body.len());
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    let start = body[..at].char_indices().rev().take_while(|(_, c)| is_word(*c)).last();
+    let start = start.map(|(index, _)| index).unwrap_or(at);
+    let end = body[at..]
+        .char_indices()
+        .find(|(_, c)| !is_word(*c))
+        .map(|(index, _)| at + index)
+        .unwrap_or(body.len());
+    // A click on something that is not a word — a space, a table's rule — selects that one
+    // character, so a drag from it still has somewhere to start.
+    if start == end {
+        let next = body[at..].chars().next().map(char::len_utf8).unwrap_or(0);
+        return line.start + start..line.start + end + next;
+    }
+    line.start + start..line.start + end
+}
+
+/// Paint one range behind the text, which is what a selection and a code chip both are.
+pub fn paint_behind(
+    ui: &egui::Ui,
+    layout: &Layout,
+    text_origin: Pos2,
+    range: std::ops::Range<usize>,
+    color: Color32,
+    rounding: f32,
+) {
+    if range.is_empty() {
+        return;
+    }
+    let visible = visible_lines(ui, layout, text_origin);
+    for rect in layout.selection_rects_in(visible, range) {
+        ui.painter().rect_filled(
+            Rect::from_min_size(
+                Pos2::new(text_origin.x + rect.x, text_origin.y + rect.y),
+                Vec2::new(rect.width, rect.height),
+            ),
+            rounding,
+            color,
+        );
+    }
+}
+
+/// Which part of a cell each of a box-drawing character's two strokes covers.
+///
+/// `None` for a stroke the character does not have; `Some((from, to))` as fractions of the cell, so
+/// `(0.0, 1.0)` is right across it and `(0.5, 1.0)` is from the middle to the right or bottom edge.
+/// That is the whole of what a corner is.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct BoxCell {
+    across: Option<(f32, f32)>,
+    down: Option<(f32, f32)>,
+}
+
+/// What the eleven box-drawing characters Quill writes are made of.
+///
+/// Only those: a rule, a quote's bar, and the ten pieces of a table's grid. Anything else in the
+/// block is left to the font, because a character with a curve, a double line or a deliberate dash
+/// in it is not two rectangles.
+fn box_rules(character: char) -> Option<BoxCell> {
+    let all = Some((0.0, 1.0));
+    let first = Some((0.0, 0.5));
+    let second = Some((0.5, 1.0));
+    let cell = match character {
+        '\u{2500}' => BoxCell { across: all, down: None },
+        '\u{2502}' => BoxCell { across: None, down: all },
+        '\u{250C}' => BoxCell { across: second, down: second },
+        '\u{2510}' => BoxCell { across: first, down: second },
+        '\u{2514}' => BoxCell { across: second, down: first },
+        '\u{2518}' => BoxCell { across: first, down: first },
+        '\u{251C}' => BoxCell { across: second, down: all },
+        '\u{2524}' => BoxCell { across: first, down: all },
+        '\u{252C}' => BoxCell { across: all, down: second },
+        '\u{2534}' => BoxCell { across: all, down: first },
+        '\u{253C}' => BoxCell { across: all, down: all },
+        _ => return None,
+    };
+    Some(cell)
+}
+
+/// Put one cell's strokes into the list, joining each to the one before it where they touch.
+///
+/// Every edge is snapped to a whole pixel, and the bottom of one line is the top of the next by
+/// construction, so a bar down a quote or a column of a table is continuous however tall the lines
+/// are. A run of the same rule becomes one rectangle rather than forty-eight.
+fn paint_a_box_cell(
+    rules: &mut Vec<(Rect, Color32)>,
+    cell: BoxCell,
+    at: Pos2,
+    width: f32,
+    height: f32,
+    color: Color32,
+) {
+    // A hairline at the ordinary reading size and thicker as the text grows, so a grid stays a grid
+    // rather than becoming a fence.
+    let thickness = (height * 0.05).round().max(1.0);
+    let middle_x = (at.x + width / 2.0 - thickness / 2.0).round();
+    let middle_y = (at.y + height / 2.0 - thickness / 2.0).round();
+    if let Some((from, to)) = cell.across {
+        let left = if from == 0.0 { at.x.floor() } else { middle_x };
+        let right = if to == 1.0 { (at.x + width).ceil() } else { middle_x + thickness };
+        add_rule(
+            rules,
+            Rect::from_min_max(
+                Pos2::new(left, middle_y),
+                Pos2::new(right, middle_y + thickness),
+            ),
+            color,
+        );
+    }
+    if let Some((from, to)) = cell.down {
+        let top = if from == 0.0 { at.y.round() } else { middle_y };
+        let bottom = if to == 1.0 { (at.y + height).round() } else { middle_y + thickness };
+        add_rule(
+            rules,
+            Rect::from_min_max(
+                Pos2::new(middle_x, top),
+                Pos2::new(middle_x + thickness, bottom),
+            ),
+            color,
+        );
+    }
+}
+
+/// Add a stroke, growing the one before it instead when the two are one line carried on.
+fn add_rule(rules: &mut Vec<(Rect, Color32)>, rect: Rect, color: Color32) {
+    if let Some((last, colour)) = rules.last_mut() {
+        let carried_on = *colour == color
+            && (last.top() - rect.top()).abs() < 0.5
+            && (last.bottom() - rect.bottom()).abs() < 0.5
+            && (last.right() - rect.left()).abs() < 0.5;
+        if carried_on {
+            last.max.x = rect.max.x;
+            return;
+        }
+    }
+    rules.push((rect, color));
 }
 
 /// The lines of `layout` that fall inside what `ui` is drawing into.

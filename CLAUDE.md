@@ -416,6 +416,87 @@ with the real fonts of the machine, colours it as the window colours it, and pri
 a frame costs. `tasks/task-1666-performance-tdd.md` has the before and after tables and the two
 designs that were rejected.
 
+## The Markdown preview is a document, which is what makes it read like one
+
+`task-1685` reported four things: tables were not drawn, the preview could not be selected or copied,
+code blocks were hard to read, and "a lot of formatting isn't complete or is missing". The fourth is
+the one that mattered — the old parser read the source **one line at a time**, decided what that line
+was in isolation, and walked its characters with three booleans for bold, italic and struck. That
+shape cannot express a list item holding a paragraph, a quote holding a list, a fence indented inside
+a bullet, or the question of whether the `*` in `2 * 3 * 4` opens emphasis. Twenty-eight separate
+omissions were downstream of it, and they are the table in §1 of
+`tasks/task-1685-markdown-tdd.md`.
+
+So `quill_core::markdown` is the two phases every conforming implementation uses.
+**`blocks`** builds a tree, recursively: a quote's lines have one `>` taken off them and are parsed
+again, a list item's lines have its indent taken off them and are parsed again. Two rules in it are
+worth naming — **lazy continuation**, which is what makes hand-wrapped prose one paragraph instead of
+five and is the single most visible fix in the ticket; and **tight and loose**, which is why lists
+stopped looking so airy, since every item used to be followed by a blank line whatever the source
+said. **`inline`** is CommonMark's **delimiter stack**: a run of `*`, `_` or `~` is measured, asked
+whether it may open and whether it may close under the flanking rules, and matched against the runs
+still open behind it. A run that can do neither is text, which is the whole of why `2 * 3 * 4` is now
+left alone and why the special case for `snake_case` could be deleted.
+
+**It is still not a second renderer, and that is the point.** The preview produces the same three
+things a document holds, so the ordinary layout, the ordinary painter, the ordinary scrollbar and the
+ordinary hit testing draw it — which is why **selecting text in it was a small feature**: the bytes
+under the pointer are `Layout::offset_at`, the rectangles are `Layout::selection_rects_in`, and the
+only new state is a `Selection` on the tab beside the scroll position. A `pulldown-cmark` was weighed
+and refused for the reason `task-1675` refused a language server: its output is events shaped for
+HTML, and Quill has no HTML, no box model and no inline layout, so everything it gave back would have
+to be walked and re-expressed anyway.
+
+**A table is set in the code font and drawn in a box.** §5 of the TDD weighs the three ways of giving
+a glyph-placing layout engine a column. Tab stops on `ParagraphStyle` are the prettiest and cost the
+most — it is `Copy` and twelve bytes, one per line of every document, and a cell that wraps makes one
+visual line hold pieces of several cells while `PlacedLine::bytes` is a single `Range`. Drawing the
+table as a picture is cheap and wrong, because a picture of a table is a table nobody can copy out
+of. So every cell is padded with spaces to its column's width: the columns line up **by construction
+rather than by measurement**, the arithmetic is integers over characters and every one of its tests
+runs with no fonts, and the whole table is ordinary text — so it selects, copies and hit-tests with no
+new code, and what lands on the clipboard is a table a person can paste anywhere. It is what
+`glamour`, `rich`, `mdcat` and `bat` all do. The one measurement is how many characters of the code
+font fit across the pane, and the caller takes it.
+
+**A rule is drawn rather than lettered.** The box-drawing characters are in the text, but
+`components::editor_view::box_rules` paints them: a glyph cannot tile, because its ink is an em box
+while the line it sits on is taller, and its bitmap is a whole pixel wider than its advance. Set as
+letters, a table's rules came out dotted and its columns came out as rows of ticks. Eleven characters,
+each a pair of half-cell strokes. `design/style-guide.md` already said this about icons.
+
+**Code is coloured by the plugin that reads the language.** The seam is `CodeHighlighter`, one method:
+`quill-core` holds no plugin registry and must not learn about one, so it asks and the window answers
+with the same `syntax::highlight` and the same theme `colour_the_file` uses for a source file.
+`Plugins::for_language` matches a fence's word against a plugin's id, its name and every extension it
+claims, so ```` ```rs ```` and ```` ```rust ```` are one question and Quill holds no table of aliases.
+A language nothing claims falls back to the one code colour, which is what the preview did before, so
+the change can never make anything worse. Where the code blocks are comes back as `Preview::panels`
+and where the inline code is as `Preview::code_spans`, and the window paints a panel behind the first
+and a chip behind the second — this crate says which paragraphs and which bytes, and the window
+decides what a code background looks like.
+
+**The preview never takes the keyboard.** In the side-by-side view the source is being typed into and
+the preview is being read, and a click in the preview that stopped the caret working would be worse
+than having no selection at all. So `Focus` is untouched and one flag, `QuillApp::reading_preview`,
+says which of the two a copy is about: set by a press in a preview, cleared by a press in an editing
+area. `Ctrl/Cmd+C` arrives as an `Event::Copy` rather than as a key press, so it is claimed **before
+the pane loop**, which is the one-frame ordering the completion popup and the explorer's keys already
+use — the source pane is drawn first and would otherwise copy its own selection. A selection is thrown
+away when the preview is worked out again, because a byte range into text that has been rebuilt means
+nothing.
+
+**Four invariants hold for every preview**, checked for every case in the battery and by
+`cargo run --example markdown_check`, which reads every `.md` in the checkout — 55 files, a megabyte,
+116 ms — and reports any that break one: the spans cover the text exactly, there is one paragraph
+style and one source line per preview line, the source lines never go backwards, and everything a
+picture, a diagram or a panel names is inside the text. One of these failing is not a wrong-looking
+document, it is a blank pane: the layout engine indexes the paragraph list by line number and the
+scroll crossing indexes `source_lines` the same way.
+
+`quill-cli editor preview-select` is the command line half, and `editor preview --json` reports the
+panels and the inline code beside the text.
+
 ## The Markdown preview draws pictures, and the layout engine knows nothing about pictures
 
 `![alt](picture.png)` on a line of its own draws the picture, in the preview and in the right hand
@@ -1422,6 +1503,11 @@ trade that away to be a shade nearer a screenshot.
   references and rename modals, and the fifty-scenario battery the implementation is held to.
   `task-1676` is the implementation of it; `cargo run --release -p quill-app --example symbol_cost`
   is how its budgets are measured again.
+- `tasks/task-1685-markdown-tdd.md` — the Markdown preview: the twenty-eight things the
+  line-at-a-time parser could not express and why they were all one fault, why a Markdown crate was
+  weighed and refused, the block tree and the delimiter stack that replaced it, the three ways of
+  giving a glyph-placing layout engine a column and why the table is set in the code font, what
+  selecting in a read-only page needs, and what is deliberately left out.
 - `tasks/task-1683-run-configurations-tdd.md` — run configurations: what IntelliJ's model, widget
   and Run tool window each are, why a configuration in Quill is one named command rather than a
   template per language, the run tile built on the terminal stack, the two manifest keys and the

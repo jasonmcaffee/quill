@@ -22,23 +22,43 @@ textured rectangle.
 The three buttons at the right of the toolbar switch between the raw Markdown,
 the source and the preview side by side, and the preview on its own.
 
-The parser is ours. It reads headings, **bold**, *italic*, ~~strikethrough~~,
-`inline code`, fenced code blocks, lists, block quotes, rules and links, and
-turns them into the same styled text Quill already knows how to lay out.
+The parser is ours, and it reads what CommonMark and GitHub Flavored Markdown
+describe: headings, **bold**, *italic*, ~~strikethrough~~, `inline code`, fenced
+and indented code blocks, tight and loose lists, task lists, nested block quotes,
+tables, rules, links, reference links, footnotes, autolinks and escapes. All of
+it becomes the same styled text Quill already knows how to lay out, which is why
+you can select a passage of the preview with the mouse and copy it.
 
 > The preview is read only. There is nothing to type into it, because what it
 > shows is worked out from the source on the left.
 
 1. Numbered lists work.
 2. So do nested ones.
-  - Like this.
-  - And this.
+   - Like this.
+   - And this.
 
-```
+A task list has real tick boxes:
+
+- [x] This one is ticked.
+- [ ] This one is not.
+
+A fence that names a language is coloured by the plugin that reads it, on a
+panel of its own:
+
+```rust
 fn main() {
-    println!("code blocks keep their spacing");
+    let greeting = "code blocks keep their spacing";
+    println!("{greeting}");
 }
 ```
+
+And a table is a table:
+
+| Crate | What is in it | Tests |
+| -------------- | ------------------------------- | ----: |
+| quill-core | the editor, with no window | 639 |
+| quill-terminal | the pseudoterminal and a screen | 116 |
+| quill-app | drawing, fonts, settings, menus | 796 |
 
 ## The files
 

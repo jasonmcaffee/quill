@@ -237,6 +237,24 @@ impl Plugins {
     /// The window asks this before it draws a diagram anywhere — a `.mmd` file's preview, and every
     /// mermaid block in a Markdown document — so switching the plugin off withdraws the feature in
     /// the same frame rather than at the next restart.
+    /// The plugin that reads a language named on a fence in a Markdown document.
+    ///
+    /// A fence says `rust`, `rs`, `js` or `TypeScript`, and all four are the same request. So the
+    /// word is matched against the plugin's id, its name and every extension it claims, which is
+    /// what makes ```` ```rs ```` and ```` ```rust ```` one question without Quill holding a table
+    /// of aliases that a plugin somebody writes later could not add to.
+    pub fn for_language(&self, name: &str) -> Option<&Plugin> {
+        let wanted = name.trim().trim_start_matches('.').to_lowercase();
+        if wanted.is_empty() {
+            return None;
+        }
+        self.installed.iter().filter(|plugin| plugin.enabled).find(|plugin| {
+            plugin.id == wanted
+                || plugin.name.to_lowercase() == wanted
+                || plugin.extensions.contains(&wanted)
+        })
+    }
+
     pub fn renders(&self, name: &str) -> bool {
         self.installed
             .iter()

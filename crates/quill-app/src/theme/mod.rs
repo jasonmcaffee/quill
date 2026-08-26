@@ -43,6 +43,14 @@ pub mod color {
     pub const UNSAVED: Color32 = Color32::from_rgb(0xFE, 0xBC, 0x2E);
     /// Behind selected text.
     pub const TEXT_SELECTION: Color32 = Color32::from_rgb(0x30, 0x43, 0x61);
+    /// Behind a code block, a table and the front matter in the Markdown preview.
+    ///
+    /// A step up from `EDITOR` rather than a colour of its own, so the block reads as a panel on the
+    /// page rather than as a second surface. `task-1685` added it: a fence with no ground under it
+    /// is the whole of what "code blocks aren't easy to read" meant.
+    pub const CODE_PANEL: Color32 = Color32::from_rgb(0x23, 0x29, 0x33);
+    /// Behind one piece of inline code, which is the same idea at the size of a word.
+    pub const CODE_CHIP: Color32 = Color32::from_rgb(0x28, 0x2F, 0x3A);
 
     /// A heading in the editor, and the file name in the title bar.
     pub const TEXT_STRONG: Color32 = Color32::from_rgb(0xFF, 0xFF, 0xFF);

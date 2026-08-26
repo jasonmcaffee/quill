@@ -49,6 +49,7 @@ different greys, and it must not happen.
 | `MENU` | Behind a menu. Darker than `CONTROL`, so a control drawn on a menu stands out. |
 | `ACCENT` | Anything switched on: an active button, the caret, the underline on the open tab. |
 | `SELECTED_ROW` | Behind the chosen row in any list. |
+| `CODE_PANEL`, `CODE_CHIP` | Behind a code block, a table and the front matter in the Markdown preview, and behind one piece of inline code. Two steps up from `EDITOR` rather than colours of their own, so a block reads as a panel on the page rather than as a second surface. |
 | `UNSAVED` | The amber dot meaning there are changes that have not been written. |
 | `TEXT_STRONG` → `TEXT` → `TEXT_CONTROL` → `TEXT_DIM` → `TEXT_FAINT` | Five weights, brightest to faintest. A heading, body text, a control's label, a heading in the explorer, and placeholder text. |
 | `HIGHLIGHT_YELLOW`, `HIGHLIGHT_GREEN`, `HIGHLIGHT_BLUE`, `HIGHLIGHT_PINK` | The four colours a passage can be marked in. Held as `quill_core::Rgba` rather than `Color32`, because a mark is written to a file and sent over the command line as well as painted; `theme::color32` is the one place the two spellings meet. |
@@ -316,6 +317,17 @@ opens the colour wheel. It is a ring of six wedges in the six named hues, with t
 used for the line round it. An icon whose whole meaning is "any colour you like" cannot be one colour,
 and the six are the corners of the ring the wheel itself draws, so the button and what it opens are
 recognisably the same thing. Nothing else may do this without a reason written down here.
+
+**A rule is drawn too**, and that is `task-1685`. Quill's horizontal rule, a quote's bar and the ten
+pieces of a table's grid are written into the preview's text as box-drawing characters — because the
+layout engine places glyphs, and a line that is not text has to be a line made of text — but they are
+**painted rather than lettered** when the frame is drawn. A box-drawing glyph cannot tile: its ink is
+an em box while the line it sits on is taller than that, and its bitmap is a whole pixel wider than
+its advance. Set as letters, a rule came out as a dotted line and a table's column came out as a
+column of ticks. `components::editor_view::box_rules` says which halves of its cell each of the
+eleven characters covers and the painter fills them, so a grid joins up exactly at any size and any
+line height. The characters stay in the text, which is what puts a real table on the clipboard when
+somebody copies one.
 
 `task-1658` asked the same question again for the three icons in the activity bar and the answer is
 the same, for a reason its own rail makes plain: each of those three is drawn in `TEXT_DIM` sitting

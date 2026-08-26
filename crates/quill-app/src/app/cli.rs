@@ -1533,6 +1533,7 @@ impl QuillApp {
             "view" => self.cli_editor_view(request, ctx),
             "scroll" => self.cli_editor_scroll(request),
             "preview" => self.cli_editor_preview(request, ctx),
+            "preview-select" => self.cli_editor_preview_select(request, ctx),
             "definition" => self.cli_editor_definition(request),
             "references" => self.cli_editor_references(request),
             "rename" => self.cli_editor_rename(request),
@@ -2435,10 +2436,111 @@ impl QuillApp {
                 })
             })
             .collect();
+        // Where the code blocks, the tables and the front matter are, and where the inline code is.
+        // The window paints a panel behind the first and a chip behind the second; reported here so
+        // that what a person can see is what a script can read.
+        let (panels, code_spans) = match self.files.active().cached.preview.as_ref() {
+            Some(preview) => (
+                preview
+                    .panels
+                    .iter()
+                    .map(|panel| {
+                        json!({
+                            "from": panel.paragraphs.start,
+                            "to": panel.paragraphs.end,
+                            "kind": match panel.kind {
+                                quill_core::PanelKind::Code => "code",
+                                quill_core::PanelKind::Table => "table",
+                                quill_core::PanelKind::FrontMatter => "front-matter",
+                            },
+                        })
+                    })
+                    .collect::<Vec<Value>>(),
+                preview
+                    .code_spans
+                    .iter()
+                    .map(|span| json!({ "from": span.start, "to": span.end }))
+                    .collect::<Vec<Value>>(),
+            ),
+            None => (Vec::new(), Vec::new()),
+        };
         ok(
             request,
             String::new(),
-            json!({ "text": self.preview_text(), "pictures": pictures, "diagrams": diagrams }),
+            json!({
+                "text": self.preview_text(),
+                "pictures": pictures,
+                "diagrams": diagrams,
+                "panels": panels,
+                "code": code_spans,
+            }),
+        )
+    }
+
+    /// `quill-cli editor preview-select` — reading and copying what the preview has selected.
+    ///
+    /// The preview goes through the same three functions the pointer goes through, so a selection
+    /// made from the command line and one made with the mouse are the same thing. The preview is
+    /// built first when it has never been drawn, exactly as `editor preview` builds it, because an
+    /// offset into a page that does not exist yet has no meaning.
+    fn cli_editor_preview_select(&mut self, request: &Request, ctx: &egui::Context) -> Outcome {
+        if !file_kind::preview_applies(self.document().path())
+            || file_kind::is_mermaid(self.document().path())
+        {
+            return no(
+                request,
+                code::NOT_APPLICABLE,
+                format!("{} has no Markdown preview to select in.", self.files.active().name()),
+            );
+        }
+        let width = if self.editor_area.width() > 1.0 {
+            self.editor_area.width()
+        } else {
+            ctx.content_rect().width().max(400.0)
+        };
+        self.refresh_preview(ctx, width);
+        let length = self
+            .files
+            .active()
+            .cached
+            .preview
+            .as_ref()
+            .map(|preview| preview.text.len_bytes())
+            .unwrap_or(0);
+
+        if request.switch("all") {
+            self.select_the_whole_preview();
+        } else if request.switch("none") {
+            self.files.active_mut().preview_selection = quill_core::Selection::caret(0);
+        } else if let Some(from) = request.number("from") {
+            let from = (from as usize).min(length);
+            let to = request.number("to").map(|to| (to as usize).min(length)).unwrap_or(length);
+            self.files.active_mut().preview_selection = quill_core::Selection::new(from, to);
+            self.reading_preview = true;
+        }
+        let selection = self.files.active().preview_selection;
+        let text = self.preview_selected_text().unwrap_or_default();
+        if request.switch("copy") {
+            if text.is_empty() {
+                return no(request, code::NOT_APPLICABLE, "Nothing is selected in the preview.");
+            }
+            ctx.copy_text(text.clone());
+        }
+        let summary = if text.is_empty() {
+            "Nothing is selected in the preview.".to_owned()
+        } else {
+            format!("{} bytes selected in the preview.", text.len())
+        };
+        ok(
+            request,
+            summary,
+            json!({
+                "from": selection.start(),
+                "to": selection.end(),
+                "length": length,
+                "text": text,
+                "copied": request.switch("copy"),
+            }),
         )
     }
 

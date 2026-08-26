@@ -28,7 +28,7 @@
 
 use std::path::{Path, PathBuf};
 
-use quill_core::{Anchor, Document, Layout, Preview};
+use quill_core::{Anchor, Document, Layout, Preview, Selection};
 
 use crate::app::{PlacedDiagram, PlacedPicture, ViewMode};
 use crate::components::gutter::{BlameRow, Change};
@@ -116,6 +116,13 @@ pub struct OpenFile {
     /// the same for the preview. See [`ViewAnchor`].
     pub zoom_anchor: Option<ViewAnchor>,
     pub preview_anchor: Option<ViewAnchor>,
+    /// What is selected in this tab's Markdown preview, as a range into the preview's own text.
+    ///
+    /// On the tab beside the scroll position it lives with, rather than on the window, because a
+    /// preview belongs to a file and two panes can be showing two of them. It is emptied when the
+    /// preview is worked out again, since a byte range into text that has been rebuilt means
+    /// nothing — see `QuillApp::refresh_preview`.
+    pub preview_selection: Selection,
     /// One row a paragraph, once this file has been annotated with git blame.
     pub blame: Option<Vec<BlameRow>>,
     /// Which paragraphs differ from the version git has.
@@ -160,6 +167,7 @@ impl OpenFile {
             preview_scroll: 0.0,
             zoom_anchor: None,
             preview_anchor: None,
+            preview_selection: Selection::caret(0),
             blame: None,
             line_changes: Vec::new(),
             transient: false,

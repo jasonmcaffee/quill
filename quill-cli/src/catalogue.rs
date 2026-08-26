@@ -612,6 +612,25 @@ pub const COMMANDS: &[Command] = &[
     },
     Command {
         area: "editor",
+        verb: "preview-select",
+        summary: "What is selected in the Markdown preview, and selecting something in it. The preview is read only, so a selection there is for reading and copying rather than editing; the offsets are into the preview's own text, which is what `editor preview` prints.",
+        arguments: NO_ARGUMENTS,
+        flags: &[
+            option("from", "bytes", "Where the selection starts in the preview's text."),
+            option("to", "bytes", "Where it ends. The end of the text when it is left out."),
+            switch("all", "Select the whole preview."),
+            switch("none", "Select nothing."),
+            switch("copy", "Put whatever is selected on the clipboard."),
+        ],
+        examples: &[
+            "quill-cli editor preview-select --json",
+            "quill-cli editor preview-select --all --copy",
+            "quill-cli editor preview-select --from 0 --to 40",
+        ],
+        local: false,
+    },
+    Command {
+        area: "editor",
         verb: "definition",
         summary: "Where the word at the caret is defined. Prints every candidate the project holds, best first, and --open goes to the best one. A file whose language has not said what a definition looks like has none, which is stated rather than guessed at.",
         arguments: NO_ARGUMENTS,

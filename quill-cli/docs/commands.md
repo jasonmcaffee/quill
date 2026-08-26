@@ -871,6 +871,26 @@ Read the preview of the tab that is showing: a Markdown page as plain text with 
 quill-cli editor preview --json
 ```
 
+### editor preview-select
+
+```
+quill-cli editor preview-select [--from <bytes>] [--to <bytes>] [--all] [--none] [--copy]
+```
+
+What is selected in the Markdown preview, and selecting something in it. The preview is read only, so a selection there is for reading and copying rather than editing; the offsets are into the preview's own text, which is what `editor preview` prints.
+
+- `--from <bytes>` — Where the selection starts in the preview's text.
+- `--to <bytes>` — Where it ends. The end of the text when it is left out.
+- `--all` — Select the whole preview.
+- `--none` — Select nothing.
+- `--copy` — Put whatever is selected on the clipboard.
+
+```sh
+quill-cli editor preview-select --json
+quill-cli editor preview-select --all --copy
+quill-cli editor preview-select --from 0 --to 40
+```
+
 ### editor definition
 
 ```

@@ -1106,7 +1106,8 @@ fn the_window_matches_the_design() {
 const MARKDOWN: &str = "\
 # Quill preview
 
-A paragraph with **bold**, *italic*, ~~struck~~ and `inline code` in it.
+A paragraph with **bold**, *italic*, ~~struck~~ and `inline code` in it, wrapped
+over two lines of source so that it comes out as one paragraph.
 
 ## A smaller heading
 
@@ -1114,12 +1115,23 @@ A paragraph with **bold**, *italic*, ~~struck~~ and `inline code` in it.
 - another bullet
   - one nested under it
 
+### A list of things to do
+
+- [x] a box that is ticked
+- [ ] one that is not
+
 1. first
 2. second
 
 > a quoted line
+> > and one quoted inside it
 
-```
+| Crate | Lines | Tests |
+| ----- | ----: | :---: |
+| core | 9132 | 412 |
+| terminal | 3004 | 88 |
+
+```rust
 fn main() {
     println!(\"code keeps its spacing\");
 }
@@ -1181,6 +1193,198 @@ fn the_preview_removes_the_marks_and_applies_them() {
     // The source itself is untouched: the preview is worked out from it, not instead of it.
     assert!(harness.state().document().text().to_string().contains("**bold**"));
     harness.snapshot(shot("view_preview"));
+}
+
+/// The three things `task-1685` added, in a document short enough that all of them are on the
+/// screen at once. `MARKDOWN` is the everything document and is taller than the window.
+const MARKDOWN_TABLE: &str = "\
+## What the crates hold
+
+| Crate | Lines | Tests |
+| ----- | ----: | :---: |
+| core | 9132 | 412 |
+| terminal | 3004 | 88 |
+| app | 17133 | 507 |
+
+Some prose with `inline code` in it, under the table.
+
+```rust
+fn main() {
+    let greeting = \"hello\";
+    println!(\"{greeting}\");
+}
+```
+
+- [x] a box that is ticked
+- [ ] one that is not";
+
+/// **A pipe table is drawn as a table**, which is the first thing `task-1685` asks for.
+///
+/// The pipes become a box of rules, the columns line up because the whole table is set in the code
+/// font, and the words that were in the cells are still there to be read and copied.
+#[test]
+fn a_table_in_the_preview_is_drawn_in_a_box() {
+    let mut harness = harness(MARKDOWN_TABLE);
+    harness.get_by_label("Markdown preview").click();
+    harness.run();
+    let preview = harness.state().preview_text();
+    assert!(!preview.contains('|'), "the pipes are the box, not the text: {preview}");
+    assert!(preview.contains('\u{250C}'), "a top left corner: {preview}");
+    assert!(preview.contains("Crate") && preview.contains("9132"), "the cells survive");
+    // Every line of the table is the same width, which is what a table means.
+    let rows: Vec<&str> = preview
+        .lines()
+        .filter(|line| line.starts_with('\u{2502}') && line.ends_with('\u{2502}'))
+        .collect();
+    assert!(rows.len() >= 3, "a head and two rows: {rows:?}");
+    assert!(
+        rows.windows(2).all(|pair| pair[0].chars().count() == pair[1].chars().count()),
+        "{rows:?}"
+    );
+    harness.snapshot(shot("preview_table"));
+}
+
+/// **A tick box is a tick box**, and a quote inside a quote is two bars deep.
+#[test]
+fn the_preview_reads_the_things_the_old_parser_could_not() {
+    let mut harness = harness(MARKDOWN);
+    harness.get_by_label("Markdown preview").click();
+    harness.run();
+    let preview = harness.state().preview_text();
+    assert!(preview.contains("\u{2611}  a box that is ticked"), "{preview}");
+    assert!(preview.contains("\u{2610}  one that is not"), "{preview}");
+    assert!(preview.contains("\u{2502}  \u{2502}  and one quoted inside it"), "{preview}");
+    assert!(
+        preview.contains("wrapped over two lines"),
+        "a hand-wrapped paragraph is one paragraph: {preview}"
+    );
+}
+
+/// **A fence names a language and the plugin that reads it colours the code.**
+///
+/// The same two calls `colour_the_file` makes for a `.rs` file, reached through the
+/// `CodeHighlighter` seam, so a fence of Rust in a document looks like a Rust file.
+#[test]
+fn a_fence_of_rust_is_coloured_by_the_plugin_that_reads_rust() {
+    let mut harness = harness(MARKDOWN_TABLE);
+    harness.get_by_label("Markdown preview").click();
+    harness.run();
+    let preview = harness.state().preview_text();
+    let at = preview.find("fn main").expect("the fence is in the preview");
+    let keyword = harness.state().preview_style_at(at + 1);
+    let name = harness.state().preview_style_at(at + 4);
+    assert_ne!(
+        keyword.color, name.color,
+        "`fn` and `main` are different kinds of thing, so they are different colours"
+    );
+}
+
+/// **A code block asks for a panel behind it**, which is the whole of "code blocks aren't easy to
+/// read": a fence with no ground under it does not read as a block.
+#[test]
+fn the_preview_puts_code_on_a_panel_and_inline_code_on_a_chip() {
+    let mut harness = harness(MARKDOWN_TABLE);
+    harness.get_by_label("Markdown preview").click();
+    harness.run();
+    let panels = harness.state().preview_panels();
+    assert!(panels.iter().any(|panel| panel.kind == quill_core::PanelKind::Code));
+    assert!(panels.iter().any(|panel| panel.kind == quill_core::PanelKind::Table));
+    assert!(!harness.state().preview_code_spans().is_empty(), "`inline code` gets a chip");
+}
+
+/// **Text in the preview can be selected with the pointer and copied**, which is the ticket's
+/// second complaint. The preview is read only; reading includes taking a copy of what you read.
+#[test]
+fn text_in_the_preview_can_be_selected_by_dragging() {
+    let mut harness = harness(MARKDOWN_TABLE);
+    harness.get_by_label("Markdown preview").click();
+    harness.run();
+    let area = harness.state().editor_area();
+    // The line of prose under the table, which is what a person would drag across.
+    let line = area.top() + 303.0;
+    drag(
+        &mut harness,
+        egui::Pos2::new(area.left() + 24.0, line),
+        egui::Pos2::new(area.left() + 340.0, line),
+    );
+    let selected = harness.state().preview_selected_text().unwrap_or_default();
+    assert!(!selected.is_empty(), "a drag across a line should have selected something");
+    assert!(
+        harness.state().preview_holds_the_selection(),
+        "and the copy should be about the preview rather than the source"
+    );
+    harness.snapshot(shot("preview_selection"));
+}
+
+/// **And selecting all of it works from the menu**, so a whole page can be taken in one go.
+#[test]
+fn the_whole_preview_can_be_selected_and_copied() {
+    let mut harness = harness(MARKDOWN);
+    harness.get_by_label("Markdown preview").click();
+    harness.run();
+    let area = harness.state().editor_area();
+    let at = egui::Pos2::new(area.left() + 30.0, area.top() + 60.0);
+    click_at(&mut harness, at);
+    let ctx = harness.ctx.clone();
+    harness.state_mut().run_action(Action::SelectAll, &ctx);
+    harness.run();
+    let selected = harness.state().preview_selected_text().unwrap_or_default();
+    assert!(selected.contains("Quill preview"), "the heading is in it");
+    assert!(selected.contains("The last paragraph."), "and so is the last line");
+}
+
+/// **`Ctrl/Cmd+C` copies the preview**, and it has to be claimed before the source pane is drawn or
+/// the source would take the event and copy its own selection instead. egui delivers a copy as an
+/// `Event::Copy` rather than as a key press, which is why this is not simply the `Copy` menu entry.
+#[test]
+fn the_copy_key_in_the_preview_copies_the_preview_and_not_the_source() {
+    let mut harness = harness(MARKDOWN_TABLE);
+    harness.get_by_label("Side by side").click();
+    harness.run();
+    let source = harness.state().editor_area();
+    // Something selected in the source, so a copy that went to the wrong half would be visible.
+    harness.state_mut().command(Command::SelectAll);
+    harness.run();
+    click_at(&mut harness, egui::Pos2::new(source.right() + 60.0, source.top() + 60.0));
+    let ctx = harness.ctx.clone();
+    harness.state_mut().run_action(Action::SelectAll, &ctx);
+    harness.run();
+
+    harness.input_mut().events.push(egui::Event::Copy);
+    harness.step();
+    let copied = harness
+        .output()
+        .platform_output
+        .commands
+        .iter()
+        .find_map(|command| match command {
+            egui::OutputCommand::CopyText(text) => Some(text.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    assert!(copied.contains("What the crates hold"), "the preview was copied, got {copied:?}");
+    assert!(!copied.contains("| ----- |"), "and not the source, got {copied:?}");
+}
+
+/// **A click in the source takes the copy back**, so the two halves of the side-by-side view never
+/// argue about what `Copy` means.
+#[test]
+fn a_click_in_the_source_takes_the_copy_back_from_the_preview() {
+    let mut harness = harness(MARKDOWN);
+    harness.get_by_label("Side by side").click();
+    harness.run();
+    let source = harness.state().editor_area();
+    let preview = egui::Pos2::new(source.right() + 60.0, source.top() + 60.0);
+    click_at(&mut harness, preview);
+    let ctx = harness.ctx.clone();
+    harness.state_mut().run_action(Action::SelectAll, &ctx);
+    harness.run();
+    assert!(harness.state().preview_holds_the_selection());
+    click_at(&mut harness, egui::Pos2::new(source.left() + 30.0, source.top() + 30.0));
+    assert!(
+        !harness.state().preview_holds_the_selection(),
+        "pressing in the source is what says the copy is about the source"
+    );
 }
 
 #[test]

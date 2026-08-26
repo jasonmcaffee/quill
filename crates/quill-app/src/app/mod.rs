@@ -113,6 +113,9 @@ const ZOOM_STEP: f32 = 1.18;
 /// jump about as the panel grew and shrank with every keystroke.
 const PROBLEM_HEIGHT: f32 = 160.0;
 
+/// How far a code panel is drawn outside the text it sits behind.
+const PANEL_PADDING: f32 = 6.0;
+
 /// How much air is left under a picture in the Markdown preview.
 ///
 /// The same idea as the space between two paragraphs: a picture with the next line of prose against
@@ -430,6 +433,14 @@ pub struct QuillApp {
     /// it, which is settled at the end of the frame — a pinch with the pointer over the explorer or
     /// the terminal still zooms the pane a person is typing into.
     zoom_offered_to_the_keyboard: bool,
+    /// True while the Markdown preview holds the selection that `Copy` means.
+    ///
+    /// The preview must never take the keyboard: in the side-by-side view the source is being typed
+    /// into and the preview is being read, and a click in the preview that stopped the caret working
+    /// would be worse than having no selection at all. So `Focus` is left alone and this one flag
+    /// says which of the two a copy is about — set by a press in a preview and cleared by a press in
+    /// an editing area, which is what "the pane the pointer last pressed in" means.
+    reading_preview: bool,
     /// The pictures in the preview, decoded and kept between frames.
     ///
     /// One of the three caches that stay on the window rather than moving onto the tab with the rest
@@ -616,6 +627,7 @@ impl QuillApp {
             zoom_pending: 1.0,
             zoom_taken: false,
             zoom_offered_to_the_keyboard: false,
+            reading_preview: false,
             preview_images: PreviewImages::new(),
             mermaid_scenes: MermaidScenes::new(),
             themed: false,
@@ -1203,6 +1215,10 @@ impl QuillApp {
                     if let Some(text) = self.terminal.tabs.active().and_then(|s| s.selected_text()) {
                         ctx.copy_text(text);
                     }
+                } else if self.preview_holds_the_selection() {
+                    if let Some(text) = self.preview_selected_text() {
+                        ctx.copy_text(text);
+                    }
                 } else if !self.document().selection().is_empty() {
                     ctx.copy_text(self.document().selected_text());
                 }
@@ -1231,7 +1247,11 @@ impl QuillApp {
                 }
             }
             Action::SelectAll => {
-                self.document_mut().apply(Command::SelectAll);
+                if self.reading_preview && self.view_mode().shows_preview() {
+                    self.select_the_whole_preview();
+                } else {
+                    self.document_mut().apply(Command::SelectAll);
+                }
             }
             Action::SetViewMode(mode) => self.set_view_mode(mode),
             Action::ToggleExplorer => self.explorer_visible = !self.explorer_visible,
@@ -2969,6 +2989,39 @@ impl QuillApp {
             .unwrap_or_default()
     }
 
+    /// The style covering one byte of the preview's text, for a test.
+    pub fn preview_style_at(&self, at: usize) -> quill_core::CharStyle {
+        self.files
+            .active()
+            .cached
+            .preview
+            .as_ref()
+            .map(|preview| preview.chars.style_at(at).clone())
+            .unwrap_or_default()
+    }
+
+    /// The panels the preview asked for, for a test.
+    pub fn preview_panels(&self) -> Vec<quill_core::PreviewPanel> {
+        self.files
+            .active()
+            .cached
+            .preview
+            .as_ref()
+            .map(|preview| preview.panels.clone())
+            .unwrap_or_default()
+    }
+
+    /// Where the inline code is, for a test.
+    pub fn preview_code_spans(&self) -> Vec<std::ops::Range<usize>> {
+        self.files
+            .active()
+            .cached
+            .preview
+            .as_ref()
+            .map(|preview| preview.code_spans.clone())
+            .unwrap_or_default()
+    }
+
     /// The pictures the preview is drawing, for a test.
     pub fn preview_pictures(&self) -> &[PlacedPicture] {
         &self.files.active().cached.preview_pictures
@@ -3023,12 +3076,27 @@ impl QuillApp {
                 color::DIVIDER.b(),
             ),
         };
-        let mut preview = quill_core::markdown::render(
-            &self.document().text().to_string(),
-            &base,
-            colors,
-            self.renderer.monospaced_family(),
-        );
+        let mono = self.renderer.monospaced_family();
+        // How many characters of the code font fit across the pane, which is the one measurement a
+        // table takes. Everything else about a table is integer arithmetic over characters, which is
+        // what `markdown::table` is for and why it is testable with no fonts.
+        let mut preview = {
+            let highlighter = PluginHighlighter { plugins: &self.plugins };
+            let code = quill_core::CharStyle {
+                family: mono.clone().unwrap_or_else(|| base.family.clone()),
+                size: base.size * 0.95,
+                ..quill_core::CharStyle::default()
+            };
+            let advance = quill_core::FontMetrics::advance(&self.renderer, "M", &code).max(1.0);
+            let options = quill_core::PreviewOptions {
+                base: base.clone(),
+                colors,
+                mono,
+                columns: (width / advance).floor().max(16.0) as usize,
+                highlighter: Some(&highlighter),
+            };
+            quill_core::markdown::render(&self.document().text().to_string(), &options)
+        };
         let pictures = self.read_the_pictures(ctx, &mut preview, width);
         let diagrams = self.lay_the_diagrams_out(ctx, &mut preview, width);
         let laid = layout(
@@ -3038,6 +3106,19 @@ impl QuillApp {
             &self.renderer,
             width,
         );
+        // A byte range into text that has been rebuilt means nothing, so a selection in the preview
+        // does not survive an edit. It does survive a scroll and a resize, which is where a person
+        // actually loses one — and the clamp is what makes a resize safe, since a table laid out at
+        // a new width is a different number of bytes.
+        let rebuilt = revision != self.files.active().cached.preview_revision;
+        let length = preview.text.len_bytes();
+        let file = self.files.active_mut();
+        if rebuilt {
+            file.preview_selection = quill_core::Selection::caret(0);
+        } else {
+            file.preview_selection.anchor = file.preview_selection.anchor.min(length);
+            file.preview_selection.head = file.preview_selection.head.min(length);
+        }
         let cached = &mut self.files.active_mut().cached;
         cached.preview_pictures = pictures;
         cached.preview_diagrams = diagrams;
@@ -3598,6 +3679,10 @@ impl QuillApp {
         if let Some(chosen) = self.route_the_explorer_keys(ui) {
             action = Some(chosen);
         }
+        // And the copy, when what is selected is in a preview rather than in a document. Before the
+        // panes for the same reason again: in the side-by-side view the source is drawn first and
+        // would otherwise take the event and copy its own selection instead.
+        self.route_the_preview_copy(ui);
         let pane_rects = self.pane_rects(editing_area);
         let had_the_keyboard = self.files.focused_pane();
         let mut keyboard = had_the_keyboard;
@@ -4726,7 +4811,9 @@ impl QuillApp {
     /// Draw the Markdown preview into `area`. It is read only, so it has no caret and no selection: there
     /// is nothing to type into, because what is shown is worked out from the source.
     fn show_markdown_preview(&mut self, ui: &mut egui::Ui, area: Rect) {
-        let response = ui.interact(area, ui.id().with("preview"), egui::Sense::hover());
+        // `click_and_drag` rather than `hover`: the preview is read only, but reading includes
+        // taking a copy of what you are reading. See `QuillApp::reading_preview`.
+        let response = ui.interact(area, ui.id().with("preview"), egui::Sense::click_and_drag());
         let text_width = (area.width() - size::EDITOR_PADDING_X * 2.0).max(50.0);
         let ctx = ui.ctx().clone();
         self.refresh_preview(&ctx, text_width);
@@ -4764,12 +4851,148 @@ impl QuillApp {
         );
         let mut painter_ui = ui.new_child(egui::UiBuilder::new().max_rect(area));
         painter_ui.set_clip_rect(ui.painter().clip_rect().intersect(area));
+        // The pointer is read before anything is drawn, so the selection painted below is the one
+        // this frame's drag made rather than the one it started with.
+        self.select_in_the_preview(&response, origin);
+        if response.hovered() {
+            painter_ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
+        }
+        self.paint_the_panels(&painter_ui, origin, text_width);
+        self.paint_the_code_chips(&painter_ui, origin);
+        editor_view::paint_behind(
+            &painter_ui,
+            self.preview_layout(),
+            origin,
+            self.files.active().preview_selection.range(),
+            color::TEXT_SELECTION,
+            2.0,
+        );
         editor_view::paint_text(&painter_ui, &self.renderer, self.preview_layout(), origin);
         self.paint_the_pictures(&painter_ui, origin);
         self.paint_the_diagrams(&painter_ui, origin, text_width);
         // Drawn last, at the position the frame settled on rather than the one it opened with.
         if let Some(bar) = scrollbar::Bar::new(area, scroll, self.preview_layout().height, view_height) {
             scrollbar::paint(ui, &bar, &bar_name, grab.active || (scroll - was).abs() > 0.01);
+        }
+    }
+
+    /// Take `Ctrl/Cmd+C` for the preview when the preview is what is being read.
+    ///
+    /// egui delivers a copy as an `Event::Copy` rather than as a key press — which is why `Copy` is
+    /// marked in `actions::menus` as not coming from the keyboard — so the event is what has to be
+    /// claimed. Removing it from the frame's input is what stops the source pane copying its own
+    /// selection a moment later.
+    fn route_the_preview_copy(&mut self, ui: &egui::Ui) {
+        if !self.view_mode().shows_preview() || !self.preview_holds_the_selection() {
+            return;
+        }
+        let took = ui.input_mut(|input| {
+            let before = input.events.len();
+            input.events.retain(|event| !matches!(event, egui::Event::Copy));
+            before != input.events.len()
+        });
+        if took {
+            if let Some(text) = self.preview_selected_text() {
+                ui.ctx().copy_text(text);
+            }
+        }
+    }
+
+    /// Read the pointer in the preview and keep what it selected on the tab.
+    ///
+    /// The component works out the selection and changes nothing, which is the rule every component
+    /// in Quill follows; the choice made here is that a press claims the copy for the preview
+    /// without taking the keyboard from the source beside it.
+    fn select_in_the_preview(&mut self, response: &egui::Response, origin: Pos2) {
+        let was = self.files.active().preview_selection;
+        let Some(preview) = self.files.active().cached.preview.as_ref() else { return };
+        let text = preview.text.clone();
+        let selection =
+            editor_view::read_pointer(response, self.preview_layout(), &text, origin, was);
+        if let Some(selection) = selection {
+            self.files.active_mut().preview_selection = selection;
+            self.reading_preview = true;
+        }
+    }
+
+    /// The text the preview has selected, which is what `Copy` means while the preview is being read.
+    pub fn preview_selected_text(&self) -> Option<String> {
+        let file = self.files.active();
+        let range = file.preview_selection.range();
+        if range.is_empty() {
+            return None;
+        }
+        let preview = file.cached.preview.as_ref()?;
+        Some(preview.text.byte_slice(range))
+    }
+
+    /// True when a copy would take what the preview has selected rather than what the document has.
+    pub fn preview_holds_the_selection(&self) -> bool {
+        self.reading_preview && !self.files.active().preview_selection.is_empty()
+    }
+
+    /// Select the whole of the preview, which is what `Select All` means while it is being read.
+    pub fn select_the_whole_preview(&mut self) {
+        let length = self
+            .files
+            .active()
+            .cached
+            .preview
+            .as_ref()
+            .map(|preview| preview.text.len_bytes())
+            .unwrap_or(0);
+        self.files.active_mut().preview_selection = quill_core::Selection::new(0, length);
+        self.reading_preview = true;
+    }
+
+    /// Draw a panel behind the code blocks, the tables and the front matter.
+    ///
+    /// `quill-core` says which paragraphs want a ground under them and this decides what one looks
+    /// like, which is the same seam the pictures and the diagrams already sit on. The panel is drawn
+    /// the whole width of the text rather than the width of the words, because a block of code is a
+    /// block: a ragged right edge would read as a quotation.
+    fn paint_the_panels(&self, ui: &egui::Ui, origin: Pos2, width: f32) {
+        let Some(preview) = self.files.active().cached.preview.as_ref() else { return };
+        if preview.panels.is_empty() {
+            return;
+        }
+        let layout = self.preview_layout();
+        let clip = ui.painter().clip_rect();
+        for panel in &preview.panels {
+            let Some((top, _)) = layout.paragraph_band(panel.paragraphs.start) else { continue };
+            let Some((last, height)) = layout.paragraph_band(panel.paragraphs.end - 1) else {
+                continue;
+            };
+            let rect = Rect::from_min_max(
+                Pos2::new(origin.x - PANEL_PADDING, origin.y + top - PANEL_PADDING),
+                Pos2::new(origin.x + width, origin.y + last + height + PANEL_PADDING),
+            );
+            if rect.bottom() < clip.top() || rect.top() > clip.bottom() {
+                continue;
+            }
+            ui.painter().rect_filled(rect, 4.0, color::CODE_PANEL);
+        }
+    }
+
+    /// Draw a chip behind each piece of inline code, which is what makes it read as a thing rather
+    /// than as green prose.
+    ///
+    /// Only the pieces on the screen are asked for. The ranges are in order, so finding them is a
+    /// pair of binary searches — the rule `task-1666` set for anything that runs once a frame.
+    fn paint_the_code_chips(&self, ui: &egui::Ui, origin: Pos2) {
+        let Some(preview) = self.files.active().cached.preview.as_ref() else { return };
+        if preview.code_spans.is_empty() {
+            return;
+        }
+        let layout = self.preview_layout();
+        let clip = ui.painter().clip_rect();
+        let bytes = layout.visible_bytes(clip.top() - origin.y, clip.bottom() - origin.y);
+        let first = preview.code_spans.partition_point(|span| span.end <= bytes.start);
+        for span in &preview.code_spans[first..] {
+            if span.start >= bytes.end {
+                break;
+            }
+            editor_view::paint_behind(ui, layout, origin, span.clone(), color::CODE_CHIP, 3.0);
         }
     }
 
@@ -4911,6 +5134,9 @@ impl QuillApp {
         let mut took_the_keyboard = false;
         if response.clicked() || response.drag_started() || response.secondary_clicked() {
             self.focus = Focus::Editor;
+            // A press in the source takes the copy back from the preview beside it. See
+            // `QuillApp::reading_preview`.
+            self.reading_preview = false;
             took_the_keyboard = true;
         }
         // Over the writing, the pointer is a vertical bar rather than an arrow, which is what it is in
@@ -5217,5 +5443,31 @@ impl eframe::App for QuillApp {
         self.run.kill_everything();
         self.write_settings();
         self.remember_the_project();
+    }
+}
+
+/// Colouring a fenced code block with the grammar a plugin already supplies.
+///
+/// `quill-core` holds no plugin registry and must not learn about one, so it asks a question through
+/// `CodeHighlighter` and this answers it — with exactly the two calls `colour_the_file` makes for a
+/// source file, so a fence of Rust inside a document is coloured as a `.rs` file is. A language
+/// nothing claims answers with nothing, and the block keeps the one code colour it always had.
+struct PluginHighlighter<'a> {
+    plugins: &'a crate::services::plugins::Plugins,
+}
+
+impl quill_core::CodeHighlighter for PluginHighlighter<'_> {
+    fn colour(
+        &self,
+        language: &str,
+        code: &str,
+    ) -> Vec<(std::ops::Range<usize>, quill_core::Color)> {
+        let Some(plugin) = self.plugins.for_language(language) else {
+            return Vec::new();
+        };
+        quill_core::syntax::highlight(code, &plugin.grammar)
+            .into_iter()
+            .filter_map(|(range, token)| plugin.theme.colour(token).map(|colour| (range, colour)))
+            .collect()
     }
 }

@@ -46,16 +46,26 @@ pub fn source_y_for_preview_y(
     at_fraction(source, line, fraction)
 }
 
-/// Which preview paragraph stands for a line of the source: the last one that came from a line at or
-/// above it.
+/// Which preview paragraph stands for a line of the source: the **first** one that came from that
+/// line, or the last one from above it when nothing came from it at all.
 ///
 /// A binary search, because `source_lines` never goes backwards — the source is read from the top
-/// down. The "at or above" is what answers the lines that produce no preview paragraph of their own:
-/// a fence's backticks and the interior of a Mermaid block both belong with the paragraph before
-/// them, which is where a reader scrolling through them is looking.
+/// down. Two things are decided here and both matter.
+///
+/// *The first, not the last.* Several preview lines may name one source line: a heading and the
+/// blank that separates it from what follows both belong to the heading's line, and a table row too
+/// wide for the pane is several lines all naming the row. Scrolling to a source line means scrolling
+/// to where that line's own text begins, which is the first of them.
+///
+/// *Or the last from above.* A line that produces no preview paragraph of its own — a fence's
+/// backticks, the interior of a Mermaid block — belongs with the paragraph before it, which is where
+/// a reader scrolling through them is looking.
 fn preview_paragraph_for_line(source_lines: &[usize], line: usize) -> usize {
-    let after = source_lines.partition_point(|from| *from <= line);
-    after.saturating_sub(1)
+    let at = source_lines.partition_point(|from| *from < line);
+    if source_lines.get(at) == Some(&line) {
+        return at;
+    }
+    at.saturating_sub(1)
 }
 
 /// Where a paragraph's `fraction` falls on a page. Nothing to say gives the top of the page, which is
@@ -84,7 +94,7 @@ mod tests {
             quiet: Color::rgb(0x8B, 0x93, 0xA3),
             rule: Color::rgb(0x2A, 0x30, 0x3B),
         };
-        let preview = markdown::render(source, &base, colors, None);
+        let preview = markdown::render(source, &markdown::Options::new(base, colors, None));
         let metrics = FixedMetrics::default();
         let document = crate::Document::from_text(source);
         let source_page = layout(
