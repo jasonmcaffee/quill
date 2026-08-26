@@ -6492,6 +6492,11 @@ fn the_explorers_menu_holds_delete_and_it_asks_before_anything_goes() {
         folder.join("readme.md").is_file(),
         "and nothing has gone while the question is still on the screen"
     );
+    assert!(
+        harness.state().message.is_none(),
+        "and the status bar is not still saying what the last thing to happen was, which is what          made asking the question report a deletion that had not happened: {:?}",
+        harness.state().message
+    );
     harness.snapshot(shot("delete_confirmation"));
 }
 

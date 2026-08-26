@@ -2011,6 +2011,10 @@ impl QuillApp {
             format!("Delete {name}.")
         };
         self.close_every_modal();
+        // Nothing has happened yet, so whatever the status bar was saying about the last thing that
+        // did is now misleading — and `quill-cli action run delete-path` answers with it, which
+        // made asking the question report a deletion that had not happened.
+        self.message = None;
         self.confirmation = Some(Confirmation {
             title: "Delete".to_owned(),
             note: format!("{what} {}", recycle::destination().reassurance()),
