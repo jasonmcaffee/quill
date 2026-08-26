@@ -659,6 +659,76 @@ and three drops are refused by simply not offering a target — a folder into it
 it, a path into the folder it is already in, and anything outside the panel, the last so a drag can
 be thought better of.
 
+## A terminal tab is called what a person calls it, and sits where they put it
+
+`task-1682` asks for three things a control could only be reached with the pointer for. Right click a
+terminal tab and the menu has `Rename...`, `Close` and `New Terminal Tab` on it; drag a tab and it
+moves along the strip; and a modal is answered by pressing Enter rather than by finding its button.
+`tasks/task-1682-terminal-tabs-tdd.md` is the design.
+
+**A name a person typed beats a name a program set, and nothing a program does takes it away.** It is
+a third field on `Session` rather than a value written into `title`, and that is the whole decision:
+`claude` sets a title on every prompt, so a rename written into the title would appear to work and
+then quietly undo itself the next time the program spoke. It is on the session rather than beside it,
+because `quill_terminal::Tabs` is a list of sessions and nothing else, and a parallel list of names
+would be a second thing to keep in step with every open, close and move. An **empty** name puts the
+tab back to being named after its program, so there is one way to undo a rename rather than a second
+command meaning "forget the name I gave"; the dialog cannot ask for it, because its button needs
+something in the field, but `quill-cli terminal rename --tab 0` can.
+
+**A name a person typed is never numbered.** `Tabs::names` puts a number after a repeat so that two
+tabs running the same program can be told apart, and a person who has called two tabs the same thing
+has already said what they want them called. That numbering had a fault this found, and it is the
+reason renaming was asked for: it counted names that had already been worked out, and
+`powershell.exe 2` does not end with `powershell.exe`, so the **third** shell was a second
+`powershell.exe 2`. It counts the names the sessions give, through a map.
+
+**Every entry in the menu is about the terminal tab that is showing**, which is `actions::tab_menu`'s
+rule restated, so they are ordinary parameterless actions the View menu, the keyboard and
+`quill-cli action run` can all ask for — and a right click therefore **shows** the tab first.
+`Rename Terminal Tab...` is on the `View` menu as well, because `quill-cli action list` is built by
+walking the real menus and a context menu is not one of them.
+
+**The drag is `task-1673`'s, settled by the strip rather than by the window.** `file_tabs::Strip` and
+`file_tabs::insertion_mark` are used unchanged — a tab goes after every tab whose middle the pointer
+has passed — but there is **one** strip of terminal tabs, so the strip a tab is picked up from is the
+strip it is dropped on and nothing outside `tab_strip` could know better where it landed.
+`Tabs::move_tab` is the move, `quill-cli terminal move` calls it too, and `position` counts the tabs
+as they are on the screen now including the one being carried, which is what `OpenFiles::drag_tab`
+already means by a position.
+
+## Enter answers a modal, and a modal takes the keyboard
+
+**`components::modal::footer` is where that is decided**, so a dialog written later gets it without
+asking. Its last button is the one that does the thing and is filled in the accent colour; Enter
+presses it. A footer whose last button is dimmed is a modal there is nothing to confirm, so the key
+press is left alone rather than doing nothing loudly. The two dialogs that draw their own footer —
+`prompt_dialog`, which the text prompt and the confirmation share, and the Settings window — ask the
+same function rather than answering a second way.
+
+**The commit panel is the one exception and uses the command key with Enter**, which is IntelliJ's
+own chord for the same dialog: its message is a `TextEdit::multiline`, where Enter is a new line and
+has to stay one. Both of that modal's tabs use it — one modal, one key — because Enter alone in the
+`Stashes` tab would pop a stash for somebody who pressed it meaning nothing. `Go to File`, `Find in
+Files` and the references modal need no exception: each takes Enter for itself *before* its footer is
+drawn, where it means "open the row that is chosen".
+
+**The modifiers are asked with `is_none` and `command_only`, never compared for equality.**
+`consume_key` matches by `Modifiers::matches_logically`, which only asks whether the modifiers the
+*pattern* names are held, so a pattern of `NONE` would take `Command+Enter` too — the trap
+`task-1678` already recorded. And an equality test against `Modifiers::COMMAND` passes a test and
+fails in the window, because **on Windows `Ctrl+Enter` arrives with both `ctrl` and `command` set**.
+
+**`a_modal_has_the_keyboard` is the other half of `text_box_has_the_keyboard`**, and it had to come
+with all of the above. That question is `ctx.text_edit_focused()`, so it says nothing about a
+confirmation, an about box or most of the git dialogs, none of which has a field in it — and behind
+those the editing area, the terminal and the explorer went on reading the frame's keys. With Enter
+given a meaning, `Enter` in the delete confirmation would have deleted the file **and** put a new
+line in the file behind it **and** opened the row the explorer's cursor was on. It asks egui's own
+modal layer rather than a list of Quill's dialogs, so a modal added later is covered without being
+added anywhere, and it is the layer as it stood at the **end of the last frame** — which is the
+honest answer at the point those three read the keyboard, before anything this frame has drawn.
+
 ## A terminal opens in the project, running the shell the person actually uses
 
 `task-1670` reported a terminal that opened in `C:\Windows` and could not find the machine's own
@@ -1265,6 +1335,11 @@ trade that away to be a shade nearer a screenshot.
   syntactic reading rather than a language server, the nine manifest keys and what a list of
   languages inside Quill would have cost instead, what auto-import would take, and the fifty-one
   scenario battery.
+- `tasks/task-1682-terminal-tabs-tdd.md` — renaming a terminal tab, dragging one along the strip,
+  and answering a modal with Enter: why a name a person typed is a third field rather than the title,
+  the numbering fault that made the third shell a second `powershell.exe 2`, why the strip settles
+  its own drag where a file tab's is settled by the window, the one modal whose body owns Enter, and
+  why a modal had to start taking the keyboard from the panes behind it.
 - `tasks/task-1681-file-operations-tdd.md` — deleting a file, saving a tab that is closed, and
   moving one with its references: what the surveyed editors do about each, why the explorer had to
   be able to hold the keyboard and what hands it back, why a deleted file goes to the Recycle Bin on

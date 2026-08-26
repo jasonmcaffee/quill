@@ -309,6 +309,23 @@ pub fn text_box_has_the_keyboard(ctx: &egui::Context) -> bool {
     ctx.text_edit_focused()
 }
 
+/// True while a modal is open, which is what makes a key press the modal's rather than a pane's.
+///
+/// The other half of the same problem [`text_box_has_the_keyboard`] answers, and it needed its own
+/// answer once `task-1682` gave Enter a meaning in every modal: a confirmation, an about box and
+/// most of the git dialogs have no field in them, so nothing had the focus and the editing area,
+/// the terminal and the explorer all went on reading the frame's keys behind the dialog. `Enter` in
+/// the delete confirmation would then have deleted the file **and** opened the row under the
+/// explorer's cursor.
+///
+/// egui's own modal layer is what is asked, rather than a list of Quill's dialogs, so a modal added
+/// later is covered without being added anywhere. It is the layer as it stood at the **end of the
+/// last frame**, which is the honest answer at the point in a frame these three read the keyboard —
+/// before anything is drawn, and so before this frame's modal has said it is there.
+pub fn a_modal_has_the_keyboard(ctx: &egui::Context) -> bool {
+    ctx.memory(|memory| memory.top_modal_layer().is_some())
+}
+
 pub struct QuillApp {
     /// The files that are open, one to a tab, and which of them is showing.
     pub files: OpenFiles,
@@ -492,6 +509,9 @@ pub struct QuillApp {
     /// menu shows the tab it was opened on first. The editing area's own menu already sets that
     /// precedent: a right click outside the selection puts the caret there before opening.
     pub tab_menu: Option<(Pos2, usize)>,
+    /// Where a terminal tab's own menu is open, and which tab it was opened on. Held here for the
+    /// same reason the other three are: a screenshot test cannot press the right mouse button.
+    pub terminal_menu: Option<(Pos2, usize)>,
     /// The tab being carried by the pointer, while one is. Frame local: the strip reports the drag
     /// every frame it is held and the window settles it once every pane has drawn, because a tab
     /// picked up in one pane is very often dropped on another and no one strip can see them all.
@@ -597,6 +617,7 @@ impl QuillApp {
             gutter_menu: None,
             text_menu: None,
             tab_menu: None,
+            terminal_menu: None,
             tab_drag: None,
             tab_strips: Vec::new(),
             last_highlight: theme::color::HIGHLIGHT_YELLOW,
@@ -1241,6 +1262,21 @@ impl QuillApp {
                 self.terminal.visible = true;
                 self.new_terminal_tab();
                 self.focus = Focus::Terminal;
+            }
+            Action::RenameTerminalTab => {
+                let index = self.terminal.tabs.active_index();
+                match self.terminal.tabs.names().get(index) {
+                    Some(name) => {
+                        self.prompt = Some(Prompt::new(
+                            "Rename Terminal Tab",
+                            "What this tab is called in the strip. The name stays put when the program in it sets a title of its own.",
+                            name,
+                            "Rename",
+                            Purpose::RenameTerminalTab(index),
+                        ));
+                    }
+                    None => self.message = Some("There is no terminal tab to rename.".to_owned()),
+                }
             }
             Action::CloseTerminalTab => {
                 let index = self.terminal.tabs.active_index();
@@ -2200,6 +2236,11 @@ impl QuillApp {
         if self.focus != Focus::Explorer || !self.explorer_visible {
             return None;
         }
+        // A modal is open: its keys are its own. Without this, `Delete` in the explorer opens the
+        // confirmation and the `Enter` that answers it also opens the row the cursor is on.
+        if a_modal_has_the_keyboard(ui.ctx()) {
+            return None;
+        }
         // A field with the keyboard is typed into, not navigated with. The filter box is the only
         // one in the panel, and while it has the focus its own arrow keys move the caret.
         if ui.ctx().memory(|memory| memory.focused()).is_some() {
@@ -2423,6 +2464,11 @@ impl QuillApp {
             }
             Purpose::ResetTo(mode) => {
                 let _ = mode;
+            }
+            Purpose::RenameTerminalTab(index) => {
+                if self.terminal.tabs.rename(index, &name) {
+                    self.message = Some(format!("Terminal tab {index} is called {name}"));
+                }
             }
         }
     }
@@ -3351,6 +3397,9 @@ impl QuillApp {
                 self.terminal.visible = false;
                 self.focus = Focus::Editor;
             }
+            if let Some((index, at)) = panel_outcome.menu {
+                self.terminal_menu = Some((at, index));
+            }
             // A shell that has stopped, from `exit` or otherwise, closes its tab, and the tile goes with the
             // last of them. A tile that never had a tab is left showing, because that is the one that has a
             // reason to give: the message says why the shell would not start.
@@ -3359,6 +3408,17 @@ impl QuillApp {
             if had_tabs && self.terminal.tabs.is_empty() {
                 self.terminal.visible = false;
                 self.focus = Focus::Editor;
+            }
+        }
+        // A terminal tab's own menu, drawn after the tile so it sits over it rather than under.
+        if let Some((at, _)) = self.terminal_menu {
+            let entries = actions::terminal_tab_menu();
+            let outcome = context_menu::show(ui, "terminal-tab", at, &entries);
+            if let Some(chosen) = outcome.chosen {
+                action = Some(chosen);
+            }
+            if outcome.close {
+                self.terminal_menu = None;
             }
         }
         self.terminal.focused = self.focus == Focus::Terminal;

@@ -2449,6 +2449,8 @@ impl QuillApp {
             }
             "select" => self.cli_terminal_select(request),
             "close" => self.cli_terminal_close(request),
+            "rename" => self.cli_terminal_rename(request),
+            "move" => self.cli_terminal_move(request),
             "send" => self.cli_terminal_send(request),
             "read" => self.cli_terminal_read(request),
             "height" => self.cli_terminal_height(request),
@@ -2485,6 +2487,64 @@ impl QuillApp {
             self.focus = crate::app::Focus::Editor;
         }
         ok(request, format!("Closed terminal tab {index}"), self.terminal_value())
+    }
+
+    /// `quill-cli terminal rename [--tab <index>] <name>` — what the tab's own `Rename...` does.
+    fn cli_terminal_rename(&mut self, request: &Request) -> Outcome {
+        let Some(index) = self.cli_terminal_tab(request) else {
+            return no(request, code::NOT_APPLICABLE, "There is no terminal tab to rename.");
+        };
+        if index >= self.terminal.tabs.count() {
+            return no(request, code::NOT_FOUND, format!("There is no terminal tab {index}."));
+        }
+        // An empty name is not a mistake: it is how a tab is put back to being named after the
+        // program in it, which the dialog cannot ask for because its button needs a name in the
+        // field. `request.text` gives nothing at all for an empty argument, so both spellings —
+        // left out, and given as nothing — mean the same thing here.
+        let name = request.text("name").unwrap_or_default();
+        self.terminal.tabs.rename(index, &name);
+        let now = self
+            .terminal
+            .tabs
+            .names()
+            .get(index)
+            .cloned()
+            .unwrap_or_default();
+        ok(request, format!("Terminal tab {index} is called {now}"), self.terminal_value())
+    }
+
+    /// `quill-cli terminal move [--tab <index>] <position>` — what dragging a terminal tab does.
+    ///
+    /// It goes through `quill_terminal::Tabs::move_tab`, which is the same call the drag makes, so a
+    /// rearrangement made from a script and one made with the pointer are the same rearrangement —
+    /// including what `position` counts, which is the tabs as they are on the screen.
+    fn cli_terminal_move(&mut self, request: &Request) -> Outcome {
+        let Some(position) = request.whole("position") else {
+            return no(request, code::USAGE, "Say where it goes, counting from 0.");
+        };
+        let Some(index) = self.cli_terminal_tab(request) else {
+            return no(request, code::NOT_APPLICABLE, "There is no terminal tab to move.");
+        };
+        if index >= self.terminal.tabs.count() {
+            return no(request, code::NOT_FOUND, format!("There is no terminal tab {index}."));
+        }
+        self.terminal.tabs.move_tab(index, position);
+        ok(
+            request,
+            format!("Terminal tab {index} is now tab {}", self.terminal.tabs.active_index()),
+            self.terminal_value(),
+        )
+    }
+
+    /// Which terminal tab a command is about: `--tab` when it is given, the one showing otherwise.
+    ///
+    /// `None` when there is no terminal tab at all, which is a different thing to be told than a
+    /// number that is out of range and is why this does not answer with the active index blindly.
+    fn cli_terminal_tab(&self, request: &Request) -> Option<usize> {
+        if self.terminal.tabs.is_empty() {
+            return None;
+        }
+        Some(request.whole("tab").unwrap_or_else(|| self.terminal.tabs.active_index()))
     }
 
     fn cli_terminal_send(&mut self, request: &Request) -> Outcome {

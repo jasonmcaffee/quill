@@ -176,6 +176,14 @@ rule the window's own grips follow: the drag strip is added **before** the conte
 cross sits over it, and the eight grips are added **after** them so a list at the modal's edge
 cannot take a drag meant for the edge.
 
+**A modal's last button is the one that does the thing, and Enter presses it.** It is the one filled
+in `ACCENT`, and `modal::footer` is where both of those are decided, so a dialog written later has
+the key without asking. A button that is dimmed is not pressed by it: a footer with nothing to
+confirm leaves the key press alone rather than doing nothing loudly. The one exception is the commit
+panel, whose message is a multiline field where Enter is a new line, so it asks for the command key
+with Enter — IntelliJ's own chord for the same dialog. A modal with a **list** in it takes Enter for
+itself before the footer is drawn, where it means "open the row that is chosen".
+
 **A search modal.** `Go to File` and `Find in Files`. A `controls::search_field` across the top of
 the body, the list under it, and the count of what was found in the footer at the left in
 `TEXT_FAINT` at 11 points opposite the button. The letters a query matched are picked out in

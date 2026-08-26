@@ -142,6 +142,13 @@ pub struct Session {
     bells: usize,
     /// The name shown on the tab before the program sets a title of its own.
     name: String,
+    /// The name a person typed for this tab, which beats both of the two above.
+    ///
+    /// Empty until somebody renames the tab. A name that was asked for by hand is the one thing in
+    /// the tab's name a program must not be able to take away again, so it is held apart from
+    /// `title` rather than written into it: `claude` sets a title on every prompt, and a rename
+    /// written into `title` would last until the next one.
+    given: String,
 }
 
 impl Session {
@@ -190,6 +197,7 @@ impl Session {
             running: true,
             bells: 0,
             name,
+            given: String::new(),
         })
     }
 
@@ -217,6 +225,7 @@ impl Session {
             running: true,
             bells: 0,
             name: "detached".to_owned(),
+            given: String::new(),
         }
     }
 
@@ -239,11 +248,27 @@ impl Session {
     /// no title at all, so the fallback below did all the work there and the fault could not be seen
     /// until Quill ran on Windows.
     pub fn name(&self) -> &str {
+        if !self.given.is_empty() {
+            return &self.given;
+        }
         if self.title.is_empty() || title_is_only_the_program(&self.title, &self.name) {
             &self.name
         } else {
             &self.title
         }
+    }
+
+    /// The name a person typed for this tab, or `None` while it is still named after its program.
+    pub fn given_name(&self) -> Option<&str> {
+        (!self.given.is_empty()).then_some(self.given.as_str())
+    }
+
+    /// Call this tab something else, which is what `task-1682` asks a right click to offer.
+    ///
+    /// An empty name puts it back to what the program calls it, so there is one way to undo a
+    /// rename rather than a second command that means "forget the name I gave".
+    pub fn rename(&mut self, name: &str) {
+        self.given = name.trim().to_owned();
     }
 
     pub fn size(&self) -> Size {

@@ -826,6 +826,27 @@ pub const COMMANDS: &[Command] = &[
     },
     Command {
         area: "terminal",
+        verb: "rename",
+        summary: "Call a terminal tab something else. The name stays put when the program in the tab sets a title of its own; an empty name puts the tab back to being named after its program.",
+        arguments: &[rest("name", true, "What to call it. Everything after the verb is taken as the name, so it needs no quotes.")],
+        flags: &[option("tab", "index", "Which tab, counting from 0. The one that is showing when it is left out.")],
+        examples: &[
+            "quill-cli terminal rename build",
+            "quill-cli terminal rename --tab 1 the long running one",
+        ],
+        local: false,
+    },
+    Command {
+        area: "terminal",
+        verb: "move",
+        summary: "Move a terminal tab along the strip, which is what dragging one does.",
+        arguments: &[argument("position", true, "Where it goes, counting the tabs as they are on the screen now from 0.")],
+        flags: &[option("tab", "index", "Which tab to move, counting from 0. The one that is showing when it is left out.")],
+        examples: &["quill-cli terminal move 0", "quill-cli terminal move --tab 2 0"],
+        local: false,
+    },
+    Command {
+        area: "terminal",
         verb: "send",
         summary: "Send a command to the shell in the terminal tab that is showing. Enter is pressed for you unless you say not to.",
         arguments: &[rest("text", false, "The command. Everything after the verb is taken as the command, so it needs no quotes.")],

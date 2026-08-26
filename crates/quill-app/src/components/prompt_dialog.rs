@@ -40,6 +40,11 @@ pub enum Purpose {
     CompareWithRevision(PathBuf),
     /// Move the branch to the revision that is typed, in the mode already chosen.
     ResetTo(&'static str),
+    /// Call this terminal tab, counting from 0, whatever is typed.
+    ///
+    /// The number rather than "the tab that is showing", because a prompt is answered on some later
+    /// frame and the tab that is showing is a thing that can change in between.
+    RenameTerminalTab(usize),
 }
 
 /// A prompt the window is showing.
@@ -220,7 +225,11 @@ fn buttons(
     if button(ui, cancel, "Cancel", true, false) {
         outcome.cancelled = true;
     }
-    if button(ui, ok, confirm, enabled, true) {
+    // Enter presses the button that does the thing, which is what `components::modal::footer` does
+    // for every other modal and is asked here through the same function so the two cannot drift.
+    // It is what answers the **confirmation**, which has no field to lose focus and so had no way
+    // of being answered from the keyboard at all.
+    if button(ui, ok, confirm, enabled, true) || (enabled && modal::Confirm::Enter.pressed(ui)) {
         outcome.confirmed = true;
     }
 }

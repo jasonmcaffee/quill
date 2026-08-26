@@ -120,6 +120,12 @@ pub enum Action {
     NewTerminalTab,
     /// Close the terminal tab that is showing.
     CloseTerminalTab,
+    /// Call the terminal tab that is showing something else. The name is asked for first.
+    ///
+    /// The name a person types beats the title the program sets, which is the whole point: `claude`
+    /// sets a title on every prompt, so a rename a program could overwrite would last seconds. An
+    /// empty name puts the tab back to being named after its program.
+    RenameTerminalTab,
     /// Make an empty file in this folder. The name is asked for first.
     NewFile(PathBuf),
     /// Hold this path to be moved when something is pasted.
@@ -955,6 +961,8 @@ fn view_menu(state: &MenuState) -> Menu {
             Entry::item("New Terminal Tab", Action::NewTerminalTab),
             Entry::item("Close Terminal Tab", Action::CloseTerminalTab)
                 .enabled(state.terminal_tabs > 0),
+            Entry::item("Rename Terminal Tab...", Action::RenameTerminalTab)
+                .enabled(state.terminal_tabs > 0),
         ],
     }
 }
@@ -992,6 +1000,26 @@ pub fn tab_menu(state: &MenuState) -> Vec<Entry> {
     ];
     entries.extend(split_menu(state));
     entries
+}
+
+/// What a terminal tab's right click menu holds.
+///
+/// Every entry is about **the terminal tab that is showing**, exactly as a file tab's menu is, which
+/// is what makes them parameterless actions the View menu, the keyboard and `quill-cli action run`
+/// can all ask for without inventing a way to name a tab. Right clicking a tab therefore shows it
+/// first. It takes no [`MenuState`] because it can only be opened by right clicking a tab, so there
+/// is always one to rename and one to close.
+///
+/// The same three entries are on the View menu, so a person who does not think to right click a tab
+/// can still find them, and so `quill-cli action list` — which is built by walking the real menus —
+/// lists them.
+pub fn terminal_tab_menu() -> Vec<Entry> {
+    vec![
+        Entry::item("Rename...", Action::RenameTerminalTab),
+        Entry::item("Close", Action::CloseTerminalTab),
+        Entry::Separator,
+        Entry::item("New Terminal Tab", Action::NewTerminalTab),
+    ]
 }
 
 /// What the explorer's right click menu holds, for the row that was clicked.

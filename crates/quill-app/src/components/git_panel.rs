@@ -215,7 +215,14 @@ fn commit_tab(
     let staged = status.staged_count() > 0;
     let has_message = !panel.message.trim().is_empty();
     let can_commit = staged && has_message;
-    match modal::footer(ui, area, &[("COMMIT AND PUSH...", can_commit), ("COMMIT", can_commit)]) {
+    // Command and Enter rather than Enter: the message above is a multiline field, where Enter is a
+    // new line and has to stay one. IntelliJ's commit dialog says the same thing.
+    match modal::footer_confirmed_by(
+        ui,
+        area,
+        &[("COMMIT AND PUSH...", can_commit), ("COMMIT", can_commit)],
+        modal::Confirm::CommandEnter,
+    ) {
         Some(0) => outcome.commit = Some(true),
         Some(1) => outcome.commit = Some(false),
         _ => {}
@@ -470,7 +477,15 @@ fn stashes_tab(
     // clicking a row acts on that one.
     let target = chosen.or_else(|| stashes.first().map(|stash| stash.name.clone()));
     let any = target.is_some();
-    match modal::footer(ui, area, &[("DROP", any), ("APPLY", any), ("POP", any)]) {
+    // Command and Enter, as the other tab of this modal uses: one modal, one key. Enter alone here
+    // would pop a stash — the accent button is `POP` — for somebody who pressed it meaning nothing,
+    // and the tab beside this one cannot take Enter at all because its message is a multiline field.
+    match modal::footer_confirmed_by(
+        ui,
+        area,
+        &[("DROP", any), ("APPLY", any), ("POP", any)],
+        modal::Confirm::CommandEnter,
+    ) {
         Some(0) => outcome.drop_stash = target,
         Some(1) => outcome.unstash = target.map(|name| (name, false)),
         Some(2) => outcome.unstash = target.map(|name| (name, true)),

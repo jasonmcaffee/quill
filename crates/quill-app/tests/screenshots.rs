@@ -2434,6 +2434,111 @@ fn a_second_terminal_tab_is_added_and_shown_in_front() {
 }
 
 #[test]
+fn a_terminal_tab_is_renamed_from_its_own_menu() {
+    let mut harness = with_terminal("", 8, 60);
+    harness.state_mut().new_detached_terminal_tab(8, 60);
+    harness.run();
+    assert_eq!(harness.state().terminal.tabs.names(), vec!["detached", "detached 2"]);
+
+    // Opened through the window's own state, as the gutter's and a file tab's menus are, because
+    // the harness cannot press the right mouse button. To the right of the strip, so the picture
+    // holds the tabs the menu is about as well as the menu.
+    let at = harness.state().terminal.grid_area().left_top() + vec2(420.0, -14.0);
+    harness.state_mut().terminal_menu = Some((at, 1));
+    harness.run();
+    harness.get_by_label("Rename...");
+    harness.get_by_label("New Terminal Tab");
+    harness.snapshot(shot("terminal_tab_menu"));
+
+    // Choosing it puts the menu away and opens the prompt, seeded with what the tab is called now.
+    harness.state_mut().terminal_menu = None;
+    choose(&mut harness, Action::RenameTerminalTab);
+    assert_eq!(
+        harness.state().prompt.as_ref().expect("the prompt is open").value,
+        "detached 2",
+    );
+    if let Some(prompt) = harness.state_mut().prompt.as_mut() {
+        prompt.value = "the build".to_owned();
+    }
+    let prompt = harness.state_mut().prompt.take().expect("a prompt");
+    harness.state_mut().run_prompt_for_test(prompt);
+    harness.run();
+    assert_eq!(harness.state().terminal.tabs.names(), vec!["detached", "the build"]);
+
+    // And the name a person typed is not taken away again by the program setting a title of its
+    // own, which is the whole reason it is held apart from the title.
+    feed(&mut harness, b"\x1b]0;claude\x07");
+    assert_eq!(harness.state().terminal.tabs.names(), vec!["detached", "the build"]);
+    harness.snapshot(shot("terminal_tab_renamed"));
+}
+
+#[test]
+fn a_terminal_tab_is_dragged_along_the_strip() {
+    let mut harness = with_terminal("", 8, 60);
+    harness.state_mut().new_detached_terminal_tab(8, 60);
+    harness.run();
+    did(&mut harness, "terminal rename --tab 0 first");
+    did(&mut harness, "terminal rename --tab 1 second");
+    harness.run();
+    assert_eq!(harness.state().terminal.tabs.names(), vec!["first", "second"]);
+
+    // The first tab dragged past the middle of the second, which is where a drop lands after it.
+    let from = harness.get_by_label("Terminal tab: first").rect().center();
+    let onto = harness.get_by_label("Terminal tab: second").rect();
+    let to = egui::pos2(onto.right() - 2.0, onto.center().y);
+    let modifiers = Modifiers::default();
+    harness.input_mut().events.push(egui::Event::PointerMoved(from));
+    harness.run();
+    harness.input_mut().events.push(egui::Event::PointerButton {
+        pos: from,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers,
+    });
+    harness.run();
+    harness.input_mut().events.push(egui::Event::PointerMoved(to));
+    harness.run();
+    // Held, so the picture shows the tab outlined in the air and the accent mark saying where it
+    // would land. It is the same mark the file tabs draw, from the same two functions.
+    harness.snapshot(shot("terminal_tab_dragging"));
+    harness.input_mut().events.push(egui::Event::PointerButton {
+        pos: to,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers,
+    });
+    harness.run();
+    assert_eq!(
+        harness.state().terminal.tabs.names(),
+        vec!["second", "first"],
+        "the tab that was dragged is now the second one"
+    );
+    assert_eq!(harness.state().terminal.tabs.active_index(), 1, "and it is the one showing");
+    harness.snapshot(shot("terminal_tabs_rearranged"));
+}
+
+#[test]
+fn dragging_a_terminal_tab_and_the_command_line_are_the_same_rearrangement() {
+    let mut harness = with_terminal("", 8, 60);
+    for name in ["one", "two", "three"] {
+        harness.state_mut().new_detached_terminal_tab(8, 60);
+        harness.run();
+        let last = harness.state().terminal.tabs.count() - 1;
+        did(&mut harness, &format!("terminal rename --tab {last} {name}"));
+    }
+    // `terminal move` counts the tabs as they are on the screen, exactly as `tab move` does, so
+    // moving the last one to the front is position 0.
+    did(&mut harness, "terminal move --tab 3 0");
+    assert_eq!(harness.state().terminal.tabs.names(), vec!["three", "detached", "one", "two"]);
+    assert_eq!(harness.state().terminal.tabs.active_index(), 0);
+
+    // An empty name puts a tab back to being named after the program in it, which is the one thing
+    // the dialog cannot ask for, because its button needs a name in the field.
+    did(&mut harness, "terminal rename --tab 0");
+    assert_eq!(harness.state().terminal.tabs.names()[0], "detached");
+}
+
+#[test]
 fn closing_the_last_terminal_tab_puts_the_tile_away() {
     let mut harness = with_terminal("", 8, 60);
     assert!(harness.state().terminal.visible);
@@ -2847,6 +2952,68 @@ fn typing_in_the_plugin_search_leaves_the_document_alone() {
         "searching the plugins should not type into the file behind the settings window"
     );
     assert!(!harness.state().document().is_modified());
+}
+
+#[test]
+fn enter_in_the_commit_message_is_a_new_line_and_the_command_key_commits() {
+    // The one modal whose body owns Enter. Every other one is confirmed by it; here it has to stay
+    // a new line, which is what `modal::Confirm::CommandEnter` is for.
+    let mut harness = git_harness("commit-enter");
+    let ctx = harness.ctx.clone();
+    harness.state_mut().run_action(Action::Git(quill_app::app::actions::GitAction::Commit), &ctx);
+    harness.run();
+    settle(&mut harness, "the history the panel asks for", |app| {
+        app.git.as_ref().is_some_and(|git| git.message.is_none() && !git.history.is_empty())
+    });
+
+    harness.get_by_label("Commit message").click();
+    harness.run();
+    harness.get_by_label("Commit message").type_text("the first line");
+    harness.run();
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    harness.get_by_label("Commit message").type_text("the second");
+    harness.run();
+    harness.run();
+    assert_eq!(
+        harness.state().git.as_ref().map(|git| git.panel.message.clone()),
+        Some("the first line\nthe second".to_owned()),
+        "Enter in the message is a new line"
+    );
+    assert!(
+        harness.state().git.as_ref().is_some_and(|git| git.panel.open),
+        "and the panel is still open"
+    );
+
+    // The command key with it is what presses `COMMIT`, which is IntelliJ's own chord for the same
+    // dialog. Something has to be staged first, or the button is dimmed and there is nothing to
+    // press.
+    let root = harness.state().tree.root().to_path_buf();
+    let ctx = harness.ctx.clone();
+    harness.state_mut().open_path_permanently(&root.join("version.ts"));
+    nudge(&mut harness);
+    harness
+        .state_mut()
+        .run_action(Action::Git(quill_app::app::actions::GitAction::Add(None)), &ctx);
+    settle(&mut harness, "the file to be staged", |app| {
+        app.git.as_ref().is_some_and(|git| {
+            git.snapshot.status.entry("version.ts").is_some_and(quill_git::status::Entry::staged)
+        })
+    });
+    // The panel is still open from above — `Git -> Commit` is a toggle, so asking for it again
+    // would put it away.
+    if let Some(state) = harness.state_mut().git.as_mut() {
+        state.panel.message = "task-1682: committed from the keyboard".to_owned();
+    }
+    nudge(&mut harness);
+    harness.key_press_modifiers(Modifiers::COMMAND, egui::Key::Enter);
+    settle(&mut harness, "the commit", |app| {
+        app.git.as_ref().is_some_and(|git| git.snapshot.status.entry("version.ts").is_none())
+    });
+    assert_eq!(
+        ask_git(&root, &["log", "--format=%s", "-n1"]),
+        "task-1682: committed from the keyboard",
+    );
 }
 
 #[test]
@@ -6469,6 +6636,67 @@ fn scratch_folder(name: &str) -> std::path::PathBuf {
     std::fs::write(root.join("app/layout.ts"), "export function draw() {}\n")
         .expect("write layout.ts");
     root
+}
+
+#[test]
+fn enter_presses_the_button_that_does_the_thing() {
+    // The About box has one button and no field in it, so before `task-1682` there was no way to
+    // answer it from the keyboard at all. `components::modal::footer` is where that is decided, so
+    // this is the rule every modal built from it follows.
+    let mut harness = harness("Text behind the About box.");
+    open_about(&mut harness);
+    assert!(harness.state().about.is_some());
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    assert!(harness.state().about.is_none(), "Enter should have pressed Done");
+}
+
+#[test]
+fn enter_answers_a_question_that_has_no_field_in_it_and_reaches_nothing_behind_it() {
+    let folder = scratch_folder("enter-confirms");
+    let mut harness = harness_in(&folder);
+    did(&mut harness, &format!("tab open {}", folder.join("readme.md").display()));
+
+    did(&mut harness, &format!("action run delete-path --path {}", folder.join("readme.md").display()));
+    assert!(harness.state().confirmation.is_some(), "the question is asked");
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    assert!(harness.state().confirmation.is_none(), "Enter answered it");
+    assert!(!folder.join("readme.md").exists(), "and the file has gone");
+}
+
+#[test]
+fn a_modal_takes_the_keyboard_from_the_editing_area_and_the_explorer() {
+    // The confirmation has no field in it, so nothing had egui's focus and the panes behind it went
+    // on reading the frame's keys. `Enter` therefore meant three things at once: answer the
+    // question, insert a new line into the file, and open the row the explorer's cursor was on.
+    let folder = scratch_folder("modal-keyboard");
+    let mut harness = harness_in(&folder);
+    did(&mut harness, &format!("tab open {}", folder.join("app/main.ts").display()));
+    let before = harness.state().document().text().to_string();
+    harness.state_mut().command(quill_core::Command::PlaceCaret { offset: 0, extend: false });
+    harness.run();
+
+    did(&mut harness, &format!("action run delete-path --path {}", folder.join("readme.md").display()));
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    assert_eq!(
+        harness.state().document().text().to_string(),
+        before,
+        "the file behind the question should not have gained a new line"
+    );
+    assert!(!harness.state().document().is_modified());
+    assert!(!folder.join("readme.md").exists(), "and the question was answered");
+
+    // A letter typed while a modal is open does not reach the document either.
+    let mut harness = harness_in(&folder);
+    did(&mut harness, &format!("tab open {}", folder.join("app/main.ts").display()));
+    let before = harness.state().document().text().to_string();
+    did(&mut harness, &format!("action run delete-path --path {}", folder.join("app/main.ts").display()));
+    harness.input_mut().events.push(egui::Event::Text("typed".to_owned()));
+    harness.run();
+    assert_eq!(harness.state().document().text().to_string(), before);
+    did(&mut harness, "modal cancel");
 }
 
 #[test]

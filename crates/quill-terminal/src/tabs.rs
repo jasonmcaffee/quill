@@ -81,19 +81,74 @@ impl Tabs {
     /// The name on each tab, in order.
     ///
     /// Two tabs running the same program would otherwise be told apart only by where they are, so a number
-    /// is put in front when a name is used more than once.
+    /// is put in front when a name is used more than once. A name somebody typed is left exactly as they
+    /// typed it: the number is there to tell two tabs apart, and a person who has called two tabs the same
+    /// thing has already said what they want them called.
     pub fn names(&self) -> Vec<String> {
         let mut names: Vec<String> = Vec::new();
+        // How many tabs before this one are running the same thing. Counted against the name the
+        // session gives rather than against the names already worked out: comparing against those
+        // made the third `powershell.exe` a second `powershell.exe 2`, because `powershell.exe 2`
+        // is not a name any later tab is ever compared equal to.
+        let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
         for session in &self.sessions {
-            let name = session.name().to_owned();
-            let repeats = names.iter().filter(|seen| seen.ends_with(&name)).count();
-            if repeats > 0 {
-                names.push(format!("{name} {}", repeats + 1));
-            } else {
-                names.push(name);
+            if let Some(given) = session.given_name() {
+                names.push(given.to_owned());
+                continue;
             }
+            let name = session.name().to_owned();
+            let count = seen.entry(name.clone()).or_insert(0);
+            *count += 1;
+            names.push(match *count {
+                1 => name,
+                repeat => format!("{name} {repeat}"),
+            });
         }
         names
+    }
+
+    /// Call tab `index` something else, which is what a right click on it offers.
+    ///
+    /// An empty name puts the tab back to being named after the program in it, so there is one way to undo
+    /// a rename rather than a second command meaning "forget the name I gave".
+    pub fn rename(&mut self, index: usize, name: &str) -> bool {
+        match self.sessions.get_mut(index) {
+            Some(session) => {
+                session.rename(name);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Move the tab at `index` so that it sits `position` tabs along, which is what dragging one does and
+    /// what `quill-cli terminal move` asks for.
+    ///
+    /// `position` counts the tabs **as they are on the screen now**, including the one being moved, because
+    /// that is what a person dragging it is looking at. Taking it out first shifts everything after it up
+    /// by one, so a move to a place further along has one subtracted from it here rather than at every
+    /// call. A position past the end means the end.
+    ///
+    /// The tab that was moved is the one showing afterwards, which is what dragging something somewhere
+    /// means; `OpenFiles::drag_tab` leaves a file tab the same way.
+    pub fn move_tab(&mut self, index: usize, position: usize) -> bool {
+        if index >= self.sessions.len() {
+            return false;
+        }
+        let mut position = position;
+        if index < position {
+            position -= 1;
+        }
+        let position = position.min(self.sessions.len() - 1);
+        if position == index {
+            // Picked up and put back where it was. Nothing moves, and showing it is still right.
+            self.active = index;
+            return true;
+        }
+        let session = self.sessions.remove(index);
+        self.sessions.insert(position, session);
+        self.active = position;
+        true
     }
 
     /// Close tab `index`, which stops its shell. The tab to its left is shown next.
@@ -192,6 +247,85 @@ mod tests {
         tabs.open_detached(Size::new(8, 40));
         tabs.active_mut().expect("a tab").feed(b"\x1b]0;claude\x07");
         assert_eq!(tabs.names(), vec!["claude"]);
+    }
+
+    #[test]
+    fn the_third_tab_running_the_same_thing_is_the_third_and_not_a_second_second() {
+        let mut tabs = tabs();
+        for _ in 0..3 {
+            tabs.open_detached(Size::new(8, 40));
+        }
+        assert_eq!(tabs.names(), vec!["detached", "detached 2", "detached 3"]);
+    }
+
+    #[test]
+    fn a_name_a_person_typed_beats_the_one_the_program_set() {
+        let mut tabs = tabs();
+        tabs.open_detached(Size::new(8, 40));
+        tabs.rename(0, "build");
+        assert_eq!(tabs.names(), vec!["build"]);
+        // The program setting a title afterwards does not take the name away again, which is the
+        // whole point: `claude` sets one on every prompt.
+        tabs.active_mut().expect("a tab").feed(b"]0;claude");
+        assert_eq!(tabs.names(), vec!["build"]);
+    }
+
+    #[test]
+    fn an_empty_name_puts_a_tab_back_to_being_named_after_its_program() {
+        let mut tabs = tabs();
+        tabs.open_detached(Size::new(8, 40));
+        tabs.rename(0, "build");
+        tabs.rename(0, "   ");
+        assert_eq!(tabs.names(), vec!["detached"]);
+    }
+
+    #[test]
+    fn a_name_a_person_typed_is_never_numbered() {
+        let mut tabs = tabs();
+        tabs.open_detached(Size::new(8, 40));
+        tabs.open_detached(Size::new(8, 40));
+        tabs.rename(0, "build");
+        tabs.rename(1, "build");
+        assert_eq!(tabs.names(), vec!["build", "build"]);
+    }
+
+    #[test]
+    fn renaming_a_tab_that_is_not_there_does_nothing() {
+        let mut tabs = tabs();
+        tabs.open_detached(Size::new(8, 40));
+        assert!(!tabs.rename(9, "build"));
+        assert_eq!(tabs.names(), vec!["detached"]);
+    }
+
+    #[test]
+    fn a_tab_dragged_along_the_strip_lands_where_the_pointer_left_it() {
+        let mut tabs = tabs();
+        for name in ["one", "two", "three"] {
+            tabs.open_detached(Size::new(8, 40));
+            tabs.rename(tabs.count() - 1, name);
+        }
+        // The first tab dropped after the last: position counts the tabs as they are on the screen,
+        // so past the end is 3 and one is subtracted for the tab that is being taken out.
+        assert!(tabs.move_tab(0, 3));
+        assert_eq!(tabs.names(), vec!["two", "three", "one"]);
+        assert_eq!(tabs.active_index(), 2, "the tab that was moved is the one showing");
+        // And back to the front.
+        assert!(tabs.move_tab(2, 0));
+        assert_eq!(tabs.names(), vec!["one", "two", "three"]);
+        assert_eq!(tabs.active_index(), 0);
+    }
+
+    #[test]
+    fn a_tab_picked_up_and_put_back_moves_nothing() {
+        let mut tabs = tabs();
+        for name in ["one", "two"] {
+            tabs.open_detached(Size::new(8, 40));
+            tabs.rename(tabs.count() - 1, name);
+        }
+        assert!(tabs.move_tab(1, 1));
+        assert_eq!(tabs.names(), vec!["one", "two"]);
+        assert_eq!(tabs.active_index(), 1);
+        assert!(!tabs.move_tab(9, 0), "a tab that is not there cannot be moved");
     }
 
     #[test]

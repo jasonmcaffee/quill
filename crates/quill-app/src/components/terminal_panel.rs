@@ -21,6 +21,7 @@ use quill_terminal::session::{SelectionKind, SessionSettings, Size};
 use quill_terminal::Tabs;
 
 use crate::components::controls;
+use crate::components::file_tabs;
 use crate::components::splitter;
 use crate::services::text_renderer::TextRenderer;
 use crate::theme::{color, icon};
@@ -76,6 +77,8 @@ pub struct PanelOutcome {
     pub drag: f32,
     /// The top edge was double clicked, which puts the tile back to its usual height.
     pub reset_height: bool,
+    /// A tab was right clicked: which one, and where the pointer was.
+    pub menu: Option<(usize, Pos2)>,
 }
 
 /// Draw the tile into `area` and take its input.
@@ -141,78 +144,9 @@ fn show_header(
         color::TEXT_DIM,
     );
 
-    let mut pen = area.left() + 16.0 + heading.size().x + 18.0;
-    let names = panel.tabs.names();
-    let active = panel.tabs.active_index();
-    let mut show = None;
-    let mut close = None;
-    for (index, name) in names.iter().enumerate() {
-        let label = painter.layout_no_wrap(
-            name.clone(),
-            egui::FontId::proportional(12.0),
-            if index == active { color::TEXT_STRONG } else { color::TEXT_CONTROL },
-        );
-        let width = label.size().x + 38.0;
-        let tab = Rect::from_min_size(
-            Pos2::new(pen, area.center().y - 11.0),
-            Vec2::new(width, 22.0),
-        );
-        let response = ui
-            .interact(tab, ui.id().with(("terminal-tab", index)), Sense::click())
-            .on_hover_text(format!("Terminal tab: {name}"));
-        if index == active {
-            painter.rect(
-                tab,
-                CornerRadius::same(4),
-                color::SELECTED_ROW,
-                Stroke::new(1.0, color::ACCENT.gamma_multiply(0.7)),
-                egui::StrokeKind::Inside,
-            );
-        } else if response.hovered() {
-            painter.rect_filled(tab, CornerRadius::same(4), color::CONTROL);
-        }
-        painter.galley(
-            Pos2::new(tab.left() + 10.0, tab.center().y - label.size().y / 2.0),
-            label,
-            color::TEXT_CONTROL,
-        );
-        let shut = Rect::from_center_size(
-            Pos2::new(tab.right() - 12.0, tab.center().y),
-            Vec2::splat(16.0),
-        );
-        let shut_response = ui
-            .interact(shut, ui.id().with(("terminal-close", index)), Sense::click())
-            .on_hover_text(format!("Close {name}"));
-        icon::cross(&painter, shut.center(), color::TEXT_DIM);
-        shut_response.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Close {name}"))
-        });
-        response.widget_info(|| {
-            egui::WidgetInfo::selected(
-                egui::WidgetType::Button,
-                true,
-                index == active,
-                format!("Terminal tab: {name}"),
-            )
-        });
-        if shut_response.clicked() {
-            close = Some(index);
-        } else if response.clicked() {
-            show = Some(index);
-        }
-        pen += width + 6.0;
-    }
-    if let Some(index) = close {
-        panel.tabs.close(index);
-        if panel.tabs.is_empty() {
-            outcome.hide = true;
-        }
-    } else if let Some(index) = show {
-        panel.tabs.show(index);
-        outcome.take_focus = true;
-    }
+    let after = tab_strip(ui, area, area.left() + 16.0 + heading.size().x + 18.0, panel, outcome);
 
-    let add = Rect::from_center_size(Pos2::new(pen + 11.0, area.center().y), Vec2::splat(22.0));
+    let add = Rect::from_center_size(Pos2::new(after + 11.0, area.center().y), Vec2::splat(22.0));
     if controls::icon_button(ui, add, "New terminal tab", icon::plus) {
         outcome.new_tab = true;
     }
@@ -224,6 +158,168 @@ fn show_header(
     if controls::icon_button(ui, hide, "Hide the terminal", icon::collapse) {
         outcome.hide = true;
     }
+}
+
+/// The tabs themselves, left to right from `pen`. Returns the x the strip ended at, which is where the
+/// plus goes.
+///
+/// A drag is settled here rather than by the window, which is where a file tab's drag has to be settled:
+/// there is **one** strip of terminal tabs, so the strip a tab is picked up from is the strip it is
+/// dropped on and nothing outside this function could know better where it landed. It goes through
+/// [`quill_terminal::Tabs::move_tab`], which is what `quill-cli terminal move` calls too, so a
+/// rearrangement made with the pointer and one made from a script are the same rearrangement.
+fn tab_strip(
+    ui: &mut egui::Ui,
+    area: Rect,
+    pen: f32,
+    panel: &mut TerminalPanel,
+    outcome: &mut PanelOutcome,
+) -> f32 {
+    let names = panel.tabs.names();
+    let active = panel.tabs.active_index();
+    let mut hit = TabHit::default();
+    let mut strip = file_tabs::Strip { area, tabs: Vec::new() };
+    let mut pen = pen;
+    for (index, name) in names.iter().enumerate() {
+        let rect = draw_tab(ui, area, pen, name, index == active, index, &mut hit);
+        strip.tabs.push(rect);
+        pen = rect.right() + 6.0;
+    }
+
+    // Where the tab being carried would land, worked out once every tab has said where it is. The mark
+    // is the one the file tabs draw, from the same two functions, so a terminal tab and a file tab
+    // follow the pointer in the same way.
+    if let Some((index, pointer)) = hit.dragging {
+        let position = strip.position_at(pointer.x);
+        file_tabs::insertion_mark(&ui.painter_at(area), &strip, position);
+        if hit.dropped {
+            panel.tabs.move_tab(index, position);
+            outcome.take_focus = true;
+        }
+    }
+    if let Some(index) = hit.close {
+        panel.tabs.close(index);
+        if panel.tabs.is_empty() {
+            outcome.hide = true;
+        }
+    } else if let Some(index) = hit.show {
+        panel.tabs.show(index);
+        outcome.take_focus = true;
+    }
+    if let Some((index, at)) = hit.menu {
+        // The tab is shown first, so every entry in its menu is about "the terminal tab that is
+        // showing" and needs no argument. A file tab's menu is opened the same way.
+        panel.tabs.show(index);
+        outcome.menu = Some((index, at));
+    }
+    pen
+}
+
+/// What the pointer did to the tabs this frame. One value rather than five, because they are settled
+/// together once the whole strip has been drawn and the drag needs every tab's rectangle.
+#[derive(Default)]
+struct TabHit {
+    show: Option<usize>,
+    close: Option<usize>,
+    menu: Option<(usize, Pos2)>,
+    /// Which tab is being carried, and where the pointer is now.
+    dragging: Option<(usize, Pos2)>,
+    /// The drag ended on this frame.
+    dropped: bool,
+}
+
+/// One tab: the pill, its name and its close cross. Returns the rectangle it filled.
+fn draw_tab(
+    ui: &mut egui::Ui,
+    area: Rect,
+    pen: f32,
+    name: &str,
+    active: bool,
+    index: usize,
+    hit: &mut TabHit,
+) -> Rect {
+    let painter = ui.painter_at(area);
+    let label = painter.layout_no_wrap(
+        name.to_owned(),
+        egui::FontId::proportional(12.0),
+        if active { color::TEXT_STRONG } else { color::TEXT_CONTROL },
+    );
+    let tab = Rect::from_min_size(
+        Pos2::new(pen, area.center().y - 11.0),
+        Vec2::new(label.size().x + 38.0, 22.0),
+    );
+    // A tab senses a drag as well as a click, which is how it is rearranged. egui only calls a press a
+    // drag once the pointer has moved far enough, so a click is still a click.
+    let response = ui
+        .interact(tab, ui.id().with(("terminal-tab", index)), Sense::click_and_drag())
+        .on_hover_text(format!("Terminal tab: {name}"));
+    if response.dragged() || response.drag_stopped() {
+        if let Some(pointer) = response.interact_pointer_pos() {
+            hit.dragging = Some((index, pointer));
+            hit.dropped = response.drag_stopped();
+        }
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+    }
+    if active {
+        painter.rect(
+            tab,
+            CornerRadius::same(4),
+            color::SELECTED_ROW,
+            Stroke::new(1.0, color::ACCENT.gamma_multiply(0.7)),
+            egui::StrokeKind::Inside,
+        );
+    } else if response.hovered() {
+        painter.rect_filled(tab, CornerRadius::same(4), color::CONTROL);
+    }
+    // A tab being carried is outlined, so it is clear which one is in the air.
+    if response.dragged() {
+        painter.rect(
+            tab,
+            CornerRadius::same(4),
+            color::CONTROL,
+            Stroke::new(1.0, color::ACCENT),
+            egui::StrokeKind::Inside,
+        );
+    }
+    painter.galley(
+        Pos2::new(tab.left() + 10.0, tab.center().y - label.size().y / 2.0),
+        label,
+        color::TEXT_CONTROL,
+    );
+    let shut = Rect::from_center_size(
+        Pos2::new(tab.right() - 12.0, tab.center().y),
+        Vec2::splat(16.0),
+    );
+    let shut_response = ui
+        .interact(shut, ui.id().with(("terminal-close", index)), Sense::click())
+        .on_hover_text(format!("Close {name}"));
+    icon::cross(&painter, shut.center(), color::TEXT_DIM);
+    shut_response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Close {name}"))
+    });
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::Button,
+            true,
+            active,
+            format!("Terminal tab: {name}"),
+        )
+    });
+    if shut_response.clicked() {
+        hit.close = Some(index);
+    } else if response.clicked() {
+        hit.show = Some(index);
+    }
+    if response.middle_clicked() {
+        hit.close = Some(index);
+    }
+    // A right click opens the tab's own menu, which is where `Rename...` is.
+    if response.secondary_clicked() {
+        if let Some(at) = response.interact_pointer_pos().or_else(|| response.hover_pos()) {
+            hit.menu = Some((index, at));
+        }
+    }
+    tab
 }
 
 /// The grid: work out its size, tell the session, draw what it reports, and take the input.
@@ -634,6 +730,11 @@ fn handle_input(
     // filter box impossible to type in while the terminal was open. The editing area asks the same
     // question in the same words, so there is one answer to it rather than two that could drift.
     if crate::app::text_box_has_the_keyboard(ui.ctx()) {
+        return;
+    }
+    // And a modal, which mostly has no field to answer the question above. The editing area stands
+    // aside in the same words for the same reason.
+    if crate::app::a_modal_has_the_keyboard(ui.ctx()) {
         return;
     }
 

@@ -370,11 +370,77 @@ pub fn body(area: Rect) -> Rect {
     )
 }
 
+/// What presses a modal's primary button from the keyboard.
+///
+/// `task-1682` asks that a modal be answerable without reaching for the pointer: somebody who has
+/// just typed a name into a field should not have to move their hand to press `Create`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Confirm {
+    /// Enter, which is what every modal in Quill but one uses.
+    Enter,
+    /// The command key with Enter, for a modal whose **body** owns Enter: the commit message is a
+    /// multiline field where Enter is a new line, and a new line is what a person pressing it there
+    /// means. IntelliJ's commit dialog makes the same choice for the same reason.
+    CommandEnter,
+}
+
+impl Confirm {
+    /// Whether the key press that presses the primary button happened this frame.
+    ///
+    /// The press is **taken out of the frame's input**, so a modal that is confirmed from the
+    /// keyboard cannot also be read as an ordinary Enter by anything drawn after it. The list
+    /// dialogs — `Go to File`, `Find in Files` and the references modal — take Enter for
+    /// themselves before their footer is drawn, which is what stops it meaning two things there:
+    /// in those, Enter opens the row that is chosen and the button at the bottom right is the same
+    /// thing said twice.
+    pub fn pressed(&self, ui: &egui::Ui) -> bool {
+        // Asked of what is really held rather than through `consume_key`, which matches by
+        // `Modifiers::matches_logically`: that only asks whether the modifiers the *pattern* names
+        // are held, so a pattern of `NONE` matches `Command+Enter` too and the commit dialog would
+        // commit on both. `task-1678`'s completion popup had to make the same comparison.
+        //
+        // `command_only` rather than an equality test, because the command key is not one flag:
+        // on Windows `Ctrl+Enter` arrives with **both** `ctrl` and `command` set, so a modal that
+        // compared against `Modifiers::COMMAND` would work in a test and never in the window.
+        let wanted = |held: &egui::Modifiers| match self {
+            Confirm::Enter => held.is_none(),
+            Confirm::CommandEnter => held.command_only(),
+        };
+        ui.input_mut(|input| {
+            let mut pressed = false;
+            input.events.retain(|event| match event {
+                egui::Event::Key {
+                    key: egui::Key::Enter,
+                    pressed: true,
+                    modifiers: held,
+                    ..
+                } if wanted(held) => {
+                    pressed = true;
+                    false
+                }
+                _ => true,
+            });
+            pressed
+        })
+    }
+}
+
 /// The bar across the bottom, with its buttons at the right.
 ///
 /// `buttons` is given in the order they read, left to right; the last one is the one that does the
-/// thing and is filled in the accent colour. Returns which one was pressed.
+/// thing and is filled in the accent colour. Returns which one was pressed — by the pointer, or by
+/// Enter, which presses that last button when it is enabled.
 pub fn footer(ui: &mut egui::Ui, area: Rect, buttons: &[(&str, bool)]) -> Option<usize> {
+    footer_confirmed_by(ui, area, buttons, Confirm::Enter)
+}
+
+/// The same footer, for a modal whose body owns Enter. See [`Confirm`].
+pub fn footer_confirmed_by(
+    ui: &mut egui::Ui,
+    area: Rect,
+    buttons: &[(&str, bool)],
+    confirm: Confirm,
+) -> Option<usize> {
     let bar = Rect::from_min_max(Pos2::new(area.left(), area.bottom() - FOOTER), area.max);
     ui.painter_at(area).line_segment(
         [Pos2::new(bar.left(), bar.top()), Pos2::new(bar.right(), bar.top())],
@@ -392,6 +458,15 @@ pub fn footer(ui: &mut egui::Ui, area: Rect, buttons: &[(&str, bool)]) -> Option
             pressed = Some(index);
         }
         right = rect.left() - 8.0;
+    }
+    // The keyboard presses the last button, which is the one that does the thing. A footer whose
+    // last button is dimmed — no name typed, nothing chosen — is a modal there is nothing to
+    // confirm, so the key press is left alone rather than doing nothing loudly.
+    let primary = buttons.len().checked_sub(1);
+    if let Some(primary) = primary {
+        if buttons[primary].1 && confirm.pressed(ui) {
+            pressed = Some(primary);
+        }
     }
     pressed
 }

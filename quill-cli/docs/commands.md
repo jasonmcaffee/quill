@@ -1147,6 +1147,40 @@ Close a terminal tab. Closing the last one puts the terminal away.
 quill-cli terminal close
 ```
 
+### terminal rename
+
+```
+quill-cli terminal rename <name> [--tab <index>]
+```
+
+Call a terminal tab something else. The name stays put when the program in the tab sets a title of its own; an empty name puts the tab back to being named after its program.
+
+- `name` — What to call it. Everything after the verb is taken as the name, so it needs no quotes. Everything after it on the line belongs to it.
+
+- `--tab <index>` — Which tab, counting from 0. The one that is showing when it is left out.
+
+```sh
+quill-cli terminal rename build
+quill-cli terminal rename --tab 1 the long running one
+```
+
+### terminal move
+
+```
+quill-cli terminal move <position> [--tab <index>]
+```
+
+Move a terminal tab along the strip, which is what dragging one does.
+
+- `position` — Where it goes, counting the tabs as they are on the screen now from 0.
+
+- `--tab <index>` — Which tab to move, counting from 0. The one that is showing when it is left out.
+
+```sh
+quill-cli terminal move 0
+quill-cli terminal move --tab 2 0
+```
+
 ### terminal send
 
 ```

@@ -211,7 +211,10 @@ fn contents(
     );
     // Named `Done` rather than `Close`, because the window's own close button is called Close and two
     // controls with one name cannot be told apart, by a person reading them out or by a test.
-    if wide_button(ui, button, "Done") {
+    // Enter is `Done`, as it is in every other modal. `components::modal::footer` is where that is
+    // decided for the ones built from it; the Settings window draws its own footer, so it asks the
+    // same question rather than answering it a second way.
+    if wide_button(ui, button, "Done") || modal::Confirm::Enter.pressed(ui) {
         outcome.closed = true;
     }
     let note = ui.painter_at(area).layout_no_wrap(

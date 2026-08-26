@@ -92,6 +92,12 @@ pub fn handle_input(
     if crate::app::text_box_has_the_keyboard(ui.ctx()) {
         return outcome;
     }
+    // A modal is open. Most of them have no field in them at all, so the question above says
+    // nothing about them, and a document that went on reading the keyboard behind a dialog would
+    // take the `Enter` that answers it as a new line in the file.
+    if crate::app::a_modal_has_the_keyboard(ui.ctx()) {
+        return outcome;
+    }
     let events = ui.input(|input| input.events.clone());
     for event in events {
         match event {
