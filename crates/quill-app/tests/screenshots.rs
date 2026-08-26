@@ -8229,7 +8229,10 @@ fn paused_harness(name: &str) -> Harness<'static, QuillApp> {
             serde_json::json!({ "variables": [
                 { "name": "attempts", "value": "3", "type": "i32", "variablesReference": 0 },
                 { "name": "items", "value": "Vec<i32>(len:3)", "type": "alloc::vec::Vec<i32>", "variablesReference": 17 },
-                { "name": "total", "value": "6", "type": "usize", "variablesReference": 0 }
+                { "name": "total", "value": "6", "type": "usize", "variablesReference": 0 },
+                // One the debugger could not read, which every real session has: it is listed in the
+                // tree in the debugger's own words and **not** painted at the end of a line.
+                { "name": "step", "value": "<optimized out>", "variablesReference": 0 }
             ]}),
         ),
     );
@@ -8345,6 +8348,20 @@ fn the_execution_point_and_the_inline_values_are_drawn_over_the_source() {
     assert!(path.ends_with("main.rs"), "{}", path.display());
     assert_eq!(line, 4);
     assert!(path.starts_with(&folder));
+
+    // A value the debugger could not read is not painted at the end of a line. It is still in the
+    // tree, in the debugger's own words — but `step = <optimized out>` beside somebody's code is the
+    // debugger declining to answer dressed as information, and IntelliJ paints nothing there either.
+    let painted = harness.state_mut().inline_values_for_test();
+    assert!(
+        painted.iter().any(|(_, text)| text == "attempts = 3"),
+        "a value the debugger read is painted: {painted:?}"
+    );
+    assert!(
+        !painted.iter().any(|(_, text)| text.contains("step")),
+        "and one it could not is not: {painted:?}"
+    );
+
     harness.snapshot(shot("debug_execution_point"));
 }
 

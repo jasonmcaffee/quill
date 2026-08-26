@@ -6066,10 +6066,26 @@ impl QuillApp {
             if rows.last().is_some_and(|(known, _)| *known == paragraph) {
                 continue;
             }
+            // A value the debugger could not read is **not painted**. It is still in the tree, in the
+            // debugger's own words, which is where the honest full answer belongs — but at the end of
+            // a line of code `step = <variable not available>` is the debugger declining to answer
+            // dressed as information, and IntelliJ paints nothing there either. Seen on the released
+            // 0.14.0 build against a real CodeLLDB: two of three inline values on a seven-line program
+            // were this.
+            if is_unreadable(value) {
+                continue;
+            }
             rows.push((paragraph, format!("{} = {}", &text[word.clone()], elide_value(value))));
         }
         self.inline_cache = Some(InlineValues { revision, frame, path, values: rows.clone() });
         rows
+    }
+
+    /// The inline values of the file that is showing, for a test to look at without drawing a frame.
+    pub fn inline_values_for_test(&mut self) -> Vec<(usize, String)> {
+        let index = self.files.active_index();
+        self.inline_cache = None;
+        self.inline_values(index)
     }
 
     /// What the gutter draws for each breakpoint in one file: which paragraph it is on, and how.
@@ -6512,6 +6528,18 @@ pub(crate) struct InlineValues {
     frame: Option<i64>,
     path: PathBuf,
     values: Vec<(usize, String)>,
+}
+
+/// True when a value is the debugger saying it has nothing to say.
+///
+/// Adapters spell this a dozen ways — `<variable not available>`, `<optimized out>`, `<not
+/// available>`, `<error: ...>` — and what they share is the angle brackets: a value a program really
+/// holds is a number, a string or a structure, and none of those is written that way. So the shape is
+/// the test rather than a list of an adapter's own wordings, which would be a list that is wrong for
+/// the next adapter.
+fn is_unreadable(value: &str) -> bool {
+    let value = value.trim();
+    value.starts_with('<') && value.ends_with('>')
 }
 
 /// A value painted at the end of a line, cut to something a line can hold.
