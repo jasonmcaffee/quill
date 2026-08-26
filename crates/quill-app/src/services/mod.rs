@@ -2,6 +2,7 @@
 
 pub mod breakpoint_store;
 pub mod control;
+pub mod crash_log;
 pub mod debuggers;
 pub mod file_clipboard;
 pub mod file_kind;

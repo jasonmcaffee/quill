@@ -157,6 +157,26 @@ fn main() -> eframe::Result {
         std::process::exit(0);
     }
 
+    // Before anything else, so that a panic while the window is being built is written down too. A
+    // graphical application on macOS has no standard error to print one to, and a panic that unwinds
+    // out of the event loop exits rather than aborting, so the operating system files no crash report
+    // either: without this a crash leaves nothing at all behind. `services::crash_log` says more.
+    //
+    // The backtrace is asked for rather than left to `RUST_BACKTRACE`, because the person whose Quill
+    // just disappeared did not set an environment variable before it happened.
+    if std::env::var_os("RUST_BACKTRACE").is_none() {
+        // SAFETY: nothing else is running yet; this is the first statement of the program.
+        unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
+    }
+    quill_app::services::crash_log::install(quill_app::services::store::folder_for_this_person());
+
+    // Proving the crash log works has to be possible on the machine it matters on, from the installed
+    // application, where there is no terminal and no test harness. `QUILL_PANIC_TEST=1 quill` panics
+    // here on purpose, and what it writes to crash.log is what a real crash writes.
+    if std::env::var_os("QUILL_PANIC_TEST").is_some() {
+        panic!("QUILL_PANIC_TEST was set, so this is a panic on purpose");
+    }
+
     // A file argument opens that file and shows the folder it sits in. A folder argument just shows the
     // folder. With no argument at all, the explorer shows the current directory — except when Quill was
     // started from the desktop rather than from a terminal, where the current directory is the folder
@@ -185,6 +205,17 @@ fn main() -> eframe::Result {
             // operating system's own window frame turned off.
             .with_decorations(false)
             .with_has_shadow(false),
+        // Run the event loop the way winit says to run it. eframe's default is `true`, which drives the
+        // loop through winit's `run_app_on_demand` so that `run_native` can return to its caller;
+        // winit's own documentation for it says "You are strongly encouraged to use
+        // `EventLoop::run_app()` for portability, unless you specifically need the ability to re-run a
+        // single event loop more than once", and eframe's own comment on the setting says the `false`
+        // option "is only there so we can revert if we find any bugs". Quill runs the loop once and
+        // then the process ends, so it needs none of what the default buys, and a window was found
+        // asleep on macOS inside `run_app_on_demand` with wakes no longer reaching it. This takes that
+        // difference out of the picture. `app::HEARTBEAT` is what makes the window recover by itself if
+        // a wake is ever lost again.
+        run_and_return: false,
         ..Default::default()
     };
 

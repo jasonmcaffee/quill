@@ -1048,6 +1048,70 @@ modal layer rather than a list of Quill's dialogs, so a modal added later is cov
 added anywhere, and it is the layer as it stood at the **end of the last frame** — which is the
 honest answer at the point those three read the keyboard, before anything this frame has drawn.
 
+## A widget of Quill's own holds egui's keyboard focus, and the window buttons cannot take it
+
+**egui moves keyboard focus when a bare `Tab` or a bare arrow key is pressed**, and it moves it to the
+next widget that can take focus. Every control Quill draws with `Sense::click` can. The editing area,
+the explorer and the terminal are not egui widgets: they read the frame's events themselves, so none
+of them held egui's focus and nothing said those keys were taken. The focus therefore walked out of
+the document on the first arrow key and landed on the first button in the window, which is `Close` in
+the title bar. A button that holds the focus is pressed by `Space` and by `Enter`. Typing a space then
+closed the window, or minimised it when the focus had reached `Minimise`.
+
+That was reported as Quill crashing while somebody typed, and there was nothing to find: no panic, no
+line in `crash.log`, no report from macOS. The window had been asked to close in the ordinary way.
+
+**`app::hold_the_keyboard` is called before anything is drawn** and keeps the focus on a widget named
+`app::KEYBOARD_HOLDER`. It has no size and senses no clicks, so there is nothing to draw, nothing to
+click and no way for `Space` to press it, and it claims `Tab` and both pairs of arrows through an
+`EventFilter` — which is how a `TextEdit` stops `Tab` moving the focus out of a text box, and the only
+mechanism egui offers for it. It gives the focus up while a text box or a modal has the keyboard,
+because there the keys really are the widget's, and it takes the focus back on the next frame from
+anything else that has ended up with it.
+
+**Two consequences to keep.** `route_the_explorer_keys` asks `text_box_has_the_keyboard` and must not
+go back to asking whether anything at all has the focus, because something always does now — the
+holder. And the three window buttons and the title bar's drag area are built with `Sense::CLICK` and
+`Sense::CLICK | Sense::DRAG`, not `Sense::click()` and `Sense::click_and_drag()`, so that they cannot
+take keyboard focus at all: they are the four widgets in the window whose keyboard press a person
+cannot undo.
+
+`typing_a_space_after_a_tab_or_an_arrow_key_cannot_close_or_minimise_the_window`,
+`a_text_box_takes_the_keyboard_from_the_holder_and_the_holder_takes_it_back` and
+`a_tab_out_of_a_text_box_cannot_land_on_a_window_button` are the tests.
+
+## The window wakes itself up
+
+**`app::HEARTBEAT` is asked for on every frame**, so the window is never asleep with nothing pending.
+Quill draws only when something happens, and everything that happens on another thread — a command
+from the command line, the git worker, the symbol indexer, a program writing to a terminal — wakes the
+window through egui's `request_repaint`, which on macOS signals a source on the main run loop.
+
+A window was found in the state where that wake had stopped arriving: visible on the screen, using no
+processor time, its main thread asleep waiting for an event, no lock held by anybody, a command queued
+with its connection still waiting for the answer, and not one frame drawn in three seconds. It could
+not be typed into or dragged, and it drew a single frame each time the operating system pushed
+something at it, such as being activated or the desktop it was on being switched to. Half a second is
+what a lost wake costs now. Asking for a frame after a delay is a timer that the run loop fires from
+inside itself, which is a different mechanism from the signal that went missing, so the heartbeat is a
+delay and not a thread calling `request_repaint`.
+
+**`run_and_return: false` in `main.rs` goes with it.** eframe's default drives the loop through
+winit's `run_app_on_demand`, which winit's own documentation strongly discourages unless a program
+needs to run one event loop more than once, and eframe's comment on the setting says `false` is there
+to revert to if a bug turns up. Quill runs the loop once and then the process ends.
+
+**A window that has stopped answering writes nothing down**, so `crash.log` is empty and macOS files
+no report — a hang is not a crash. `sample <pid>` is how to look at one: it says which thread is where
+and whether any frame is running at all. Read the block for `com.apple.main-thread`.
+
+`an_idle_window_always_asks_to_be_woken_again` is the test. It reads `repaint_delay` from the frame's
+output, because there is nothing in a screenshot that shows whether a window will ever draw again.
+`HEARTBEAT` is also why the tests cannot use a shorter one: egui takes `predicted_dt` off any delay
+asked for so as not to overshoot, the harness calls a frame a quarter of a second by default, and a
+heartbeat at or under that becomes "repaint immediately" and makes `Harness::run` spin until it gives
+up.
+
 ## A run configuration is a named command, and a run is a terminal with a program in it
 
 `task-1683` asks for IntelliJ's run configurations and `task-1684` is the implementation. A

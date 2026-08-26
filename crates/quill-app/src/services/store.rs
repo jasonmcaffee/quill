@@ -218,6 +218,13 @@ impl Default for Store {
 /// everywhere else follows the directory specification, which is `XDG_CONFIG_HOME` when it is set and
 /// `~/.config` when it is not. With no home directory at all the current folder is used, so that Quill
 /// still runs.
+/// Where Quill keeps its things for this person, without opening a store first.
+///
+/// `main` needs it before anything else exists, to point the crash log at it.
+pub fn folder_for_this_person() -> PathBuf {
+    settings_folder()
+}
+
 fn settings_folder() -> PathBuf {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     if cfg!(target_os = "macos") {

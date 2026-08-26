@@ -148,8 +148,14 @@ pub fn show(
     for (index, (fill, label)) in buttons.into_iter().enumerate() {
         let centre = Pos2::new(first_centre.x + index as f32 * BUTTON_STEP, first_centre.y);
         let hit = Rect::from_center_size(centre, Vec2::splat(16.0));
+        // `Sense::CLICK` and not `Sense::click()`: the same clicks, but the button cannot take
+        // keyboard focus. A focused button is pressed by `Space` and by `Enter`, and these three
+        // close, minimise and resize the window — so a focus that reached one of them turned a space
+        // typed in a file into the window closing. `app::hold_the_keyboard` is what stops the focus
+        // wandering in the first place; this is here so that even if it ever does, the keys it arrives
+        // with cannot do something a person cannot undo.
         let response = ui
-            .interact(hit, ui.id().with(("window-button", label)), Sense::click())
+            .interact(hit, ui.id().with(("window-button", label)), Sense::CLICK)
             .on_hover_text(label);
         painter.circle_filled(centre, 6.5, fill);
         if response.hovered() {
@@ -224,7 +230,13 @@ pub fn show(
     if drag_to > drag_from {
         let drag_area =
             Rect::from_min_max(Pos2::new(drag_from, area.top()), Pos2::new(drag_to, area.bottom()));
-        let drag = ui.interact(drag_area, ui.id().with("title-drag"), Sense::click_and_drag());
+        // Clicks and drags, and no keyboard focus, for the reason given above the window buttons: a
+        // double click here resizes the window, and `Enter` on a focused widget counts as a click.
+        let drag = ui.interact(
+            drag_area,
+            ui.id().with("title-drag"),
+            Sense::CLICK | Sense::DRAG,
+        );
         if drag.drag_started() {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
         }

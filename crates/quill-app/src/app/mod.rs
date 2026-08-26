@@ -344,6 +344,93 @@ pub fn a_modal_has_the_keyboard(ctx: &egui::Context) -> bool {
     ctx.memory(|memory| memory.top_modal_layer().is_some())
 }
 
+/// The name of the widget that holds egui's keyboard focus while a pane of Quill's own is being typed
+/// into.
+pub const KEYBOARD_HOLDER: &str = "quill-keyboard-holder";
+
+/// How long the window will sleep before it wakes itself up, whether or not anything has asked it to.
+///
+/// Quill draws only when something happens: a key press, the pointer, a program writing to a
+/// terminal, a thread finishing its work. When none of those is happening it asks for no frame and
+/// the operating system puts the main thread to sleep until an event arrives. Everything that wakes
+/// it from another thread — the command line, the git worker, the symbol indexer, every terminal —
+/// does so through egui's `request_repaint`, which on macOS signals a source on the main run loop.
+///
+/// A window was found in the state where that wake had stopped arriving. It was visible on the
+/// screen, it was using no processor time, its main thread was asleep waiting for an event, no lock
+/// was held by anybody and nothing was deadlocked, a command from the command line was queued with
+/// its connection still waiting for the answer, and not one frame had been drawn in three seconds.
+/// It could not be typed into and it could not be dragged. It drew a single frame each time the
+/// operating system pushed something at it, such as being activated or the desktop it was on being
+/// switched to. Nothing had crashed; the window was asleep and the wake never came.
+///
+/// The window therefore no longer depends on being woken. Every frame asks for another one half a
+/// second later, so there is always a timer pending, and a wake that goes missing costs half a second
+/// instead of the window. The cost of that is two frames a second while nothing is happening.
+///
+/// The wake this schedules is a different mechanism from the one that went missing. Asking for a frame
+/// after a delay makes winit wait on a timer, which the run loop fires from inside itself; waking from
+/// another thread signals a source and hopes the sleep breaks. The timer is the one that can be
+/// counted on, which is why the heartbeat is a delay rather than a thread calling `request_repaint`.
+pub const HEARTBEAT: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Keep egui's keyboard focus on a widget of Quill's own, so that pressing `Tab` or an arrow key
+/// cannot hand the keyboard to a button.
+///
+/// **This is what a report of Quill crashing while somebody typed turned out to be.** egui moves
+/// keyboard focus when a bare `Tab` or a bare arrow key is pressed, and it moves it to the next
+/// widget that can take focus — every control Quill draws with `Sense::click` can. The editing area,
+/// the explorer and the terminal are not egui widgets and never held egui's focus, so the focus
+/// walked out of the document and onto the first button in the window, which is `Close` in the title
+/// bar. A button with the keyboard is pressed by `Space` and by `Enter`. One arrow key and a space
+/// therefore closed the window, or minimised it if the focus had reached `Minimise` instead. Nothing
+/// panicked and nothing was written down, because the window was asked to close in the ordinary way.
+///
+/// egui's answer to this is a focused widget that says which keys are its own, which is how a
+/// `TextEdit` keeps `Tab` from moving the focus out of a text box. Quill has three surfaces that read
+/// the keyboard themselves rather than through a widget, so one focusable widget stands for all three:
+/// while it holds the focus, `Tab` and the arrows are claimed and egui moves the focus nowhere.
+///
+/// It senses no clicks, so `Space` and `Enter` cannot press it, and it has no size, so there is
+/// nothing to draw and nothing to click on.
+///
+/// It gives the focus up while a text box or a modal has the keyboard, because there the keys really
+/// are the widget's: a `Tab` in the commit message is the box's, and a modal's buttons are the only
+/// things a key should reach while it is open. Anything else holding the focus — a button in the
+/// toolbar, a row in the explorer, a file tab — is a focus that arrived by wandering, and the holder
+/// takes it back on the frame after. That leaves the one frame between the `Tab` that moved the focus
+/// and the holder taking it back, and a person's next key press is frames later.
+///
+/// A click on a text box is never stolen: on the frame it is clicked the holder already has the focus
+/// and so asks for nothing, and the box's own request is the one that takes effect.
+pub fn hold_the_keyboard(ui: &mut egui::Ui) {
+    let id = egui::Id::new(KEYBOARD_HOLDER);
+    if text_box_has_the_keyboard(ui.ctx()) || a_modal_has_the_keyboard(ui.ctx()) {
+        ui.memory_mut(|memory| memory.surrender_focus(id));
+        return;
+    }
+    let response = ui.interact(Rect::ZERO, id, egui::Sense::focusable_noninteractive());
+    if ui.memory(|memory| memory.focused()) != Some(id) {
+        response.request_focus();
+    }
+    // Claimed every frame rather than once: egui only lets a widget claim keys on a frame where it
+    // both had the focus last frame and holds it now, so the frame it takes the focus on is a frame it
+    // cannot yet claim anything on.
+    ui.memory_mut(|memory| {
+        memory.set_focus_lock_filter(
+            id,
+            egui::EventFilter {
+                tab: true,
+                horizontal_arrows: true,
+                vertical_arrows: true,
+                // Escape is left alone: it hands the keyboard back, and the focus is taken again on
+                // the frame after by the request above.
+                escape: false,
+            },
+        );
+    });
+}
+
 pub struct QuillApp {
     /// The files that are open, one to a tab, and which of them is showing.
     pub files: OpenFiles,
@@ -3437,7 +3524,11 @@ impl QuillApp {
         }
         // A field with the keyboard is typed into, not navigated with. The filter box is the only
         // one in the panel, and while it has the focus its own arrow keys move the caret.
-        if ui.ctx().memory(|memory| memory.focused()).is_some() {
+        //
+        // The question is whether a **text box** has the keyboard, not whether anything at all has
+        // the focus: `hold_the_keyboard` keeps the focus on a widget of Quill's own the rest of the
+        // time, and the broader question would leave the tree unable to be walked at all.
+        if text_box_has_the_keyboard(ui.ctx()) {
             return None;
         }
         // A letter typed while the tree has the keyboard belongs to the **editor**. The explorer has
@@ -4197,6 +4288,11 @@ impl QuillApp {
         self.keep_the_symbol_index_fresh();
         // Before the explorer is drawn, so the folders it needs are already open on this frame.
         self.follow_the_open_file();
+        // Before any button is drawn, so that on the very first frame the focus is here and not on the
+        // first thing in the title bar.
+        hold_the_keyboard(ui);
+        // Always ask to be woken again. See `HEARTBEAT`.
+        ui.ctx().request_repaint_after(HEARTBEAT);
         let full = ui.max_rect();
 
         // The window is one painted surface with rounded corners, because it has no operating system

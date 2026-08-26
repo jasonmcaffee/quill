@@ -6581,9 +6581,19 @@ fn asking_from_the_definition_opens_the_references_instead() {
         "and so is the one inside a string: {found:?}"
     );
     // The headings and one row of each kind name themselves, which is how a test finds them.
-    harness.get_by_label("References in quill-screenshot-code\\layout.rs");
+    harness.get_by_label(&references_heading("layout.rs"));
     harness.get_by_label("Reference layout.rs:11");
     harness.snapshot(shot("references"));
+}
+
+/// The label the references modal gives a file's heading.
+///
+/// The modal names the file the way the platform spells a path, so the label has a backslash in it on
+/// Windows and a slash everywhere else. Written down twice as a literal, these two tests passed on
+/// Windows and failed on macOS for a reason that has nothing to do with what they are testing.
+fn references_heading(file: &str) -> String {
+    let path = std::path::Path::new("quill-screenshot-code").join(file);
+    format!("References in {}", path.display())
 }
 
 #[test]
@@ -6595,7 +6605,7 @@ fn choosing_a_file_heading_shows_that_files_first_reference() {
     caret_on(&mut harness, "fn draw", 4);
     harness.state_mut().run_action(Action::FindReferences, &ctx);
     settle_the_references(&mut harness);
-    harness.get_by_label("References in quill-screenshot-code\\caret.rs").click();
+    harness.get_by_label(&references_heading("caret.rs")).click();
     harness.run();
     harness.run();
     let (path, line) = harness
@@ -8106,6 +8116,61 @@ fn debug_harness(name: &str) -> Harness<'static, QuillApp> {
     harness
 }
 
+// Typing in a code file, keystroke by keystroke, with every frame painted.
+//
+// These come from a crash reported while typing a getter into a JavaScript class: the window went
+// away with no message, because a panic in a bundled application on macOS reaches no standard error
+// and unwinds out rather than aborting, so the operating system files no report either. That gap is
+// closed by `services::crash_log`; these are the other half, and they exercise the paths a keystroke
+// in a code file goes down, which nothing else here did:
+//
+//   - the file's symbols are read again on every keystroke, including from half-typed shapes,
+//   - the completion list is built, opened, moved through and accepted,
+//   - and the frame is **painted** after each one, which the other tests here only do at the end.
+//
+// The crash itself could not be reproduced from the description; what these do is make sure the
+// sequence described stays exercised, so that if it is a fault in this path it fails here rather than
+// on somebody's machine with nothing written down.
+
+/// A small JavaScript project, with names a stem of `get` matches so that the list really opens.
+fn javascript_folder() -> std::path::PathBuf {
+    static FOLDER: OnceLock<std::path::PathBuf> = OnceLock::new();
+    FOLDER
+        .get_or_init(|| {
+            let root = std::env::temp_dir().join("quill-screenshot-javascript");
+            std::fs::create_dir_all(&root).expect("make the folder");
+            std::fs::write(root.join("person.js"), "").expect("write person.js");
+            std::fs::write(
+                root.join("people.js"),
+                "export function getName(person) { return person.name; }\n\
+                 export function getAge(person) { return person.age; }\n\
+                 export const getters = { getName, getAge };\n\
+                 export class Employee {\n  get title() { return this.role; }\n  \
+                 getSalary() { return 0; }\n}\n",
+            )
+            .expect("write people.js");
+            root
+        })
+        .clone()
+}
+
+/// A window on that project with `person.js` open and the symbol index built, because the completion
+/// list is built from the index and means nothing until it has arrived.
+fn javascript_harness() -> Harness<'static, QuillApp> {
+    let folder = javascript_folder();
+    let mut harness = harness_in(&folder);
+    harness.state_mut().open_path_permanently(&folder.join("person.js"));
+    for _ in 0..600 {
+        pump(&mut harness);
+        if harness.state().symbols_indexer().is_some_and(|indexer| !indexer.is_building()) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    harness.run();
+    harness
+}
+
 /// What the adapter would have said, so a whole session is a list of values with no process in it.
 fn answer(request_seq: i64, command: &str, body: serde_json::Value) -> Message {
     Message::Response {
@@ -8806,4 +8871,311 @@ fn a_breakpoint_is_still_there_when_the_project_is_opened_again() {
     assert_eq!(marks[0].0, 2, "paragraph 2 is the third line");
 
     std::fs::remove_dir_all(&folder).ok();
+}
+/// Type `text` a character at a time, painting every frame, and walking the completion list whenever
+/// it opens.
+///
+/// Painting is the point. `Harness::run` builds a frame's shapes; `render` is what turns them into a
+/// picture, and the completion list's own drawing — a row's matched letters picked out one at a time —
+/// only happens there.
+fn type_and_paint(harness: &mut Harness<'static, QuillApp>, text: &str) {
+    for letter in text.chars() {
+        if letter == '\n' {
+            harness.key_press(egui::Key::Enter);
+        } else {
+            harness.input_mut().events.push(egui::Event::Text(letter.to_string()));
+        }
+        harness.run();
+        harness.render().expect("paint the frame");
+        if harness.state().completion().is_some() {
+            harness.key_press(egui::Key::ArrowDown);
+            harness.run();
+            harness.render().expect("paint the frame with a row chosen");
+        }
+    }
+}
+
+#[test]
+fn typing_a_getter_into_a_javascript_class_survives_every_keystroke() {
+    // The sequence from the report: the class, a blank line inside it, the closing brace, and then a
+    // getter typed on the blank line.
+    let mut harness = javascript_harness();
+    type_and_paint(&mut harness, "class Person {\n\n}");
+    let text = harness.state().document().text().to_string();
+    let inside = text.find("{\n").expect("the brace and the line under it") + 2;
+    harness.state_mut().command(Command::PlaceCaret { offset: inside, extend: false });
+    harness.run();
+
+    type_and_paint(&mut harness, "get");
+    let offered = completions(&harness);
+    assert!(
+        offered.contains(&"getName".to_owned()),
+        "the list should be open on the project's own names, so this test is exercising it: {offered:?}"
+    );
+
+    type_and_paint(&mut harness, " fullName() {\nreturn this.name;\n");
+    assert!(
+        harness.state().document().text().to_string().contains("get fullName()"),
+        "and what was typed is what is there"
+    );
+}
+
+#[test]
+fn accepting_a_completion_inside_a_class_survives() {
+    let mut harness = javascript_harness();
+    type_and_paint(&mut harness, "class Person {\n\n}");
+    let text = harness.state().document().text().to_string();
+    let inside = text.find("{\n").expect("the brace") + 2;
+    harness.state_mut().command(Command::PlaceCaret { offset: inside, extend: false });
+    harness.run();
+    type_and_paint(&mut harness, "get");
+    assert!(!completions(&harness).is_empty(), "the list is open");
+
+    // Tab takes the whole word, which is the acceptance that also has to replace what is to the right
+    // of the caret, and the one that can add an import.
+    harness.key_press(egui::Key::Tab);
+    harness.run();
+    harness.render().expect("paint what acceptance left behind");
+    let after = harness.state().document().text().to_string();
+    assert!(after.contains("get"), "something was accepted: {after:?}");
+    assert!(harness.state().completion().is_none(), "and the list closed behind it");
+}
+
+#[test]
+fn the_shapes_of_javascript_that_could_be_mis_sliced_survive_being_typed() {
+    // Every one of these is a shape where a byte offset could land inside a character or past the end:
+    // a template literal with expressions in it, a regular expression, an accented identifier, an
+    // unclosed string, a comment naming a symbol, and spread syntax.
+    let mut harness = javascript_harness();
+    let shapes = [
+        "import { getName } from './people.js';\n",
+        "import * as people from './people.js';\n",
+        "const greeting = `hello ${person.name} and ${getName(person)}`;\n",
+        "const pattern = /get[A-Z]\\w+/g;\n",
+        "class Person extends Employee {\n  static get kind() { return 'person'; }\n}\n",
+        "const \u{00e9}quipe = { g\u{00e9}rant: getName };\n",
+        "// a comment about getName\n",
+        "const half = 'unclosed string\n",
+        "const object = { get, getName, ...rest };\n",
+        "async function* getEverything() { yield await getName(); }\n",
+    ];
+    for shape in shapes {
+        harness.state_mut().command(Command::SelectAll);
+        harness.run();
+        type_and_paint(&mut harness, shape);
+    }
+}
+
+// The window closing or minimising itself while somebody types.
+//
+// This is what the report of a crash while typing turned out to be, and it is also the report of the
+// window minimising itself in the middle of a word. Neither is a crash: nothing panics, nothing is
+// written to `crash.log`, and macOS files no report, because the window is asked to close in the
+// ordinary way — by a button being pressed.
+//
+// egui moves keyboard focus when a bare `Tab` or a bare arrow key is pressed, and it keeps moving it
+// unless the widget that holds focus says those keys are its own. Quill's editing area never held
+// egui's focus, so nothing said that, and the focus walked out of the document and onto the three
+// window buttons in the title bar. A button with keyboard focus is pressed by `Space` or `Enter`. So
+// one arrow key followed by a space closed the window if the focus had landed on `Close`, minimised it
+// if it had landed on `Minimise`, and resized it if it had landed on `Maximise` — while the person was
+// doing nothing but typing.
+//
+// Every key below is one a person types constantly in a code file.
+
+/// The commands the window sent this frame that move, close or resize the window itself.
+fn window_commands(harness: &Harness<'static, QuillApp>) -> Vec<String> {
+    harness
+        .output()
+        .viewport_output
+        .values()
+        .flat_map(|viewport| viewport.commands.iter())
+        .filter(|command| {
+            matches!(
+                command,
+                egui::ViewportCommand::Close
+                    | egui::ViewportCommand::Minimized(_)
+                    | egui::ViewportCommand::Maximized(_)
+                    | egui::ViewportCommand::StartDrag
+            )
+        })
+        .map(|command| format!("{command:?}"))
+        .collect()
+}
+
+/// Whether any of the three window buttons holds the keyboard.
+fn a_window_button_holds_the_keyboard(harness: &mut Harness<'static, QuillApp>) -> Option<String> {
+    ["Close", "Minimise", "Maximise"].into_iter().find_map(|label| {
+        let held = harness.get_all_by_label(label).any(|node| node.is_focused());
+        held.then(|| label.to_owned())
+    })
+}
+
+#[test]
+fn typing_a_space_after_a_tab_or_an_arrow_key_cannot_close_or_minimise_the_window() {
+    let mut harness = javascript_harness();
+    type_and_paint(&mut harness, "class Person {\n");
+
+    // Each of these is pressed and then a space is typed, which is what pressing a focused button
+    // takes. The arrows are in it because egui moves focus on those as well as on `Tab`, and an arrow
+    // key in a code file is the commonest key press there is.
+    for key in [
+        egui::Key::Tab,
+        egui::Key::ArrowUp,
+        egui::Key::ArrowDown,
+        egui::Key::ArrowLeft,
+        egui::Key::ArrowRight,
+    ] {
+        harness.key_press(key);
+        harness.run();
+        assert_eq!(
+            a_window_button_holds_the_keyboard(&mut harness),
+            None,
+            "after {key:?} the keyboard is still in the document, not on a window button"
+        );
+        // And it is Quill's own holder that has it, so this test is passing for the reason it is meant
+        // to and not because the title bar happened not to be drawn.
+        assert_eq!(
+            harness.ctx.memory(|memory| memory.focused()),
+            Some(egui::Id::new(quill_app::app::KEYBOARD_HOLDER)),
+            "the focus stays where Quill put it after {key:?}"
+        );
+
+        // A space, as a keyboard sends it: the key press and the letter both.
+        harness.key_press(egui::Key::Space);
+        harness.input_mut().events.push(egui::Event::Text(" ".to_owned()));
+        harness.run();
+        let commands = window_commands(&harness);
+        assert!(
+            commands.is_empty(),
+            "{key:?} then a space must type a space and nothing else, and it sent {commands:?}"
+        );
+
+        // And the same for Enter, which presses a focused button too.
+        harness.key_press(key);
+        harness.run();
+        harness.key_press(egui::Key::Enter);
+        harness.run();
+        let commands = window_commands(&harness);
+        assert!(
+            commands.is_empty(),
+            "{key:?} then Enter must not reach a window button, and it sent {commands:?}"
+        );
+    }
+
+    // The keys have to keep doing what they did, which is the other half of it. The arrows moved the
+    // caret about as they were pressed, so where in the file each character landed is not fixed — what
+    // matters is that every one of these keys still reached the document: the class was typed, `Tab`
+    // still put a tab in and the spaces still went in as spaces.
+    let text = harness.state().document().text().to_string();
+    assert!(text.contains("Person {"), "what was typed is still there: {text:?}");
+    assert!(text.contains('\t'), "Tab still types a tab: {text:?}");
+    assert!(text.contains(' '), "and a space is still a space: {text:?}");
+}
+
+#[test]
+fn an_idle_window_always_asks_to_be_woken_again() {
+    // The window was found asleep with a command queued and no frame drawn in three seconds: it had
+    // asked for no frame, so the only thing that could have drawn one was a wake from another thread,
+    // and that wake never arrived. Asking for the next frame on every frame is what makes a lost wake
+    // cost a quarter of a second. If this ever stops being true, a missed wake can hang the window
+    // again, and there is no way to see that from a screenshot.
+    let mut harness = harness("");
+    harness.run();
+    let asked_for = harness
+        .output()
+        .viewport_output
+        .get(&egui::ViewportId::ROOT)
+        .expect("the window's own output")
+        .repaint_delay;
+    assert!(
+        asked_for <= quill_app::app::HEARTBEAT,
+        "an idle window asked to sleep for {asked_for:?}, which is longer than the heartbeat of {:?}",
+        quill_app::app::HEARTBEAT
+    );
+
+    // And typing does not take it away: it is asked for on every frame, not on the first.
+    harness.get_by_label_contains("readme.md").click();
+    harness.run();
+    harness.input_mut().events.push(egui::Event::Text("x".to_owned()));
+    harness.run();
+    harness.run();
+    let asked_for = harness
+        .output()
+        .viewport_output
+        .get(&egui::ViewportId::ROOT)
+        .expect("the window's own output")
+        .repaint_delay;
+    assert!(asked_for <= quill_app::app::HEARTBEAT, "and still after a frame of typing: {asked_for:?}");
+}
+
+/// What holds egui's keyboard focus this frame.
+fn what_holds_the_keyboard(harness: &Harness<'static, QuillApp>) -> Option<egui::Id> {
+    harness.ctx.memory(|memory| memory.focused())
+}
+
+/// Quill's own holder, which is where the focus belongs while a pane is being typed into.
+fn the_holder() -> egui::Id {
+    egui::Id::new(quill_app::app::KEYBOARD_HOLDER)
+}
+
+#[test]
+fn a_text_box_takes_the_keyboard_from_the_holder_and_the_holder_takes_it_back() {
+    // The other half of holding the focus: a box that is typed into has to be able to take it, or the
+    // explorer's filter, the commit message and the rename prompt could never be typed into at all.
+    let mut harness = harness("");
+    harness.run();
+    assert_eq!(what_holds_the_keyboard(&harness), Some(the_holder()), "it starts here");
+
+    harness.get_by_label("Filter files").click();
+    harness.run();
+    assert_ne!(
+        what_holds_the_keyboard(&harness),
+        Some(the_holder()),
+        "a click on the filter box hands the keyboard over, and it is not taken back on the next frame"
+    );
+    harness.get_by_label("Filter files").type_text("two");
+    harness.run();
+    assert_eq!(harness.state().filter, "two", "so it can be typed into");
+
+    // Escape hands the keyboard back, and the holder has it again.
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+    harness.run();
+    assert_eq!(
+        what_holds_the_keyboard(&harness),
+        Some(the_holder()),
+        "and when the box lets go, the focus comes back rather than sitting on nothing"
+    );
+}
+
+#[test]
+fn a_tab_out_of_a_text_box_cannot_land_on_a_window_button() {
+    // The second line of defence. `Tab` in a text box is the box's own key only while the box holds the
+    // keyboard; egui moves the focus on out of it, and where it goes is whatever egui draws next that
+    // can take focus. The three window buttons take no focus at all, so it cannot be one of them, and
+    // whatever it is the holder takes the keyboard back on the frame after.
+    let mut harness = harness("");
+    harness.get_by_label("Filter files").click();
+    harness.run();
+
+    for press in 0..12 {
+        harness.key_press(egui::Key::Tab);
+        harness.run();
+        assert_eq!(
+            a_window_button_holds_the_keyboard(&mut harness),
+            None,
+            "Tab number {press} out of the filter box reached a window button"
+        );
+        harness.key_press(egui::Key::Space);
+        harness.input_mut().events.push(egui::Event::Text(" ".to_owned()));
+        harness.run();
+        let commands = window_commands(&harness);
+        assert!(commands.is_empty(), "and a space after it sent {commands:?}");
+        assert_eq!(
+            what_holds_the_keyboard(&harness),
+            Some(the_holder()),
+            "the keyboard is back with the holder after Tab number {press}"
+        );
+    }
 }
