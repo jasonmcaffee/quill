@@ -101,6 +101,17 @@ fn main() {
         distinct.len()
     );
     println!("  paid once a text revision, on the tab, not once a question");
+    // What `task-1680` added to that read: the export marker, which is one look at the text between
+    // the keyword and the token in front of it and only while a marker is armed. Measured against
+    // the same file with the key taken away, because a number nobody measures is a wish.
+    let bare = quill_core::Grammar { export_keyword: None, ..grammar.clone() };
+    let without = timed(10, || {
+        std::hint::black_box(FileSymbols::read(&text, &bare));
+    });
+    let with = timed(10, || {
+        std::hint::black_box(FileSymbols::read(&text, &grammar));
+    });
+    println!("  of which language.export_keyword is {:.3} ms", (with - without).max(0.0));
     println!();
     println!(
         "{:<8}{:>10}{:>10}{:>12}{:>12}{:>10}",
@@ -123,6 +134,42 @@ fn main() {
         println!(
             "{stem:<8}{gathered:>10}{offered:>10}{gather:>12.3}{score:>12.3}{whole:>10.3}"
         );
+    }
+
+    // The import arm (`task-1680` §7). The one unbounded moment in it is a specifier with nothing
+    // typed, which turns every importable file in the project into a row; the next character makes
+    // `could_match` throw nearly all of them away before a candidate is built. Each sample is put
+    // at the end of the open file, asked about, and undone, so what is measured is the real
+    // `completion_offer` on a real tab rather than a second copy of the gathering.
+    let samples: &[&str] = match grammar.imports {
+        Some(quill_core::syntax::ImportStyle::Path) => &[
+            "\nuse ",
+            "\nuse quill_core::",
+            "\nuse quill_core::completion::",
+            "\nuse quill_core::completion::Can",
+        ],
+        Some(quill_core::syntax::ImportStyle::Quoted) => {
+            &["\nimport { A } from './", "\nimport { A } from './la", "\nimport { La } from './"]
+        }
+        None => &[],
+    };
+    if !samples.is_empty() {
+        println!();
+        println!("{:<40}{:>10}{:>12}", "inside an import", "offered", "total ms");
+        for sample in samples {
+            let at = app.document().text().len_bytes();
+            app.document_mut().apply(quill_core::Command::PlaceCaret { offset: at, extend: false });
+            app.document_mut().apply(quill_core::Command::Insert((*sample).to_owned()));
+            let caret = app.document().text().len_bytes();
+            let whole = timed(20, || {
+                std::hint::black_box(app.completion_offer(caret));
+            });
+            let offered = app.completion_offer(caret).rows.len();
+            worst = worst.max(whole);
+            let written = sample.trim_start_matches('\n');
+            println!("{written:<40}{offered:>10}{whole:>12.3}");
+            app.document_mut().apply(quill_core::Command::Undo);
+        }
     }
 
     println!();

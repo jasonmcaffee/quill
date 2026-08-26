@@ -38,11 +38,13 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use quill_core::completion::{self, Candidate, Row, Source};
+use quill_core::imports::{self as core_imports, Context as ImportContext};
+use quill_core::symbols::SymbolKind;
 use quill_core::{Command, Grammar, Role};
 
 use crate::app::{Focus, QuillApp};
 use crate::components::completion as view;
-use crate::services::file_kind;
+use crate::services::{file_kind, imports};
 
 /// How many rows are drawn before the list scrolls.
 pub const VISIBLE_ROWS: usize = 8;
@@ -80,6 +82,13 @@ pub struct CompletionState {
     /// tab changes or the keyboard moves to another pane — derived from the state rather than fired
     /// from each of the places a tab can change.
     pub path: PathBuf,
+    /// The import the rows were worked out for, when they were worked out for one. `task-1680`.
+    ///
+    /// It is carried so that accepting knows what `Tab` means — a specifier's whole range comes out
+    /// of the reading, because the grammar cannot say what the whole of `./lay/out` is — and so the
+    /// popup never has to read the text again to find out. `None` for every ordinary completion,
+    /// which is what makes the field invisible to the four sources.
+    pub import: Option<ImportContext>,
 }
 
 impl CompletionState {
@@ -146,6 +155,33 @@ impl CompletionKeys {
     pub fn escape() -> Self {
         Self { escape: true, ..Self::default() }
     }
+}
+
+/// What is on offer at one point in the file.
+///
+/// A structure rather than a tuple, because `task-1680` gave it a fourth part and a four-tuple is
+/// where a caller starts getting the order wrong.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Offer {
+    /// What a row replaces: the stem, or what has been typed of a module specifier.
+    pub range: Range<usize>,
+    /// The text of that range.
+    pub typed: String,
+    /// What is offered, best first.
+    pub rows: Vec<Row>,
+    /// The import these rows belong to, if they belong to one.
+    pub import: Option<ImportContext>,
+}
+
+/// Whether a candidate is worth building at all: everything when nothing has been typed, and the
+/// cheap subsequence reject otherwise.
+///
+/// `task-1678` added `could_match` because turning thousands of names into owned strings to throw
+/// nearly all of them away is the difference between a keystroke that allocates and one that does
+/// not. The empty case is `task-1680`'s: inside an import there is a real answer to a stem with
+/// nothing in it.
+fn offers(typed: &str, name: &str) -> bool {
+    typed.is_empty() || completion::could_match(typed, name)
 }
 
 /// Where the popup hangs, worked out by the pane that has the keyboard while it draws itself.
@@ -271,19 +307,184 @@ impl QuillApp {
         pool
     }
 
-    /// The stem at a point in the tab that is showing, and the rows it offers.
+    /// Everything that could be offered inside an import, which is one pool instead of four.
+    ///
+    /// The four ordinary sources are **not** added to it. A keyword, a local word and an unrelated
+    /// name from the project are all wrong answers to `from '│'`, and a list holding them would be
+    /// a list nobody could use.
+    fn import_candidates(&mut self, context: &ImportContext, typed: &str) -> Vec<Candidate> {
+        let Some(from) = self.files.active().path().map(Path::to_path_buf) else {
+            return Vec::new();
+        };
+        let grammar = self.completion_grammar();
+        match context {
+            ImportContext::Specifier { .. } => self.specifier_candidates(&from, typed, &grammar),
+            ImportContext::Named { module, .. } => {
+                let found = {
+                    let project = self.the_project();
+                    imports::resolve_specifier(&project, &from, module, &grammar)
+                };
+                match found {
+                    Some(module) => self.export_candidates(&module, typed),
+                    None => Vec::new(),
+                }
+            }
+            ImportContext::Segment { segments, .. } => {
+                self.segment_candidates(&from, segments, typed, &grammar)
+            }
+        }
+    }
+
+    /// The project as `services::imports` reads it: where it is, and every file in it.
+    fn the_project(&self) -> imports::Project<'_> {
+        imports::Project { root: self.tree.root(), files: self.tree.all_files() }
+    }
+
+    /// Every specifier that would reach a file of this language from the file being edited.
+    fn specifier_candidates(
+        &self,
+        from: &Path,
+        typed: &str,
+        grammar: &Grammar,
+    ) -> Vec<Candidate> {
+        let project = self.the_project();
+        imports::specifiers(&project, from, grammar)
+            .into_iter()
+            .filter(|(written, _)| offers(typed, written))
+            .map(|(written, path)| {
+                Candidate::described(
+                    written,
+                    Source::Module,
+                    Some(SymbolKind::Module),
+                    file_name(&path),
+                )
+            })
+            .collect()
+    }
+
+    /// What a module path could become: the child modules where it has reached, and the exported
+    /// names of the file it has reached.
+    fn segment_candidates(
+        &mut self,
+        from: &Path,
+        segments: &[String],
+        typed: &str,
+        grammar: &Grammar,
+    ) -> Vec<Candidate> {
+        // The tree is borrowed for the whole of this block and given back before the exports are
+        // asked for, because reading an open tab's symbols needs the window mutably.
+        let (mut pool, reached) = {
+            let project = self.the_project();
+            if segments.is_empty() {
+                let rows = imports::roots(&project, grammar)
+                    .into_iter()
+                    .filter(|(name, _)| offers(typed, name))
+                    .map(|(name, folder)| {
+                        let detail = match folder.is_some() {
+                            true => "package",
+                            false => "module",
+                        };
+                        Candidate::described(name, Source::Module, Some(SymbolKind::Module), detail)
+                    })
+                    .collect();
+                return rows;
+            }
+            let Some(reached) = imports::resolve_segments(&project, from, segments, grammar) else {
+                return Vec::new();
+            };
+            let mut pool: Vec<Candidate> = Vec::new();
+            if let Some(folder) = reached.folder.as_deref() {
+                for (name, path) in imports::children(&project, folder, grammar) {
+                    if !offers(typed, &name) {
+                        continue;
+                    }
+                    let detail = match path.is_dir() || path.extension().is_none() {
+                        true => "module".to_owned(),
+                        false => file_name(&path),
+                    };
+                    pool.push(Candidate::described(
+                        name,
+                        Source::Module,
+                        Some(SymbolKind::Module),
+                        detail,
+                    ));
+                }
+            }
+            (pool, reached.file)
+        };
+        if let Some(module) = reached {
+            pool.extend(self.export_candidates(&module, typed));
+        }
+        pool
+    }
+
+    /// What one module exports, from wherever that module is owned.
+    ///
+    /// The ownership rule of `task-1675` §3.3, unchanged: a module that is **open** is owned by its
+    /// `Document`, so a function added in the tab beside this one is offered before it is saved;
+    /// every other module is owned by the index.
+    fn export_candidates(&mut self, module: &Path, typed: &str) -> Vec<Candidate> {
+        let detail = file_name(module);
+        let open = self.files.iter().position(|file| file.path() == Some(module));
+        if let Some(index) = open {
+            let symbols = self.tab_symbols(index);
+            return symbols
+                .named
+                .iter()
+                .filter(|(name, definition)| definition.exported && offers(typed, name))
+                .map(|(name, definition)| {
+                    Candidate::described(
+                        name.clone(),
+                        Source::OpenTab,
+                        Some(definition.kind),
+                        detail.clone(),
+                    )
+                })
+                .collect();
+        }
+        let Some(indexer) = self.symbols.as_ref() else {
+            return Vec::new();
+        };
+        indexer
+            .index()
+            .exports_of(module)
+            .iter()
+            .filter(|export| offers(typed, &export.name))
+            .map(|export| {
+                Candidate::described(
+                    export.name.clone(),
+                    Source::Index,
+                    Some(export.kind),
+                    detail.clone(),
+                )
+            })
+            .collect()
+    }
+
+    /// What is on offer at a point: what a row replaces, what has been typed of it, the rows
+    /// themselves, and the import they belong to if they belong to one.
     ///
     /// One function, so `quill-cli editor complete` prints exactly the list the popup would show
     /// and the two can never come to disagree about what is on offer.
-    pub fn completion_at(&mut self, offset: usize) -> (Range<usize>, String, Vec<Row>) {
+    pub fn completion_offer(&mut self, offset: usize) -> Offer {
         let text = self.document().text().to_string();
-        let stem = completion::stem_at(&text, offset, &self.completion_grammar());
-        if stem.is_empty() {
-            return (stem, String::new(), Vec::new());
+        let grammar = self.completion_grammar();
+        // The import question is asked first, and when it answers the four sources are not gathered
+        // at all.
+        if let Some(context) = core_imports::context_at(&text, offset, &grammar) {
+            let range = context.typed_range();
+            let typed = text[range.clone()].to_owned();
+            let pool = self.import_candidates(&context, &typed);
+            let rows = completion::rank_all(&typed, pool);
+            return Offer { range, typed, rows, import: Some(context) };
         }
-        let word = text[stem.clone()].to_owned();
-        let rows = self.completion_rows(&word);
-        (stem, word, rows)
+        let range = completion::stem_at(&text, offset, &grammar);
+        if range.is_empty() {
+            return Offer { range, typed: String::new(), rows: Vec::new(), import: None };
+        }
+        let typed = text[range.clone()].to_owned();
+        let rows = self.completion_rows(&typed);
+        Offer { range, typed, rows, import: None }
     }
 
     /// The rows a stem offers here, best first. What the popup shows and what the command line
@@ -298,14 +499,6 @@ impl QuillApp {
         self.grammar_for(self.files.active().path()).cloned().unwrap_or_default()
     }
 
-    /// The stem under the caret in the tab that is showing, and the text it is a range of.
-    fn stem_here(&self) -> (String, Range<usize>) {
-        let text = self.document().text().to_string();
-        let head = self.document().selection().head;
-        let stem = completion::stem_at(&text, head, &self.completion_grammar());
-        (text, stem)
-    }
-
     /// Work the popup for a frame: close it when it has stopped being an answer, and refilter it
     /// when the word being typed has changed.
     ///
@@ -313,17 +506,26 @@ impl QuillApp {
     /// includes the letter that was just typed. `typed` is whether a character reached the document
     /// this frame — the automatic trigger fires on that and on nothing else, which is why a paste,
     /// an undo or a command line edit does not make a list appear over somebody's work.
+    ///
+    /// A refresh that closed the popup asks again in the same frame, which is `task-1680` §8: typing
+    /// `::` ends one segment and starts another, and without this the new list would need one more
+    /// keystroke before it came back. It changes nothing outside an import, because
+    /// [`Self::offer_a_completion`] still refuses a stem shorter than [`AUTOMATIC_STEM`].
     pub fn keep_the_completion_fresh(&mut self, typed: bool) {
         if self.completion.is_some() {
             self.refresh_the_completion();
-            return;
         }
-        if typed {
+        if self.completion.is_none() && typed {
             self.offer_a_completion();
         }
     }
 
     /// Open the popup unasked, if every one of §5.1's conditions holds.
+    ///
+    /// An import changes two of them and nothing else. The two-character threshold does not apply,
+    /// because `from '│'` and `use │` are positions at which the language itself says what comes
+    /// next; and a module specifier **is** a string, so the refusal to open inside one is asked of
+    /// the import reading instead of the tokeniser's.
     fn offer_a_completion(&mut self) {
         if !self.settings.suggestions.is_automatic()
             || !self.completion_applies_here()
@@ -332,18 +534,35 @@ impl QuillApp {
         {
             return;
         }
-        let (text, stem) = self.stem_here();
-        if text[stem.clone()].chars().count() < AUTOMATIC_STEM {
-            return;
+        let head = self.document().selection().head;
+        let text = self.document().text().to_string();
+        let grammar = self.completion_grammar();
+        match core_imports::context_at(&text, head, &grammar) {
+            Some(context) => {
+                if !context.is_specifier() && !self.point_is_code(context.typed_range().start) {
+                    return;
+                }
+            }
+            None => {
+                let stem = completion::stem_at(&text, head, &grammar);
+                if text[stem.clone()].chars().count() < AUTOMATIC_STEM {
+                    return;
+                }
+                // A doc comment's prose does not want a list flickering over it. Asked at the
+                // stem's own first byte rather than at the caret, because a caret sitting exactly
+                // at the end of a comment is past the span and would read as code.
+                if !self.point_is_code(stem.start) {
+                    return;
+                }
+            }
         }
-        // A doc comment's prose does not want a list flickering over it. Asked at the stem's own
-        // first byte rather than at the caret, because a caret sitting exactly at the end of a
-        // comment is past the span and would read as code.
+        self.open_the_completion(head, false);
+    }
+
+    /// Whether a point in the tab that is showing is code rather than a comment or a string.
+    fn point_is_code(&mut self, at: usize) -> bool {
         let index = self.files.active_index();
-        if self.tab_symbols(index).read.role_at(stem.start) != Role::Code {
-            return;
-        }
-        self.open_the_completion(stem, &text, false);
+        self.tab_symbols(index).read.role_at(at) == Role::Code
     }
 
     /// `Complete Word`, `Ctrl+Space`, and `quill-cli editor complete`.
@@ -358,27 +577,33 @@ impl QuillApp {
                 Some("No plugin claims this file, so Quill has no words to offer.".to_owned());
             return;
         }
-        let (text, stem) = self.stem_here();
-        if stem.is_empty() {
+        let head = self.document().selection().head;
+        let text = self.document().text().to_string();
+        let grammar = self.completion_grammar();
+        let inside_an_import = core_imports::context_at(&text, head, &grammar).is_some();
+        let stem = completion::stem_at(&text, head, &grammar);
+        if stem.is_empty() && !inside_an_import {
             self.completion = None;
             self.message = Some("There is nothing to complete here.".to_owned());
             return;
         }
         let word = text[stem.clone()].to_owned();
-        if !self.open_the_completion(stem, &text, true) {
-            self.message = Some(format!("Nothing completes '{word}'."));
+        if !self.open_the_completion(head, true) {
+            self.message = match word.is_empty() {
+                true => Some("There is nothing to import here.".to_owned()),
+                false => Some(format!("Nothing completes '{word}'.")),
+            };
         }
     }
 
     /// Work out the rows and open the popup on them. False when there was nothing to offer, in
     /// which case nothing opens: a list that lingers empty is a list that says nothing.
-    fn open_the_completion(&mut self, stem: Range<usize>, text: &str, manual: bool) -> bool {
+    fn open_the_completion(&mut self, offset: usize, manual: bool) -> bool {
         let Some(path) = self.files.active().path().map(Path::to_path_buf) else {
             return false;
         };
-        let word = text[stem.clone()].to_owned();
-        let rows = self.completion_rows(&word);
-        if rows.is_empty() {
+        let offer = self.completion_offer(offset);
+        if offer.rows.is_empty() {
             self.completion = None;
             return false;
         }
@@ -386,14 +611,15 @@ impl QuillApp {
         // popup opening over a stale sentence reads as an answer to the wrong question.
         self.message = None;
         self.completion = Some(CompletionState {
-            stem,
-            rows,
+            stem: offer.range,
+            rows: offer.rows,
             chosen: 0,
             scroll: 0,
             revision: self.document().text_revision(),
             caret: self.document().selection().head,
             manual,
             path,
+            import: offer.import,
         });
         true
     }
@@ -446,15 +672,12 @@ impl QuillApp {
             self.close_the_completion();
             return;
         }
-        let started_at = state.stem.start;
-        let (text, stem) = self.stem_here();
-        if stem.is_empty() || stem.start != started_at {
-            self.close_the_completion();
-            return;
-        }
-        let word = text[stem.clone()].to_owned();
-        let rows = self.completion_rows(&word);
-        if rows.is_empty() {
+        // Worked out again at the caret as it is now. What decides whether the popup survives is
+        // whether it still has anything to say: `task-1680` replaced the older rule — close when
+        // the stem's first byte moved — with this one, which says the same thing everywhere the
+        // older one did and also lets a specifier grow a `/` and a module path grow a `::`.
+        let offer = self.completion_offer(head);
+        if offer.rows.is_empty() {
             // Typing narrowed it to nothing. It does not linger empty; the next character typed
             // asks again.
             self.close_the_completion();
@@ -463,9 +686,10 @@ impl QuillApp {
         let Some(state) = self.completion.as_mut() else {
             return;
         };
-        state.stem = stem;
-        state.chosen = state.chosen.min(rows.len() - 1);
-        state.rows = rows;
+        state.stem = offer.range;
+        state.chosen = state.chosen.min(offer.rows.len() - 1);
+        state.rows = offer.rows;
+        state.import = offer.import;
         state.revision = revision;
         state.caret = head;
         state.settle_the_scroll();
@@ -564,8 +788,14 @@ impl QuillApp {
         };
         let text = self.document().text().to_string();
         let head = self.document().selection().head;
+        // `Tab` replaces the whole of what is being written, and inside a specifier the grammar
+        // cannot say what the whole of `./lay/out` is — so the reading answers instead.
         let range = match whole_word {
-            true => completion::word_at(&text, head, &self.completion_grammar()),
+            true => state
+                .import
+                .as_ref()
+                .and_then(ImportContext::whole_range)
+                .unwrap_or_else(|| completion::word_at(&text, head, &self.completion_grammar())),
             false => state.stem.clone(),
         };
         // A range that came out empty is a caret with nothing to its left, which cannot happen while
@@ -1225,6 +1455,268 @@ mod tests {
         let keyword = rows.iter().find(|row| row.name == "struct").expect("`struct`: {rows:?}");
         assert_eq!(keyword.source, Source::Language);
         assert_eq!(keyword.detail, "keyword");
+        std::fs::remove_dir_all(&folder).ok();
+    }
+
+
+    // Import completion (`task-1680`). The two families, each against a project shaped like one a
+    // person really writes in.
+
+    /// A TypeScript project: a file to type in, two siblings, a folder with an index, and a note.
+    fn a_web_project(name: &str) -> PathBuf {
+        let folder = std::env::temp_dir().join(name);
+        std::fs::remove_dir_all(&folder).ok();
+        std::fs::create_dir_all(folder.join("src/app/widgets")).expect("make the folders");
+        std::fs::create_dir_all(folder.join("src/core")).expect("make the core folder");
+        std::fs::write(folder.join("src/app/mod.ts"), "").expect("write mod.ts");
+        std::fs::write(
+            folder.join("src/app/layout.ts"),
+            "export class Layout {}\n\nexport function drawFrame() {\n  const hidden = 1;\n  return hidden;\n}\n\nconst secret = 2;\n\nexport const LIMIT = 8;\n",
+        )
+        .expect("write layout.ts");
+        std::fs::write(folder.join("src/app/widgets/index.ts"), "export class Button {}\n")
+            .expect("write index.ts");
+        std::fs::write(folder.join("src/app/widgets/button.tsx"), "export class Pressed {}\n")
+            .expect("write button.tsx");
+        std::fs::write(folder.join("src/core/completion.ts"), "export function rank() {}\n")
+            .expect("write completion.ts");
+        std::fs::write(folder.join("src/notes.md"), "# a note\n").expect("write notes.md");
+        folder
+    }
+
+    /// A window on it, its index built, with `src/app/mod.ts` open and the caret at the end.
+    fn a_web_window(name: &str) -> (PathBuf, QuillApp) {
+        let folder = a_web_project(name);
+        let mut app = QuillApp::new(&folder);
+        build_the_index(&mut app);
+        app.open_path_permanently(&folder.join("src/app/mod.ts"));
+        (folder, app)
+    }
+
+    /// A Rust workspace shaped like Quill's own: two packages, each with a source root.
+    fn a_workspace(name: &str) -> PathBuf {
+        let folder = std::env::temp_dir().join(name);
+        std::fs::remove_dir_all(&folder).ok();
+        std::fs::create_dir_all(folder.join("crates/quill-core/src")).expect("make the core");
+        std::fs::create_dir_all(folder.join("crates/quill-app/src/app")).expect("make the app");
+        std::fs::write(folder.join("crates/quill-core/src/lib.rs"), "pub mod completion;\n")
+            .expect("write core lib.rs");
+        std::fs::write(
+            folder.join("crates/quill-core/src/completion.rs"),
+            "pub struct Candidate;\n\npub fn rank() {}\n\nfn hidden() {}\n",
+        )
+        .expect("write completion.rs");
+        std::fs::write(folder.join("crates/quill-app/src/lib.rs"), "pub mod app;\n")
+            .expect("write app lib.rs");
+        std::fs::write(folder.join("crates/quill-app/src/app/mod.rs"), "")
+            .expect("write app/mod.rs");
+        std::fs::write(
+            folder.join("crates/quill-app/src/app/actions.rs"),
+            "pub enum Action {}\n\npub fn menus() {}\n",
+        )
+        .expect("write actions.rs");
+        folder
+    }
+
+    /// A window on it, with `crates/quill-app/src/app/mod.rs` open.
+    fn a_rust_window(name: &str) -> (PathBuf, QuillApp) {
+        let folder = a_workspace(name);
+        let mut app = QuillApp::new(&folder);
+        build_the_index(&mut app);
+        app.open_path_permanently(&folder.join("crates/quill-app/src/app/mod.rs"));
+        (folder, app)
+    }
+
+    /// Put a line in the open file and ask for the list at the `|`, which is taken out first.
+    fn ask_at(app: &mut QuillApp, line: &str) {
+        let caret = line.find('|').expect("the sample marks the caret with |");
+        let whole = 0..app.document().text().len_bytes();
+        app.document_mut().apply(Command::ReplaceMany(vec![(whole, line.replace('|', ""))]));
+        app.document_mut().apply(Command::PlaceCaret { offset: caret, extend: false });
+        app.close_the_completion();
+        app.complete_word();
+    }
+
+    #[test]
+    fn a_specifier_offers_the_projects_own_files_and_nothing_else() {
+        // Scenarios 41, 42, 43 and 51.
+        let (folder, mut app) = a_web_window("quill-import-specifier");
+        typing(&mut app, "import { Layout } from '");
+        let rows = offered(&app);
+        assert!(rows.contains(&"./layout".to_owned()), "{rows:?}");
+        assert!(rows.contains(&"./widgets".to_owned()), "a folder's index is the folder: {rows:?}");
+        assert!(rows.contains(&"./widgets/button".to_owned()), "{rows:?}");
+        assert!(rows.contains(&"../core/completion".to_owned()), "{rows:?}");
+        assert!(!rows.iter().any(|row| row.ends_with(".ts")), "the extension is dropped: {rows:?}");
+        assert!(!rows.iter().any(|row| row.contains("notes")), "a note is not TypeScript");
+        // Scenario 51: none of the four ordinary sources reaches an import.
+        assert!(!rows.contains(&"import".to_owned()), "no keyword: {rows:?}");
+        assert!(!rows.contains(&"Layout".to_owned()), "no name from the project: {rows:?}");
+        for row in app.completion().expect("open").rows.iter() {
+            assert_eq!(row.source, Source::Module, "{}", row.name);
+        }
+        // And typing narrows it, exactly as it narrows a word.
+        typing(&mut app, "./wid");
+        assert_eq!(offered(&app), vec!["./widgets".to_owned(), "./widgets/button".to_owned()]);
+        std::fs::remove_dir_all(&folder).ok();
+    }
+
+    #[test]
+    fn a_named_import_offers_what_the_module_exports_and_not_what_it_hides() {
+        // Scenarios 44 and 46: a `const` inside a function body is a definition and is not
+        // something another file can name.
+        let (folder, mut app) = a_web_window("quill-import-named");
+        ask_at(&mut app, "import { | } from './layout'");
+        let rows = offered(&app);
+        assert!(rows.contains(&"Layout".to_owned()), "{rows:?}");
+        assert!(rows.contains(&"drawFrame".to_owned()), "{rows:?}");
+        assert!(rows.contains(&"LIMIT".to_owned()), "{rows:?}");
+        assert!(!rows.contains(&"hidden".to_owned()), "a local is not an export: {rows:?}");
+        assert!(!rows.contains(&"secret".to_owned()), "nor is an unexported const: {rows:?}");
+        let row = &app.completion().expect("open").rows[0];
+        assert_eq!(row.source, Source::Index, "a closed module is owned by the index");
+        assert_eq!(row.detail, "layout.ts");
+        std::fs::remove_dir_all(&folder).ok();
+    }
+
+    #[test]
+    fn a_module_that_is_open_answers_from_its_live_text() {
+        // Scenario 45, which is `task-1675` §3.3's ownership rule reaching one more feature: a
+        // function added in the tab beside this one is offered before it is saved.
+        let (folder, mut app) = a_web_window("quill-import-live");
+        app.open_path_permanently(&folder.join("src/app/layout.ts"));
+        let end = app.document().text().len_bytes();
+        app.document_mut().apply(Command::PlaceCaret { offset: end, extend: false });
+        app.document_mut().apply(Command::Insert("\nexport function justAdded() {}\n".to_owned()));
+        app.open_path_permanently(&folder.join("src/app/mod.ts"));
+        ask_at(&mut app, "import { just| } from './layout'");
+        assert_eq!(offered(&app), vec!["justAdded".to_owned()]);
+        assert_eq!(app.completion().expect("open").rows[0].source, Source::OpenTab);
+        std::fs::remove_dir_all(&folder).ok();
+    }
+
+    #[test]
+    fn a_module_that_resolves_to_nothing_offers_nothing() {
+        // Scenarios 15 and 40 at this layer: guessing would be worse than saying nothing.
+        let (folder, mut app) = a_web_window("quill-import-unresolved");
+        ask_at(&mut app, "import { | } from './nowhere'");
+        assert!(app.completion().is_none(), "{:?}", offered(&app));
+        std::fs::remove_dir_all(&folder).ok();
+    }
+
+    #[test]
+    fn tab_replaces_the_whole_specifier_and_enter_replaces_what_was_typed() {
+        // Scenario 48. `completion::word_at` cannot answer this: a specifier is not made of word
+        // characters, so the reading has to carry the range.
+        let (folder, mut app) = a_web_window("quill-import-accept");
+        ask_at(&mut app, "import { Layout } from './la|zy'");
+        assert!(app.choose_the_completion("./layout"), "{:?}", offered(&app));
+        app.accept_the_completion(false);
+        assert_eq!(text_of(&app), "import { Layout } from './layoutzy'", "Enter takes the stem");
+
+        ask_at(&mut app, "import { Layout } from './la|zy'");
+        assert!(app.choose_the_completion("./layout"));
+        app.accept_the_completion(true);
+        assert_eq!(text_of(&app), "import { Layout } from './layout'", "Tab takes the whole of it");
+
+        // And with nothing typed at all, which is the one place a completion replaces no bytes.
+        ask_at(&mut app, "import { Layout } from '|'");
+        assert!(app.choose_the_completion("./layout"), "{:?}", offered(&app));
+        app.accept_the_completion(false);
+        assert_eq!(text_of(&app), "import { Layout } from './layout'");
+        std::fs::remove_dir_all(&folder).ok();
+    }
+
+    #[test]
+    fn accepting_an_import_row_is_one_undo_step() {
+        // Scenario 49, which is `Command::ReplaceMany` doing what it already does.
+        let (folder, mut app) = a_web_window("quill-import-undo");
+        ask_at(&mut app, "import { Layout } from './la|zy'");
+        assert!(app.choose_the_completion("./layout"));
+        app.accept_the_completion(true);
+        app.document_mut().apply(Command::Undo);
+        assert_eq!(text_of(&app), "import { Layout } from './lazy'", "one press puts it back");
+        std::fs::remove_dir_all(&folder).ok();
+    }
+
+    #[test]
+    fn a_module_path_offers_the_packages_then_walks_into_one() {
+        // Scenarios 20, 36 and 47, in the order a person types them.
+        let (folder, mut app) = a_rust_window("quill-import-path");
+        ask_at(&mut app, "use |");
+        let rows = offered(&app);
+        assert!(rows.contains(&"crate".to_owned()), "{rows:?}");
+        assert!(rows.contains(&"super".to_owned()), "{rows:?}");
+        assert!(rows.contains(&"quill_core".to_owned()), "a folder named with a hyphen: {rows:?}");
+        assert!(!rows.contains(&"quill-core".to_owned()), "{rows:?}");
+
+        ask_at(&mut app, "use quill_core::|");
+        assert_eq!(
+            offered(&app),
+            vec!["completion".to_owned()],
+            "lib.rs is the package itself rather than a module in it"
+        );
+
+        ask_at(&mut app, "use quill_core::completion::|");
+        let rows = offered(&app);
+        assert!(rows.contains(&"Candidate".to_owned()), "{rows:?}");
+        assert!(rows.contains(&"rank".to_owned()), "{rows:?}");
+        assert!(!rows.contains(&"hidden".to_owned()), "only what `pub` marks: {rows:?}");
+        std::fs::remove_dir_all(&folder).ok();
+    }
+
+    #[test]
+    fn crate_and_super_are_read_from_where_the_file_is() {
+        // Scenarios 35 and 37 through the window, which is what proves the grammar's own words
+        // reached the resolver.
+        let (folder, mut app) = a_rust_window("quill-import-roots");
+        ask_at(&mut app, "use crate::|");
+        assert_eq!(offered(&app), vec!["app".to_owned()]);
+        ask_at(&mut app, "use crate::app::|");
+        assert_eq!(offered(&app), vec!["actions".to_owned()]);
+        ask_at(&mut app, "use super::|");
+        assert_eq!(offered(&app), vec!["app".to_owned()], "mod.rs is its folder, so super is above");
+        std::fs::remove_dir_all(&folder).ok();
+    }
+
+    #[test]
+    fn typing_the_separator_opens_the_next_segments_list_in_the_same_frame() {
+        // Scenario 50: without the one line in `keep_the_completion_fresh` the new list would need
+        // one more keystroke before it came back.
+        let (folder, mut app) = a_rust_window("quill-import-separator");
+        typing(&mut app, "use quill_core:");
+        typing(&mut app, ":");
+        assert_eq!(offered(&app), vec!["completion".to_owned()], "the list is already there");
+        std::fs::remove_dir_all(&folder).ok();
+    }
+
+    #[test]
+    fn an_ordinary_path_in_code_is_offered_the_ordinary_sources() {
+        // Scenario 25 through the window: the anchor is what makes the whole reading trustworthy.
+        let (folder, mut app) = a_rust_window("quill-import-not-an-import");
+        ask_at(&mut app, "let x = quill_core::comp|");
+        let modules = app
+            .completion()
+            .map(|state| state.rows.iter().filter(|row| row.source == Source::Module).count())
+            .unwrap_or(0);
+        assert_eq!(modules, 0, "{:?}", offered(&app));
+        std::fs::remove_dir_all(&folder).ok();
+    }
+
+    #[test]
+    fn a_stylesheet_offers_the_projects_stylesheets_with_their_extensions() {
+        // CSS asks for the quoted family with no export keyword and no definers, so what it offers
+        // is files and only files.
+        let folder = std::env::temp_dir().join("quill-import-css");
+        std::fs::remove_dir_all(&folder).ok();
+        std::fs::create_dir_all(&folder).expect("make the folder");
+        std::fs::write(folder.join("site.css"), "").expect("write site.css");
+        std::fs::write(folder.join("theme.css"), ".card { color: red; }\n").expect("write theme");
+        let mut app = QuillApp::new(&folder);
+        build_the_index(&mut app);
+        app.open_path_permanently(&folder.join("site.css"));
+        typing(&mut app, "@import '");
+        assert_eq!(offered(&app), vec!["./theme.css".to_owned()], "written out, and never itself");
         std::fs::remove_dir_all(&folder).ok();
     }
 

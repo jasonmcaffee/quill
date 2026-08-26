@@ -81,6 +81,9 @@ pub enum Source {
     Index,
     /// One of the language's own words: a keyword, a builtin or a type from the manifest.
     Language,
+    /// A file or a module, offered inside an import. `task-1680`'s one new source: the rows a
+    /// specifier or a module path could become, which are not names inside a file but files.
+    Module,
 }
 
 impl Source {
@@ -90,13 +93,17 @@ impl Source {
     /// The nearest answer first: what this file defines, then what this file says, then the other
     /// tabs, then the disk, then the language itself — which is last because a keyword is the one
     /// candidate a person can always type out from memory.
+    /// A module comes first, which only ever decides a tie and only inside an import, where a
+    /// module and an item of the same name can both be offered. The module wins it, because
+    /// `use a::b` with `b` both a module and a function far more often means the module.
     pub fn order(self) -> u8 {
         match self {
-            Source::ThisFile => 0,
-            Source::Word => 1,
-            Source::OpenTab => 2,
-            Source::Index => 3,
-            Source::Language => 4,
+            Source::Module => 0,
+            Source::ThisFile => 1,
+            Source::Word => 2,
+            Source::OpenTab => 3,
+            Source::Index => 4,
+            Source::Language => 5,
         }
     }
 
@@ -108,11 +115,12 @@ impl Source {
     /// the answer knows.
     fn describes_itself(self) -> u8 {
         match self {
-            Source::ThisFile => 0,
-            Source::OpenTab => 1,
-            Source::Index => 2,
-            Source::Language => 3,
-            Source::Word => 4,
+            Source::Module => 0,
+            Source::ThisFile => 1,
+            Source::OpenTab => 2,
+            Source::Index => 3,
+            Source::Language => 4,
+            Source::Word => 5,
         }
     }
 
@@ -124,6 +132,7 @@ impl Source {
             Source::OpenTab => "open tab",
             Source::Index => "project",
             Source::Language => "language",
+            Source::Module => "module",
         }
     }
 }
@@ -259,6 +268,24 @@ pub fn rank(stem: &str, candidates: Vec<Candidate>) -> Vec<Row> {
     if stem.is_empty() {
         return Vec::new();
     }
+    rank_all(stem, candidates)
+}
+
+/// The same, except that an **empty** stem offers everything rather than nothing.
+///
+/// `task-1680`. [`rank`]'s guard is right for a word being typed — with nothing typed there is
+/// nothing being completed, and a list that opened on every space would be unusable — and wrong
+/// for an import, where `from '│'` and `use │` are positions at which the language itself says
+/// what comes next, so a list is an answer rather than an interruption. IntelliJ opens its own
+/// popup at zero characters after a `.` and after `import` for the same reason.
+///
+/// With nothing typed nothing can be scored, so the rows come back in the tie-break's own order:
+/// by source, then by the shorter name, then by the name's bytes. Which is still total, so the
+/// determinism the popup's pictures rest on holds here too.
+pub fn rank_all(stem: &str, candidates: Vec<Candidate>) -> Vec<Row> {
+    if stem.is_empty() {
+        return everything(candidates);
+    }
     let needle: Vec<char> = stem.chars().collect();
     let lowered: Vec<char> = needle.iter().flat_map(|c| c.to_lowercase()).collect();
     // The stem's own letters, folded once. A stem whose case folding changes its length — the
@@ -321,6 +348,48 @@ pub fn rank(stem: &str, candidates: Vec<Candidate>) -> Vec<Row> {
     });
     let mut taken: Vec<Option<Row>> = rows.into_iter().map(Some).collect();
     order.into_iter().filter_map(|(_, _, _, at)| taken[at].take()).collect()
+}
+
+/// Every candidate as a row, deduplicated and in the tie-break's order. What an empty stem offers.
+///
+/// No scoring, because there is nothing to score against: every row's score is zero and no letter
+/// of any name is marked. The deduplication is the same rule [`rank`] uses — two entries that would
+/// type the same bytes are one offer, and the source that describes itself best keeps the label.
+fn everything(candidates: Vec<Candidate>) -> Vec<Row> {
+    let mut seen: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::with_capacity(candidates.len());
+    let mut rows: Vec<Row> = Vec::with_capacity(candidates.len());
+    for candidate in candidates {
+        if candidate.name.is_empty() {
+            continue;
+        }
+        if let Some(at) = seen.get(&candidate.name) {
+            let known: &mut Row = &mut rows[*at];
+            if candidate.source.describes_itself() < known.source.describes_itself() {
+                known.source = candidate.source;
+                known.kind = candidate.kind;
+                known.detail = candidate.detail;
+            }
+            continue;
+        }
+        seen.insert(candidate.name.clone(), rows.len());
+        rows.push(Row {
+            name: candidate.name,
+            source: candidate.source,
+            kind: candidate.kind,
+            detail: candidate.detail,
+            matched: Vec::new(),
+            score: 0,
+        });
+    }
+    rows.sort_by(|left, right| {
+        left.source
+            .order()
+            .cmp(&right.source.order())
+            .then(left.name.chars().count().cmp(&right.name.chars().count()))
+            .then(left.name.as_bytes().cmp(right.name.as_bytes()))
+    });
+    rows
 }
 
 /// Working space reused across a whole pool, so scoring a project's worth of names allocates once.
@@ -519,6 +588,42 @@ mod tests {
             numbers: true,
             ..Grammar::default()
         }
+    }
+
+    #[test]
+    fn an_empty_stem_offers_nothing_to_rank_and_everything_to_rank_all() {
+        // `task-1680` §5.2. The guard is right for a word being typed and wrong inside an import,
+        // where `from '|'` is a position at which the language itself says what comes next.
+        let pool = || {
+            vec![
+                Candidate::described("./layout", Source::Module, Some(SymbolKind::Module), "src"),
+                Candidate::described("./caret", Source::Module, Some(SymbolKind::Module), "src"),
+                Candidate::new("draw", Source::Word),
+            ]
+        };
+        assert!(rank("", pool()).is_empty(), "nothing is being completed");
+        let all: Vec<String> = rank_all("", pool()).into_iter().map(|row| row.name).collect();
+        assert_eq!(
+            all,
+            vec!["./caret".to_owned(), "./layout".to_owned(), "draw".to_owned()],
+            "by source, then by the shorter name: a module comes before a word"
+        );
+    }
+
+    #[test]
+    fn a_module_wins_a_tie_with_a_name_spelt_the_same() {
+        // The one place `Source::Module`'s order is read: `use a::b` with `b` both a module and a
+        // function far more often means the module.
+        let rows = rank(
+            "part",
+            vec![
+                Candidate::described("parts", Source::Index, Some(SymbolKind::Function), "a.rs"),
+                Candidate::described("parts", Source::Module, Some(SymbolKind::Module), "a/"),
+            ],
+        );
+        assert_eq!(rows.len(), 1, "two entries that would type the same bytes are one offer");
+        assert_eq!(rows[0].source, Source::Module);
+        assert_eq!(rows[0].detail, "a/");
     }
 
     /// CSS, where a hyphen is a letter.

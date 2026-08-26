@@ -7,6 +7,7 @@ pub mod file_marks;
 pub mod file_search;
 pub mod file_tree;
 pub mod icons;
+pub mod imports;
 pub mod launcher;
 pub mod mcp;
 pub mod mermaid_scene;

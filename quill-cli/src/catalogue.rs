@@ -662,7 +662,7 @@ pub const COMMANDS: &[Command] = &[
     Command {
         area: "editor",
         verb: "complete",
-        summary: "The names the word being typed at the caret could become, best first: the same list the popup shows, with what each row is and where it came from. --choose applies one of them to the stem exactly as Enter would.",
+        summary: "The names the word being typed at the caret could become, best first: the same list the popup shows, with what each row is and where it came from. Inside an import it is what can be imported instead — the project's files in a module specifier, and what a module exports between the braces — and there it answers with nothing typed. --choose applies one of them exactly as Enter would.",
         arguments: NO_ARGUMENTS,
         flags: &[
             option("offset", "bytes", "Ask about this position in the file rather than about the caret."),
@@ -675,6 +675,7 @@ pub const COMMANDS: &[Command] = &[
             "quill-cli editor complete --json",
             "quill-cli editor complete --limit 5 --json",
             "quill-cli editor complete --choose draw_frame",
+            "quill-cli editor complete --choose ./layout",
         ],
         local: false,
     },

@@ -291,12 +291,83 @@ this repository**, and `cargo run --release -p quill-app --example completion_co
 measured again. It was over that when first written (6.6 ms), and the fix was removing waste rather
 than capping the pool: the dedup was a linear search over the rows already kept, the alignment table
 and the candidate's characters were three allocations *per candidate*, and the sort comparator counted
-every name's characters at every comparison. 4.59 ms now, worst case.
+every name's characters at every comparison. 4.59 ms when that was written; **5.06 ms today, and the
+number to read is 4.42** — the file it is measured against is `tests/screenshots.rs`, which has grown
+to 271 KB, and the 5.06 is a *one* character stem, which only `Ctrl+Space` can ask for because the
+popup does not open under two. Nothing in `task-1680` moved it: the export marker it added to
+`FileSymbols::read` measures 0.000 ms, and the example prints that line so it stays measured rather
+than assumed.
 
 `editor.suggestions` is `automatic` or `manual`, with a tick box in `Settings -> Editor`. `manual` is
 already the off switch — `Ctrl+Space` and the menu entry work either way — which is why there is no
 third value. `quill-cli editor complete` prints the rows and `--choose` applies one, both through the
 same functions the popup uses.
+
+## Inside an import, the list is the files, and what they export
+
+Start writing `import { } from '` and the list under the caret is the project's own files; put the
+caret between the braces and it is what that file exports. `use quill_core::comp` offers the same
+thing walked down a module tree instead. `task-1680` is the design, and it is one new question asked
+before `task-1678`'s four sources are gathered: *is the caret in the middle of an import?* When the
+answer is yes the four sources are **not** gathered at all, because a keyword, a local word and an
+unrelated name from the project are all wrong answers to `from '│'`.
+
+**Two families, because there are two shapes and no third.** A `quoted` module is a string resolved
+against the file system — TypeScript, JavaScript, CSS — and a `path` module is segments resolved
+against a module tree, which is Rust's `use`. `quill_core::imports::context_at` reads which, working
+**backwards from the caret** for the reason `symbols::identifier_at` does: a few hundred bytes of
+scanning a keystroke rather than a reading of the file, and a half-typed line above cannot poison the
+answer. The path family's walk **is** its parse, and the keyword it ends at is the whole of what
+makes it trustworthy — `use` in front and it is an import, anything else and `a::b::c` is ordinary
+code.
+
+**The tier is syntactic and says so.** No language server: `task-1675` §2 already weighed and
+rejected one, and every reason holds here. The precedent for this tier is Vim's `Ctrl+X Ctrl+F`,
+which completes a file name off the disk with no language knowledge at all, and VS Code's built-in
+path completion for HTML and CSS. What is offered is what is really there — the files come from
+`FileTree::all_files`, the same list `Go to File` searches, so a specifier Quill offers is one that
+really resolves and nothing outside the project can be reached.
+
+**Nine manifest keys, every one off unless a language asks**, which is the rule `language.definers`
+set: `imports`, `import_keywords`, `import_extensions`, `import_index`, `import_omit_extension`,
+`export_keyword`, `path_separator`, `source_roots` and `path_roots`. The alternative was a list of
+languages inside Quill, which is the exact thing those keys exist to prevent and which would mean a
+plugin somebody writes for Python could never have the feature.
+`the_older_plugins_ask_for_none_of_what_the_imports_added` pins that Mermaid is unchanged by any of
+it, and a manifest naming a shape or a root this version does not have is refused with a message,
+exactly as `plugin.kind` and `language.renders` are.
+
+**The inserted specifier is always relative.** VS Code makes its shape a setting with four values
+because there is no single right spelling of one; a relative specifier is the one that is *always*
+right, needing no `tsconfig.json`, no `baseUrl`, no alias table and no `exports` map.
+
+**`language.export_keyword` is what makes a definition importable** — `export`, `pub` — and it is
+`quill_core::symbols`' answer, not a second reading: the marker reaches its declaration along one
+line, over `default` and over `pub(crate)`, and `export { a, b }` marks what it names wherever that
+was declared. A language naming none hides nothing. The ownership rule of `task-1675` §3.3 decides
+where a module's exports come from, unchanged: a module that is **open** is owned by its `Document`,
+so a function added in the tab beside this one is offered before it is saved, and every other module
+is owned by `services::symbol_index`, which gained one small table of each file's exported names so a
+closed module answers without being read again on every keystroke.
+
+**Nothing new is indexed and no thread is added**, which is the same sentence `task-1678` opens with.
+The one unbounded moment is a specifier with nothing typed, which turns every importable file into a
+row: it happens once per import statement, and the next character makes `completion::could_match`
+throw nearly all of them away before a candidate is built. Measured, it is 0.87 ms at worst.
+
+Two smaller things it changed, both of which had to change. `completion::rank_all` sits beside
+`rank`: an empty stem offers **everything** rather than nothing, because `from '│'` and `use │` are
+positions at which the language itself says what comes next, which is why IntelliJ opens its own
+popup at zero characters after `import`. And `Command::ReplaceMany` now treats an **empty range
+carrying text** as an insertion — accepting `./layout` inside `from '│'` replaces no bytes and
+inserts all of them, and it has to be the same one-undo-step command every other completion is. An
+empty range carrying nothing is still dropped, because it would be an undo step for an edit that
+changes no byte.
+
+Deliberately not here, each with its reason in §12 of the TDD: **auto-import** (a different feature
+with a different risk, since it edits a part of the file the caret is not in), **bare package
+specifiers** (`node_modules` is out of the walk and `task-1659` measured what putting it back would
+cost), **`tsconfig` path aliases**, and **following re-exports**.
 
 ## A frame costs what is on the screen, not what is in the file
 
@@ -1086,6 +1157,11 @@ trade that away to be a shade nearer a screenshot.
   keys and why `Tab` and `Enter` differ, and the thirty-five scenario battery. `task-1678` is the
   implementation of it; `cargo run --release -p quill-app --example completion_cost` is how its one
   budget is measured again.
+- `tasks/task-1680-import-completion-tdd.md` — completing an import: the two shapes a module is
+  written in and the one enum that reads both, why the tier is the project's file list and a
+  syntactic reading rather than a language server, the nine manifest keys and what a list of
+  languages inside Quill would have cost instead, what auto-import would take, and the fifty-one
+  scenario battery.
 - `tasks/task-1675-code-editing-tdd.md` — go to definition, find all references and rename: the
   three mechanisms that were weighed (a language server client, tree-sitter and stack graphs, a
   syntactic index) and why the index was chosen, the two grammar keys a language adds, the

@@ -12,6 +12,7 @@ pub mod completion;
 pub mod cursor;
 pub mod document;
 pub mod highlights;
+pub mod imports;
 pub mod layout;
 pub mod markdown;
 pub mod mermaid;
@@ -26,6 +27,7 @@ pub use completion::{Candidate, Row as CompletionRow, Source as CompletionSource
 pub use cursor::Selection;
 pub use document::{Command, Document};
 pub use highlights::{Highlight, Highlights, Rgba};
+pub use imports::Context as ImportContext;
 pub use layout::{
     layout, relayout, Anchor, Caret, ClusterText, Layout, PlacedCluster, PlacedLine, PlacedRun,
     Rect,
@@ -36,4 +38,4 @@ pub use rope::Rope;
 pub use scroll_sync::{preview_y_for_source_y, source_y_for_preview_y};
 pub use style::{Align, CharStyle, Color, ParagraphStyle, ParagraphStyles, StyleChange, StyleSpans};
 pub use symbols::{Confidence, Definition, Occurrence, Role, SymbolKind};
-pub use syntax::{highlight, Grammar, Token};
+pub use syntax::{highlight, Grammar, ImportStyle, PathRoot, Token};

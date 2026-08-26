@@ -1910,8 +1910,9 @@ impl QuillApp {
 
     /// `quill-cli editor complete` — the names the word being typed could become.
     ///
-    /// It goes through the same two functions the popup does: `completion_at` works out the stem and
-    /// the rows, and `--choose` opens the state exactly as `Ctrl+Space` would and then accepts it
+    /// It goes through the same two functions the popup does: `completion_offer` works out what a
+    /// row replaces and what the rows are, and `--choose` opens the state exactly as `Ctrl+Space`
+    /// would and then accepts it
     /// exactly as `Enter` would. So a thing done from the command line and the same thing done by
     /// hand really are the same thing, and the list a script reads is the list a person is looking
     /// at rather than a second answer worked out beside it.
@@ -1933,8 +1934,11 @@ impl QuillApp {
         if let Some(name) = request.text("choose") {
             return self.cli_editor_complete_choose(request, offset, name.trim());
         }
-        let (stem, word, rows) = self.completion_at(offset);
-        if word.is_empty() {
+        let offer = self.completion_offer(offset);
+        let (stem, word, rows) = (offer.range, offer.typed, offer.rows);
+        // An empty stem with rows behind it is `task-1680`'s one new shape: inside a module
+        // specifier there is a real answer to a question with nothing typed in it.
+        if word.is_empty() && rows.is_empty() {
             return no(request, code::NOT_APPLICABLE, "There is nothing to complete here.");
         }
         let limit = request.whole("limit").unwrap_or(rows.len());

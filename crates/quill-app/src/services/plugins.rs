@@ -50,7 +50,7 @@
 use std::path::{Path, PathBuf};
 
 use quill_core::symbols::SymbolKind;
-use quill_core::syntax::{Grammar, Token};
+use quill_core::syntax::{Grammar, ImportStyle, PathRoot, Token};
 use quill_core::Color;
 
 use crate::services::store::{Store, Values};
@@ -400,6 +400,24 @@ pub fn parse(values: &Values, bundled: bool) -> Result<Plugin, String> {
         // `the_older_plugins_ask_for_none_of_what_the_symbols_added` keeps.
         definers: definers(values)?,
         brace_definitions: values.flag("language.brace_definitions").unwrap_or(false),
+        // The nine `task-1680` added, and the same rule again: a plugin that names none of them
+        // behaves exactly as it did before, which
+        // `the_older_plugins_ask_for_none_of_what_the_imports_added` keeps.
+        export_keyword: word(values, "language.export_keyword"),
+        imports: import_style(values)?,
+        import_keywords: list(values, "language.import_keywords"),
+        import_extensions: list(values, "language.import_extensions")
+            .into_iter()
+            .map(|extension| match extension.starts_with('.') {
+                true => extension,
+                false => format!(".{extension}"),
+            })
+            .collect(),
+        import_index: list(values, "language.import_index"),
+        import_omit_extension: values.flag("language.import_omit_extension").unwrap_or(false),
+        path_separator: word(values, "language.path_separator"),
+        source_roots: list(values, "language.source_roots"),
+        path_roots: path_roots(values)?,
     };
     let colours: Vec<(Token, Color)> = Token::ALL
         .into_iter()
@@ -457,6 +475,56 @@ fn definers(values: &Values) -> Result<Vec<(String, SymbolKind)>, String> {
         found.push((keyword.to_owned(), parsed));
     }
     Ok(found)
+}
+
+/// `language.imports`: which of the two shapes of import this language writes.
+///
+/// Checked against what this version can actually read, for the same reason `plugin.kind`,
+/// `language.renders` and `language.definers` are: a manifest asking for a third shape should say
+/// so plainly rather than load as a language whose imports quietly never complete.
+fn import_style(values: &Values) -> Result<Option<ImportStyle>, String> {
+    let Some(named) = word(values, "language.imports") else {
+        return Ok(None);
+    };
+    match ImportStyle::parse(&named) {
+        Some(style) => Ok(Some(style)),
+        None => {
+            let known: Vec<&str> = ImportStyle::ALL.iter().map(|style| style.name()).collect();
+            Err(format!(
+                "language.imports is `{named}`, and an import in Quill is written {}",
+                known.join(" or ")
+            ))
+        }
+    }
+}
+
+/// `language.path_roots`: a comma list of `word=meaning` naming the segments of a module path that
+/// are not module names — `crate=package, self=module, super=parent`.
+fn path_roots(values: &Values) -> Result<Vec<(String, PathRoot)>, String> {
+    let mut found = Vec::new();
+    for entry in list(values, "language.path_roots") {
+        let Some((word, meaning)) = entry.split_once('=') else {
+            return Err(format!("language.path_roots holds `{entry}`, which is not `word=meaning`"));
+        };
+        let Some(parsed) = PathRoot::parse(meaning) else {
+            let known: Vec<&str> = PathRoot::ALL.iter().map(|root| root.name()).collect();
+            return Err(format!(
+                "language.path_roots says `{entry}`, and a root in Quill is one of {}",
+                known.join(", ")
+            ));
+        };
+        let word = word.trim();
+        if word.is_empty() {
+            return Err(format!("language.path_roots holds `{entry}`, which names no word"));
+        }
+        found.push((word.to_owned(), parsed));
+    }
+    Ok(found)
+}
+
+/// One trimmed word, or nothing when the manifest left the key out or left it empty.
+fn word(values: &Values, name: &str) -> Option<String> {
+    values.text(name).map(str::trim).filter(|value| !value.is_empty()).map(str::to_owned)
 }
 
 /// A comma separated value as a list, with the spaces trimmed and the empty entries dropped.
@@ -676,6 +744,71 @@ mod tests {
             assert!(!plugin.grammar.brace_definitions, "{id} asks for no brace rule");
             assert!(!plugin.grammar.defines_symbols(), "so the entries are absent for {id}");
         }
+    }
+
+    #[test]
+    fn the_four_code_plugins_say_how_their_imports_are_written() {
+        // `task-1680`. The two families and what each one needs, read through the manifest reader
+        // the window uses, so a key that never reached the grammar would fail here.
+        let (plugins, problems) = Plugins::load(None);
+        assert!(problems.is_empty(), "{problems:?}");
+        for id in ["typescript", "javascript"] {
+            let grammar = &plugins.get(id).expect(id).grammar;
+            assert_eq!(grammar.imports, Some(ImportStyle::Quoted), "{id}");
+            assert!(grammar.import_keywords.contains(&"import".to_owned()), "{id}");
+            assert!(grammar.import_omit_extension, "{id} writes ./layout, not ./layout.ts");
+            assert_eq!(grammar.import_index, vec!["index".to_owned()], "{id}");
+            assert_eq!(grammar.export_keyword.as_deref(), Some("export"), "{id}");
+            assert!(grammar.completes_imports(), "{id}");
+        }
+        let css = &plugins.get("css").expect("css").grammar;
+        assert_eq!(css.imports, Some(ImportStyle::Quoted));
+        assert_eq!(css.import_keywords, vec!["@import".to_owned()]);
+        assert!(!css.import_omit_extension, "a stylesheet names the file it imports");
+        assert_eq!(css.export_keyword, None, "CSS declares nothing, so it hides nothing");
+
+        let rust = &plugins.get("rust").expect("rust").grammar;
+        assert_eq!(rust.imports, Some(ImportStyle::Path));
+        assert_eq!(rust.path_separator.as_deref(), Some("::"));
+        assert_eq!(rust.source_roots, vec!["src".to_owned()]);
+        assert_eq!(rust.export_keyword.as_deref(), Some("pub"));
+        assert_eq!(rust.path_root("crate"), Some(PathRoot::Package));
+        assert_eq!(rust.path_root("self"), Some(PathRoot::Module));
+        assert_eq!(rust.path_root("super"), Some(PathRoot::Parent));
+        assert_eq!(rust.path_root("quill_core"), None, "a package is not a reserved word");
+        assert_eq!(rust.import_index, vec!["mod".to_owned(), "lib".to_owned(), "main".to_owned()]);
+    }
+
+    #[test]
+    fn the_older_plugins_ask_for_none_of_what_the_imports_added() {
+        // The same rule once more, and Mermaid is what keeps it honest: a diagram imports nothing,
+        // so nothing about it changed.
+        let (plugins, _) = Plugins::load(None);
+        let mermaid = &plugins.get("mermaid").expect("mermaid").grammar;
+        assert_eq!(mermaid.imports, None);
+        assert!(mermaid.import_keywords.is_empty());
+        assert!(mermaid.import_extensions.is_empty());
+        assert_eq!(mermaid.export_keyword, None);
+        assert_eq!(mermaid.path_separator, None);
+        assert!(mermaid.path_roots.is_empty());
+        assert!(!mermaid.completes_imports(), "so no import is ever read out of a diagram");
+    }
+
+    #[test]
+    fn a_manifest_asking_for_an_import_shape_or_a_root_quill_does_not_have_is_refused() {
+        // The rule `plugin.kind`, `language.renders` and `language.definers` already keep: a
+        // manifest naming something this version does not have should say so plainly rather than
+        // load as a language whose imports quietly never complete.
+        let head = "plugin.id = a\nlanguage.extensions = .a\n";
+        let refused = |text: &str| parse(&Values::parse(text), false).expect_err(text);
+        assert!(refused(&format!("{head}language.imports = sideways")).contains("quoted or path"));
+        assert!(refused(&format!("{head}language.path_roots = crate")).contains("word=meaning"));
+        let unknown = format!("{head}language.path_roots = crate=universe");
+        assert!(refused(&unknown).contains("package, module, parent"), "{}", refused(&unknown));
+        // And the shapes that are right are read.
+        let good = format!("{head}language.imports = path\nlanguage.path_roots = crate=package");
+        let plugin = parse(&Values::parse(&good), false).expect("a path family language");
+        assert_eq!(plugin.grammar.path_root("crate"), Some(PathRoot::Package));
     }
 
     #[test]

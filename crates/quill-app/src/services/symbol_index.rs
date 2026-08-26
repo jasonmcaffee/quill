@@ -55,6 +55,21 @@ pub struct Entry {
     pub name_range: std::ops::Range<usize>,
     pub kind: SymbolKind,
     pub confidence: Confidence,
+    /// True when another file could import this name. `task-1680`.
+    pub exported: bool,
+}
+
+/// One name a file exports, which is what a list offered inside an import is made of.
+///
+/// A second, smaller table beside [`Index::by_name`], and it holds only the **exported**
+/// definitions, which is what keeps it small. The alternative was reading the module off the disk on
+/// each keystroke: 1.8 ms for the largest file in this repository, paid on every letter typed
+/// between the braces.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Export {
+    pub name: String,
+    pub kind: SymbolKind,
+    pub confidence: Confidence,
 }
 
 /// Everything the project defines, by name.
@@ -79,6 +94,10 @@ pub struct Index {
     /// because `task-1666`'s rule is that nothing running that often may allocate: on Quill's own
     /// repository this is 4,445 strings the table already owns a copy of.
     names: Vec<String>,
+    /// What each file exports. `task-1680`: the question an import asks is the other way round from
+    /// the one a jump asks — not "where is this name" but "what does this file have" — and the
+    /// table above cannot answer it without being walked whole.
+    by_file: HashMap<PathBuf, Vec<Export>>,
 }
 
 impl Index {
@@ -126,6 +145,15 @@ impl Index {
         &self.names
     }
 
+    /// What this file exports, in the order it declares them.
+    ///
+    /// The disk-owned half of an import's named list. The ownership rule of `task-1675` §3.3 says
+    /// what the other half is: a module that is **open** is owned by its `Document`, and its
+    /// exports are read from the live text on its tab instead.
+    pub fn exports_of(&self, path: &Path) -> &[Export] {
+        self.by_file.get(path).map_or(&[], Vec::as_slice)
+    }
+
     /// True when the walk stopped at [`LIMIT`], so a caller can say so rather than imply the
     /// project holds no more.
     pub fn capped(&self) -> bool {
@@ -171,16 +199,21 @@ impl Index {
                     return Some(index);
                 }
                 total += 1;
-                index
-                    .by_name
-                    .entry(text[definition.name_range.clone()].to_owned())
-                    .or_default()
-                    .push(Entry {
-                        path: path.clone(),
-                        name_range: definition.name_range,
+                let name = text[definition.name_range.clone()].to_owned();
+                if definition.exported {
+                    index.by_file.entry(path.clone()).or_default().push(Export {
+                        name: name.clone(),
                         kind: definition.kind,
                         confidence: definition.confidence,
                     });
+                }
+                index.by_name.entry(name).or_default().push(Entry {
+                    path: path.clone(),
+                    name_range: definition.name_range,
+                    kind: definition.kind,
+                    confidence: definition.confidence,
+                    exported: definition.exported,
+                });
             }
         }
         index.settle();

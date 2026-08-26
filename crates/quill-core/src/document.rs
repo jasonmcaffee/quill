@@ -664,10 +664,16 @@ impl Document {
         // file rather than refuse. Nothing is trusted: a range outside the text or across the
         // middle of a character is dropped, and where two overlap the earlier one wins, which is
         // the same choice `symbols::replacements` makes so the two cannot disagree.
+        //
+        // An **empty** range carrying text is an insertion at that point, which `task-1680` needs:
+        // accepting `./layout` inside `from '│'` replaces nothing and inserts everything, and it has
+        // to be the same one-undo-step command every other completion is. An empty range carrying
+        // nothing is dropped, because it would push an undo step for an edit that changes no byte.
         let mut edits: Vec<(Range<usize>, String)> = edits
             .into_iter()
-            .filter(|(range, _)| {
-                range.start < range.end
+            .filter(|(range, replacement)| {
+                (range.start < range.end || !replacement.is_empty())
+                    && range.start <= range.end
                     && range.end <= self.text.len_bytes()
                     && self.clamp_to_boundary(range.start) == range.start
                     && self.clamp_to_boundary(range.end) == range.end
@@ -1056,6 +1062,22 @@ mod tests {
             (1..4, "B".to_owned()),
         ]));
         assert_eq!(document.text().to_string(), "Art", "the earlier of two overlapping edits wins");
+    }
+
+    #[test]
+    fn an_empty_range_carrying_text_is_an_insertion_and_one_carrying_nothing_is_dropped() {
+        // `task-1680`: accepting `./layout` inside `from '|'` replaces no bytes and inserts all of
+        // them, and it has to be the same one-undo-step command every other completion is.
+        let mut document = Document::new();
+        assert!(document.apply(Command::ReplaceMany(vec![(0..0, "hello".to_owned())])));
+        assert_eq!(document.text().to_string(), "hello");
+        assert!(document.apply(Command::ReplaceMany(vec![(5..5, " there".to_owned())])));
+        assert_eq!(document.text().to_string(), "hello there");
+        document.apply(Command::Undo);
+        assert_eq!(document.text().to_string(), "hello", "one step, as every other edit is");
+        // An empty range with nothing in it would be an undo step for an edit that changes no byte.
+        assert!(!document.apply(Command::ReplaceMany(vec![(2..2, String::new())])));
+        assert_eq!(document.text().to_string(), "hello");
     }
 
     /// The ranges of a rename built the way the modal builds them.

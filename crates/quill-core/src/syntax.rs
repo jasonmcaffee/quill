@@ -46,6 +46,12 @@
 //! word, because [`number`] wants a digit first, so half the colours in a stylesheet were coloured
 //! and the other half were not.
 //!
+//! [`Grammar::export_keyword`] and the eight fields under it are `task-1680`'s, and they are what
+//! lets a language say how its **imports** are written: which words begin one, whether the module
+//! is a string or a path of segments, what a written module resolves to on the disk, and which
+//! segments are reserved. They follow the same rule — a plugin that names none of them has exactly
+//! the behaviour it had before, and nothing in Quill holds a list of which languages have imports.
+//!
 //! Deliberately not handled, so nobody has to discover it: nested block comments in Rust — the first
 //! terminator ends the comment; interpolation inside a template literal, which is coloured as part
 //! of the string; JSX, which is text; and regular expression literals, which cannot be told from
@@ -149,6 +155,118 @@ pub struct Grammar {
     /// JavaScript and TypeScript do: **a class method has no keyword in front of its name**. What
     /// it finds is marked [`crate::symbols::Confidence::Likely`] all the way to the screen.
     pub brace_definitions: bool,
+    /// The word that makes a definition importable from another file: `export`, or `pub`.
+    ///
+    /// `language.export_keyword`. A language that names none says that nothing is hidden, and every
+    /// definition it has is offered when one of its files is imported. What this decides is
+    /// [`crate::symbols::Definition::exported`], and the only thing that reads it is import
+    /// completion — a `const` inside a function body is a definition and is not an export, and a
+    /// list of a module's exports holding every local it has would be worse than no list.
+    pub export_keyword: Option<String>,
+    /// How this language writes the module an import names, and that it has imports at all.
+    ///
+    /// `language.imports`, and the key `task-1680` turns everything else in this group on with.
+    /// [`None`] for a language that named nothing, which is every plugin that shipped before it.
+    pub imports: Option<ImportStyle>,
+    /// The words a statement that imports something begins with: `import, export, require` in
+    /// TypeScript, `@import` in CSS, `use` in Rust.
+    ///
+    /// The anchor the whole reading rests on. Without one of these in front of it, `a::b::c` is
+    /// ordinary code and `'./layout'` is an ordinary string, and neither is a question about an
+    /// import.
+    pub import_keywords: Vec<String>,
+    /// What a written module may resolve to on the disk, in the order they are tried, each with its
+    /// leading dot: `.ts` before `.js`, because TypeScript's manifest says so.
+    pub import_extensions: Vec<String>,
+    /// The basenames a folder's own module is written in — `index` for TypeScript, `mod, lib, main`
+    /// for Rust — in the order they are tried.
+    pub import_index: Vec<String>,
+    /// True when the specifier a completion inserts drops the extension: `./layout` and not
+    /// `./layout.ts`. False in CSS, where `@import 'theme.css'` is written out.
+    pub import_omit_extension: bool,
+    /// What joins two segments of a module path. `::` in Rust. Only the [`ImportStyle::Path`]
+    /// family has one.
+    pub path_separator: Option<String>,
+    /// The folder a package's module tree is rooted in — `src` — so that `quill_core::completion`
+    /// can be `crates/quill-core/src/completion.rs` without the `src` being written in the path.
+    pub source_roots: Vec<String>,
+    /// The segments that are not module names, and what each means: `crate=package, self=module,
+    /// super=parent`.
+    ///
+    /// A language's own words rather than Quill's, for the reason `language.definers` exists: a
+    /// list of languages inside Quill is a list a plugin written later can never join.
+    pub path_roots: Vec<(String, PathRoot)>,
+}
+
+/// How a language writes the module an import names.
+///
+/// Two, because there are two shapes and no third: a string resolved against the file system, and a
+/// path of segments resolved against a module tree. `tasks/task-1680-import-completion-tdd.md` §4.1
+/// says what they share, which is only the popup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImportStyle {
+    /// The module is a string literal: `from './layout'`, `@import 'theme.css'`.
+    Quoted,
+    /// The module is a path of segments: `use quill_core::completion`.
+    Path,
+}
+
+impl ImportStyle {
+    /// The word a manifest writes, and what a message lists when it refuses another one.
+    pub fn name(self) -> &'static str {
+        match self {
+            ImportStyle::Quoted => "quoted",
+            ImportStyle::Path => "path",
+        }
+    }
+
+    /// The style this word names, or nothing when a manifest asked for one that does not exist.
+    pub fn parse(name: &str) -> Option<Self> {
+        match name.trim() {
+            "quoted" => Some(ImportStyle::Quoted),
+            "path" => Some(ImportStyle::Path),
+            _ => None,
+        }
+    }
+
+    pub const ALL: [ImportStyle; 2] = [ImportStyle::Quoted, ImportStyle::Path];
+}
+
+/// What one of a path family's reserved first segments means.
+///
+/// Three, and they are the three a module tree can be walked from without knowing anything about
+/// the language: the package this file is in, the module this file is, and the module above it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathRoot {
+    /// The source root of the package holding this file: Rust's `crate`.
+    Package,
+    /// The module this file itself is: Rust's `self`.
+    Module,
+    /// The module above this one, and again for each repetition: Rust's `super`.
+    Parent,
+}
+
+impl PathRoot {
+    /// The word a manifest writes on the right of a `word=meaning` pair.
+    pub fn name(self) -> &'static str {
+        match self {
+            PathRoot::Package => "package",
+            PathRoot::Module => "module",
+            PathRoot::Parent => "parent",
+        }
+    }
+
+    /// The meaning this word names, or nothing when a manifest asked for one Quill does not have.
+    pub fn parse(name: &str) -> Option<Self> {
+        match name.trim() {
+            "package" => Some(PathRoot::Package),
+            "module" => Some(PathRoot::Module),
+            "parent" => Some(PathRoot::Parent),
+            _ => None,
+        }
+    }
+
+    pub const ALL: [PathRoot; 3] = [PathRoot::Package, PathRoot::Module, PathRoot::Parent];
 }
 
 impl Grammar {
@@ -181,6 +299,24 @@ impl Grammar {
     /// control that can never apply.
     pub fn defines_symbols(&self) -> bool {
         !self.definers.is_empty() || self.brace_definitions
+    }
+
+    /// True when this language has said enough for an import to be read out of it.
+    ///
+    /// One function, for the same reason [`Self::defines_symbols`] is one: the trigger, the pool
+    /// and the resolution all ask it, so none of the three can decide on its own that a language
+    /// has imports. A language that named `language.imports` but no keywords has said nothing
+    /// usable, because the keyword is the anchor the whole reading rests on.
+    pub fn completes_imports(&self) -> bool {
+        self.imports.is_some() && !self.import_keywords.is_empty()
+    }
+
+    /// What this word means as the first segment of a module path, if the language reserved it.
+    ///
+    /// A list rather than a map, for the reason [`Self::definer`] is one: a language names two or
+    /// three of them.
+    pub fn path_root(&self, word: &str) -> Option<PathRoot> {
+        self.path_roots.iter().find(|(name, _)| name == word).map(|(_, root)| *root)
     }
 
     /// Whether `character` may be part of a word, given where in the word it is.

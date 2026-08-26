@@ -5992,6 +5992,117 @@ fn a_modifier_click_on_the_definition_itself_opens_the_references() {
     assert!(!modal.hits().is_empty());
 }
 
+// Import completion (`task-1680`).
+//
+// Two pictures, and they are what say that a list hanging inside a pair of quotes is a list of the
+// project's own files, and that a list between a pair of braces is a list of what one module
+// exports with the glyph for what each thing is. Everything underneath is tested with no window in
+// `quill_core::imports`, `services::imports` and `app::completion`.
+
+/// A small TypeScript project for the import pictures.
+///
+/// Its own folder, for the reason [`completion_folder`] has its own: the explorer draws whatever is
+/// in the folder, so adding a file to a fixture another test has already accepted a picture of would
+/// change that picture for a reason that is not a change to Quill.
+fn import_folder() -> std::path::PathBuf {
+    static FOLDER: OnceLock<std::path::PathBuf> = OnceLock::new();
+    FOLDER
+        .get_or_init(|| {
+            let root = std::env::temp_dir().join("quill-screenshot-imports");
+            std::fs::create_dir_all(root.join("src/app/widgets")).expect("make the folders");
+            std::fs::create_dir_all(root.join("src/core")).expect("make the core folder");
+            std::fs::write(root.join("src/app/main.ts"), "").expect("write main.ts");
+            std::fs::write(
+                root.join("src/app/layout.ts"),
+                "export class Layout {}\n\
+                 \n\
+                 export interface Placed {}\n\
+                 \n\
+                 export const LINE_HEIGHT = 18;\n\
+                 \n\
+                 export function drawFrame() {\n\
+                 \x20   const hidden = 1;\n\
+                 \x20   return hidden;\n\
+                 }\n\
+                 \n\
+                 export function drawGutter() {}\n\
+                 \n\
+                 export function drawCaret() {}\n\
+                 \n\
+                 const secret = 2;\n",
+            )
+            .expect("write layout.ts");
+            std::fs::write(root.join("src/app/caret.ts"), "export class Caret {}\n")
+                .expect("write caret.ts");
+            std::fs::write(root.join("src/app/widgets/index.ts"), "export class Button {}\n")
+                .expect("write index.ts");
+            std::fs::write(root.join("src/app/widgets/scrollbar.ts"), "export class Bar {}\n")
+                .expect("write scrollbar.ts");
+            std::fs::write(root.join("src/core/completion.ts"), "export function rank() {}\n")
+                .expect("write completion.ts");
+            std::fs::write(root.join("src/core/document.ts"), "export class Document {}\n")
+                .expect("write document.ts");
+            std::fs::write(root.join("readme.md"), "# a project\n").expect("write readme.md");
+            root
+        })
+        .clone()
+}
+
+/// A window on it, with its index built and `src/app/main.ts` open and empty.
+fn import_harness() -> Harness<'static, QuillApp> {
+    let folder = import_folder();
+    let mut harness = harness_in(&folder);
+    harness.state_mut().open_path_permanently(&folder.join("src/app/main.ts"));
+    for _ in 0..600 {
+        pump(&mut harness);
+        let ready = harness
+            .state()
+            .symbols_indexer()
+            .is_some_and(|indexer| !indexer.is_building() && !indexer.index().is_empty());
+        if ready {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    harness.run();
+    harness
+}
+
+#[test]
+fn typing_a_module_specifier_offers_the_projects_own_files() {
+    // Scenarios 2 and 41: the quotes open and the list is the project, written as the specifier
+    // that would reach each file from this one.
+    let mut harness = import_harness();
+    type_letters(&mut harness, "import { Layout } from '");
+    let offered = completions(&harness);
+    assert!(offered.contains(&"./layout".to_owned()), "{offered:?}");
+    assert!(offered.contains(&"./widgets".to_owned()), "{offered:?}");
+    assert!(offered.contains(&"../core/completion".to_owned()), "{offered:?}");
+    assert!(!offered.iter().any(|row| row.ends_with(".ts")), "the extension is dropped");
+    harness.snapshot(shot("completion_import_specifier"));
+}
+
+#[test]
+fn a_name_typed_between_the_braces_offers_what_that_module_exports() {
+    // Scenarios 11 and 44: the module is written after the caret, and only what `export` marks is
+    // offered — `hidden` and `secret` are in the file and are not something another file can name.
+    let mut harness = import_harness();
+    let line = "import { draw } from './layout'";
+    harness.state_mut().command(Command::Insert(line.to_owned()));
+    let caret = line.find("draw").expect("the sample") + 4;
+    harness.state_mut().command(Command::PlaceCaret { offset: caret, extend: false });
+    let ctx = harness.ctx.clone();
+    harness.state_mut().run_action(Action::CompleteWord, &ctx);
+    harness.run();
+    let offered = completions(&harness);
+    assert_eq!(
+        offered,
+        vec!["drawCaret".to_owned(), "drawFrame".to_owned(), "drawGutter".to_owned()],
+        "only the exports, best first"
+    );
+    harness.snapshot(shot("completion_import_named"));
+}
+
 // Auto-complete (`task-1677`).
 //
 // The pictures are what say the list hangs under the caret, that the matched letters are picked out,

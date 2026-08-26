@@ -116,6 +116,13 @@ pub struct Definition {
     pub name_range: Range<usize>,
     pub kind: SymbolKind,
     pub confidence: Confidence,
+    /// True when another file could import this name.
+    ///
+    /// `task-1680`. What decides it is [`Grammar::export_keyword`] — `export` in TypeScript, `pub`
+    /// in Rust — and a language that named none says nothing is hidden, so every definition it has
+    /// is exported. The only thing that reads it is the list offered inside an import: a `const`
+    /// declared in a function body is a definition and is not something another file can name.
+    pub exported: bool,
 }
 
 /// Where an occurrence of a name sits in the file's own reading of itself.
@@ -214,18 +221,51 @@ impl FileSymbols {
         // The kind a definer keyword is waiting to give to the next word, and where that keyword
         // ended, so a line break between the two can end the run.
         let mut pending: Option<(SymbolKind, usize)> = None;
+        // `task-1680`'s half of the same walk: where the export keyword last was, so the definition
+        // it belongs to can be marked with it. A language that named none says nothing is hidden,
+        // and the three variables below are then never read at all.
+        let marks = grammar.export_keyword.is_some();
+        // Where the export keyword last was. Not advanced as the walk goes: what is asked of it is
+        // always "what is written between it and here", which is one look at the text.
+        let mut exported: Option<usize> = None;
+        // Inside `export { a, b }` — a list of the names this file exports without declaring them
+        // in the same breath.
+        let mut listing = false;
+        let mut listed: Vec<Range<usize>> = Vec::new();
         syntax::scan(text, grammar, |range, token| {
             // The keyword and the name have to be next to each other. See the note above.
             let adjacent = |after: usize| {
                 after <= range.start
                     && text[after..range.start].chars().all(|letter| letter == ' ' || letter == '\t')
             };
+            // The export keyword reaches its declaration along **one line**, over whatever is
+            // written between them: `export default function`, `pub(crate) fn`. A line break is
+            // what ends it, because a marker that carried on down the file would mark the next
+            // declaration as well. An unclosed `{` between the two means this is `export { a, b }`
+            // — a list of names rather than a declaration — and a definer keyword cannot be in the
+            // way, because recording the definition it made is what clears the marker.
+            if let Some(after) = exported {
+                let gap = (after <= range.start).then(|| &text[after..range.start]);
+                match gap.filter(|gap| !gap.contains('\n')) {
+                    Some(gap) => {
+                        listing = gap.matches('{').count() > gap.matches('}').count();
+                    }
+                    None => {
+                        exported = None;
+                        listing = false;
+                    }
+                }
+            }
             match token {
                 Token::Comment => read.quiet.push((range, Role::Comment)),
                 Token::String => read.quiet.push((range, Role::String)),
                 // A definer replaces whatever was pending, so `const fn new` defines a function. A
                 // keyword the language did not name is stepped over: `let mut count` is a `count`.
                 Token::Keyword => {
+                    if marks && grammar.export_keyword.as_deref() == Some(&text[range.clone()]) {
+                        exported = Some(range.end);
+                        listing = false;
+                    }
                     if let Some(kind) = grammar.definer(&text[range.clone()]) {
                         pending = Some((kind, range.end));
                     } else if let Some((kind, after)) = pending {
@@ -234,6 +274,12 @@ impl FileSymbols {
                 }
                 Token::Text | Token::Function | Token::Type | Token::Builtin => {
                     read.words.push(range.clone());
+                    // `export { a, b }` and `pub use x::{a, b}` say what this file exports without
+                    // declaring it there, so the names are collected and matched against the
+                    // definitions once the whole file has been read.
+                    if listing {
+                        listed.push(range.clone());
+                    }
                     if !defines {
                         return;
                     }
@@ -245,7 +291,12 @@ impl FileSymbols {
                                     name_range: range,
                                     kind,
                                     confidence: Confidence::Sure,
+                                    exported: !marks || (exported.is_some() && !listing),
                                 });
+                                // The marker belongs to the declaration it was in front of and to
+                                // nothing after it.
+                                exported = None;
+                                listing = false;
                                 return;
                             }
                         }
@@ -257,7 +308,10 @@ impl FileSymbols {
                                 name_range: range,
                                 kind: SymbolKind::Function,
                                 confidence: Confidence::Likely,
+                                exported: !marks || (exported.is_some() && !listing),
                             });
+                            exported = None;
+                            listing = false;
                         }
                     } else {
                         pending = None;
@@ -267,7 +321,26 @@ impl FileSymbols {
                 _ => pending = None,
             }
         });
+        read.mark_the_listed(text, &listed);
         read
+    }
+
+    /// Mark as exported the definitions named in an `export { a, b }` list.
+    ///
+    /// Separate from the walk because such a list may be written **before** the declaration it
+    /// names, and one pass cannot mark what it has not read yet. It is one walk of two small lists,
+    /// and for a language that named no export keyword the second is always empty.
+    fn mark_the_listed(&mut self, text: &str, listed: &[Range<usize>]) {
+        if listed.is_empty() {
+            return;
+        }
+        for definition in &mut self.definitions {
+            if definition.exported {
+                continue;
+            }
+            let name = &text[definition.name_range.clone()];
+            definition.exported = listed.iter().any(|range| text[range.clone()] == *name);
+        }
     }
 
     /// What this file defines, in the order the definitions appear in it.
@@ -663,6 +736,70 @@ mod tests {
             brace_definitions: true,
             ..Grammar::default()
         }
+    }
+
+    /// The names a file exports, in the order they are declared. `task-1680`.
+    fn exports(source: &str, grammar: &Grammar) -> Vec<String> {
+        file_definitions(source, grammar)
+            .into_iter()
+            .filter(|definition| definition.exported)
+            .map(|definition| source[definition.name_range].to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn the_export_keyword_marks_the_declaration_it_is_in_front_of() {
+        // Scenario 44: a list of a module's exports holding every local it has would be worse than
+        // no list at all.
+        let mut grammar = typescript();
+        grammar.export_keyword = Some("export".to_owned());
+        let source = "export const shown = 1;\nconst hidden = 2;\nexport function draw() {\n  const local = 3;\n}\n";
+        assert_eq!(exports(source, &grammar), vec!["shown".to_owned(), "draw".to_owned()]);
+    }
+
+    #[test]
+    fn the_marker_steps_over_what_is_written_between_it_and_the_declaration() {
+        // `export default class Foo` in TypeScript and `pub(crate) fn draw` in Rust: both reach
+        // their declaration along one line, over words and brackets.
+        let mut typescript = typescript();
+        typescript.export_keyword = Some("export".to_owned());
+        assert_eq!(
+            exports("export default class Foo {}\n", &typescript),
+            vec!["Foo".to_owned()]
+        );
+        let mut rust = rust();
+        rust.export_keyword = Some("pub".to_owned());
+        let source = "pub(crate) fn draw() {}\nfn hidden() {}\npub struct Layout;\n";
+        assert_eq!(exports(source, &rust), vec!["draw".to_owned(), "Layout".to_owned()]);
+    }
+
+    #[test]
+    fn a_line_break_ends_the_marker_rather_than_carrying_it_down_the_file() {
+        let mut grammar = rust();
+        grammar.export_keyword = Some("pub".to_owned());
+        // The `pub` belongs to `first` and to nothing under it.
+        let source = "pub fn first() {}\nfn second() {}\nfn third() {}\n";
+        assert_eq!(exports(source, &grammar), vec!["first".to_owned()]);
+    }
+
+    #[test]
+    fn an_export_list_marks_what_it_names_wherever_that_was_declared() {
+        // `const a = 1; export { a }` is ordinary TypeScript, and the list may be written above the
+        // declaration as well as below it, which is why it is matched after the file is read.
+        let mut grammar = typescript();
+        grammar.export_keyword = Some("export".to_owned());
+        let source = "const shown = 1;\nconst hidden = 2;\nexport { shown };\n";
+        assert_eq!(exports(source, &grammar), vec!["shown".to_owned()]);
+        let above = "export { later };\nconst later = 1;\nconst never = 2;\n";
+        assert_eq!(exports(above, &grammar), vec!["later".to_owned()]);
+    }
+
+    #[test]
+    fn a_language_that_names_no_export_keyword_hides_nothing() {
+        // The rule every key added since `task-1671` follows: off unless a language asks, and off
+        // means the behaviour that was there before.
+        let source = "fn first() {}\nfn second() {}\n";
+        assert_eq!(exports(source, &rust()), vec!["first".to_owned(), "second".to_owned()]);
     }
 
     /// CSS, which deliberately has no definers at all.
