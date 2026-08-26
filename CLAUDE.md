@@ -893,6 +893,10 @@ trade that away to be a shade nearer a screenshot.
 - `tasks/task-1666-performance-tdd.md` — why a frame cost 818 ms and now costs 20: the eight faults
   that were found, what each was worth, the two revisions a document counts, the incremental layout
   and why its fingerprint is derived rather than reported, and what was deliberately not done.
+- `tasks/task-1675-code-editing-tdd.md` — go to definition, find all references and rename: the
+  three mechanisms that were weighed (a language server client, tree-sitter and stack graphs, a
+  syntactic index) and why the index was chosen, the two grammar keys a language adds, the
+  references and rename modals, and the fifty-scenario battery the implementation is held to.
 - `tasks/quill-mermaid-plugin-tdd.md` — Mermaid: the four ways of drawing it that were weighed and why
   Quill writes its own, what each of the twenty types becomes on the screen, which ten are named
   rather than drawn, and what `language.renders` buys.
