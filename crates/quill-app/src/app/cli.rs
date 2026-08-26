@@ -898,7 +898,13 @@ impl QuillApp {
             self.files.active_index()
         };
         let name = self.files.get(index).map(|file| file.name()).unwrap_or_default();
-        self.close_tab(index);
+        // A tab is written on the way out, which is what closing one by hand does. A script that
+        // means to throw the changes away has no menu to say so through, so it says so here.
+        if request.switch("discard") {
+            self.close_tab_without_saving(index);
+        } else {
+            self.close_tab(index);
+        }
         ok(
             request,
             format!("Closed {name}"),
@@ -2653,6 +2659,9 @@ impl QuillApp {
                     ),
                 }
             }
+            "select" => self.cli_explorer_select(request),
+            "delete" => self.cli_explorer_delete(request),
+            "move" => self.cli_explorer_move(request),
             "expand" => self.cli_explorer_expand(request),
             "collapse" => self.cli_explorer_collapse(request),
             "tree" => self.cli_explorer_tree(request),
@@ -2669,6 +2678,151 @@ impl QuillApp {
             },
             _ => unknown(request),
         }
+    }
+
+    /// `explorer select` — set the row the explorer's cursor is on, or read it.
+    fn cli_explorer_select(&mut self, request: &Request) -> Outcome {
+        if let Some(path) = self.cli_path_argument(request, "path") {
+            if !path.exists() {
+                return no(
+                    request,
+                    code::NOT_FOUND,
+                    format!("There is nothing at {}", path.display()),
+                );
+            }
+            self.explorer_visible = true;
+            self.tree.expand(&path);
+            self.selected = Some(path);
+            self.focus = crate::app::Focus::Explorer;
+        }
+        match &self.selected {
+            Some(path) => ok(
+                request,
+                format!("Selected {}", path.display()),
+                json!({ "selected": path.to_string_lossy(), "focused": self.focus == crate::app::Focus::Explorer }),
+            ),
+            None => ok(
+                request,
+                "Nothing is selected in the explorer.",
+                json!({ "selected": null, "focused": self.focus == crate::app::Focus::Explorer }),
+            ),
+        }
+    }
+
+    /// `explorer delete` — throw a file away, with no question in front of it.
+    ///
+    /// The question the menu asks exists so that a click cannot destroy something by accident.
+    /// Typing this command is the deliberate act, so asking again would be asking twice.
+    fn cli_explorer_delete(&mut self, request: &Request) -> Outcome {
+        let Some(path) = self.cli_path_argument(request, "path") else {
+            return no(request, code::USAGE, "Say which path to delete.");
+        };
+        if !path.exists() {
+            return no(request, code::NOT_FOUND, format!("There is nothing at {}", path.display()));
+        }
+        if path == *self.tree.root() {
+            return no(
+                request,
+                code::NOT_APPLICABLE,
+                "The project folder itself cannot be deleted from here.",
+            );
+        }
+        self.delete_path(&path);
+        let message = self.message.clone().unwrap_or_default();
+        ok(
+            request,
+            message,
+            json!({
+                "deleted": path.to_string_lossy(),
+                "destination": crate::services::recycle::destination().name(),
+                "gone": !path.exists(),
+            }),
+        )
+    }
+
+    /// `explorer move` — move a path and rewrite what names it.
+    fn cli_explorer_move(&mut self, request: &Request) -> Outcome {
+        let Some(path) = self.cli_path_argument(request, "path") else {
+            return no(request, code::USAGE, "Say which path to move.");
+        };
+        let Some(folder) = self.cli_path_argument(request, "folder") else {
+            return no(request, code::USAGE, "Say which folder it goes into.");
+        };
+        if !path.exists() {
+            return no(request, code::NOT_FOUND, format!("There is nothing at {}", path.display()));
+        }
+        if !folder.is_dir() {
+            return no(request, code::NOT_FOUND, format!("{} is not a folder.", folder.display()));
+        }
+        if folder == path || folder.starts_with(&path) {
+            return no(
+                request,
+                code::NOT_APPLICABLE,
+                "A folder cannot be moved into itself.",
+            );
+        }
+        let name = path.file_name().map(|name| name.to_owned()).unwrap_or_default();
+        let target = folder.join(&name);
+        let refactor = !request.switch("no-refactor");
+        if request.switch("dry-run") {
+            let started = std::time::Instant::now();
+            let plan = match refactor {
+                true => self.plan_a_move(&path, &target),
+                false => crate::services::file_move::Plan::default(),
+            };
+            let elapsed = started.elapsed().as_secs_f64() * 1000.0;
+            let files: Vec<serde_json::Value> = plan
+                .files
+                .iter()
+                .map(|file| {
+                    json!({
+                        "path": file.path.to_string_lossy(),
+                        "edits": file.edits.len(),
+                        "changes": file
+                            .edits
+                            .iter()
+                            .map(|(range, text)| json!({ "from": range.start, "to": range.end, "text": text }))
+                            .collect::<Vec<_>>(),
+                    })
+                })
+                .collect();
+            return ok(
+                request,
+                format!(
+                    "Would move {} to {} \u{00B7} {} \u{00B7} worked out in {elapsed:.1} ms",
+                    path.display(),
+                    folder.display(),
+                    plan.sentence()
+                ),
+                json!({
+                    "from": path.to_string_lossy(),
+                    "to": target.to_string_lossy(),
+                    "moved": plan.moved.len(),
+                    "references": plan.references(),
+                    "files": files,
+                    "notes": plan.notes,
+                    "milliseconds": elapsed,
+                    "applied": false,
+                }),
+            );
+        }
+        if !self.move_path(&path, &target, refactor) {
+            return no(
+                request,
+                code::NOT_APPLICABLE,
+                self.message.clone().unwrap_or_else(|| "The move did not happen.".to_owned()),
+            );
+        }
+        let message = self.message.clone().unwrap_or_default();
+        ok(
+            request,
+            message,
+            json!({
+                "from": path.to_string_lossy(),
+                "to": target.to_string_lossy(),
+                "applied": true,
+            }),
+        )
     }
 
     fn cli_explorer_expand(&mut self, request: &Request) -> Outcome {
@@ -3247,8 +3401,18 @@ impl QuillApp {
             );
         }
         if let Some(question) = self.confirmation.take() {
-            let label = question.request.label();
-            self.send_git(question.request);
+            let label = match question.answer {
+                crate::app::Answer::Git(what) => {
+                    let label = what.label();
+                    self.send_git(what);
+                    label
+                }
+                crate::app::Answer::Delete(path) => {
+                    let name = path.display().to_string();
+                    self.delete_path(&path);
+                    format!("delete {name}")
+                }
+            };
             return ok(request, format!("Confirmed: {label}"), json!({ "confirmed": label }));
         }
         if self.git.as_ref().is_some_and(|git| git.panel.open) {

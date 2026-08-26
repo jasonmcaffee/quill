@@ -214,6 +214,15 @@ impl Document {
         self.path.as_deref()
     }
 
+    /// Point the document at a different file, without reading or writing anything.
+    ///
+    /// What a move needs and nothing else does: the bytes are already at the new path, so the tab
+    /// that is showing them has to follow. It is **not an edit** — no byte of the text changes — so
+    /// `modified`, the undo history and the revisions are all left exactly as they are.
+    pub fn set_path(&mut self, path: PathBuf) {
+        self.path = Some(path);
+    }
+
     pub fn is_modified(&self) -> bool {
         self.modified
     }

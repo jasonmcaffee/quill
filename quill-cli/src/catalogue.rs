@@ -355,10 +355,10 @@ pub const COMMANDS: &[Command] = &[
     Command {
         area: "tab",
         verb: "close",
-        summary: "Close a tab. Closing the last one leaves an empty untitled tab rather than no tab at all.",
+        summary: "Close a tab. A tab with unsaved changes is written first, which is what closing one by hand does. Closing the last one leaves an empty untitled tab rather than no tab at all.",
         arguments: &[argument("tab", false, "Its number, name or path. The tab that is showing when it is left out.")],
-        flags: NO_FLAGS,
-        examples: &["quill-cli tab close", "quill-cli tab close notes.md"],
+        flags: &[switch("discard", "Close it without writing what was typed into it.")],
+        examples: &["quill-cli tab close", "quill-cli tab close notes.md", "quill-cli tab close --discard"],
         local: false,
     },
     Command {
@@ -958,6 +958,42 @@ pub const COMMANDS: &[Command] = &[
     },
     Command {
         area: "explorer",
+        verb: "select",
+        summary: "Set the row the explorer's own cursor is on, which is what Delete is about, or read it when no path is given. It is not the same as the tab that is showing.",
+        arguments: &[argument("path", false, "The file or folder to select.")],
+        flags: NO_FLAGS,
+        examples: &["quill-cli explorer select README.md", "quill-cli explorer select --json"],
+        local: false,
+    },
+    Command {
+        area: "explorer",
+        verb: "delete",
+        summary: "Delete a file or a folder. On Windows it goes to the Recycle Bin; everywhere else it is gone. No question is asked, because typing the command is the deliberate act the question exists to ask for.",
+        arguments: &[argument("path", true, "The file or folder to delete.")],
+        flags: NO_FLAGS,
+        examples: &["quill-cli explorer delete notes/old.md"],
+        local: false,
+    },
+    Command {
+        area: "explorer",
+        verb: "move",
+        summary: "Move a file or a folder into another folder, rewriting every import, use line and mod declaration in the project that names it. The same thing dragging a row in the explorer does.",
+        arguments: &[
+            argument("path", true, "The file or folder to move."),
+            argument("folder", true, "The folder it goes into."),
+        ],
+        flags: &[
+            switch("dry-run", "Print the whole change set and change nothing at all."),
+            switch("no-refactor", "Move the bytes and leave every reference to them alone."),
+        ],
+        examples: &[
+            "quill-cli explorer move src/app/layout.ts src/draw",
+            "quill-cli explorer move src/app/layout.ts src/draw --dry-run --json",
+        ],
+        local: false,
+    },
+    Command {
+        area: "explorer",
         verb: "reveal",
         summary: "Show a path in the platform's own file manager: Explorer on Windows, Finder on macOS.",
         arguments: &[argument("path", true, "The file or folder.")],
@@ -1424,6 +1460,6 @@ mod tests {
         let open = find("tab open").expect("tab open");
         assert_eq!(open.usage(), "quill-cli tab open <path> [--permanent]");
         let close = find("tab close").expect("tab close");
-        assert_eq!(close.usage(), "quill-cli tab close [tab]");
+        assert_eq!(close.usage(), "quill-cli tab close [tab] [--discard]");
     }
 }

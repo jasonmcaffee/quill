@@ -203,6 +203,19 @@ fn string_around(text: &str, offset: usize, grammar: &Grammar) -> Option<Range<u
     }
     let start = text[..offset].rfind('\n').map(|at| at + 1).unwrap_or(0);
     let end = text[offset..].find('\n').map(|at| offset + at).unwrap_or(text.len());
+    strings_on_line(text, start, end, grammar)
+        .into_iter()
+        .find(|content| content.contains(&offset) || content.end == offset)
+}
+
+/// The content of every string on one line, without the quotes, left to right.
+///
+/// The one place a string is recognised, so [`string_around`] and [`specifiers_in`] cannot come to
+/// different conclusions about where one begins. A string left unterminated - which is what one
+/// being typed always is - runs to the end of the line, which is what lets the popup answer
+/// `from './lay` before the closing quote has been typed.
+fn strings_on_line(text: &str, start: usize, end: usize, grammar: &Grammar) -> Vec<Range<usize>> {
+    let mut found = Vec::new();
     let line = &text[start..end];
     let mut open: Option<(char, usize)> = None;
     let mut at = 0;
@@ -217,10 +230,7 @@ fn string_around(text: &str, offset: usize, grammar: &Grammar) -> Option<Range<u
                     continue;
                 }
                 if letter == quote {
-                    let content = (start + from)..(start + at);
-                    if content.contains(&offset) || content.end == offset {
-                        return Some(content);
-                    }
+                    found.push((start + from)..(start + at));
                     open = None;
                 }
             }
@@ -233,10 +243,12 @@ fn string_around(text: &str, offset: usize, grammar: &Grammar) -> Option<Range<u
         at += width;
     }
     // An unterminated string, which is what one being typed is: it runs to the end of the line.
-    let (_, from) = open?;
-    let content = (start + from)..end;
-    (content.contains(&offset) || content.end == offset).then_some(content)
+    if let Some((_, from)) = open {
+        found.push((start + from)..end);
+    }
+    found
 }
+
 
 /// Whether a line comment opens on this line before `at`.
 ///
@@ -488,6 +500,423 @@ fn word_back(text: &str, at: usize, grammar: &Grammar) -> Range<usize> {
     }
     start..at
 }
+
+// ---------------------------------------------------------------- reading a whole file forwards
+//
+// Everything above answers "what is the caret in the middle of". What follows answers the same
+// question of every position in a file at once, which is what `task-1681` needs to move a file and
+// take the code that names it with it.
+//
+// It is deliberately the *same* reading. `specifiers_in` asks `commented_out` and
+// `keyword_in_statement` — the two tests `quoted` already applies to the string under the caret —
+// of every string in the file, so the completion popup and the move refactor cannot come to
+// different conclusions about what an import is.
+
+/// A module specifier written in a file: the byte range of its content, without the quotes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WrittenSpecifier {
+    /// The string's content, quotes excluded. Replacing exactly this range rewrites the specifier
+    /// and leaves the quotes, the keyword and the rest of the line alone.
+    pub range: Range<usize>,
+    pub text: String,
+}
+
+/// Every module specifier written in `text`, in the order they appear.
+///
+/// Only the [`ImportStyle::Quoted`] family has one. A language that named no imports, or named the
+/// path family, answers with nothing in one comparison.
+pub fn specifiers_in(text: &str, grammar: &Grammar) -> Vec<WrittenSpecifier> {
+    if grammar.imports != Some(ImportStyle::Quoted) || grammar.import_keywords.is_empty() {
+        return Vec::new();
+    }
+    let mut found = Vec::new();
+    let mut line_start = 0usize;
+    while line_start <= text.len() {
+        let line_end = text[line_start..].find('\n').map(|at| line_start + at).unwrap_or(text.len());
+        for content in strings_on_line(text, line_start, line_end, grammar) {
+            if content.is_empty() {
+                continue;
+            }
+            let quote = content.start.saturating_sub(1);
+            if commented_out(text, quote, grammar) || !keyword_in_statement(text, quote, grammar) {
+                continue;
+            }
+            found.push(WrittenSpecifier {
+                text: text[content.clone()].to_owned(),
+                range: content,
+            });
+        }
+        if line_end >= text.len() {
+            break;
+        }
+        line_start = line_end + 1;
+    }
+    found
+}
+
+/// One leaf of a `use` statement: one full path, with its braces already expanded.
+///
+/// `use a::{b, c::{d, e}}` is three leaves — `a::b`, `a::c::d` and `a::c::e` — because a leaf is
+/// the unit that can move out from under a shared prefix when the module it names is moved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UseLeaf {
+    /// The segments as written, outermost first. A `self` inside a group is dropped, because
+    /// `use a::{self, b}` names `a` itself.
+    pub segments: Vec<String>,
+    /// The name after `as`, if there is one.
+    pub alias: Option<String>,
+    /// True for `use a::*`.
+    pub glob: bool,
+}
+
+impl UseLeaf {
+    /// How this leaf is written on its own, without the keyword or the semicolon.
+    pub fn written(&self, separator: &str) -> String {
+        let mut line = self.segments.join(separator);
+        if self.glob {
+            if !line.is_empty() {
+                line.push_str(separator);
+            }
+            line.push('*');
+        }
+        if let Some(alias) = &self.alias {
+            line.push_str(" as ");
+            line.push_str(alias);
+        }
+        line
+    }
+}
+
+/// A whole `use` statement, read into its leaves.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UseStatement {
+    /// Everything from the visibility, or the keyword when there is none, up to and including the
+    /// `;`. Replacing this range replaces the statement and nothing around it.
+    pub range: Range<usize>,
+    /// What is written in front of the keyword: `pub`, `pub(crate)`, or nothing.
+    pub visibility: String,
+    /// The whitespace at the start of the statement's first line, so a statement written again in
+    /// two lines lines up with the one it replaced.
+    pub indent: String,
+    pub leaves: Vec<UseLeaf>,
+}
+
+/// One reading of a file's tokens, so the three questions below can share it.
+///
+/// [`crate::syntax::scan`] is not free — it is the whole of the grammar applied to every byte — and
+/// a move refactor asks all three of `use_statements_in`, `paths_in` and `nesting` of every file in
+/// the project. Reading once and asking three times took the plan for this repository from 557 ms
+/// to 186.
+#[derive(Debug, Clone, Default)]
+pub struct Tokens {
+    /// Every comment and string, in order.
+    quiet: Vec<Range<usize>>,
+    /// Every word that is in neither, in order.
+    words: Vec<Range<usize>>,
+}
+
+/// Read a file's tokens once.
+pub fn tokens(text: &str, grammar: &Grammar) -> Tokens {
+    let mut read = Tokens::default();
+    crate::syntax::scan(text, grammar, |range, token| match token {
+        crate::syntax::Token::Comment | crate::syntax::Token::String => read.quiet.push(range),
+        crate::syntax::Token::Number | crate::syntax::Token::Operator => {}
+        _ => read.words.push(range),
+    });
+    read
+}
+
+/// Every `use` statement in `text`, in the order they appear.
+///
+/// Only the [`ImportStyle::Path`] family has them, and only outside comments and strings — a `use`
+/// line quoted in a doc comment is prose and is left as prose.
+pub fn use_statements_in(text: &str, grammar: &Grammar, read: &Tokens) -> Vec<UseStatement> {
+    let Some(separator) = grammar.path_separator.as_deref().filter(|it| !it.is_empty()) else {
+        return Vec::new();
+    };
+    if grammar.imports != Some(ImportStyle::Path) {
+        return Vec::new();
+    }
+    let quiet = &read.quiet;
+    let mut found = Vec::new();
+    for word in read.words.iter().cloned() {
+        if !grammar.import_keywords.iter().any(|keyword| *keyword == text[word.clone()]) {
+            continue;
+        }
+        if found.iter().any(|statement: &UseStatement| statement.range.contains(&word.start)) {
+            continue;
+        }
+        if let Some(statement) = read_use(text, word, separator, grammar, quiet) {
+            found.push(statement);
+        }
+    }
+    found
+}
+
+/// A chain of segments written in the text: `crate::services::file_tree`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WrittenPath {
+    /// The whole chain, first segment to last.
+    pub range: Range<usize>,
+    /// Where each segment is, so a prefix of the chain can be replaced on its own.
+    pub segments: Vec<Range<usize>>,
+}
+
+impl WrittenPath {
+    /// The segments as words.
+    pub fn words(&self, text: &str) -> Vec<String> {
+        self.segments.iter().map(|range| text[range.clone()].to_owned()).collect()
+    }
+}
+
+/// Every chain of two or more segments in `text`, outside comments and strings.
+///
+/// This is the other half of the path family: `services::file_clipboard::free_name(...)` in the
+/// body of a function names the same module a `use` line does, and has to follow it when it moves.
+pub fn paths_in(text: &str, grammar: &Grammar, read: &Tokens) -> Vec<WrittenPath> {
+    let Some(separator) = grammar.path_separator.as_deref().filter(|it| !it.is_empty()) else {
+        return Vec::new();
+    };
+    let words = &read.words;
+    let mut found = Vec::new();
+    let mut at = 0usize;
+    while at < words.len() {
+        let mut chain = vec![words[at].clone()];
+        while at + 1 < words.len() && joined_by(text, words[at].end, words[at + 1].start, separator) {
+            chain.push(words[at + 1].clone());
+            at += 1;
+        }
+        if chain.len() > 1 {
+            let range = chain[0].start..chain[chain.len() - 1].end;
+            found.push(WrittenPath { range, segments: chain });
+        }
+        at += 1;
+    }
+    found
+}
+
+/// Whether the only thing between two words is the separator.
+fn joined_by(text: &str, from: usize, to: usize, separator: &str) -> bool {
+    text[from..to].trim() == separator
+}
+
+/// Read one `use` statement, starting at the keyword.
+fn read_use(
+    text: &str,
+    keyword: Range<usize>,
+    separator: &str,
+    grammar: &Grammar,
+    quiet: &[Range<usize>],
+) -> Option<UseStatement> {
+    let mut cursor = Cursor { text, at: keyword.end, quiet };
+    let mut leaves = Vec::new();
+    cursor.tree(Vec::new(), separator, grammar, &mut leaves)?;
+    cursor.space();
+    if !cursor.eat(";") {
+        return None;
+    }
+    let end = cursor.at;
+    let (start, visibility) = visibility_before(text, keyword.start, grammar);
+    let line = text[..start].rfind('\n').map(|at| at + 1).unwrap_or(0);
+    let indent = text[line..start].to_owned();
+    let indent = if indent.trim().is_empty() { indent } else { String::new() };
+    Some(UseStatement { range: start..end, visibility, indent, leaves })
+}
+
+/// Where the statement really begins, and what is written in front of the keyword.
+///
+/// `pub`, `pub(crate)` and `pub(in a::b)` are all one word followed by an optional bracketed group,
+/// so the group is stepped over whole rather than read.
+fn visibility_before(text: &str, keyword: usize, grammar: &Grammar) -> (usize, String) {
+    let Some(mut at) = space_back(text, keyword) else {
+        return (keyword, String::new());
+    };
+    if text[..at].ends_with(')') {
+        let Some(open) = matching_open(text, at) else {
+            return (keyword, String::new());
+        };
+        at = match space_back(text, open) {
+            Some(before) => before,
+            None => return (keyword, String::new()),
+        };
+    }
+    let word = word_back(text, at, grammar);
+    if word.is_empty() || text[word.clone()] != *"pub" {
+        return (keyword, String::new());
+    }
+    (word.start, text[word.start..].split(|c: char| c.is_whitespace()).next().unwrap_or("pub").to_owned())
+}
+
+/// A reader that walks the text of one statement, stepping over comments as it goes.
+struct Cursor<'a> {
+    text: &'a str,
+    at: usize,
+    quiet: &'a [Range<usize>],
+}
+
+impl Cursor<'_> {
+    /// Step over whitespace, and over any comment that begins where we now stand.
+    fn space(&mut self) {
+        loop {
+            while self.text[self.at..].chars().next().is_some_and(char::is_whitespace) {
+                self.at += self.text[self.at..].chars().next().map_or(0, char::len_utf8);
+            }
+            match self.quiet.iter().find(|range| range.start == self.at) {
+                Some(range) => self.at = range.end,
+                None => return,
+            }
+        }
+    }
+
+    fn eat(&mut self, what: &str) -> bool {
+        if self.text[self.at..].starts_with(what) {
+            self.at += what.len();
+            return true;
+        }
+        false
+    }
+
+    fn word(&mut self, grammar: &Grammar) -> Option<String> {
+        let rest = &self.text[self.at..];
+        let mut end = 0usize;
+        for letter in rest.chars() {
+            let first = end == 0;
+            if !grammar.is_word_character(letter, first) {
+                break;
+            }
+            end += letter.len_utf8();
+        }
+        if end == 0 {
+            return None;
+        }
+        let word = rest[..end].to_owned();
+        self.at += end;
+        Some(word)
+    }
+
+    /// One path, its group if it has one, and its alias if it has one.
+    ///
+    /// Returns nothing when what is written is not a path at all, which is how a `use` that this
+    /// reader does not understand is left alone rather than half read.
+    fn tree(
+        &mut self,
+        prefix: Vec<String>,
+        separator: &str,
+        grammar: &Grammar,
+        out: &mut Vec<UseLeaf>,
+    ) -> Option<()> {
+        let mut segments = prefix;
+        loop {
+            self.space();
+            if self.eat("{") {
+                loop {
+                    self.space();
+                    if self.eat("}") {
+                        return Some(());
+                    }
+                    self.tree(segments.clone(), separator, grammar, out)?;
+                    self.space();
+                    if self.eat(",") {
+                        continue;
+                    }
+                    self.space();
+                    if self.eat("}") {
+                        return Some(());
+                    }
+                    return None;
+                }
+            }
+            if self.eat("*") {
+                out.push(UseLeaf { segments, alias: None, glob: true });
+                return Some(());
+            }
+            let word = self.word(grammar)?;
+            // `use a::{self, b}` names `a` itself, so the word adds nothing to the path.
+            if !(word == "self" && !segments.is_empty()) {
+                segments.push(word);
+            }
+            self.space();
+            if self.eat(separator) {
+                continue;
+            }
+            let mut alias = None;
+            let mark = self.at;
+            if let Some(word) = self.word(grammar) {
+                if word == "as" {
+                    self.space();
+                    alias = self.word(grammar);
+                } else {
+                    self.at = mark;
+                }
+            }
+            out.push(UseLeaf { segments, alias, glob: false });
+            return Some(());
+        }
+    }
+}
+
+/// How deeply nested in braces each position of a file is, counted outside comments and strings.
+///
+/// What it exists for is `mod tests { use super::*; }`, which nearly every Rust file in this
+/// repository ends with. `super` there means the module the file **is**, not the module above it,
+/// and this reading has no idea an inline `mod` was opened — so a move refactor that trusted its own
+/// answer would rewrite `use super::*;` into something that names the wrong module. The depth is
+/// what lets it say "I cannot see where this is anchored" and leave it exactly as it is.
+#[derive(Debug, Clone, Default)]
+pub struct Nesting {
+    /// Where each brace is, and how deep the text is *after* it. Sorted, so a position is a binary
+    /// search rather than a walk.
+    braces: Vec<(usize, usize)>,
+}
+
+impl Nesting {
+    /// How deep `offset` is. Zero at the top level of the file.
+    pub fn at(&self, offset: usize) -> usize {
+        match self.braces.binary_search_by_key(&offset, |(at, _)| *at) {
+            Ok(found) => self.braces[found].1,
+            Err(0) => 0,
+            Err(after) => self.braces[after - 1].1,
+        }
+    }
+}
+
+/// Read the brace nesting of a whole file.
+///
+/// The comments and strings are stepped over with an index into a list that is already in order,
+/// rather than searched for at every byte: this runs over every character of every file in the
+/// project, and a search inside that loop makes it quadratic in the size of the file.
+pub fn nesting(text: &str, read: &Tokens) -> Nesting {
+    let quiet = &read.quiet;
+    let mut braces = Vec::new();
+    let mut depth = 0usize;
+    let mut at = 0usize;
+    let mut next = 0usize;
+    while at < text.len() {
+        while next < quiet.len() && quiet[next].start < at {
+            next += 1;
+        }
+        if next < quiet.len() && quiet[next].start == at {
+            at = quiet[next].end;
+            next += 1;
+            continue;
+        }
+        let letter = text[at..].chars().next().expect("inside the text");
+        match letter {
+            '{' => {
+                depth += 1;
+                braces.push((at, depth));
+            }
+            '}' => {
+                depth = depth.saturating_sub(1);
+                braces.push((at, depth));
+            }
+            _ => {}
+        }
+        at += letter.len_utf8();
+    }
+    Nesting { braces }
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -755,5 +1184,139 @@ mod tests {
         assert_eq!(context_at("import { A } from './a'", 900, &grammar), None);
         // The middle of a two-byte character, which a byte offset from a command line can be.
         assert_eq!(context_at("import { \u{00e9} } from './a'", 10, &grammar), None);
+    }
+    // ------------------------------------------------------- reading a whole file forwards
+
+    /// The specifiers in a file, as text, which is what a move refactor rewrites.
+    fn written(text: &str, grammar: &Grammar) -> Vec<String> {
+        specifiers_in(text, grammar).into_iter().map(|found| found.text).collect()
+    }
+
+    #[test]
+    fn every_shape_of_import_is_found_reading_forwards() {
+        let grammar = typescript();
+        let text = concat!(
+            "import x from './a';\n",
+            "import './b';\n",
+            "import { c } from \"./c\";\n",
+            "export * from './d';\n",
+            "const e = require('./e');\n",
+            "const f = await import('./f');\n",
+        );
+        assert_eq!(written(text, &grammar), ["./a", "./b", "./c", "./d", "./e", "./f"]);
+    }
+
+    #[test]
+    fn a_named_list_written_over_four_lines_is_still_one_import() {
+        let grammar = typescript();
+        let text = "import {\n    a,\n    b,\n} from './layout';\n";
+        assert_eq!(written(text, &grammar), ["./layout"]);
+    }
+
+    #[test]
+    fn an_ordinary_string_is_not_a_specifier() {
+        let grammar = typescript();
+        let text = concat!(
+            "import x from './a';\n",
+            "const greeting = 'hello';\n",
+            "// import y from './b';\n",
+            "const path = './c';\n",
+        );
+        assert_eq!(written(text, &grammar), ["./a"], "only the import line has one");
+    }
+
+    #[test]
+    fn a_stylesheet_import_keeps_its_extension() {
+        let grammar = css();
+        let text = "@import 'theme.css';\n.a { color: red; }\n";
+        let found = specifiers_in(text, &grammar);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].text, "theme.css");
+        assert_eq!(&text[found[0].range.clone()], "theme.css");
+    }
+
+    #[test]
+    fn the_range_is_the_content_and_never_the_quotes() {
+        let grammar = typescript();
+        let text = "import x from './a';\n";
+        let found = specifiers_in(text, &grammar);
+        assert_eq!(&text[found[0].range.clone()], "./a");
+        assert_eq!(&text[found[0].range.start - 1..found[0].range.start], "'");
+    }
+
+    #[test]
+    fn a_language_of_the_other_family_has_no_specifiers() {
+        assert!(specifiers_in("use crate::a::b;\n", &rust()).is_empty());
+        let line = "import x from './a';
+";
+        assert!(use_statements_in(line, &typescript(), &tokens(line, &typescript())).is_empty());
+    }
+
+    /// The leaves of every `use` statement, written back out, which is the readable form.
+    fn leaves(text: &str) -> Vec<String> {
+        use_statements_in(text, &rust(), &tokens(text, &rust()))
+            .into_iter()
+            .flat_map(|statement| {
+                statement.leaves.into_iter().map(|leaf| leaf.written("::")).collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_use_statement_is_read_into_its_leaves() {
+        assert_eq!(leaves("use a::b;\n"), ["a::b"]);
+        assert_eq!(leaves("use a::b as c;\n"), ["a::b as c"]);
+        assert_eq!(leaves("use a::{b, c};\n"), ["a::b", "a::c"]);
+        assert_eq!(leaves("use a::{b, c::{d, e}};\n"), ["a::b", "a::c::d", "a::c::e"]);
+        assert_eq!(leaves("use a::*;\n"), ["a::*"]);
+        assert_eq!(leaves("pub use a::b;\n"), ["a::b"]);
+        assert_eq!(leaves("use a::{self, b};\n"), ["a", "a::b"]);
+    }
+
+    #[test]
+    fn a_use_statement_written_over_four_lines_is_one_statement() {
+        let text = "use crate::{\n    a,\n    b::c,\n};\n";
+        let found = use_statements_in(text, &rust(), &tokens(text, &rust()));
+        assert_eq!(found.len(), 1);
+        assert_eq!(&text[found[0].range.clone()], "use crate::{\n    a,\n    b::c,\n};");
+        assert_eq!(found[0].leaves.len(), 2);
+    }
+
+    #[test]
+    fn the_visibility_and_the_indent_come_back_with_the_statement() {
+        let text = "mod a {\n    pub(crate) use super::b;\n}\n";
+        let found = use_statements_in(text, &rust(), &tokens(text, &rust()));
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].visibility, "pub(crate)");
+        assert_eq!(found[0].indent, "    ");
+        assert_eq!(&text[found[0].range.clone()], "pub(crate) use super::b;");
+    }
+
+    #[test]
+    fn a_use_line_quoted_in_a_comment_is_prose() {
+        let text = "// use crate::a::b;\nuse crate::c::d;\n";
+        assert_eq!(leaves(text), ["crate::c::d"]);
+    }
+
+    #[test]
+    fn a_chain_in_the_body_of_a_function_is_a_written_path() {
+        let text = "fn go() {\n    services::file_clipboard::free_name(&a, &b);\n}\n";
+        let found = paths_in(text, &rust(), &tokens(text, &rust()));
+        let words: Vec<Vec<String>> = found.iter().map(|path| path.words(text)).collect();
+        assert!(
+            words.contains(&vec![
+                "services".to_owned(),
+                "file_clipboard".to_owned(),
+                "free_name".to_owned()
+            ]),
+            "found {words:?}"
+        );
+    }
+
+    #[test]
+    fn a_chain_inside_a_comment_or_a_string_is_not_a_written_path() {
+        let text = "// crate::a::b\nlet s = \"crate::c::d\";\n";
+        let read = tokens(text, &rust());
+        assert!(paths_in(text, &rust(), &read).is_empty(), "{:?}", paths_in(text, &rust(), &read));
     }
 }

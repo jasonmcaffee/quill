@@ -6446,3 +6446,366 @@ fn the_editor_page_holds_the_gutter_and_the_suggestions() {
     harness.run();
     assert!(!harness.state().settings.suggestions.is_automatic());
 }
+
+// ============================================================================================
+// Deleting a file, saving a tab that is closed, and moving a file with its references.
+//
+// `task-1681`. Every one of these works on a folder of its own, copied out of the way, because a
+// test that deletes and moves files must never be able to reach the fixture another test is
+// reading — and because `services::recycle` really does put a deleted file in the Recycle Bin on
+// this platform.
+
+/// A folder of its own for a test that changes what is in it.
+fn scratch_folder(name: &str) -> std::path::PathBuf {
+    let root = std::env::temp_dir().join(format!("quill-1681-{name}"));
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::create_dir_all(root.join("app")).expect("make the app folder");
+    std::fs::create_dir_all(root.join("draw")).expect("make the draw folder");
+    std::fs::write(root.join("readme.md"), "# Notes\n").expect("write readme.md");
+    std::fs::write(root.join("app/main.ts"), "import { draw } from './layout';\n")
+        .expect("write main.ts");
+    std::fs::write(root.join("app/other.ts"), "import { draw } from './layout';\n")
+        .expect("write other.ts");
+    std::fs::write(root.join("app/layout.ts"), "export function draw() {}\n")
+        .expect("write layout.ts");
+    root
+}
+
+#[test]
+fn the_explorers_menu_holds_delete_and_it_asks_before_anything_goes() {
+    let folder = scratch_folder("menu");
+    let mut harness = harness_in(&folder);
+    let entries = quill_app::app::actions::explorer_menu(&folder.join("readme.md"), false, false);
+    let names: Vec<String> = entries
+        .iter()
+        .filter_map(|entry| match entry {
+            quill_app::app::actions::Entry::Item { name, .. } => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(names.contains(&"Delete".to_owned()), "the menu holds it: {names:?}");
+
+    did(&mut harness, &format!("action run delete-path --path {}", folder.join("readme.md").display()));
+    let question = harness.state().confirmation.clone().expect("the question is asked");
+    assert!(question.note.contains("readme.md"), "it names the file: {}", question.note);
+    assert!(
+        folder.join("readme.md").is_file(),
+        "and nothing has gone while the question is still on the screen"
+    );
+    harness.snapshot(shot("delete_confirmation"));
+}
+
+#[test]
+fn confirming_the_question_takes_the_file_off_the_disk_and_closes_its_tab() {
+    let folder = scratch_folder("confirm");
+    let mut harness = harness_in(&folder);
+    did(&mut harness, &format!("tab open {}", folder.join("readme.md").display()));
+    assert!(harness.state().files.paths().contains(&folder.join("readme.md")));
+
+    did(&mut harness, &format!("action run delete-path --path {}", folder.join("readme.md").display()));
+    did(&mut harness, "modal accept");
+    harness.run();
+    assert!(!folder.join("readme.md").exists(), "the file has gone");
+    assert!(
+        !harness.state().files.paths().contains(&folder.join("readme.md")),
+        "and the tab that was on it has gone with it"
+    );
+}
+
+#[test]
+fn cancelling_the_question_leaves_the_file_exactly_where_it_was() {
+    let folder = scratch_folder("cancel");
+    let mut harness = harness_in(&folder);
+    did(&mut harness, &format!("action run delete-path --path {}", folder.join("readme.md").display()));
+    did(&mut harness, "modal cancel");
+    harness.run();
+    assert!(folder.join("readme.md").is_file());
+    assert!(harness.state().confirmation.is_none());
+}
+
+#[test]
+fn delete_means_the_file_in_the_explorer_and_the_letter_in_the_editor() {
+    let folder = scratch_folder("two-meanings");
+    let mut harness = harness_in(&folder);
+    did(&mut harness, &format!("tab open {}", folder.join("readme.md").display()));
+
+    // With the editing area holding the keyboard, `Delete` is what it has always been.
+    harness.state_mut().command(quill_core::Command::PlaceCaret { offset: 0, extend: false });
+    harness.run();
+    harness.key_press(egui::Key::Delete);
+    harness.run();
+    assert_eq!(
+        harness.state().document().text().to_string(),
+        " Notes\n",
+        "it took the letter in front of the caret"
+    );
+    assert!(harness.state().confirmation.is_none(), "and asked nothing");
+
+    // With the explorer holding it, the same key is about the file.
+    did(&mut harness, &format!("explorer select {}", folder.join("readme.md").display()));
+    harness.key_press(egui::Key::Delete);
+    harness.run();
+    let question = harness.state().confirmation.clone().expect("the question is asked instead");
+    assert!(question.note.contains("readme.md"));
+}
+
+#[test]
+fn the_arrow_keys_walk_the_selection_and_a_letter_hands_the_keyboard_back() {
+    let folder = scratch_folder("arrows");
+    let mut harness = harness_in(&folder);
+    did(&mut harness, &format!("explorer select {}", folder.join("app").display()));
+    let rows: Vec<std::path::PathBuf> =
+        harness.state().tree.rows().iter().map(|row| row.entry.path.clone()).collect();
+    let at = rows.iter().position(|row| *row == folder.join("app")).expect("the app folder is a row");
+
+    harness.key_press(egui::Key::ArrowDown);
+    harness.run();
+    assert_eq!(
+        harness.state().selected.as_deref(),
+        Some(rows[at + 1].as_path()),
+        "Down moves to the next row that is showing"
+    );
+    harness.key_press(egui::Key::ArrowUp);
+    harness.run();
+    assert_eq!(harness.state().selected.as_deref(), Some(folder.join("app").as_path()));
+
+    // A letter belongs to the editor, so it hands the keyboard over and the letter lands in the
+    // document. Without this, clicking a file in the tree and then typing would swallow the word.
+    let before = harness.state().document().text().to_string();
+    harness.input_mut().events.push(egui::Event::Text("x".to_owned()));
+    harness.run();
+    assert_eq!(harness.state().focus, quill_app::app::Focus::Editor);
+    assert_eq!(
+        harness.state().document().text().to_string(),
+        format!("x{before}"),
+        "and the letter that handed it over is the one that was typed"
+    );
+}
+
+#[test]
+fn closing_a_tab_that_was_edited_writes_it_and_an_untitled_one_is_not_written() {
+    let folder = scratch_folder("save-on-close");
+    let mut harness = harness_in(&folder);
+    // A window opens with one untitled tab, which is the case that has nowhere to be written. It is
+    // closed as it always was and says so, rather than putting `untitled.md` in somebody's project
+    // because they shut a scratch buffer.
+    harness.input_mut().events.push(egui::Event::Text("scratch".to_owned()));
+    harness.run();
+    did(&mut harness, "tab close");
+    harness.run();
+    assert!(
+        harness.state().message.clone().unwrap_or_default().contains("without saving"),
+        "it says what it did: {:?}",
+        harness.state().message
+    );
+    assert!(!folder.join("untitled.md").exists(), "and wrote nothing into the project");
+
+    did(&mut harness, &format!("tab open {}", folder.join("readme.md").display()));
+    harness.state_mut().command(quill_core::Command::PlaceCaret { offset: 0, extend: false });
+    harness.run();
+    harness.input_mut().events.push(egui::Event::Text("Hello ".to_owned()));
+    harness.run();
+    assert!(harness.state().document().is_modified(), "it has changes that are not on the disk");
+
+    did(&mut harness, "tab close");
+    harness.run();
+    assert_eq!(
+        std::fs::read_to_string(folder.join("readme.md")).expect("read it back"),
+        "Hello # Notes\n",
+        "closing the tab wrote what was typed"
+    );
+}
+
+#[test]
+fn discarding_is_how_a_script_closes_a_tab_without_writing_it() {
+    let folder = scratch_folder("discard");
+    let mut harness = harness_in(&folder);
+    did(&mut harness, &format!("tab open {}", folder.join("readme.md").display()));
+    harness.state_mut().command(quill_core::Command::PlaceCaret { offset: 0, extend: false });
+    harness.run();
+    harness.input_mut().events.push(egui::Event::Text("Hello ".to_owned()));
+    harness.run();
+    did(&mut harness, "tab close --discard");
+    harness.run();
+    assert_eq!(
+        std::fs::read_to_string(folder.join("readme.md")).expect("read it back"),
+        "# Notes\n",
+        "the file on the disk is untouched"
+    );
+}
+
+#[test]
+fn moving_a_file_rewrites_a_closed_importer_and_leaves_an_open_one_modified() {
+    let folder = scratch_folder("move");
+    let mut harness = harness_in(&folder);
+    // One of the two importers is open, so the ownership rule has both cases to answer.
+    did(&mut harness, &format!("tab open {}", folder.join("app/main.ts").display()));
+
+    let result = did(
+        &mut harness,
+        &format!(
+            "explorer move {} {}",
+            folder.join("app/layout.ts").display(),
+            folder.join("draw").display()
+        ),
+    );
+    assert_eq!(result["applied"], serde_json::json!(true));
+    harness.run();
+
+    assert!(folder.join("draw/layout.ts").is_file(), "the file moved");
+    assert!(!folder.join("app/layout.ts").exists());
+    assert_eq!(
+        std::fs::read_to_string(folder.join("app/other.ts")).expect("read the closed importer"),
+        "import { draw } from '../draw/layout';\n",
+        "the closed file was written"
+    );
+    let open = harness
+        .state()
+        .files
+        .iter()
+        .find(|file| file.path() == Some(folder.join("app/main.ts").as_path()))
+        .expect("the open importer is still a tab");
+    assert_eq!(
+        open.document.text().to_string(),
+        "import { draw } from '../draw/layout';\n",
+        "the open file was edited as a document"
+    );
+    assert!(open.document.is_modified(), "and left unsaved rather than written behind somebody");
+    assert_eq!(
+        std::fs::read_to_string(folder.join("app/main.ts")).expect("read what is on the disk"),
+        "import { draw } from './layout';\n",
+        "so the disk still holds what it held"
+    );
+}
+
+#[test]
+fn a_dry_run_says_what_would_change_and_changes_nothing() {
+    let folder = scratch_folder("dry-run");
+    let mut harness = harness_in(&folder);
+    let result = did(
+        &mut harness,
+        &format!(
+            "explorer move {} {} --dry-run",
+            folder.join("app/layout.ts").display(),
+            folder.join("draw").display()
+        ),
+    );
+    assert_eq!(result["applied"], serde_json::json!(false));
+    assert_eq!(result["references"], serde_json::json!(2), "both importers would change");
+    assert!(folder.join("app/layout.ts").is_file(), "and nothing moved");
+    assert_eq!(
+        std::fs::read_to_string(folder.join("app/other.ts")).expect("read it"),
+        "import { draw } from './layout';\n",
+        "and nothing was written"
+    );
+}
+
+#[test]
+fn a_move_asked_for_without_the_refactor_leaves_every_reference_alone() {
+    let folder = scratch_folder("no-refactor");
+    let mut harness = harness_in(&folder);
+    did(
+        &mut harness,
+        &format!(
+            "explorer move {} {} --no-refactor",
+            folder.join("app/layout.ts").display(),
+            folder.join("draw").display()
+        ),
+    );
+    assert!(folder.join("draw/layout.ts").is_file());
+    assert_eq!(
+        std::fs::read_to_string(folder.join("app/other.ts")).expect("read it"),
+        "import { draw } from './layout';\n",
+        "the import is exactly as it was, and now points at nothing"
+    );
+}
+
+#[test]
+fn a_move_and_the_move_back_leave_the_project_exactly_as_it_started() {
+    let folder = scratch_folder("its-own-inverse");
+    let before = std::fs::read_to_string(folder.join("app/other.ts")).expect("read it");
+    let mut harness = harness_in(&folder);
+    did(
+        &mut harness,
+        &format!(
+            "explorer move {} {}",
+            folder.join("app/layout.ts").display(),
+            folder.join("draw").display()
+        ),
+    );
+    did(
+        &mut harness,
+        &format!(
+            "explorer move {} {}",
+            folder.join("draw/layout.ts").display(),
+            folder.join("app").display()
+        ),
+    );
+    assert!(folder.join("app/layout.ts").is_file(), "it is back where it started");
+    assert_eq!(
+        std::fs::read_to_string(folder.join("app/other.ts")).expect("read it again"),
+        before,
+        "and so is every specifier, which is why a move needs no undo of its own"
+    );
+}
+
+#[test]
+fn renaming_a_file_takes_the_code_that_names_it_with_it() {
+    let folder = scratch_folder("rename");
+    let mut harness = harness_in(&folder);
+    did(
+        &mut harness,
+        &format!("modal open rename --path {}", folder.join("app/layout.ts").display()),
+    );
+    did(&mut harness, "modal type page.ts");
+    did(&mut harness, "modal accept");
+    harness.run();
+    assert!(folder.join("app/page.ts").is_file(), "the file was renamed");
+    assert_eq!(
+        std::fs::read_to_string(folder.join("app/other.ts")).expect("read the importer"),
+        "import { draw } from './page';\n",
+        "and the import followed it, because a rename is a move to a new name"
+    );
+}
+
+#[test]
+fn dragging_a_row_onto_a_folder_moves_it_and_rewrites_what_named_it() {
+    let folder = scratch_folder("drag");
+    let mut harness = harness_in(&folder);
+    // The folders have to be open for their rows to be there to aim at.
+    did(&mut harness, &format!("explorer expand {}", folder.join("app").display()));
+    harness.run();
+    let from = row_middle(&mut harness, "layout.ts");
+    let to = row_middle(&mut harness, "draw");
+    drag(&mut harness, from, to);
+    harness.run();
+    assert!(folder.join("draw/layout.ts").is_file(), "it landed in the folder it was dropped on");
+    assert_eq!(
+        std::fs::read_to_string(folder.join("app/other.ts")).expect("read the importer"),
+        "import { draw } from '../draw/layout';\n"
+    );
+}
+
+#[test]
+fn a_row_dropped_where_it_already_is_does_nothing_at_all() {
+    let folder = scratch_folder("no-op-drag");
+    let mut harness = harness_in(&folder);
+    did(&mut harness, &format!("explorer expand {}", folder.join("app").display()));
+    harness.run();
+    let from = row_middle(&mut harness, "layout.ts");
+    let to = row_middle(&mut harness, "main.ts");
+    drag(&mut harness, from, to);
+    harness.run();
+    assert!(folder.join("app/layout.ts").is_file(), "it is where it was");
+    assert_eq!(
+        std::fs::read_to_string(folder.join("app/other.ts")).expect("read the importer"),
+        "import { draw } from './layout';\n",
+        "and nothing was rewritten"
+    );
+}
+
+/// The middle of the explorer row whose name contains `name`.
+fn row_middle(harness: &mut Harness<'static, QuillApp>, name: &str) -> egui::Pos2 {
+    let node = harness.get_by_label_contains(name);
+    node.rect().center()
+}

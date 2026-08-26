@@ -23,8 +23,28 @@
 //!
 //! Opening out the folders above the row is the window's half, because it is the tree that changes
 //! rather than the drawing. See `QuillApp::follow_the_open_file`.
+//!
+//! ## The selection, and the ring round it
+//!
+//! `task-1681` gave the explorer a cursor of its own, because `Delete` cannot mean "throw this file
+//! away" while the editing area has the keys. Two marks, not one: the file that is **showing** keeps
+//! its filled pill, and the row the explorer's own cursor is on gains a one point ring — drawn only
+//! while the explorer has the keyboard, so there is never a doubt about where a key press is going.
+//! A row that is both is a pill with a ring, which is what clicking a file looks like.
+//!
+//! ## Dragging
+//!
+//! A row can be carried onto a folder, which is IntelliJ's Move refactoring under the gesture a
+//! person reaches for. The component **reports and decides nothing**, which is the rule every
+//! component here follows and is the shape `task-1673` gave the tab drag: it collects the rectangle
+//! of every row it draws, works out which one the pointer is over once the list is drawn, and says
+//! what was dropped where. `QuillApp::move_path` does the rest.
+//!
+//! Three drops are refused by simply not offering a target — a folder into itself or into anything
+//! under it, a path into the folder it is already in, and anything outside the panel, the last so a
+//! drag can be thought better of.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use egui::{CornerRadius, Pos2, Rect, Sense, Stroke, Vec2};
 
@@ -44,6 +64,28 @@ pub struct Decoration {
     pub icon: Option<egui::TextureHandle>,
 }
 
+/// What the window tells the explorer about itself.
+///
+/// A struct rather than six more arguments, because the list had reached the length at which a
+/// caller starts passing them in the wrong order.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct View<'a> {
+    /// The file showing in the pane with the keyboard, drawn as a filled pill.
+    pub current: Option<&'a Path>,
+    /// The row the explorer's own cursor is on.
+    pub selected: Option<&'a Path>,
+    /// Whether the explorer has the keyboard, which is what the ring says.
+    pub keyboard: bool,
+    /// Whether the file showing has changes that have not been written.
+    pub unsaved: bool,
+    /// True on the frames the list should scroll to `current`.
+    pub reveal: bool,
+    /// True on the frames the list should scroll to `selected`, which is what the arrow keys ask
+    /// for: they move the explorer's own cursor without opening anything, so nothing else would.
+    pub reveal_selected: bool,
+    pub opacity: f32,
+}
+
 /// What the user did in the explorer.
 #[derive(Debug, Default)]
 pub struct ExplorerOutcome {
@@ -55,29 +97,38 @@ pub struct ExplorerOutcome {
     pub open_permanently: Option<PathBuf>,
     /// A row was right clicked: where the pointer was, and what it was over.
     pub context_menu: Option<(Pos2, PathBuf, bool)>,
+    /// A row was clicked, so it becomes the explorer's selection.
+    pub select: Option<PathBuf>,
+    /// Something was clicked in the panel, so the explorer should take the keyboard.
+    pub focus: bool,
+    /// A row was let go over a folder: what was carried, and the folder it landed in.
+    pub moved: Option<(PathBuf, PathBuf)>,
     /// The button that hides the panel was pressed.
     pub hide: bool,
 }
 
+/// One row as it was drawn, which is what the drop target is worked out from.
+struct Drawn {
+    rect: Rect,
+    path: PathBuf,
+    directory: bool,
+}
+
 /// Draw the explorer into `area`.
 ///
-/// `filter` is the text in the filter box, `current` is the file that is open and `unsaved` says whether it
-/// has changes that have not been written. `reveal` is true on the frame the list should scroll to
-/// `current`, which is once, when the file that is showing changed.
+/// `filter` is the text in the filter box and `view` is everything the window knows that changes
+/// how a row is drawn.
 pub fn show(
     ui: &mut egui::Ui,
     area: Rect,
     tree: &FileTree,
     filter: &mut String,
-    current: Option<&std::path::Path>,
-    unsaved: bool,
-    reveal: bool,
-    opacity: f32,
+    view: View,
     decorate: &dyn Fn(&std::path::Path) -> Decoration,
 ) -> ExplorerOutcome {
     let mut outcome = ExplorerOutcome::default();
     let painter = ui.painter_at(area);
-    painter.rect_filled(area, CornerRadius::ZERO, crate::theme::faded(color::EXPLORER, opacity));
+    painter.rect_filled(area, CornerRadius::ZERO, crate::theme::faded(color::EXPLORER, view.opacity));
 
     // The heading: the folder's name in small letter spaced capitals, then the button that hides the panel.
     let heading_y = area.top() + 22.0;
@@ -113,7 +164,8 @@ pub fn show(
     // The project's name is a row like any other row in the tree, so it takes a right click and
     // opens the same menu a folder does — `task-1673` asks for that, and the project folder is the
     // one folder in the tree that has no row of its own to right click. It takes no left click:
-    // there is nothing to open or close about the root, which is always shown.
+    // there is nothing to open or close about the root, which is always shown. It is a drop target,
+    // though, because moving something back to the top of the project has to be possible.
     let heading_hit = Rect::from_min_max(
         Pos2::new(area.left(), area.top() + 8.0),
         Pos2::new(area.right() - 34.0, area.top() + 36.0),
@@ -123,6 +175,8 @@ pub fn show(
     if heading_response.secondary_clicked() {
         if let Some(at) = heading_response.interact_pointer_pos().or_else(|| heading_response.hover_pos()) {
             outcome.context_menu = Some((at, tree.root().to_path_buf(), true));
+            outcome.select = Some(tree.root().to_path_buf());
+            outcome.focus = true;
         }
     }
     let project = tree
@@ -188,6 +242,12 @@ pub fn show(
     let list_rect = Rect::from_min_max(Pos2::new(area.left(), list_top), Pos2::new(area.right(), footer_top));
     let filtering = !filter.trim().is_empty();
 
+    // What was drawn, and what is in the air. Both filled in by the loop below and read once it has
+    // finished, which is the first moment anything knows where every row ended up.
+    let mut drawn: Vec<Drawn> = Vec::new();
+    let mut carried: Option<PathBuf> = None;
+    let mut released = false;
+
     let mut list = ui.new_child(egui::UiBuilder::new().max_rect(list_rect));
     list.set_clip_rect(list_rect);
     egui::ScrollArea::vertical().id_salt("explorer-rows").show(&mut list, |ui| {
@@ -202,28 +262,34 @@ pub fn show(
             for path in matches {
                 let depth = tree.depth_of(path);
                 let refusal = crate::services::file_kind::openable(path).err();
-                let row =
-                    file_row(ui, path, depth, current, unsaved, reveal, refusal, decorate(path));
+                let row = file_row(ui, path, depth, view, refusal, decorate(path));
+                row.collect(path, false, &mut drawn, &mut carried, &mut released);
                 row.apply(&mut outcome, path, false);
             }
         } else {
             for row in tree.rows() {
                 if row.entry.is_directory {
-                    let clicked = folder_row(ui, &row.entry.name, row.depth, row.entry.expanded);
+                    let clicked = folder_row(ui, &row.entry, row.depth, view);
                     if clicked.open {
                         outcome.toggle = Some(row.entry.path.clone());
                     }
+                    clicked.collect(&row.entry.path, true, &mut drawn, &mut carried, &mut released);
                     clicked.apply(&mut outcome, &row.entry.path, true);
                 } else {
                     let clicked = file_row(
                         ui,
                         &row.entry.path,
                         row.depth,
-                        current,
-                        unsaved,
-                        reveal,
+                        view,
                         row.entry.refusal,
                         decorate(&row.entry.path),
+                    );
+                    clicked.collect(
+                        &row.entry.path,
+                        false,
+                        &mut drawn,
+                        &mut carried,
+                        &mut released,
                     );
                     clicked.apply(&mut outcome, &row.entry.path, false);
                 }
@@ -235,9 +301,44 @@ pub fn show(
         }
     });
 
+    // Where a row being carried would land. After the loop, for the reason `settle_the_tab_drag`
+    // runs after the pane loop: this is the earliest moment anything knows where every row is.
+    if let Some(source) = &carried {
+        let pointer = ui.input(|input| input.pointer.interact_pos());
+        let target = pointer.and_then(|at| drop_target(&drawn, tree.root(), &heading_hit, at, source));
+        if let Some(folder) = &target {
+            let painter = ui.painter_at(area);
+            if let Some(row) = drawn.iter().find(|row| row.directory && row.path == *folder) {
+                painter.rect(
+                    row.rect.shrink2(Vec2::new(8.0, 1.0)),
+                    CornerRadius::same(5),
+                    color::CONTROL,
+                    Stroke::new(1.0, color::ACCENT),
+                    egui::StrokeKind::Inside,
+                );
+            } else if *folder == *tree.root() {
+                painter.rect(
+                    heading_hit,
+                    CornerRadius::same(5),
+                    egui::Color32::TRANSPARENT,
+                    Stroke::new(1.0, color::ACCENT),
+                    egui::StrokeKind::Inside,
+                );
+            }
+        }
+        if let Some(at) = pointer {
+            carried_name(ui, area, source, at, target.is_some());
+        }
+        if released {
+            if let Some(folder) = target {
+                outcome.moved = Some((source.clone(), folder));
+            }
+        }
+    }
+
     // The footer, counting the files and how many are unsaved.
     let footer = Rect::from_min_max(Pos2::new(area.left(), footer_top), area.right_bottom());
-    painter.rect_filled(footer, CornerRadius::ZERO, crate::theme::faded(color::EXPLORER_FOOTER, opacity));
+    painter.rect_filled(footer, CornerRadius::ZERO, crate::theme::faded(color::EXPLORER_FOOTER, view.opacity));
     painter.line_segment(
         [Pos2::new(footer.left(), footer.top()), Pos2::new(footer.right(), footer.top())],
         Stroke::new(1.0, color::DIVIDER),
@@ -249,7 +350,7 @@ pub fn show(
     if openable < count {
         text = format!("{text}  \u{00B7}  {openable} can be opened");
     }
-    if unsaved {
+    if view.unsaved {
         text = format!("{text}  \u{00B7}  1 unsaved");
     }
     let galley = painter.layout_no_wrap(text, egui::FontId::proportional(10.5), color::TEXT_DIM);
@@ -262,11 +363,59 @@ pub fn show(
     outcome
 }
 
+/// The folder a drop at `at` would land in, or nothing when the drop is refused.
+///
+/// A folder row is that folder and a file row is the folder the file is in, which is what IntelliJ
+/// does and is what somebody aiming at a crowded folder means. Three things answer with nothing: a
+/// folder dropped into itself or into anything under it, a path dropped into the folder it is
+/// already in, and a pointer over no row at all.
+fn drop_target(
+    drawn: &[Drawn],
+    root: &Path,
+    heading: &Rect,
+    at: Pos2,
+    source: &Path,
+) -> Option<PathBuf> {
+    let folder = match drawn.iter().find(|row| row.rect.contains(at)) {
+        Some(row) if row.directory => row.path.clone(),
+        Some(row) => row.path.parent()?.to_path_buf(),
+        None if heading.contains(at) => root.to_path_buf(),
+        None => return None,
+    };
+    if folder == source || folder.starts_with(source) {
+        return None;
+    }
+    if source.parent() == Some(folder.as_path()) {
+        return None;
+    }
+    Some(folder)
+}
+
+/// The name of what is being carried, drawn under the pointer.
+fn carried_name(ui: &egui::Ui, area: Rect, source: &Path, at: Pos2, welcome: bool) {
+    let name = source.file_name().map(|name| name.to_string_lossy().to_string()).unwrap_or_default();
+    let painter = ui.painter_at(area.expand(4.0));
+    let tint = if welcome { color::TEXT_STRONG } else { color::TEXT_FAINT };
+    let galley = painter.layout_no_wrap(name, egui::FontId::proportional(12.0), tint);
+    let box_rect = Rect::from_min_size(
+        at + Vec2::new(12.0, 6.0),
+        galley.size() + Vec2::new(12.0, 6.0),
+    );
+    painter.rect(
+        box_rect,
+        CornerRadius::same(4),
+        color::MENU,
+        Stroke::new(1.0, if welcome { color::ACCENT } else { color::CONTROL_BORDER }),
+        egui::StrokeKind::Inside,
+    );
+    painter.galley(box_rect.min + Vec2::new(6.0, 3.0), galley, tint);
+}
+
 /// What happened to one row, before the caller knows which path it was.
 ///
-/// A row cannot decide what a click means — that is the window's business — so it reports the three
+/// A row cannot decide what a click means — that is the window's business — so it reports the
 /// things that can happen to it and the caller turns them into an outcome.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct RowClick {
     /// Clicked once: open the file, or open or close the folder.
     open: bool,
@@ -274,12 +423,27 @@ struct RowClick {
     twice: bool,
     /// Right clicked, at this position.
     menu: Option<Pos2>,
+    /// Where the row was drawn, which is what a drop is worked out against.
+    rect: Rect,
+    /// True while this row is the one being carried.
+    dragged: bool,
+    /// True on the frame it was let go.
+    dropped: bool,
+    /// Clicked at all, whether or not the file can be opened. What the selection follows, because
+    /// a file Quill cannot show the text of can still be the one you meant to delete.
+    picked: bool,
 }
 
 impl RowClick {
-    fn apply(self, outcome: &mut ExplorerOutcome, path: &std::path::Path, directory: bool) {
+    fn apply(&self, outcome: &mut ExplorerOutcome, path: &std::path::Path, directory: bool) {
         if let Some(at) = self.menu {
             outcome.context_menu = Some((at, path.to_path_buf(), directory));
+            outcome.select = Some(path.to_path_buf());
+            outcome.focus = true;
+        }
+        if self.picked {
+            outcome.select = Some(path.to_path_buf());
+            outcome.focus = true;
         }
         if directory {
             return;
@@ -288,6 +452,24 @@ impl RowClick {
             outcome.open_permanently = Some(path.to_path_buf());
         } else if self.open {
             outcome.open = Some(path.to_path_buf());
+        }
+    }
+
+    /// Remember where this row was drawn, and whether it is the one in the air.
+    fn collect(
+        &self,
+        path: &std::path::Path,
+        directory: bool,
+        drawn: &mut Vec<Drawn>,
+        carried: &mut Option<PathBuf>,
+        released: &mut bool,
+    ) {
+        drawn.push(Drawn { rect: self.rect, path: path.to_path_buf(), directory });
+        if self.dragged || self.dropped {
+            *carried = Some(path.to_path_buf());
+        }
+        if self.dropped {
+            *released = true;
         }
     }
 
@@ -301,20 +483,45 @@ impl RowClick {
                 .secondary_clicked()
                 .then(|| response.interact_pointer_pos().or_else(|| response.hover_pos()))
                 .flatten(),
+            rect: response.rect,
+            dragged: response.dragged(),
+            dropped: response.drag_stopped(),
+            picked: response.clicked() || response.double_clicked(),
         }
     }
 }
 
 /// A folder row: a triangle that points down when open, then the name.
-fn folder_row(ui: &mut egui::Ui, name: &str, depth: usize, expanded: bool) -> RowClick {
+fn folder_row(
+    ui: &mut egui::Ui,
+    entry: &crate::services::file_tree::Entry,
+    depth: usize,
+    view: View,
+) -> RowClick {
+    let name = &entry.name;
     let row = allocate_row(ui);
     let response =
         ui.interact(row, ui.id().with(("folder", name, depth)), Sense::click_and_drag());
-    if response.hovered() {
-        ui.painter().rect_filled(row.shrink2(Vec2::new(8.0, 1.0)), CornerRadius::same(5), color::CONTROL);
+    let pill = row.shrink2(Vec2::new(8.0, 1.0));
+    let selected = view.selected == Some(entry.path.as_path());
+    if selected && view.reveal_selected {
+        ui.scroll_to_rect(row, None);
+    }
+    if selected {
+        ui.painter().rect_filled(pill, CornerRadius::same(5), color::SELECTED_ROW);
+    } else if response.hovered() {
+        ui.painter().rect_filled(pill, CornerRadius::same(5), color::CONTROL);
+    }
+    if selected && view.keyboard {
+        ui.painter().rect_stroke(
+            pill,
+            CornerRadius::same(5),
+            Stroke::new(1.0, color::ACCENT),
+            egui::StrokeKind::Inside,
+        );
     }
     let x = row.left() + 16.0 + depth as f32 * size::INDENT;
-    icon::disclosure(ui.painter(), Pos2::new(x, row.center().y), expanded, color::TEXT_DIM);
+    icon::disclosure(ui.painter(), Pos2::new(x, row.center().y), entry.expanded, color::TEXT_DIM);
     let galley = ui.painter().layout_no_wrap(
         name.to_owned(),
         egui::FontId::proportional(12.5),
@@ -327,7 +534,7 @@ fn folder_row(ui: &mut egui::Ui, name: &str, depth: usize, expanded: bool) -> Ro
     );
     // The accessible name is the folder's name, so a test can ask for it by name.
     response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), expanded, name)
+        egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), entry.expanded, name)
     });
     RowClick::from(&response)
 }
@@ -338,36 +545,44 @@ fn file_row(
     ui: &mut egui::Ui,
     path: &std::path::Path,
     depth: usize,
-    current: Option<&std::path::Path>,
-    unsaved: bool,
-    reveal: bool,
+    view: View,
     refusal: Option<Refusal>,
     decoration: Decoration,
 ) -> RowClick {
     let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
     let row = allocate_row(ui);
-    // A file Quill cannot open is drawn dimmed and does not take clicks, so the tree says what is in the
-    // folder without pretending everything in it can be opened.
+    // A file Quill cannot open is drawn dimmed and does not open on a click, so the tree says what is
+    // in the folder without pretending everything in it can be opened. It still takes a right click
+    // and can still be carried: renaming a picture, or moving one, has nothing to do with whether
+    // Quill can show its text.
     let openable = refusal.is_none();
-    // A file Quill cannot open still takes a right click, because renaming it or revealing it in the
-    // file manager has nothing to do with whether it holds text.
-    let sense = if openable { Sense::click_and_drag() } else { Sense::click() };
-    let response = ui.interact(row, ui.id().with(("file", path)), sense);
+    let response = ui.interact(row, ui.id().with(("file", path)), Sense::click_and_drag());
     if let Some(refusal) = refusal {
         // The row says which of the two reasons it is: the file is not text, or it is too large.
         response.clone().on_hover_text(refusal.reason());
     }
-    let open = current == Some(path);
-    if open && reveal {
+    let open = view.current == Some(path);
+    let selected = view.selected == Some(path);
+    if (open && view.reveal) || (selected && view.reveal_selected) {
         // The least scrolling that brings the row into view, so a row already on the screen does not
         // move. See the note at the top of this file.
         ui.scroll_to_rect(row, None);
     }
     let pill = row.shrink2(Vec2::new(8.0, 1.0));
-    if open {
+    if open || selected {
         ui.painter().rect_filled(pill, CornerRadius::same(5), color::SELECTED_ROW);
     } else if response.hovered() && openable {
         ui.painter().rect_filled(pill, CornerRadius::same(5), color::CONTROL);
+    }
+    // The ring says where the keyboard is, which is the whole reason the explorer has a selection of
+    // its own. Without it a person could not tell whether Delete would take a letter or a file.
+    if selected && view.keyboard {
+        ui.painter().rect_stroke(
+            pill,
+            CornerRadius::same(5),
+            Stroke::new(1.0, color::ACCENT),
+            egui::StrokeKind::Inside,
+        );
     }
     let x = row.left() + 16.0 + depth as f32 * size::INDENT;
     match &decoration.icon {
@@ -389,7 +604,7 @@ fn file_row(
     }
     // A file git has something to say about is drawn in git's colour for it, which is what IntelliJ
     // does and is the cheapest way to see at a glance what a commit would hold.
-    let tint = if open {
+    let tint = if open || selected {
         color::TEXT_STRONG
     } else if let Some(mark) = decoration.tint {
         mark
@@ -405,7 +620,7 @@ fn file_row(
         galley,
         tint,
     );
-    if open && unsaved {
+    if open && view.unsaved {
         ui.painter().circle_filled(Pos2::new(pill.right() - 12.0, row.center().y), 3.5, color::UNSAVED);
     }
     response.widget_info(|| {
@@ -413,7 +628,8 @@ fn file_row(
     });
     let mut click = RowClick::from(&response);
     if !openable {
-        // It cannot be opened, so a click on it opens nothing. The menu still works.
+        // It cannot be opened, so a click on it opens nothing. The menu, the selection and carrying
+        // it still work.
         click.open = false;
         click.twice = false;
     }

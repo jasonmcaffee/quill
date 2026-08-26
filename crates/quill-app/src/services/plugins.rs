@@ -302,6 +302,13 @@ pub struct Grammars {
 }
 
 impl Grammars {
+    /// A set built by hand, for a test that needs one without a plugin folder behind it.
+    ///
+    /// Extensions are written without the dot, as `for_path` compares them.
+    pub fn of(by_extension: Vec<(String, Grammar)>) -> Self {
+        Self { by_extension }
+    }
+
     /// The grammar that reads this file, if a plugin that is switched on claims it.
     pub fn for_path(&self, path: &Path) -> Option<&Grammar> {
         let extension = path.extension().and_then(|name| name.to_str())?.to_lowercase();

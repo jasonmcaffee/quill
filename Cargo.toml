@@ -45,6 +45,8 @@ windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_UI_WindowsAndMessaging",
+    # Deleting a file to the Recycle Bin, which is `SHFileOperationW`. See `services/recycle.rs`.
+    "Win32_UI_Shell",
 ] }
 objc2-foundation = { version = "0.3", default-features = false, features = [
     "std",

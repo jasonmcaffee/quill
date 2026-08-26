@@ -130,8 +130,12 @@ pub enum Action {
     CopyPathReference(PathBuf),
     /// Put whatever was cut or copied into this folder.
     PasteInto(PathBuf),
-    /// Rename this file or folder. The new name is asked for first.
+    /// Rename this file or folder. The new name is asked for first, and what refers to it follows
+    /// it, because a rename is a move to a new name.
     RenamePath(PathBuf),
+    /// Throw this file or folder away. The question is asked first, and where it goes is
+    /// `services::recycle`'s answer.
+    DeletePath(PathBuf),
     /// Show this path in the platform's file manager.
     RevealPath(PathBuf),
     /// Read this folder again, and this file again if it is open.
@@ -318,6 +322,15 @@ impl Shortcut {
 
     pub const fn control_shift(key: egui::Key) -> Self {
         Self { key, command: false, shift: true, alt: false, ctrl: true }
+    }
+
+    /// A key with no modifier at all.
+    ///
+    /// One entry uses it — `Delete` in the explorer's menu — and it is marked as not coming from
+    /// the keyboard, because a bare key that the menu watcher fired would delete a file every time
+    /// somebody pressed Delete while typing.
+    pub const fn plain(key: egui::Key) -> Self {
+        Self { key, command: false, shift: false, alt: false, ctrl: false }
     }
 
     /// True when this key press is this shortcut, and not a longer one that happens to include it.
@@ -986,9 +999,10 @@ pub fn tab_menu(state: &MenuState) -> Vec<Entry> {
 /// `directory` says whether the row is a folder, because a new file goes *in* a folder and *beside*
 /// a file, and there is nothing to reload from disk about a file that is not open.
 ///
-/// There is no `Delete`. IntelliJ's menu has one and `task-1649` does not ask for one, and a
-/// destructive entry nobody asked for, one row under `Rename...`, is worth leaving out until it is
-/// wanted. Cut and Paste already move a file out of the way.
+/// `Delete` is here because `task-1681` asked for it, one row under `Rename...` and with the key
+/// beside it. It is marked as not coming from the keyboard: the watcher behind the menu bar must
+/// never fire it, because `Delete` in the editing area means "take away the letter in front of the
+/// caret". The explorer reads the key itself, and only while it has the keyboard.
 pub fn explorer_menu(path: &std::path::Path, directory: bool, can_paste: bool) -> Vec<Entry> {
     let folder = if directory {
         path.to_path_buf()
@@ -1011,6 +1025,12 @@ pub fn explorer_menu(path: &std::path::Path, directory: bool, can_paste: bool) -
             .not_from_the_keyboard(),
         Entry::Separator,
         Entry::item("Rename...", Action::RenamePath(path.to_path_buf())),
+        Entry::with_shortcut(
+            "Delete",
+            Action::DeletePath(path.to_path_buf()),
+            Shortcut::plain(egui::Key::Delete),
+        )
+        .not_from_the_keyboard(),
         Entry::Separator,
         Entry::item(crate::services::launcher::file_manager_name(), Action::RevealPath(path.to_path_buf())),
         Entry::item("Reload from Disk", Action::ReloadPath(path.to_path_buf())),

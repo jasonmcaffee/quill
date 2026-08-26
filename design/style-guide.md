@@ -117,6 +117,13 @@ Its text is `TEXT_STRONG` when chosen and `TEXT_CONTROL` otherwise. This is the 
 explorer, the chosen page in Settings, the chosen plugin, and the chosen commit in the history —
 they are all the same drawing and they should be.
 
+**A row with the keyboard on it.** The same pill, with a one point `ACCENT` stroke drawn inside its
+edge. It is one addition to the pill rather than a second kind of selection, and it means exactly
+one thing: *a key press now is about this row*. `task-1681` added it for the explorer, where a bare
+`Delete` throws a file away and a person has to be able to see that before they press it. Do not use
+it for a row that is merely chosen — that is the pill on its own — and never draw it on a panel that
+does not have the keyboard.
+
 **A button.** `CONTROL` with a one point `CONTROL_BORDER` stroke, corner radius `CONTROL_CORNER`,
 label `TEXT_STRONG` centred. Hovered it fills `ACCENT`. An icon button is a 22 point square with no
 fill until it is hovered, when it fills `CONTROL` at corner radius 4.

@@ -506,16 +506,19 @@ quill-cli tab show README.md
 ### tab close
 
 ```
-quill-cli tab close [tab]
+quill-cli tab close [tab] [--discard]
 ```
 
-Close a tab. Closing the last one leaves an empty untitled tab rather than no tab at all.
+Close a tab. A tab with unsaved changes is written first, which is what closing one by hand does. Closing the last one leaves an empty untitled tab rather than no tab at all.
 
 - `tab` (optional) — Its number, name or path. The tab that is showing when it is left out.
+
+- `--discard` — Close it without writing what was typed into it.
 
 ```sh
 quill-cli tab close
 quill-cli tab close notes.md
+quill-cli tab close --discard
 ```
 
 ### tab next
@@ -1330,6 +1333,54 @@ Scroll the explorer to the file that is showing and select it, opening out the f
 
 ```sh
 quill-cli explorer select-open-file
+```
+
+### explorer select
+
+```
+quill-cli explorer select [path]
+```
+
+Set the row the explorer's own cursor is on, which is what Delete is about, or read it when no path is given. It is not the same as the tab that is showing.
+
+- `path` (optional) — The file or folder to select.
+
+```sh
+quill-cli explorer select README.md
+quill-cli explorer select --json
+```
+
+### explorer delete
+
+```
+quill-cli explorer delete <path>
+```
+
+Delete a file or a folder. On Windows it goes to the Recycle Bin; everywhere else it is gone. No question is asked, because typing the command is the deliberate act the question exists to ask for.
+
+- `path` — The file or folder to delete.
+
+```sh
+quill-cli explorer delete notes/old.md
+```
+
+### explorer move
+
+```
+quill-cli explorer move <path> <folder> [--dry-run] [--no-refactor]
+```
+
+Move a file or a folder into another folder, rewriting every import, use line and mod declaration in the project that names it. The same thing dragging a row in the explorer does.
+
+- `path` — The file or folder to move.
+- `folder` — The folder it goes into.
+
+- `--dry-run` — Print the whole change set and change nothing at all.
+- `--no-refactor` — Move the bytes and leave every reference to them alone.
+
+```sh
+quill-cli explorer move src/app/layout.ts src/draw
+quill-cli explorer move src/app/layout.ts src/draw --dry-run --json
 ```
 
 ### explorer reveal

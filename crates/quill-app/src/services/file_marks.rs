@@ -199,6 +199,27 @@ impl FileMarks {
     }
 
     /// Take every mark away, everywhere. What `highlight clear --all` asks for.
+    /// Forget everything marked in one file, which is what deleting it means.
+    pub fn forget(&mut self, path: &Path) {
+        if self.files.remove(path).is_some() {
+            self.dirty = true;
+        }
+    }
+
+    /// Follow a set of files that moved, so a marked passage is still marked at the new path.
+    ///
+    /// `task-1681` is the second place a closed file's bytes move; this is the first place one
+    /// changes its name. The marks themselves are untouched, because a move does not shift a byte
+    /// inside the file.
+    pub fn moved(&mut self, moved: &[(PathBuf, PathBuf)]) {
+        for (old, new) in moved {
+            if let Some(marks) = self.files.remove(old) {
+                self.files.insert(new.clone(), marks);
+                self.dirty = true;
+            }
+        }
+    }
+
     pub fn clear_all(&mut self) -> usize {
         let cleared = self.total();
         if cleared > 0 {

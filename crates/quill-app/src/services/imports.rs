@@ -426,6 +426,135 @@ fn parts(path: &Path) -> Vec<&std::ffi::OsStr> {
         .collect()
 }
 
+// ------------------------------------------------------- what a file is, where it is being moved
+//
+// `task-1681` moves a file and takes the code that names it with it, so it needs two things this
+// module already computed for the popup and never had to hand out: how one file is written as a
+// specifier from a given folder, and where a file sits in the module tree. Both are path
+// arithmetic, so both work on a path that is not on the disk yet — which is the whole point, since
+// the answer wanted is always the one for *after* the move.
+
+/// How one file is written as a specifier from the folder `base`, or nothing when it cannot be.
+///
+/// Public because `services::file_move` asks it about a file that has not moved yet. It is the same
+/// function `specifiers` uses for every row of the popup, so a specifier the refactor writes is one
+/// the popup would have offered.
+pub fn write_specifier(base: &Path, file: &Path, grammar: &Grammar) -> Option<String> {
+    specifier_for(base, file, grammar)
+}
+
+/// The same, keeping the shape of a specifier that is already written.
+///
+/// A specifier written with its extension keeps it even where `import_omit_extension` would drop
+/// it. Rewriting `'./a.js'` as `'./a'` while moving an unrelated file is a change nobody asked for,
+/// and a project that writes its extensions writes all of them.
+pub fn rewrite_specifier(
+    base: &Path,
+    file: &Path,
+    written: &str,
+    grammar: &Grammar,
+) -> Option<String> {
+    let extension = extension_of(file, grammar);
+    let kept = match &extension {
+        Some(extension) => written.to_lowercase().ends_with(&extension.to_lowercase()),
+        None => false,
+    };
+    if !kept {
+        return specifier_for(base, file, grammar);
+    }
+    relative(base, file)
+}
+
+/// Where a file sits in the module tree of the package it is in.
+///
+/// Pure path arithmetic, so it answers about a path that is not on the disk. The source root is the
+/// nearest ancestor named by `language.source_roots`; the package is that root's parent folder with
+/// `-` read as `_`, which is how cargo spells a crate; and the segments are the path from the root
+/// down, with a final `language.import_index` stem dropped because `services/mod.rs` **is**
+/// `services` rather than a module inside it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Module {
+    /// The folder `language.source_roots` named, which is what `crate` means from inside it.
+    pub root: PathBuf,
+    /// How the package is spelt in a path: `quill_app`.
+    pub package: String,
+    /// The segments below the root: `["services", "file_clipboard"]`.
+    pub segments: Vec<String>,
+}
+
+impl Module {
+    /// Whether this module is `other`, or is inside it.
+    pub fn is_inside(&self, other: &Module) -> bool {
+        self.root == other.root && self.segments.starts_with(&other.segments)
+    }
+
+    /// The module above this one, or nothing at the root of the package.
+    pub fn parent(&self) -> Option<Module> {
+        let mut segments = self.segments.clone();
+        segments.pop()?;
+        Some(Module { root: self.root.clone(), package: self.package.clone(), segments })
+    }
+
+    /// This module's name, which is what a `mod` declaration says.
+    pub fn name(&self) -> Option<&str> {
+        self.segments.last().map(String::as_str)
+    }
+}
+
+/// The module a file would be if it were at `path`.
+pub fn module_of(path: &Path, grammar: &Grammar) -> Option<Module> {
+    if grammar.source_roots.is_empty() {
+        return None;
+    }
+    let root = source_roots_above(path, grammar).into_iter().next()?;
+    let package = root.parent()?.file_name()?.to_str()?.replace('-', "_");
+    let under = path.strip_prefix(&root).ok()?;
+    let mut segments: Vec<String> = Vec::new();
+    for part in under.components() {
+        let Component::Normal(part) = part else {
+            return None;
+        };
+        segments.push(part.to_str()?.to_owned());
+    }
+    // The last one is a file name, and a file is a module named after its stem — unless its stem is
+    // one of the language's index names, in which case the file *is* the folder's module.
+    if let Some(last) = segments.pop() {
+        match extension_of(Path::new(&last), grammar) {
+            Some(extension) => {
+                let stem = last[..last.len() - extension.len()].to_owned();
+                if !grammar.import_index.iter().any(|index| *index == stem) {
+                    segments.push(stem);
+                }
+            }
+            // A folder, which is a module of its own name.
+            None => segments.push(last),
+        }
+    }
+    Some(Module { root, package, segments })
+}
+
+/// The file that holds a module's own declarations: `services/mod.rs`, or `lib.rs` at the root.
+///
+/// Answered against the project, because which of `mod`, `lib` and `main` a crate uses is a fact
+/// about the crate rather than about the language.
+pub fn module_file(project: &Project, module: &Module, grammar: &Grammar) -> Option<PathBuf> {
+    let mut folder = module.root.clone();
+    for segment in &module.segments {
+        folder.push(segment);
+    }
+    if let Some(found) = module_file_in(project, &folder, grammar) {
+        return Some(found);
+    }
+    // Rust's older style: `services.rs` beside `services/`.
+    let beside: Vec<PathBuf> = with_each_extension(&folder, grammar).collect();
+    beside.into_iter().find(|candidate| project.holds(candidate))
+}
+
+/// Every package in the project, spelt the way a path spells one, with its source root.
+pub fn package_roots(project: &Project, grammar: &Grammar) -> Vec<(String, PathBuf)> {
+    packages(project, grammar)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

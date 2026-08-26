@@ -556,6 +556,109 @@ again before the pointer was up. `scroll_to_rect(row, None)` is what "the least 
 is the same call `Go to File` and `Find in Files` already make. `View -> Select Opened File` and
 `quill-cli explorer select-open-file` ask for it by hand.
 
+## The explorer holds the keyboard, and a file can be thrown away or moved
+
+`task-1681` asks for three things that look unrelated and are not: a file can be deleted, a tab that
+was edited saves itself when it is closed, and a file dragged to a new folder takes the code that
+names it with it. Two of them needed something Quill had never had, and it is the same thing.
+
+**`Focus` has a third value.** `Delete` cannot mean "throw this file away" while the editing area
+has the keys, because there it means "take away the letter in front of the caret". So the explorer
+holds the keyboard, has a **selection** of its own — separate from the file that is showing, because
+they are different questions — and is walked with the arrow keys. `Enter` opens the selected file
+permanently and hands the keyboard to the editor, `Escape` hands it back, and `Delete` asks the
+question. The selection is drawn as the pill the open file already has, with a one point `ACCENT`
+ring **only while the explorer has the keyboard**, so a person can always see where a key press is
+going.
+
+**A letter typed hands the keyboard straight to the editor**, and that one rule is what makes the
+paragraph above safe rather than annoying. Clicking a file in the tree and then typing is one of the
+commonest things anybody does; the explorer has no use for a printable character — its filter box is
+a field of its own — so any letter means the editor, and the handover happens *before any pane reads
+the frame's input*, which is what makes the letter that caused it land in the document. `Delete` and
+the arrow keys produce no text event and stay the explorer's. **`Backspace` on its own deliberately
+does nothing**: it is exactly the key somebody who has just clicked a file is about to press in the
+editor. The command key with it is IntelliJ's own answer for the Mac keyboard that has no `Delete`.
+
+**Where a deleted file goes is one function**, `services::recycle`. On Windows it is the Recycle Bin,
+through `SHFileOperationW` with `FOF_ALLOWUNDO` — one feature flag on the `windows-sys` dependency
+the window's transparency already needs, and no new crate. Everywhere else it is deleted outright,
+and the question says so: `Destination` is an enum with two values and the dialog's wording is
+derived from it, so the day the second platform is answered there is one place to change and the
+sentence follows. `Confirmation` stopped holding a git request and started holding an `Answer`, so
+the one confirmation dialog can ask a question that has nothing to do with git without learning a
+second thing.
+
+**`QuillApp::close_tab` writes a modified tab before closing it.** Every other editor puts a
+three-answer dialog here; Quill can give the simpler answer because it saves plain text and nothing
+else, so writing the buffer to the file it came from is exactly what was typed. A picture tab and a
+tab with no path are the two exceptions, each with a reason, and the untitled one *says* it was
+closed without saving rather than putting `untitled.md` in somebody's project.
+
+## A file that moves takes the code that names it with it
+
+Drag a row onto a folder and the file moves and every import, `use` line and `mod` declaration in the
+project that named it is rewritten. `Rename...` goes through the same function, because a rename
+**is** a move to a new name and two answers to one question would be one too many.
+`tasks/task-1681-file-operations-tdd.md` is the design.
+
+**The tier is the syntactic one `task-1675` and `task-1680` already chose**, and one more reason is
+added to theirs: a refactor that depended on a language server would work on a machine that happened
+to have one and *silently do nothing* on a machine that did not — which is the worst of the three
+possible outcomes, because the file has already been dropped somewhere else.
+
+**It is one reading, asked twice.** `quill_core::imports` gained the forward half of the questions it
+already answered backwards from a caret: `specifiers_in` runs `context_at`'s own test — is this
+string inside an import statement — over every string in the file, and `use_statements_in` and
+`paths_in` read the path family the same way, out of the token stream so a `use` line quoted in a doc
+comment is left as prose. The completion popup and the refactor therefore cannot come to different
+conclusions about what an import is.
+
+**One rule decides every case**: *work out what the written text will mean **after** the move; if
+that is not what it means now, rewrite it, and if it is, leave it exactly as it is.* That is what
+makes moving a whole folder cheap — every specifier inside it still points where it did — and it is
+what keeps a `super::sibling` in a moved Rust module untouched while rewriting a `super::sibling` in
+a file that stayed behind.
+
+`services::file_move::plan` is all of it, and it reads nothing itself: it is handed a closure that
+answers with a file's text, so the window can prefer an open tab's live text and a test can hand in
+a map. **The ownership rule is `task-1675`'s, unchanged** — an open file is one
+`Command::ReplaceMany`, which is one undo step, and is left **modified rather than written**; a
+closed file is read, checked and written once, and one that changed underneath the plan is skipped
+whole and named.
+
+**Rust's `mod` declarations are the part that actually breaks the build**, and they are the reason
+this is more than a search and replace: a file is not a module because of where it sits, it is a
+module because some other file says `mod name;`. So the declaration is taken out of the old parent
+module file with any `#[…]` or `///` lines that belong to it, and put into the new one in
+alphabetical order with the same visibility — and when the destination folder has no module file at
+all, that is a **note**, not a guess. Making `mod.rs` where there was none is a decision about the
+shape of somebody's crate.
+
+**There is no preview modal, and that is not the same decision `Rename Symbol` made.** A name is
+ambiguous and a path is not: a specifier resolves to one file or to no file, and one that resolves to
+no file is left alone, so there is nothing for a person to disambiguate. And **the move is its own
+inverse** — drag it back and every specifier comes back exactly as it was, because they were derived
+from the paths in the first place. What replaces the preview is a report in the status bar naming
+what moved, how many references were rewritten in how many files, and every file that was skipped;
+`quill-cli explorer move --dry-run` prints the whole change set and touches nothing, which is the
+preview for anybody who wants one and is what a test asserts against.
+
+**The plan is built on the frame the row is dropped**, so it has to be quick: measured against this
+repository — 1,001 files in the walk — a Rust module file is 62 ms and a whole module folder, 56
+references in 37 files, is 56 ms. It was 557 ms when first written and the fix was removing waste,
+which is `task-1666`'s rule again: `syntax::scan` was being run five times over every file, and
+`imports::Tokens` is that reading done once; and `nesting` searched the comment list at every byte,
+where the list is in order and an index into it is enough. `quill-cli explorer move --dry-run`
+prints the elapsed time, so the number stays measured rather than remembered.
+
+**The explorer reports the drag and decides nothing**, which is the shape `task-1673` gave the tab
+drag: it collects the rectangle of every row as it draws them and works out which one the pointer is
+over once the list is drawn. A folder row is that folder, a file row is the folder the file is in,
+and three drops are refused by simply not offering a target — a folder into itself or anything under
+it, a path into the folder it is already in, and anything outside the panel, the last so a drag can
+be thought better of.
+
 ## A terminal opens in the project, running the shell the person actually uses
 
 `task-1670` reported a terminal that opened in `C:\Windows` and could not find the machine's own
@@ -890,9 +993,9 @@ from inside one. `tools::offered` is where that is written down and
 `exactly_one_command_is_held_back...` fails if the list grows, because an exclusion nobody argued
 about is how "everything is reachable" quietly stops being true.
 
-**One tool an area is the default, and it was measured rather than assumed.** Ninety-seven commands
-are ninety-seven tool definitions in an agent's context on every conversation — about **18,000
-tokens**, against **8,000** for the fourteen area tools, which still carry every command's usage line
+**One tool an area is the default, and it was measured rather than assumed.** A hundred and four
+commands are a hundred and four tool definitions in an agent's context on every conversation — about
+**18,800 tokens**, against **8,200** for the fifteen area tools, which still carry every command's usage line
 and summary. `quill-cli mcp tools --count` prints both figures against the catalogue as it is now, so
 the choice is never made against a number in a comment. `mcp.tools = every` is there for a client that
 permits tools by name, which is the one thing grouping really costs.
@@ -1162,6 +1265,11 @@ trade that away to be a shade nearer a screenshot.
   syntactic reading rather than a language server, the nine manifest keys and what a list of
   languages inside Quill would have cost instead, what auto-import would take, and the fifty-one
   scenario battery.
+- `tasks/task-1681-file-operations-tdd.md` — deleting a file, saving a tab that is closed, and
+  moving one with its references: what the surveyed editors do about each, why the explorer had to
+  be able to hold the keyboard and what hands it back, why a deleted file goes to the Recycle Bin on
+  one platform and not the other, the two families the move refactor rewrites and the `mod`
+  declarations that are the hard half, and why this one has no preview modal when rename does.
 - `tasks/task-1675-code-editing-tdd.md` — go to definition, find all references and rename: the
   three mechanisms that were weighed (a language server client, tree-sitter and stack graphs, a
   syntactic index) and why the index was chosen, the two grammar keys a language adds, the

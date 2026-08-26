@@ -67,6 +67,9 @@ use crate::components::text_tools;
 use crate::components::title_bar::{self, MenuPlacement};
 use crate::services::file_kind;
 use crate::services::file_marks::FileMarks;
+use crate::services::file_move;
+use crate::services::imports;
+use crate::services::recycle;
 use crate::services::file_tree::FileTree;
 use crate::services::file_clipboard::FileClipboard;
 use crate::services::launcher;
@@ -114,16 +117,28 @@ const PICTURE_GAP: f32 = 14.0;
 
 /// A question with two answers, and what to do when it is answered.
 ///
-/// Everything Quill asks about first is something git cannot undo, so what is held is the request
-/// itself and confirming simply sends it. That is what keeps the dialog from having to know what
-/// any of them mean.
+/// The dialog knows nothing about what it is asking. What is held is the [`Answer`] — the thing to
+/// do when the button is pressed — so a seventh question can be added without the one confirmation
+/// dialog learning a seventh thing.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Confirmation {
     pub title: String,
     pub note: String,
     /// The word on the button that does it.
     pub button: String,
-    pub request: quill_git::worker::Request,
+    pub answer: Answer,
+}
+
+/// What confirming a question does.
+///
+/// Two, because everything Quill used to ask about first was something git could not undo, and
+/// `task-1681` added the one thing that is not: throwing a file away.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Answer {
+    /// Send this to the git thread.
+    Git(quill_git::worker::Request),
+    /// Delete this path, wherever `services::recycle` puts a deleted file on this platform.
+    Delete(PathBuf),
 }
 
 /// Which of the three ways of looking at a Markdown file is showing.
@@ -246,6 +261,13 @@ pub enum Focus {
     /// The document. Typing edits the file.
     #[default]
     Editor,
+    /// The explorer. The arrow keys walk the tree and `Delete` throws a file away.
+    ///
+    /// `task-1681` added it, because `Delete` cannot mean "throw this file away" while the editing
+    /// area has the keys — there it means "take away the letter in front of the caret". A single
+    /// click on a row leaves the keyboard here, which is what VS Code does and what makes `Down`
+    /// `Down` `Down` a way to look through a folder; a double click hands it to the editor.
+    Explorer,
     /// The terminal. Typing goes to the program running in it, and Tab and Escape go with it.
     Terminal,
 }
@@ -404,6 +426,14 @@ pub struct QuillApp {
     pub clipboard: FileClipboard,
     /// Where the explorer's own menu is open, and what it is about.
     pub explorer_menu: Option<(Pos2, PathBuf, bool)>,
+    /// The row the explorer's own cursor is on, which is what `Delete` is about.
+    ///
+    /// Separate from the file that is showing, because the two are different questions: a click
+    /// selects a row here and opens it there, and the arrow keys move this one without opening
+    /// anything at all.
+    pub selected: Option<PathBuf>,
+    /// How many more frames the explorer should scroll to its own selection.
+    reveal_selection: u8,
     /// The text prompt, when one is open.
     pub prompt: Option<Prompt>,
     /// The `Go to File` modal, when it is open.
@@ -529,6 +559,8 @@ impl QuillApp {
             written_project: None,
             native_menu: None,
             revealed: None,
+            selected: None,
+            reveal_selection: 0,
             reveal_in_explorer: 0,
             editor_area: Rect::ZERO,
             zoom_pending: 1.0,
@@ -1250,6 +1282,7 @@ impl QuillApp {
                     Purpose::Rename(path),
                 ));
             }
+            Action::DeletePath(path) => self.ask_before_deleting(&path),
             Action::RevealPath(path) => {
                 launcher::reveal(&path);
             }
@@ -1685,7 +1718,7 @@ impl QuillApp {
                             "Throw away the changes to {path}. They are not in a commit and not in a stash, so this cannot be undone."
                         ),
                         button: "ROLL BACK".to_owned(),
-                        request: Request::Rollback(vec![path]),
+                        answer: Answer::Git(Request::Rollback(vec![path])),
                     });
                 }
             }
@@ -1784,26 +1817,6 @@ impl QuillApp {
     /// is how a click in the commit panel and an entry on the Git menu end up in the same place.
     fn show_git_windows(&mut self, ctx: &egui::Context) -> Option<Action> {
         use quill_git::worker::Request;
-        // The confirmation first: it is drawn over whatever asked the question.
-        if let Some(question) = self.confirmation.clone() {
-            let outcome = prompt_dialog::confirm(
-                ctx,
-                &prompt_dialog::Confirmation {
-                    title: question.title.clone(),
-                    note: question.note.clone(),
-                    confirm: question.button.clone(),
-                    purpose: String::new(),
-                },
-            );
-            if outcome.confirmed {
-                if let Some(git) = self.git.as_mut() {
-                    git.send(question.request);
-                }
-                self.confirmation = None;
-            } else if outcome.cancelled {
-                self.confirmation = None;
-            }
-        }
         let git = self.git.as_mut()?;
         let mut action = None;
 
@@ -1859,7 +1872,7 @@ impl QuillApp {
                 title: "Drop Stash".to_owned(),
                 note: format!("Throw {name} away. What is in it is nowhere else, so this cannot be undone."),
                 button: "DROP".to_owned(),
-                request: Request::DropStash(name),
+                answer: Answer::Git(Request::DropStash(name)),
             });
             return action;
         }
@@ -1899,7 +1912,7 @@ impl QuillApp {
                         "Move the branch to {revision} and throw away everything after it, including changes that were never committed. This cannot be undone."
                     ),
                     button: "RESET".to_owned(),
-                    request: Request::Reset { revision, mode },
+                    answer: Answer::Git(Request::Reset { revision, mode }),
                 });
                 return action;
             }
@@ -1914,7 +1927,7 @@ impl QuillApp {
                 title: "Delete Branch".to_owned(),
                 note: format!("Delete {name}. Git refuses if it holds commits that are nowhere else."),
                 button: "DELETE".to_owned(),
-                request: Request::DeleteBranch { name, force: false },
+                answer: Answer::Git(Request::DeleteBranch { name, force: false }),
             });
             self.git.as_mut()?.dialogs.close();
             return action;
@@ -1934,6 +1947,357 @@ impl QuillApp {
             action = None;
         }
         action
+    }
+
+    /// Draw the one confirmation, and do what it asks when it is answered.
+    ///
+    /// Drawn before every other modal, because it is asked *over* whatever asked it, and drawn on
+    /// its own rather than inside `show_git_windows`, because `task-1681` gave it a second kind of
+    /// answer and a window with no repository behind it can now ask a question.
+    fn show_the_confirmation(&mut self, ctx: &egui::Context) {
+        let Some(question) = self.confirmation.clone() else {
+            return;
+        };
+        let outcome = prompt_dialog::confirm(
+            ctx,
+            &prompt_dialog::Confirmation {
+                title: question.title.clone(),
+                note: question.note.clone(),
+                confirm: question.button.clone(),
+                purpose: String::new(),
+            },
+        );
+        if outcome.confirmed {
+            self.confirmation = None;
+            match question.answer {
+                Answer::Git(request) => {
+                    if let Some(git) = self.git.as_mut() {
+                        git.send(request);
+                    }
+                }
+                Answer::Delete(path) => self.delete_path(&path),
+            }
+        } else if outcome.cancelled {
+            self.confirmation = None;
+        }
+    }
+
+    /// Ask before throwing a file away.
+    ///
+    /// The question names what is about to go and where it is going, and for a folder it counts
+    /// what is inside — the count is the fact that changes the answer. Where a deleted file goes is
+    /// `services::recycle`'s to say, so the sentence is derived from it rather than written twice.
+    pub fn ask_before_deleting(&mut self, path: &Path) {
+        if !path.exists() {
+            self.message = Some(format!("{} is not there.", path.display()));
+            return;
+        }
+        if path == self.tree.root() {
+            self.message = Some("The project folder itself cannot be deleted from here.".to_owned());
+            return;
+        }
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.display().to_string());
+        let what = if path.is_dir() {
+            let inside = recycle::count_inside(path, 10_000);
+            match inside {
+                0 => format!("Delete {name}, which is empty."),
+                1 => format!("Delete {name} and the 1 file in it."),
+                _ => format!("Delete {name} and the {inside} files in it."),
+            }
+        } else {
+            format!("Delete {name}.")
+        };
+        self.close_every_modal();
+        self.confirmation = Some(Confirmation {
+            title: "Delete".to_owned(),
+            note: format!("{what} {}", recycle::destination().reassurance()),
+            button: "DELETE".to_owned(),
+            answer: Answer::Delete(path.to_path_buf()),
+        });
+    }
+
+    /// Throw a file or a folder away, and tidy up after it.
+    ///
+    /// Every tab on the file — or on anything under the folder — is closed **without** the save
+    /// `close_tab` does, because writing a file in order to throw it away is not a thing to do. The
+    /// project's marks for those paths go with them, and the index is told the project changed.
+    pub fn delete_path(&mut self, path: &Path) {
+        match recycle::delete(path) {
+            Ok(()) => {
+                let gone: Vec<PathBuf> = self
+                    .files
+                    .paths()
+                    .into_iter()
+                    .filter(|open| open == path || open.starts_with(path))
+                    .collect();
+                for open in &gone {
+                    if let Some(index) = self.files.index_of(open) {
+                        self.close_tab_without_saving(index);
+                    }
+                    self.marks.forget(open);
+                }
+                if self.selected.as_deref() == Some(path) {
+                    self.selected = path.parent().map(Path::to_path_buf);
+                }
+                self.tree.reload();
+                self.the_project_changed_on_disk();
+                let name = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().to_string())
+                    .unwrap_or_else(|| path.display().to_string());
+                self.message = Some(format!("Deleted {name} to {}", recycle::destination().name()));
+            }
+            Err(problem) => {
+                self.message =
+                    Some(format!("Quill could not delete {}: {problem}", path.display()))
+            }
+        }
+    }
+
+    /// Move a file or a folder, and take the code that names it with it.
+    ///
+    /// `to` is where the thing itself lands, not the folder it was dropped into, because a name
+    /// already taken in the destination has to be settled before anything is planned.
+    ///
+    /// The order matters. The plan is worked out **first**, against the project as it is, because
+    /// every specifier in it is resolved against files that are still where they were. Then the
+    /// bytes move. Then the edits are applied, following `task-1675`'s ownership rule: an open file
+    /// is edited as a document and left modified, and a closed file is read, checked and written
+    /// once.
+    pub fn move_path(&mut self, from: &Path, to: &Path, refactor: bool) -> bool {
+        if from == to {
+            return false;
+        }
+        if to.exists() {
+            self.message = Some(format!("{} is already there", to.display()));
+            return false;
+        }
+        let plan = match refactor {
+            true => self.plan_a_move(from, to),
+            false => file_move::Plan::default(),
+        };
+        if let Some(folder) = to.parent() {
+            if let Err(problem) = std::fs::create_dir_all(folder) {
+                self.message = Some(format!("Quill could not make {}: {problem}", folder.display()));
+                return false;
+            }
+        }
+        if let Err(problem) = move_the_bytes(from, to) {
+            self.message = Some(format!("Quill could not move {}: {problem}", from.display()));
+            return false;
+        }
+        // The tabs follow the file before anything is written, so a tab on a moved file is edited
+        // at its new path rather than at one with nothing behind it.
+        self.retarget_the_tabs(&plan.moved);
+        self.marks.moved(&plan.moved);
+        let report = self.apply_a_move(&plan);
+        self.tree.reload();
+        if let Some(folder) = to.parent() {
+            self.tree.expand(folder);
+        }
+        self.the_project_changed_on_disk();
+        self.selected = Some(to.to_path_buf());
+        let name = from
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| from.display().to_string());
+        let where_to = to
+            .parent()
+            .and_then(|folder| folder.strip_prefix(self.tree.root()).ok())
+            .map(|folder| folder.display().to_string())
+            .filter(|folder| !folder.is_empty())
+            .unwrap_or_else(|| "the project".to_owned());
+        let mut said = format!("Moved {name} to {where_to} \u{00B7} {}", plan.sentence());
+        for note in plan.notes.iter().chain(report.iter()) {
+            said.push_str(&format!(" \u{00B7} {note}"));
+        }
+        self.message = Some(said);
+        true
+    }
+
+    /// Work out what a move would change, without changing anything.
+    ///
+    /// The reader it hands the planner is where the ownership rule enters: a file that is open
+    /// answers with the text in its tab, and every other file answers with what is on the disk.
+    pub fn plan_a_move(&self, from: &Path, to: &Path) -> file_move::Plan {
+        let files = self.tree.all_files().to_vec();
+        let project = imports::Project { root: self.tree.root(), files: &files };
+        let open: Vec<(PathBuf, String)> = self
+            .files
+            .iter()
+            .filter_map(|file| {
+                file.path().map(|path| (path.to_path_buf(), file.document.text().to_string()))
+            })
+            .collect();
+        let read = |path: &Path| -> Option<String> {
+            if let Some((_, text)) = open.iter().find(|(known, _)| known == path) {
+                return Some(text.clone());
+            }
+            std::fs::read_to_string(path).ok()
+        };
+        file_move::plan(&project, &self.plugins.grammars(), from, to, &read)
+    }
+
+    /// Point every tab that was on a moved file at where the file went.
+    fn retarget_the_tabs(&mut self, moved: &[(PathBuf, PathBuf)]) {
+        for (old, new) in moved {
+            let Some(index) = self.files.index_of(old) else {
+                continue;
+            };
+            self.files.at_mut(index).document.set_path(new.clone());
+            self.files.at_mut(index).forget_what_was_worked_out();
+        }
+    }
+
+    /// Apply a plan's edits, and say what could not be applied.
+    ///
+    /// An open file is one `Command::ReplaceMany`, which is one undo step, and is left **modified
+    /// rather than written**: a refactor must never silently write a buffer somebody was editing.
+    /// A closed file is read, every range is checked to still hold what the plan expected, and only
+    /// then is it written once — and a file that changed underneath the plan is skipped whole and
+    /// named rather than patched on faith.
+    fn apply_a_move(&mut self, plan: &file_move::Plan) -> Vec<String> {
+        let mut skipped = Vec::new();
+        for file in &plan.files {
+            if file.edits.is_empty() {
+                continue;
+            }
+            match self.files.index_of(&file.path) {
+                Some(index) => {
+                    let edits = file.edits.clone();
+                    self.files.at_mut(index).document.apply(Command::ReplaceMany(edits));
+                }
+                None => {
+                    if let Err(reason) = write_the_edits(&file.path, &file.edits) {
+                        let name = file
+                            .path
+                            .file_name()
+                            .map(|name| name.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        skipped.push(format!("{name} was left alone: {reason}"));
+                    }
+                }
+            }
+        }
+        skipped
+    }
+
+    /// The keys the explorer takes, and only while it has the keyboard.
+    ///
+    /// `Up` and `Down` walk the rows that are showing, so a row inside a shut folder is never
+    /// stepped onto; `Right` opens a folder and `Left` shuts it or steps to its parent; `Enter`
+    /// opens the file permanently and hands the keyboard to the editor; `Escape` hands it back
+    /// without opening anything; and `Delete` — or `Backspace`, which is the key a Mac keyboard has
+    /// — asks the question.
+    fn route_the_explorer_keys(&mut self, ui: &egui::Ui) -> Option<Action> {
+        if self.focus != Focus::Explorer || !self.explorer_visible {
+            return None;
+        }
+        // A field with the keyboard is typed into, not navigated with. The filter box is the only
+        // one in the panel, and while it has the focus its own arrow keys move the caret.
+        if ui.ctx().memory(|memory| memory.focused()).is_some() {
+            return None;
+        }
+        // A letter typed while the tree has the keyboard belongs to the **editor**. The explorer has
+        // no use for one, and "click a file in the tree and start typing" has to go on working
+        // exactly as it did — the keyboard is handed over here, before any pane reads the frame's
+        // input, so the letter that caused it lands in the document.
+        if ui.input(|input| input.events.iter().any(|event| matches!(event, egui::Event::Text(_))))
+        {
+            self.focus = Focus::Editor;
+            return None;
+        }
+        let key = ui.input(|input| {
+            [
+                egui::Key::ArrowDown,
+                egui::Key::ArrowUp,
+                egui::Key::ArrowRight,
+                egui::Key::ArrowLeft,
+                egui::Key::Enter,
+                egui::Key::Escape,
+                egui::Key::Delete,
+            ]
+            .into_iter()
+            .find(|key| input.key_pressed(*key))
+        })
+        .or_else(|| {
+            // The Mac keyboard has no `Delete`, and `Backspace` on its own is far too close to what
+            // somebody who has just clicked a file is about to type. IntelliJ's own answer on macOS
+            // is the command key with it, and that is unambiguous on every platform.
+            ui.input(|input| {
+                input.key_pressed(egui::Key::Backspace) && input.modifiers.command
+            })
+            .then_some(egui::Key::Delete)
+        })?;
+        match key {
+            egui::Key::ArrowDown => self.step_the_selection(1),
+            egui::Key::ArrowUp => self.step_the_selection(-1),
+            egui::Key::ArrowRight => self.open_the_selected_folder(true),
+            egui::Key::ArrowLeft => self.open_the_selected_folder(false),
+            egui::Key::Enter => {
+                let path = self.selected.clone()?;
+                if path.is_dir() {
+                    self.tree.toggle(&path);
+                } else {
+                    self.open_path_permanently(&path);
+                    self.focus = Focus::Editor;
+                }
+            }
+            egui::Key::Escape => self.focus = Focus::Editor,
+            egui::Key::Delete => {
+                return self.selected.clone().map(Action::DeletePath);
+            }
+            _ => {}
+        }
+        None
+    }
+
+    /// Move the explorer's cursor by `step` rows, through the rows that are showing.
+    fn step_the_selection(&mut self, step: isize) {
+        let rows: Vec<PathBuf> = self.explorer_rows();
+        if rows.is_empty() {
+            return;
+        }
+        let at = self
+            .selected
+            .as_ref()
+            .and_then(|path| rows.iter().position(|row| row == path))
+            .map(|at| (at as isize + step).clamp(0, rows.len() as isize - 1) as usize)
+            .unwrap_or(if step > 0 { 0 } else { rows.len() - 1 });
+        self.selected = Some(rows[at].clone());
+        self.reveal_selection = REVEAL_FRAMES;
+    }
+
+    /// `Right` opens the folder the cursor is on; `Left` shuts it, or steps to the folder above.
+    fn open_the_selected_folder(&mut self, open: bool) {
+        let Some(path) = self.selected.clone() else {
+            return;
+        };
+        let showing = self.tree.find(&path).map(|entry| entry.expanded).unwrap_or(false);
+        if path.is_dir() && showing != open {
+            self.tree.toggle(&path);
+            return;
+        }
+        if !open {
+            if let Some(folder) = path.parent() {
+                if folder.starts_with(self.tree.root()) && folder != self.tree.root() {
+                    self.selected = Some(folder.to_path_buf());
+                    self.reveal_selection = REVEAL_FRAMES;
+                }
+            }
+        }
+    }
+
+    /// The rows the explorer is showing, in order — the same list it draws.
+    fn explorer_rows(&self) -> Vec<PathBuf> {
+        if self.filter.trim().is_empty() {
+            self.tree.rows().iter().map(|row| row.entry.path.clone()).collect()
+        } else {
+            self.tree.matching(&self.filter).iter().map(|path| path.to_path_buf()).collect()
+        }
     }
 
     /// Read a path again from disk: the folder it is in, and the file itself if it is open.
@@ -2024,28 +2388,16 @@ impl QuillApp {
                 if target == path {
                     return;
                 }
-                if target.exists() {
-                    self.message = Some(format!("{} is already there", target.display()));
-                    return;
-                }
-                match std::fs::rename(&path, &target) {
-                    Ok(()) => {
-                        self.tree.reload();
-                        // A tab on the file that was renamed is now looking at a path with nothing
-                        // at it, so it is reopened at the new one rather than left pointing at
-                        // nothing.
-                        if let Some(index) = self.files.index_of(&path) {
-                            self.files.show(index);
-                            self.close_tab(index);
-                            if target.is_file() {
-                                self.open_path_permanently(&target);
-                            }
-                        }
-                        self.message = Some(format!("Renamed to {name}"));
-                    }
-                    Err(problem) => {
-                        self.message = Some(format!("Quill could not rename {}: {problem}", path.display()))
-                    }
+                // A rename **is** a move to a new name, so it goes through the same function a drag
+                // does and the code that names the file follows it. A rename that updated no
+                // references while a drag did would be two answers to one question.
+                if self.move_path(&path, &target, true) {
+                    let said = self.message.take().unwrap_or_default();
+                    let rest = said.split_once('\u{00B7}').map(|(_, rest)| rest).unwrap_or("");
+                    self.message = Some(match rest.trim().is_empty() {
+                        true => format!("Renamed to {name}"),
+                        false => format!("Renamed to {name} \u{00B7} {}", rest.trim()),
+                    });
                 }
             }
             Purpose::NewBranch => self.send_git(quill_git::worker::Request::CreateBranch(name)),
@@ -2094,7 +2446,61 @@ impl QuillApp {
     }
 
     /// Close the tab at `index`, and show whatever is left.
+    /// Close the tab at `index`, and show whatever is left.
+    ///
+    /// **A tab with unsaved changes is written first**, which is what `task-1681` asks for: *"If I
+    /// close a tab that has been edited but not saved, it should save and close."* Every other
+    /// editor puts a three-answer dialog here; Quill can give the simpler answer because it saves
+    /// plain text and nothing else, so writing the buffer to the file it came from is exactly what
+    /// was typed. There is no format conversion to get wrong and no decision for a dialog to ask
+    /// about.
+    ///
+    /// This is the one place a tab is closed — the cross on the tab, `Ctrl+W`, the tab's own menu
+    /// and `quill-cli tab close` all reach it — so it is one change in one function.
     pub fn close_tab(&mut self, index: usize) {
+        self.save_before_closing(index);
+        self.files.close(index);
+        self.forget_layout();
+    }
+
+    /// Write a tab that is about to be closed, if it has unsaved changes and somewhere to put them.
+    ///
+    /// Two tabs are deliberately left alone. **A picture** holds an empty document over the
+    /// picture's path, so writing it would put nothing over the file — `save` already refuses for
+    /// this reason. **A tab with no path** has nowhere to be written, and choosing one is a dialog,
+    /// which is the thing this is removing; it says so rather than writing `untitled.md` into
+    /// somebody's project because they shut a scratch buffer.
+    fn save_before_closing(&mut self, index: usize) {
+        let Some(file) = self.files.get(index) else {
+            return;
+        };
+        if file.is_picture() || !file.document.is_modified() {
+            return;
+        }
+        let Some(path) = file.path().map(Path::to_path_buf) else {
+            self.message = Some(
+                "That tab has no file to save to, so it was closed without saving.".to_owned(),
+            );
+            return;
+        };
+        let name = file.name();
+        match self.files.at_mut(index).document.save() {
+            Ok(()) => {
+                self.message = Some(format!("Saved {name}"));
+                // The disk is what the index holds for every file that is not open, and this one is
+                // about to stop being open.
+                self.the_project_changed_on_disk();
+            }
+            Err(problem) => {
+                self.message =
+                    Some(format!("Quill could not save {}: {problem}", path.display()))
+            }
+        }
+    }
+
+    /// Close a tab without writing it, which is what deleting its file means and what
+    /// `quill-cli tab close --discard` asks for.
+    pub fn close_tab_without_saving(&mut self, index: usize) {
         self.files.close(index);
         self.forget_layout();
     }
@@ -2647,6 +3053,14 @@ impl QuillApp {
                 // person who closed the folder holding the open file closed it deliberately.
                 let reveal = self.reveal_in_explorer > 0;
                 self.reveal_in_explorer = self.reveal_in_explorer.saturating_sub(1);
+                // The same one shot for the explorer's own cursor, which the arrow keys move
+                // without opening anything, so nothing else would scroll to it.
+                let reveal_selected = self.reveal_selection > 0;
+                self.reveal_selection = self.reveal_selection.saturating_sub(1);
+                let selected = self.selected.clone();
+                if self.reveal_selection > 0 {
+                    ui.ctx().request_repaint();
+                }
                 if self.reveal_in_explorer > 0 {
                     // The second frame has to actually happen, and an idle window draws nothing.
                     ui.ctx().request_repaint();
@@ -2682,23 +3096,44 @@ impl QuillApp {
                     explorer_rect,
                     &self.tree,
                     &mut self.filter,
-                    open.as_deref(),
-                    unsaved,
-                    reveal,
-                    self.settings.opacity,
+                    explorer::View {
+                        current: open.as_deref(),
+                        selected: selected.as_deref(),
+                        keyboard: self.focus == Focus::Explorer,
+                        unsaved,
+                        reveal,
+                        reveal_selected,
+                        opacity: self.settings.opacity,
+                    },
                     &decorate,
                 )
             };
+            if let Some(path) = explorer_outcome.select {
+                self.selected = Some(path);
+            }
+            if explorer_outcome.focus {
+                self.focus = Focus::Explorer;
+            }
             if let Some(path) = explorer_outcome.toggle {
                 self.tree.toggle(&path);
             }
+            // A single click opens the file and leaves the keyboard here, which is VS Code's own
+            // behaviour and is what makes `Down` `Down` `Down` a way to look through a folder. A
+            // double click is somebody going to the editor, so the keyboard goes with them.
             if let Some(path) = explorer_outcome.open {
                 self.open_path(&path);
-                self.focus = Focus::Editor;
             }
             if let Some(path) = explorer_outcome.open_permanently {
                 self.open_path_permanently(&path);
                 self.focus = Focus::Editor;
+            }
+            if let Some((source, folder)) = explorer_outcome.moved {
+                let name = source
+                    .file_name()
+                    .map(|name| name.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let target = folder.join(name);
+                self.move_path(&source, &target, true);
             }
             if explorer_outcome.hide {
                 self.explorer_visible = false;
@@ -2722,6 +3157,12 @@ impl QuillApp {
         // key the popup takes never reaches `editor_view::handle_input`. Everything else flows
         // through untouched.
         self.route_the_completion_keys(ui);
+        // The explorer's own keys, for the same reason and in the same place: they are read before
+        // any pane is drawn, and only while the explorer has the keyboard, so `Delete` can never
+        // mean two things at once.
+        if let Some(chosen) = self.route_the_explorer_keys(ui) {
+            action = Some(chosen);
+        }
         let pane_rects = self.pane_rects(editing_area);
         let had_the_keyboard = self.files.focused_pane();
         let mut keyboard = had_the_keyboard;
@@ -2972,6 +3413,8 @@ impl QuillApp {
                 ui.ctx().request_repaint();
             }
         }
+        // The one confirmation, drawn over whatever asked it and before every other modal.
+        self.show_the_confirmation(ui.ctx());
         if let Some(chosen) = self.show_git_windows(ui.ctx()) {
             action = Some(chosen);
         }
@@ -4098,6 +4541,57 @@ impl QuillApp {
         }
         took_the_keyboard
     }
+}
+
+/// Move a file or a folder on the disk.
+///
+/// A rename first, which is one operation and keeps the file's own history where the platform has
+/// one; a copy and a delete when that fails, which is what happens across volumes and is what
+/// `services::file_clipboard` already does for a paste.
+fn move_the_bytes(from: &Path, to: &Path) -> std::io::Result<()> {
+    if std::fs::rename(from, to).is_ok() {
+        return Ok(());
+    }
+    if from.is_dir() {
+        copy_the_folder(from, to)?;
+        std::fs::remove_dir_all(from)
+    } else {
+        std::fs::copy(from, to)?;
+        std::fs::remove_file(from)
+    }
+}
+
+/// Copy a folder and everything under it.
+fn copy_the_folder(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let here = entry.path();
+        let there = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_the_folder(&here, &there)?;
+        } else {
+            std::fs::copy(&here, &there)?;
+        }
+    }
+    Ok(())
+}
+
+/// Write a closed file's share of a move, having checked it is still the file the plan was made
+/// against.
+///
+/// The check is what makes this safe on a syntactic tier: every range is compared against the
+/// length of the text it is supposed to be inside, and a file that has changed since the plan was
+/// made is refused whole rather than patched on faith. Bytes outside the ranges are untouched, so
+/// encodings, line endings and trailing whitespace survive byte for byte.
+fn write_the_edits(path: &Path, edits: &[(std::ops::Range<usize>, String)]) -> Result<(), String> {
+    let text = std::fs::read_to_string(path).map_err(|problem| problem.to_string())?;
+    if edits.iter().any(|(range, _)| range.end > text.len() || !text.is_char_boundary(range.start))
+    {
+        return Err("it has changed since the move was worked out".to_owned());
+    }
+    let after = file_move::applied(&text, edits);
+    std::fs::write(path, after).map_err(|problem| problem.to_string())
 }
 
 /// The colour a file is drawn in for what git thinks of it.

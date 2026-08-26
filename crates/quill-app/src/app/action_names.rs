@@ -76,6 +76,7 @@ impl Action {
             Action::CopyPathReference(_) => "copy-path-reference".to_owned(),
             Action::PasteInto(_) => "paste-into".to_owned(),
             Action::RenamePath(_) => "rename-path".to_owned(),
+            Action::DeletePath(_) => "delete-path".to_owned(),
             Action::RevealPath(_) => "reveal-path".to_owned(),
             Action::ReloadPath(_) => "reload-path".to_owned(),
             Action::Git(what) => format!("git-{}", what.name()),
@@ -157,6 +158,7 @@ impl Action {
             "copy-path-reference" => Action::CopyPathReference(with_path()),
             "paste-into" => Action::PasteInto(with_path()),
             "rename-path" => Action::RenamePath(with_path()),
+            "delete-path" => Action::DeletePath(with_path()),
             "reveal-path" => Action::RevealPath(with_path()),
             "reload-path" => Action::ReloadPath(with_path()),
             "clear-highlight" => Action::ClearHighlight,
@@ -347,6 +349,7 @@ mod tests {
                 | Action::CopyPathReference(path)
                 | Action::PasteInto(path)
                 | Action::RenamePath(path)
+                | Action::DeletePath(path)
                 | Action::RevealPath(path)
                 | Action::ReloadPath(path) => Some(path.clone()),
                 Action::Git(
