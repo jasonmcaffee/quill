@@ -65,10 +65,33 @@ pub enum Action {
     ToggleTerminal,
     /// Close the file tab that is showing.
     CloseTab,
-    /// Show the next file tab, wrapping round at the end.
+    /// Show the next file tab in this pane, wrapping round at the end.
     NextTab,
-    /// Show the previous file tab.
+    /// Show the previous file tab in this pane.
     PreviousTab,
+    /// Put a pane to the right of the one with the keyboard and move the tab that is showing into it.
+    ///
+    /// IntelliJ's `Split Right` shows the same file in **both** splits and Quill cannot, because two
+    /// tabs on one file would be two documents over one path. This is IntelliJ's `Split and Move
+    /// Right` under the name a person looks for; `tasks/task-1664-split-view-tdd.md` §3 records what
+    /// was weighed. Splitting a pane that holds one tab opens the new pane empty instead, because
+    /// taking its only tab away would leave the window looking exactly as it did.
+    SplitRight,
+    /// Move the tab that is showing into the pane beside it.
+    MoveTabRight,
+    MoveTabLeft,
+    /// Fold the pane that has the keyboard into the one beside it.
+    Unsplit,
+    /// Every tab back into one pane.
+    UnsplitAll,
+    /// Put the keyboard in the next pane, wrapping round at the right hand end.
+    NextPane,
+    PreviousPane,
+    /// Scroll the explorer to the file that is showing, opening out the folders above it.
+    ///
+    /// It happens on its own when the file that is showing changes; this is the same thing asked for
+    /// by hand, which is IntelliJ's button of the same name.
+    SelectOpenFile,
     /// Another terminal tab.
     NewTerminalTab,
     /// Close the terminal tab that is showing.
@@ -468,6 +491,13 @@ pub struct MenuState {
     pub unfinished: Option<&'static str>,
     /// How many files are open, which is what decides whether the tab entries can be used.
     pub open_files: usize,
+    /// How many panes the editing area is divided into, which is what dims `Unsplit`.
+    pub panes: usize,
+    /// Which pane has the keyboard, which is what dims `Move Left` at the left hand end.
+    pub pane: usize,
+    /// How many tabs are in the pane that has the keyboard, which is what decides whether the tab
+    /// entries can be used and what `Split Right` will do.
+    pub tabs_in_pane: usize,
     /// How many passages are marked in the file that is showing, which is what decides whether
     /// `Clear All Highlights` can be used.
     pub highlights: usize,
@@ -768,13 +798,21 @@ fn view_menu(state: &MenuState) -> Menu {
             Entry::with_shortcut("Close Tab", Action::CloseTab, Shortcut::command(egui::Key::F4))
                 .enabled(state.open_files > 1),
             Entry::with_shortcut("Next Tab", Action::NextTab, Shortcut::control(egui::Key::Tab))
-                .enabled(state.open_files > 1),
+                .enabled(state.tabs_in_pane > 1),
             Entry::with_shortcut(
                 "Previous Tab",
                 Action::PreviousTab,
                 Shortcut::control_shift(egui::Key::Tab),
             )
-            .enabled(state.open_files > 1),
+            .enabled(state.tabs_in_pane > 1),
+            Entry::Separator,
+            Entry::item("Select Opened File", Action::SelectOpenFile),
+            // The splits are a menu inside the menu, as Recent Projects is. Seven more rows in View
+            // itself would have made it twenty two rows long and taller than a small window; and a
+            // tab's own right click menu is where a person reaches for them anyway. They are on a
+            // real menu at all so that `quill-cli action list` finds them, because that list is built
+            // by walking the menus and a context menu is not one of them.
+            Entry::Submenu { name: "Split".to_owned(), entries: split_menu(state) },
             Entry::Separator,
             Entry::with_shortcut(
                 "Terminal",
@@ -787,6 +825,41 @@ fn view_menu(state: &MenuState) -> Menu {
                 .enabled(state.terminal_tabs > 0),
         ],
     }
+}
+
+/// The entries that split the editing area into panes, which are the same wherever they are shown:
+/// the `Split` menu inside `View`, and the lower half of a tab's own right click menu.
+fn split_menu(state: &MenuState) -> Vec<Entry> {
+    vec![
+        Entry::item("Split Right", Action::SplitRight),
+        Entry::item("Move Right", Action::MoveTabRight).enabled(state.pane + 1 < state.panes),
+        Entry::item("Move Left", Action::MoveTabLeft).enabled(state.pane > 0),
+        Entry::item("Next Pane", Action::NextPane).enabled(state.panes > 1),
+        Entry::item("Previous Pane", Action::PreviousPane).enabled(state.panes > 1),
+        Entry::Separator,
+        Entry::item("Unsplit", Action::Unsplit).enabled(state.panes > 1),
+        Entry::item("Unsplit All", Action::UnsplitAll).enabled(state.panes > 1),
+    ]
+}
+
+/// What a tab's right click menu holds.
+///
+/// Every entry is about **the tab that is showing**, which is what makes them parameterless actions
+/// the View menu, the keyboard and `quill-cli action run` can all ask for without inventing a way to
+/// name a tab. Right clicking a tab therefore shows it first — the editing area's own menu already
+/// sets that precedent, putting the caret where the pointer is before opening.
+///
+/// The same entries are on the View menu, so a person who does not think to right click a tab can
+/// still find them, and so `quill-cli action list` — which is built by walking the real menus — lists
+/// them.
+pub fn tab_menu(state: &MenuState) -> Vec<Entry> {
+    let mut entries = vec![
+        Entry::item("Close", Action::CloseTab).enabled(state.open_files > 1),
+        Entry::item("Select Opened File", Action::SelectOpenFile),
+        Entry::Separator,
+    ];
+    entries.extend(split_menu(state));
+    entries
 }
 
 /// What the explorer's right click menu holds, for the row that was clicked.

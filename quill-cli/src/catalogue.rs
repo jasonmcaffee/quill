@@ -12,8 +12,8 @@
 //! `dotnet tool install` are, which is the more common of the two orders and the one the .NET
 //! guidance asks for: a command holding subcommands is a **grouping**, and the verb underneath it
 //! is the action. Areas are what the window is made of, so somebody who can see Quill can guess the
-//! area: `tab`, `editor`, `terminal`, `explorer`, `modal`, `settings`, `plugins`, `git`, `window`,
-//! `project`, `action`. Six commands have no area, because they are about the CLI or about a whole
+//! area: `tab`, `pane`, `editor`, `terminal`, `explorer`, `modal`, `settings`, `plugins`, `git`,
+//! `window`, `project`, `action`. Six commands have no area, because they are about the CLI or about a whole
 //! Quill: `status`, `instances`, `launch`, `quit`, `commands` and `version`.
 //!
 //! Names are lower case and hyphenated — `save-as`, `go-to-file`, `find-in-files` — and never
@@ -346,6 +346,73 @@ pub const COMMANDS: &[Command] = &[
         arguments: NO_ARGUMENTS,
         flags: &[switch("discard", "Reload even though the tab has unsaved changes, losing them.")],
         examples: &["quill-cli tab reload", "quill-cli tab reload --discard"],
+        local: false,
+    },
+    // -------------------------------------------------------------------------------- the panes
+    Command {
+        area: "pane",
+        verb: "list",
+        summary: "The panes the editing area is split into, with the tabs in each, which tab is showing in each, and which pane has the keyboard.",
+        arguments: NO_ARGUMENTS,
+        flags: NO_FLAGS,
+        examples: &["quill-cli pane list --json"],
+        local: false,
+    },
+    Command {
+        area: "pane",
+        verb: "split",
+        summary: "Put a pane to the right of the one with the keyboard and move the tab that is showing into it. A pane holding only that tab keeps it and the new pane opens empty.",
+        arguments: NO_ARGUMENTS,
+        flags: NO_FLAGS,
+        examples: &["quill-cli pane split"],
+        local: false,
+    },
+    Command {
+        area: "pane",
+        verb: "move",
+        summary: "Move the tab that is showing into the pane beside it.",
+        arguments: &[argument("direction", true, "left or right.")],
+        flags: NO_FLAGS,
+        examples: &["quill-cli pane move right", "quill-cli pane move left"],
+        local: false,
+    },
+    Command {
+        area: "pane",
+        verb: "focus",
+        summary: "Put the keyboard in a pane, so that the next file opened lands in it.",
+        arguments: &[argument("pane", true, "Its number counting from 0, left to right.")],
+        flags: NO_FLAGS,
+        examples: &["quill-cli pane focus 1"],
+        local: false,
+    },
+    Command {
+        area: "pane",
+        verb: "width",
+        summary: "Set one pane's share of the editing area, which is what dragging the divider between two panes does. The other panes share what is left.",
+        arguments: &[
+            argument("pane", true, "Its number counting from 0."),
+            argument("fraction", true, "Its share of the width, between 0.05 and 0.95."),
+        ],
+        flags: NO_FLAGS,
+        examples: &["quill-cli pane width 0 0.35"],
+        local: false,
+    },
+    Command {
+        area: "pane",
+        verb: "unsplit",
+        summary: "Fold the pane that has the keyboard into the one beside it, keeping its tabs.",
+        arguments: NO_ARGUMENTS,
+        flags: NO_FLAGS,
+        examples: &["quill-cli pane unsplit"],
+        local: false,
+    },
+    Command {
+        area: "pane",
+        verb: "unsplit-all",
+        summary: "Put every tab back into one pane.",
+        arguments: NO_ARGUMENTS,
+        flags: NO_FLAGS,
+        examples: &["quill-cli pane unsplit-all"],
         local: false,
     },
     // ------------------------------------------------------------------------------- the editor
@@ -700,6 +767,15 @@ pub const COMMANDS: &[Command] = &[
         arguments: NO_ARGUMENTS,
         flags: &[option("limit", "number", "At most this many paths. 500 by default.")],
         examples: &["quill-cli explorer files --limit 20 --json"],
+        local: false,
+    },
+    Command {
+        area: "explorer",
+        verb: "select-open-file",
+        summary: "Scroll the explorer to the file that is showing and select it, opening out the folders above it. It happens on its own when the tab changes; this asks for it by hand.",
+        arguments: NO_ARGUMENTS,
+        flags: NO_FLAGS,
+        examples: &["quill-cli explorer select-open-file"],
         local: false,
     },
     Command {

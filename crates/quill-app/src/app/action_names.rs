@@ -54,6 +54,14 @@ impl Action {
             Action::CloseTab => "close-tab".to_owned(),
             Action::NextTab => "next-tab".to_owned(),
             Action::PreviousTab => "previous-tab".to_owned(),
+            Action::SplitRight => "split-right".to_owned(),
+            Action::MoveTabRight => "move-tab-right".to_owned(),
+            Action::MoveTabLeft => "move-tab-left".to_owned(),
+            Action::Unsplit => "unsplit".to_owned(),
+            Action::UnsplitAll => "unsplit-all".to_owned(),
+            Action::NextPane => "next-pane".to_owned(),
+            Action::PreviousPane => "previous-pane".to_owned(),
+            Action::SelectOpenFile => "select-open-file".to_owned(),
             Action::NewTerminalTab => "new-terminal-tab".to_owned(),
             Action::CloseTerminalTab => "close-terminal-tab".to_owned(),
             Action::NewFile(_) => "new-file".to_owned(),
@@ -121,6 +129,14 @@ impl Action {
             "close-tab" => Action::CloseTab,
             "next-tab" => Action::NextTab,
             "previous-tab" => Action::PreviousTab,
+            "split-right" => Action::SplitRight,
+            "move-tab-right" => Action::MoveTabRight,
+            "move-tab-left" => Action::MoveTabLeft,
+            "unsplit" => Action::Unsplit,
+            "unsplit-all" => Action::UnsplitAll,
+            "next-pane" => Action::NextPane,
+            "previous-pane" => Action::PreviousPane,
+            "select-open-file" => Action::SelectOpenFile,
             "new-terminal-tab" => Action::NewTerminalTab,
             "close-terminal-tab" => Action::CloseTerminalTab,
             "new-file" => Action::NewFile(with_path()),
@@ -290,6 +306,10 @@ mod tests {
         for menu in actions::menus(&state) {
             walk(&menu.entries, &mut out);
         }
+        // The context menus are not in the bar, so the walk above does not reach them. The tab's is
+        // walked as well, because `task-1664` puts `Split Right` on it and the rule the tests keep is
+        // that anything a menu can ask for can be asked for from the command line.
+        walk(&actions::tab_menu(&state), &mut out);
         out
     }
 

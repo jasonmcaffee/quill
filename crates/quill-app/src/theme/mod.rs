@@ -126,6 +126,12 @@ pub mod size {
     pub const EDITOR_PADDING_X: f32 = 43.0;
     /// Space between the text and the top of the editing area.
     pub const EDITOR_PADDING_Y: f32 = 36.0;
+    /// The narrowest an editing pane may be dragged.
+    ///
+    /// Wide enough to still be an editor rather than a stripe: the gutter, the padding either side
+    /// and enough room for a line of text. A divider that could be dragged past it would be a way of
+    /// losing a pane off the side of the window.
+    pub const EDITOR_PANE_MIN: f32 = 160.0;
     /// The window's rounded corner.
     pub const WINDOW_CORNER: u8 = 12;
     /// A control's rounded corner.

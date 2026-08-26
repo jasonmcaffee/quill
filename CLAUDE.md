@@ -215,6 +215,69 @@ text, which is the exception `design/style-guide.md` records beside a syntax the
 line half — `list`, `add`, `clear` and `apply`, the last taking a JSON array so twenty passages across
 twenty files are one request and none of the files has to be opened.
 
+## The editing area is a row of panes, and a pane is a number written on the tab
+
+`task-1664` asks for IntelliJ's split view. Right click a tab, choose `Split Right`, and the editing
+area is cut into panes side by side, each with **its own tabs**, its own scroll position, its own
+view mode and its own gutter. The same entries are on `View -> Split` and in `quill-cli pane`.
+
+**A tab moves into the new pane rather than being copied**, which is the one place Quill and IntelliJ
+differ and is a decision Jason confirmed on the ticket. IntelliJ's `Split Right` shows the same file
+in both splits; Quill cannot, because `OpenFiles::open` has always said that a file already open is
+*shown* rather than opened twice — two tabs on one file would be two `Document`s over one path, and
+whichever was saved second would win. This is IntelliJ's own `Split and Move Right` under the name a
+person looks for. The exception is a pane holding **one** tab: taking its only tab away would empty
+the pane it came from and leave the window looking exactly as it did, so there the tab stays and the
+new pane opens empty and focused — which is what a person means by putting a pane on the right,
+because opening a file always lands in the pane with the keyboard.
+
+**Which pane a tab is in is written on the tab**, as `OpenFile::pane`, and which tab is showing in a
+pane is the highest `OpenFile::shown_at` stamp in it. Neither is a list of indices, because every
+index into `files` shifts when a tab is opened or closed and all seven pane operations would have to
+fix them up. `OpenFiles::active_index` is then *the highest stamp in the focused pane*, which is why
+the hundred and seven places that say `files.active()` did not have to change: "the file that is
+showing" still has exactly one answer. Two invariants are kept by `OpenFiles::tidy` after every
+change and asserted in the tests — panes numbered `0..panes` with no gaps, and no pane empty.
+
+**A row of panes, not a tree of splitters.** There is no `Split Down` and no nesting.
+`tasks/task-1664-split-view-tdd.md` §4 states what a tree would cost and what would have to change
+for it; a row answers the ask and every operation on it is a small function with a unit test.
+
+**What was laid out belongs to the tab, not to the window.** Ten fields moved from `QuillApp` onto
+`OpenFile::cached` — the layout, its revision and width, the preview, its layout, its pictures and its
+diagrams. With two panes at two widths a single cache is not slow so much as *wrong* in the way a
+cache is wrong: the first pane lays its file out, the second lays its own over the top, and the next
+frame does it again for ever. `coloured_revision` moved for the same reason, so the file in the second
+pane is coloured too. Three caches deliberately stay on the window — `preview_images`,
+`mermaid_scenes` and `icons` — because none of them is keyed on a document.
+
+**The pane loop borrows the focus.** For each pane in turn the window sets `files.focus` to it, draws
+the strip and the editing area exactly as it drew the single one, and puts the focus back at the end,
+so `active()` answers with that pane's file for the duration and nothing had to have a pane index
+threaded through it. Two things must **not** follow the borrowed focus and are passed in: the
+keyboard, or every pane would take the same key presses and draw a caret, and `editor_area`, which the
+status bar reads on the frame after. Everything in a pane is drawn into a `Ui` carrying the pane's
+number as its **id salt**, because egui identifies a widget by its id and two gutters, or two
+previews, would otherwise be one widget. The dividers are added after every pane, for the reason
+`components::splitter` already records.
+
+## The explorer follows the tab
+
+The file showing in the pane with the keyboard is selected in the explorer, the folders above it are
+opened out, and the list is scrolled the **least** amount that brings the row into view — `task-1664`
+again. The pill was already drawn; what was missing is that a row inside a closed folder is not drawn
+at all, a row below the fold is drawn where nobody can see it, and nothing noticed when the answer
+changed.
+
+`QuillApp::follow_the_open_file` is one rule for all three: it remembers the path it last revealed and,
+when the file showing is not that one, calls `FileTree::expand` and asks the explorer to scroll. It is
+**derived from the state rather than fired from each of the eleven places a tab can change**, because
+the twelfth, added next month, would be the one that forgot. It is a **one shot** — a person who shut
+the folder holding the open file shut it deliberately, and a reveal that ran every frame would open it
+again before the pointer was up. `scroll_to_rect(row, None)` is what "the least amount" means, and it
+is the same call `Go to File` and `Find in Files` already make. `View -> Select Opened File` and
+`quill-cli explorer select-open-file` ask for it by hand.
+
 ## Git runs the `git` program, on a thread
 
 `quill-git` shells out to `git` rather than using a library, and the reason is what the machine's own
@@ -517,6 +580,9 @@ trade that away to be a shade nearer a screenshot.
   and pictures opening in a tab.
 - `tasks/task-1659-search-and-images-tdd.md` — `Go to File`, `Find in Files` and the thread it reads
   the project on, modals that can be dragged and resized, and pictures in the Markdown preview.
+- `tasks/task-1664-split-view-tdd.md` — the explorer following the tab, and the editing area split
+  into panes: why a tab moves rather than being copied, why a pane is a number on the tab, why the
+  layout caches had to move onto it, and what a tree of splitters would have cost.
 - `tasks/task-1663-highlights-tdd.md` — highlighting a passage: where the ranges live so they move
   with the text, the file beside the project that remembers them, the right click menu and the drawn
   colour wheel, and the bulk commands.

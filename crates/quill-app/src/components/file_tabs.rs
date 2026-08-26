@@ -14,6 +14,19 @@
 //! than the tabs being squeezed to unreadable stubs. There is no scroll area, because everything in
 //! Quill is painted at an absolute position and one container that is not would behave differently
 //! from the rest of the window.
+//!
+//! ## One strip a pane
+//!
+//! Since `task-1664` the editing area can be split into panes, and each pane has a strip of its own
+//! holding its own tabs. Two things follow, and both are parameters rather than something the strip
+//! works out.
+//!
+//! Every control's id carries the **pane number**, because egui identifies a widget by its id and two
+//! strips whose second tab shared an id would hand one click to both of them.
+//!
+//! And the strip is told whether its pane has the **keyboard**. The accent line under the tab that is
+//! showing is drawn in the quiet colour when it does not, which is how a person sees at a glance
+//! which of four panes their typing is going to.
 
 use egui::{Color32, CornerRadius, Pos2, Rect, Sense, Stroke, Vec2};
 
@@ -54,6 +67,8 @@ pub struct TabsOutcome {
     pub close: Option<usize>,
     /// A tab was double clicked, which makes a transient tab permanent.
     pub keep: Option<usize>,
+    /// A tab was right clicked: which one, and where the pointer was.
+    pub menu: Option<(usize, Pos2)>,
 }
 
 /// How wide one tab is. Measured rather than guessed, because a name can be any length.
@@ -68,11 +83,17 @@ fn tab_width(ui: &egui::Ui, tab: &TabView) -> f32 {
 }
 
 /// Draw the strip into `area`.
+///
+/// `active` is which of `tabs` is showing, counting within this strip. `pane` is which pane the strip
+/// belongs to, which keeps the ids of two strips apart, and `focused` says whether that pane has the
+/// keyboard.
 pub fn show(
     ui: &mut egui::Ui,
     area: Rect,
     tabs: &[TabView],
     active: usize,
+    pane: usize,
+    focused: bool,
     opacity: f32,
 ) -> TabsOutcome {
     let mut outcome = TabsOutcome::default();
@@ -96,7 +117,7 @@ pub fn show(
         if rect.right() < area.left() || rect.left() > area.right() {
             continue;
         }
-        draw_tab(&mut inner, rect, tab, index, index == active, &mut outcome);
+        draw_tab(&mut inner, rect, tab, Where { pane, index, focused }, index == active, &mut outcome);
     }
     outcome
 }
@@ -117,29 +138,42 @@ fn shift(widths: &[f32], active: usize, available: f32) -> f32 {
     needed.min(left).max(0.0)
 }
 
+/// Where one tab is: which strip it is in, where in that strip, and whether the strip has the
+/// keyboard. Three values that travel together, so they are one argument rather than three.
+#[derive(Clone, Copy)]
+struct Where {
+    pane: usize,
+    index: usize,
+    focused: bool,
+}
+
 /// One tab: the marker, the name, and either the unsaved dot or the close cross.
 fn draw_tab(
     ui: &mut egui::Ui,
     rect: Rect,
     tab: &TabView,
-    index: usize,
+    at: Where,
     active: bool,
     outcome: &mut TabsOutcome,
 ) {
+    let index = at.index;
     let name = format!("Tab: {}", tab.name);
     let response = ui
-        .interact(rect, ui.id().with(("file-tab", index)), Sense::click())
+        .interact(rect, ui.id().with(("file-tab", at.pane, index)), Sense::click())
         .on_hover_text(&name);
     let painter = ui.painter();
     if active {
         painter.rect_filled(rect, CornerRadius::ZERO, color::SELECTED_ROW);
+        // The accent line, quiet in a pane that has not got the keyboard, so which pane is being
+        // typed into can be seen at a glance.
+        let line = if at.focused { color::ACCENT } else { color::ACCENT.gamma_multiply(0.35) };
         painter.rect_filled(
             Rect::from_min_size(
                 Pos2::new(rect.left(), rect.bottom() - UNDERLINE),
                 Vec2::new(rect.width(), UNDERLINE),
             ),
             CornerRadius::ZERO,
-            color::ACCENT,
+            line,
         );
     } else if response.hovered() {
         painter.rect_filled(rect, CornerRadius::ZERO, color::CONTROL);
@@ -185,7 +219,7 @@ fn draw_tab(
     } else {
         let shut_name = format!("Close {}", tab.name);
         let shut_response = ui
-            .interact(shut, ui.id().with(("file-tab-close", index)), Sense::click())
+            .interact(shut, ui.id().with(("file-tab-close", at.pane, index)), Sense::click())
             .on_hover_text(&shut_name);
         icon::cross(&ui.painter(), shut.center(), color::TEXT_DIM);
         shut_response.widget_info(|| {
@@ -206,6 +240,13 @@ fn draw_tab(
     }
     if response.middle_clicked() {
         outcome.close = Some(index);
+    }
+    // A right click opens the tab's own menu. The window shows the tab first, so that every entry in
+    // the menu can be about "the tab that is showing" and so be an ordinary action with no argument.
+    if response.secondary_clicked() {
+        if let Some(at) = response.interact_pointer_pos().or_else(|| response.hover_pos()) {
+            outcome.menu = Some((index, at));
+        }
     }
 }
 

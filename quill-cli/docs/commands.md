@@ -527,6 +527,102 @@ quill-cli tab reload
 quill-cli tab reload --discard
 ```
 
+## pane — the editing area split into panes
+
+The editing area can be split into panes side by side, each with its own tabs, which is IntelliJ's split view. `pane split` moves the tab that is showing into a new pane on the right — it moves rather than copies, because two tabs on one file would be two documents over one path. A pane holding only that tab keeps it and the new pane opens empty, ready for the next file: opening a file always lands in the pane that has the keyboard.
+
+### pane list
+
+```
+quill-cli pane list
+```
+
+The panes the editing area is split into, with the tabs in each, which tab is showing in each, and which pane has the keyboard.
+
+```sh
+quill-cli pane list --json
+```
+
+### pane split
+
+```
+quill-cli pane split
+```
+
+Put a pane to the right of the one with the keyboard and move the tab that is showing into it. A pane holding only that tab keeps it and the new pane opens empty.
+
+```sh
+quill-cli pane split
+```
+
+### pane move
+
+```
+quill-cli pane move <direction>
+```
+
+Move the tab that is showing into the pane beside it.
+
+- `direction` — left or right.
+
+```sh
+quill-cli pane move right
+quill-cli pane move left
+```
+
+### pane focus
+
+```
+quill-cli pane focus <pane>
+```
+
+Put the keyboard in a pane, so that the next file opened lands in it.
+
+- `pane` — Its number counting from 0, left to right.
+
+```sh
+quill-cli pane focus 1
+```
+
+### pane width
+
+```
+quill-cli pane width <pane> <fraction>
+```
+
+Set one pane's share of the editing area, which is what dragging the divider between two panes does. The other panes share what is left.
+
+- `pane` — Its number counting from 0.
+- `fraction` — Its share of the width, between 0.05 and 0.95.
+
+```sh
+quill-cli pane width 0 0.35
+```
+
+### pane unsplit
+
+```
+quill-cli pane unsplit
+```
+
+Fold the pane that has the keyboard into the one beside it, keeping its tabs.
+
+```sh
+quill-cli pane unsplit
+```
+
+### pane unsplit-all
+
+```
+quill-cli pane unsplit-all
+```
+
+Put every tab back into one pane.
+
+```sh
+quill-cli pane unsplit-all
+```
+
 ## editor — the text in the tab that is showing
 
 These are about the tab that is showing. Lines and columns count from 1, which is what the status bar shows.
@@ -1025,6 +1121,18 @@ Every file in the project that Quill searches, which leaves out what a build wro
 
 ```sh
 quill-cli explorer files --limit 20 --json
+```
+
+### explorer select-open-file
+
+```
+quill-cli explorer select-open-file
+```
+
+Scroll the explorer to the file that is showing and select it, opening out the folders above it. It happens on its own when the tab changes; this asks for it by hand.
+
+```sh
+quill-cli explorer select-open-file
 ```
 
 ### explorer reveal

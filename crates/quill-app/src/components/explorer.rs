@@ -4,6 +4,21 @@
 //! button and a button that hides the panel, a box that filters the file list, a small coloured square in
 //! front of each file saying what kind it is, the open file shown as a filled pill with an amber dot when
 //! it has unsaved changes, and a footer counting the files.
+//!
+//! ## Following the tab
+//!
+//! `task-1664` asks that the tree agree with the tabs: the file that is showing is selected here, and
+//! the list is scrolled far enough for the row to be seen. The pill was already drawn; what the panel
+//! does now is scroll to it, when the window says to by passing `reveal`.
+//!
+//! It scrolls with `scroll_to_rect(row, None)`, and the `None` is the point of it: that means *scroll
+//! by the least amount that brings this rectangle into view*, so a row that is already visible does
+//! not move and the tree does not jump every time you switch tabs. `Align::Center` would put the row
+//! in the middle of the panel and throw away the reader's place in the tree for no reason. `Go to
+//! File` and `Find in Files` scroll their own lists with the same call.
+//!
+//! Opening out the folders above the row is the window's half, because it is the tree that changes
+//! rather than the drawing. See `QuillApp::follow_the_open_file`.
 
 use std::path::PathBuf;
 
@@ -45,7 +60,8 @@ pub struct ExplorerOutcome {
 /// Draw the explorer into `area`.
 ///
 /// `filter` is the text in the filter box, `current` is the file that is open and `unsaved` says whether it
-/// has changes that have not been written.
+/// has changes that have not been written. `reveal` is true on the frame the list should scroll to
+/// `current`, which is once, when the file that is showing changed.
 pub fn show(
     ui: &mut egui::Ui,
     area: Rect,
@@ -53,6 +69,7 @@ pub fn show(
     filter: &mut String,
     current: Option<&std::path::Path>,
     unsaved: bool,
+    reveal: bool,
     opacity: f32,
     decorate: &dyn Fn(&std::path::Path) -> Decoration,
 ) -> ExplorerOutcome {
@@ -164,7 +181,8 @@ pub fn show(
             for path in matches {
                 let depth = tree.depth_of(path);
                 let refusal = crate::services::file_kind::openable(path).err();
-                let row = file_row(ui, path, depth, current, unsaved, refusal, decorate(path));
+                let row =
+                    file_row(ui, path, depth, current, unsaved, reveal, refusal, decorate(path));
                 row.apply(&mut outcome, path, false);
             }
         } else {
@@ -182,6 +200,7 @@ pub fn show(
                         row.depth,
                         current,
                         unsaved,
+                        reveal,
                         row.entry.refusal,
                         decorate(&row.entry.path),
                     );
@@ -300,6 +319,7 @@ fn file_row(
     depth: usize,
     current: Option<&std::path::Path>,
     unsaved: bool,
+    reveal: bool,
     refusal: Option<Refusal>,
     decoration: Decoration,
 ) -> RowClick {
@@ -317,6 +337,11 @@ fn file_row(
         response.clone().on_hover_text(refusal.reason());
     }
     let open = current == Some(path);
+    if open && reveal {
+        // The least scrolling that brings the row into view, so a row already on the screen does not
+        // move. See the note at the top of this file.
+        ui.scroll_to_rect(row, None);
+    }
     let pill = row.shrink2(Vec2::new(8.0, 1.0));
     if open {
         ui.painter().rect_filled(pill, CornerRadius::same(5), color::SELECTED_ROW);

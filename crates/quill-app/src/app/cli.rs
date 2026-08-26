@@ -322,6 +322,7 @@ impl QuillApp {
             "" => self.cli_top(request, verb, ctx),
             "window" => self.cli_window(request, verb, ctx),
             "tab" => self.cli_tab(request, verb),
+            "pane" => self.cli_pane(request, verb),
             "editor" => self.cli_editor(request, verb, ctx),
             "highlight" => self.cli_highlight(request, verb),
             "terminal" => self.cli_terminal(request, verb),
@@ -470,6 +471,7 @@ impl QuillApp {
             "window": { "width": screen.width(), "height": screen.height() },
             "tabs": self.tabs_value(),
             "activeTab": self.files.active_index(),
+            "panes": self.panes_value(),
             "editor": self.editor_value(),
             "explorer": {
                 "visible": self.explorer_visible,
@@ -621,6 +623,155 @@ impl QuillApp {
             "reload" => self.cli_tab_reload(request),
             _ => unknown(request),
         }
+    }
+
+    // ---------------------------------------------------------------- the panes
+
+    /// `quill-cli pane ...` — the editing area split into panes.
+    ///
+    /// Every verb goes through the action or the `OpenFiles` method the menus go through, so a split
+    /// made from a script and a split made by right clicking a tab are the same split.
+    fn cli_pane(&mut self, request: &Request, verb: &str) -> Outcome {
+        match verb {
+            "list" => {
+                let rows: Vec<String> = (0..self.files.pane_count())
+                    .map(|pane| {
+                        let showing = self
+                            .files
+                            .showing_in(pane)
+                            .map(|index| self.files.at(index).name())
+                            .unwrap_or_default();
+                        format!(
+                            "{}{pane:<3} {:>2} tab{}  showing {showing}",
+                            if pane == self.files.focused_pane() { "*" } else { " " },
+                            self.files.tabs_in(pane).len(),
+                            if self.files.tabs_in(pane).len() == 1 { " " } else { "s" },
+                        )
+                    })
+                    .collect();
+                let panes = self.files.pane_count();
+                lines(
+                    request,
+                    format!("{panes} pane{}", if panes == 1 { "" } else { "s" }),
+                    rows,
+                    self.panes_value(),
+                )
+            }
+            "split" => {
+                self.files.split_right();
+                ok(
+                    request,
+                    format!(
+                        "Split into {} panes, showing {}",
+                        self.files.pane_count(),
+                        self.files.active().name()
+                    ),
+                    self.panes_value(),
+                )
+            }
+            "move" => {
+                let Some(direction) = request.text("direction") else {
+                    return no(request, code::USAGE, "Say which way: left or right.");
+                };
+                let right = match direction.trim().to_ascii_lowercase().as_str() {
+                    "right" => true,
+                    "left" => false,
+                    other => {
+                        return no(
+                            request,
+                            code::USAGE,
+                            format!("{other} is not a direction. Say left or right."),
+                        )
+                    }
+                };
+                if !self.files.move_tab(right) {
+                    return no(
+                        request,
+                        code::NOT_APPLICABLE,
+                        format!("There is no pane to the {direction} of this one."),
+                    );
+                }
+                ok(
+                    request,
+                    format!(
+                        "{} is in pane {}",
+                        self.files.active().name(),
+                        self.files.focused_pane()
+                    ),
+                    self.panes_value(),
+                )
+            }
+            "focus" => {
+                let Some(pane) = request.number("pane") else {
+                    return no(request, code::USAGE, "Say which pane, counting from 0.");
+                };
+                let pane = pane.max(0.0) as usize;
+                if !self.files.focus_pane(pane) {
+                    return no(
+                        request,
+                        code::NOT_FOUND,
+                        format!("There is no pane {pane}. There are {}.", self.files.pane_count()),
+                    );
+                }
+                self.focus = crate::app::Focus::Editor;
+                ok(
+                    request,
+                    format!("Pane {pane} has the keyboard, showing {}", self.files.active().name()),
+                    self.panes_value(),
+                )
+            }
+            "width" => {
+                let (Some(pane), Some(fraction)) = (request.number("pane"), request.number("fraction"))
+                else {
+                    return no(request, code::USAGE, "Say which pane and what share of the width.");
+                };
+                let pane = pane.max(0.0) as usize;
+                if !self.files.set_pane_width(pane, fraction as f32) {
+                    return no(
+                        request,
+                        code::NOT_APPLICABLE,
+                        format!(
+                            "There is no pane {pane} to widen. There are {}.",
+                            self.files.pane_count()
+                        ),
+                    );
+                }
+                ok(request, format!("Pane {pane} is {fraction} of the editing area"), self.panes_value())
+            }
+            "unsplit" | "unsplit-all" => {
+                let all = verb == "unsplit-all";
+                let done_it = if all { self.files.unsplit_all() } else { self.files.unsplit() };
+                if !done_it {
+                    return no(request, code::NOT_APPLICABLE, "The editing area is not split.");
+                }
+                ok(
+                    request,
+                    format!("{} pane{} left", self.files.pane_count(), if self.files.pane_count() == 1 { "" } else { "s" }),
+                    self.panes_value(),
+                )
+            }
+            _ => unknown(request),
+        }
+    }
+
+    /// The panes, for `pane list` and for `status`.
+    fn panes_value(&self) -> Value {
+        json!({
+            "count": self.files.pane_count(),
+            "focused": self.files.focused_pane(),
+            "panes": (0..self.files.pane_count())
+                .map(|pane| json!({
+                    "pane": pane,
+                    "width": self.files.pane_widths().get(pane).copied().unwrap_or(0.0),
+                    "tabs": self.files.tabs_in(pane),
+                    "showing": self.files.showing_in(pane),
+                    "name": self
+                        .files
+                        .showing_in(pane)
+                        .map(|index| self.files.at(index).name()),
+                }))
+                .collect::<Vec<Value>>(),
+        })
     }
 
     fn cli_tab_open(&mut self, request: &Request) -> Outcome {
@@ -787,6 +938,7 @@ impl QuillApp {
                 "picture": file.is_picture(),
                 "transient": file.transient,
                 "viewMode": view_mode_name(file.view_mode),
+                "pane": file.pane,
             }))
             .collect::<Vec<Value>>())
     }
@@ -1556,7 +1708,14 @@ impl QuillApp {
         self.refresh_preview(ctx, width);
         // What the parser found is the source of each picture; what the window read is whether it
         // could be drawn and how large. They are matched up by the paragraph both of them name.
-        let sources = self.preview.as_ref().map(|preview| preview.images.clone()).unwrap_or_default();
+        let sources = self
+            .files
+            .active()
+            .cached
+            .preview
+            .as_ref()
+            .map(|preview| preview.images.clone())
+            .unwrap_or_default();
         let pictures: Vec<Value> = self
             .preview_pictures()
             .iter()
@@ -1840,6 +1999,21 @@ impl QuillApp {
                     },
                     json!({ "filter": self.filter, "matches": matched }),
                 )
+            }
+            "select-open-file" => {
+                self.select_the_open_file();
+                match self.files.active().path() {
+                    Some(path) => ok(
+                        request,
+                        format!("The explorer is showing {}", path.display()),
+                        json!({ "path": path.to_string_lossy(), "visible": self.explorer_visible }),
+                    ),
+                    None => no(
+                        request,
+                        code::NOT_APPLICABLE,
+                        "The tab that is showing has never been saved, so there is no row to select.",
+                    ),
+                }
             }
             "expand" => self.cli_explorer_expand(request),
             "collapse" => self.cli_explorer_collapse(request),
@@ -2728,9 +2902,9 @@ impl QuillApp {
                     return no(request, code::NOT_FOUND, format!("There is no plugin called {id}."));
                 }
                 let on = verb == "enable";
-                let store = self.store.clone();
-                self.plugins.set_enabled(store.as_ref(), &id, on);
-                self.coloured_revision = None;
+                // Through the window's own way in, so switching a plugin off from the command line
+                // and switching it off in the Plugins page are the same thing.
+                self.set_plugin_enabled(&id, on);
                 ok(
                     request,
                     format!("{id} is switched {}", if on { "on" } else { "off" }),

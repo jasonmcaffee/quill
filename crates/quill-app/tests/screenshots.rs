@@ -4496,3 +4496,247 @@ fn the_command_line_can_read_what_a_diagram_came_out_as() {
     let text = answer["text"].to_string();
     assert!(text.contains("Where the work went"), "it reads the words back: {text}");
 }
+
+// -------------------------------------------------------------------------------------- task-1664
+//
+// The explorer following the tab, and the editing area split into panes.
+
+/// Run an action the way a menu row does.
+fn choose(harness: &mut Harness<'static, QuillApp>, action: Action) {
+    let ctx = harness.ctx.clone();
+    harness.state_mut().run_action(action, &ctx);
+    harness.run();
+}
+
+#[test]
+fn the_explorer_opens_out_the_folders_above_the_file_that_is_showing_and_scrolls_to_it() {
+    // The file is two folders down and both of them start shut, so before `task-1664` there was no
+    // row to select at all. Opening it should open `chapters` and `chapters/appendix` and leave the
+    // row on the screen.
+    let folder = sample_folder();
+    let mut harness = harness_in(&folder);
+    harness.state_mut().open_path_permanently(&folder.join("chapters/appendix/tables.txt"));
+    harness.run();
+    assert_eq!(harness.state().files.active().name(), "tables.txt");
+    let open = harness.state().tree.expanded_folders();
+    assert!(open.contains(&folder.join("chapters")), "chapters should be open, and {open:?} is");
+    assert!(
+        open.contains(&folder.join("chapters/appendix")),
+        "appendix should be open, and {open:?} is"
+    );
+    // The row exists and is drawn as the selected one, which is what the picture is of.
+    harness.get_by_label("tables.txt");
+    harness.snapshot(shot("explorer_follows_the_tab"));
+}
+
+#[test]
+fn a_folder_shut_by_hand_is_not_opened_again_until_the_tab_changes() {
+    // The reveal is a one shot. A person who shut the folder holding the open file shut it on
+    // purpose, and a reveal that ran every frame would open it again before the pointer was up.
+    let folder = sample_folder();
+    let mut harness = harness_in(&folder);
+    harness.state_mut().open_path_permanently(&folder.join("chapters/one.md"));
+    harness.run();
+    assert!(harness.state().tree.expanded_folders().contains(&folder.join("chapters")));
+    harness.state_mut().tree.toggle(&folder.join("chapters"));
+    harness.run();
+    harness.run();
+    assert!(
+        !harness.state().tree.expanded_folders().contains(&folder.join("chapters")),
+        "the folder should have stayed shut"
+    );
+    // Showing a different file and then this one again is a change, so it is revealed again.
+    harness.state_mut().open_path_permanently(&folder.join("readme.md"));
+    harness.run();
+    harness.state_mut().open_path_permanently(&folder.join("chapters/one.md"));
+    harness.run();
+    assert!(
+        harness.state().tree.expanded_folders().contains(&folder.join("chapters")),
+        "asking for the file again opens the folder again"
+    );
+}
+
+#[test]
+fn splitting_a_tab_puts_two_files_side_by_side() {
+    let folder = sample_folder();
+    let mut harness = harness_in(&folder);
+    harness.state_mut().open_path_permanently(&folder.join("readme.md"));
+    harness.state_mut().open_path_permanently(&folder.join("program.rs"));
+    harness.run();
+    assert_eq!(harness.state().files.pane_count(), 1);
+
+    choose(&mut harness, Action::SplitRight);
+    assert_eq!(harness.state().files.pane_count(), 2);
+    assert_eq!(harness.state().files.focused_pane(), 1);
+    // One file in each pane, and each pane has a tab strip of its own.
+    assert_eq!(harness.state().files.tabs_in(0).len(), 1);
+    assert_eq!(harness.state().files.tabs_in(1).len(), 1);
+    assert_eq!(harness.state().files.active().name(), "program.rs");
+    harness.snapshot(shot("split_two_panes"));
+}
+
+#[test]
+fn three_panes_each_show_a_file_of_their_own() {
+    let folder = sample_folder();
+    let mut harness = harness_in(&folder);
+    for name in ["readme.md", "notes.txt", "program.rs"] {
+        harness.state_mut().open_path_permanently(&folder.join(name));
+    }
+    harness.run();
+    choose(&mut harness, Action::SplitRight);
+    // The second split is on the pane that still holds two tabs, which is the one on the left.
+    harness.state_mut().files.focus_pane(0);
+    choose(&mut harness, Action::SplitRight);
+    assert_eq!(harness.state().files.pane_count(), 3);
+    for pane in 0..3 {
+        assert_eq!(harness.state().files.tabs_in(pane).len(), 1, "pane {pane}");
+    }
+    harness.snapshot(shot("split_three_panes"));
+}
+
+#[test]
+fn a_tabs_own_menu_offers_the_splits() {
+    let folder = sample_folder();
+    let mut harness = harness_in(&folder);
+    harness.state_mut().open_path_permanently(&folder.join("readme.md"));
+    harness.state_mut().open_path_permanently(&folder.join("program.rs"));
+    harness.run();
+    // Opened through the window's own state, as the gutter's menu is, because the harness cannot
+    // press the right mouse button.
+    harness.state_mut().tab_menu = Some((egui::pos2(360.0, 96.0), 0));
+    harness.run();
+    harness.get_by_label("Split Right");
+    harness.get_by_label("Unsplit All");
+    harness.snapshot(shot("tab_menu"));
+}
+
+#[test]
+fn only_the_pane_with_the_keyboard_takes_what_is_typed() {
+    // The one fault the pane loop invites: `files.active()` answers with the pane being drawn while
+    // it is being drawn, so without the keyboard being passed in separately every pane would take
+    // the same key presses and draw a caret.
+    let folder = sample_folder();
+    let mut harness = harness_in(&folder);
+    harness.state_mut().open_path_permanently(&folder.join("readme.md"));
+    harness.state_mut().open_path_permanently(&folder.join("notes.txt"));
+    harness.run();
+    choose(&mut harness, Action::SplitRight);
+    let left = harness.state().files.tabs_in(0)[0];
+    let before = harness.state().files.at(left).document.text().to_string();
+
+    harness.input_mut().events.push(egui::Event::Text("typed".to_owned()));
+    harness.run();
+    assert_eq!(
+        harness.state().files.at(left).document.text().to_string(),
+        before,
+        "the pane without the keyboard should not have taken the text"
+    );
+    assert!(
+        harness.state().files.active().document.text().to_string().contains("typed"),
+        "the pane with the keyboard should have"
+    );
+}
+
+#[test]
+fn each_pane_lays_its_own_file_out_at_its_own_width() {
+    // The reason the ten cache fields moved onto the tab. With one cache on the window the two panes
+    // would lay their files out over each other every frame, and neither would be at the right width.
+    let folder = sample_folder();
+    let mut harness = harness_in(&folder);
+    harness.state_mut().open_path_permanently(&folder.join("readme.md"));
+    harness.state_mut().open_path_permanently(&folder.join("program.rs"));
+    harness.run();
+    choose(&mut harness, Action::SplitRight);
+    // Two panes of unequal width, so one cache could not be right for both.
+    harness.state_mut().files.set_pane_width(0, 0.3);
+    harness.run();
+    harness.run();
+    let left = harness.state().files.tabs_in(0)[0];
+    let right = harness.state().files.tabs_in(1)[0];
+    let narrow = harness.state().files.at(left).cached.laid_out_width;
+    let wide = harness.state().files.at(right).cached.laid_out_width;
+    assert!(narrow > 0.0 && wide > 0.0, "both panes laid their file out: {narrow} and {wide}");
+    assert!(wide > narrow, "the wider pane laid out at a greater width: {wide} against {narrow}");
+}
+
+#[test]
+fn unsplitting_brings_every_tab_back_into_one_pane() {
+    let folder = sample_folder();
+    let mut harness = harness_in(&folder);
+    harness.state_mut().open_path_permanently(&folder.join("readme.md"));
+    harness.state_mut().open_path_permanently(&folder.join("notes.txt"));
+    harness.run();
+    choose(&mut harness, Action::SplitRight);
+    assert_eq!(harness.state().files.pane_count(), 2);
+    choose(&mut harness, Action::UnsplitAll);
+    assert_eq!(harness.state().files.pane_count(), 1);
+    assert_eq!(harness.state().files.tabs_in(0).len(), 2);
+}
+
+#[test]
+fn the_command_line_splits_the_editing_area_and_says_what_it_did() {
+    let mut harness = harness_in(&sample_folder());
+    did(&mut harness, "tab open readme.md --permanent");
+    did(&mut harness, "tab open program.rs --permanent");
+
+    let result = did(&mut harness, "pane split");
+    assert_eq!(result["count"].as_u64(), Some(2));
+    assert_eq!(harness.state().files.pane_count(), 2);
+
+    let result = did(&mut harness, "pane list");
+    assert_eq!(result["count"].as_u64(), Some(2), "pane list should say there are two");
+    assert_eq!(result["focused"].as_u64(), Some(1));
+
+    // A pane that is not there is refused rather than clamped, so a script is told.
+    assert_eq!(refused(&mut harness, "pane focus 9"), "not-found");
+    assert_eq!(refused(&mut harness, "pane move sideways"), "usage");
+
+    did(&mut harness, "pane move left");
+    assert_eq!(harness.state().files.pane_count(), 1, "the pane it left was emptied");
+    assert_eq!(refused(&mut harness, "pane unsplit"), "not-applicable");
+}
+
+#[test]
+fn the_command_line_scrolls_the_explorer_to_the_file_that_is_showing() {
+    let folder = sample_folder();
+    let mut harness = harness_in(&folder);
+    did(&mut harness, "tab open chapters/appendix/tables.txt --permanent");
+    // Shut the folders again and put the explorer away, so the command has something to do.
+    harness.state_mut().tree.toggle(&folder.join("chapters"));
+    harness.state_mut().explorer_visible = false;
+    harness.run();
+
+    did(&mut harness, "explorer select-open-file");
+    assert!(harness.state().explorer_visible, "it shows the explorer if it was put away");
+    assert!(
+        harness.state().tree.expanded_folders().contains(&folder.join("chapters/appendix")),
+        "and opens the folders above the file"
+    );
+}
+
+#[test]
+fn a_split_project_opens_split_again() {
+    // The whole round trip through `.quill`, on a folder of its own so that no other test's window
+    // is reading or writing the same state file.
+    let folder = copy_out_of_the_repository(&sample_folder(), "quill-screenshot-split-project");
+    {
+        let mut harness = harness_in(&folder);
+        harness.state_mut().restore_project();
+        harness.state_mut().open_path_permanently(&folder.join("readme.md"));
+        harness.state_mut().open_path_permanently(&folder.join("program.rs"));
+        harness.run();
+        let ctx = harness.ctx.clone();
+        harness.state_mut().run_action(Action::SplitRight, &ctx);
+        // Written on the frame after the change, as every other piece of project state is.
+        harness.run();
+        harness.run();
+        assert_eq!(harness.state().files.pane_count(), 2);
+    }
+    let mut second = harness_in(&folder);
+    second.state_mut().restore_project();
+    second.run();
+    assert_eq!(second.state().files.pane_count(), 2, "the split should have come back");
+    assert_eq!(second.state().files.tabs_in(0).len(), 1);
+    assert_eq!(second.state().files.tabs_in(1).len(), 1);
+    std::fs::remove_dir_all(&folder).ok();
+}

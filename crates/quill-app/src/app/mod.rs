@@ -228,6 +228,10 @@ pub struct PlacedDiagram {
     pub source: String,
 }
 
+/// How many frames the explorer scrolls to the file that is showing after it changes. See
+/// `QuillApp::reveal_in_explorer` for why it is not one.
+const REVEAL_FRAMES: u8 = 2;
+
 /// What the keyboard is talking to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Focus {
@@ -297,17 +301,23 @@ pub struct QuillApp {
     written_project: Option<ProjectState>,
     /// The macOS menu bar, once it has been installed.
     native_menu: Option<NativeMenu>,
-    /// The most recent layout, kept so that a frame that changed nothing does not lay out again.
-    layout: Layout,
-    laid_out_revision: u64,
-    laid_out_width: f32,
-    /// Set when the layout has to be worked out again whatever the revision says.
+    /// What each pane has asked for the explorer to scroll to, and what it last scrolled to.
     ///
-    /// The revision counts changes to one document, so it starts again at one for the next document that is
-    /// opened. Two documents can therefore be at the same revision, and comparing revisions alone would keep
-    /// the layout of the file that was open before. That is a real fault, found by looking at a screenshot
-    /// where a file had been opened and the editing area was empty.
-    layout_stale: bool,
+    /// The window remembers the path it last revealed and compares it against the file showing in
+    /// the pane with the keyboard, rather than each of the eleven places a tab can change calling a
+    /// reveal. The twelfth, added next month, would be the one that forgot. See
+    /// `Self::follow_the_open_file`.
+    revealed: Option<PathBuf>,
+    /// How many more frames the explorer should scroll to the file that is showing.
+    ///
+    /// Two rather than one, and the reason is worth keeping. Revealing a file usually **opens folders
+    /// out in the same frame**, so the list can grow by forty rows between one frame and the next —
+    /// and egui clamps a scroll target against the content size it measured on the *previous* frame.
+    /// The first frame therefore scrolls as far as the old, shorter list allowed and stops short of
+    /// the row; the second, by which time the list has been measured, reaches it. Measured on a real
+    /// window: opening a file three folders down left its row just below the fold until a second
+    /// frame was drawn.
+    reveal_in_explorer: u8,
     /// The rectangle the editing area last occupied, so a test can measure the document's own text without
     /// also measuring the bars round it.
     editor_area: Rect,
@@ -318,19 +328,15 @@ pub struct QuillApp {
     /// move, so what the gesture has asked for is kept here between frames and the setting changes
     /// only when it has asked for a whole point.
     zoom_pending: f32,
-    /// The Markdown preview, worked out from the source and kept until the source changes.
-    preview: Option<quill_core::Preview>,
-    preview_layout: Layout,
-    preview_revision: u64,
-    preview_width: f32,
     /// The pictures in the preview, decoded and kept between frames.
+    ///
+    /// One of the three caches that stay on the window rather than moving onto the tab with the rest
+    /// of `OpenFile::cached`: it is keyed on a path rather than on a document, so panes drawing two
+    /// files share it correctly and it costs nothing to keep shared.
     preview_images: PreviewImages,
-    /// Where each of those pictures is drawn, worked out with the preview and drawn from every frame.
-    preview_pictures: Vec<PlacedPicture>,
-    /// Every diagram that has been laid out, kept so a preview lays each one out once.
+    /// Every diagram that has been laid out, kept so a preview lays each one out once. Keyed on the
+    /// source text, so it is shared between panes for the same reason.
     mermaid_scenes: MermaidScenes,
-    /// The diagrams in the preview, in the order they appear.
-    preview_diagrams: Vec<PlacedDiagram>,
     /// Set when the theme has been applied, which has to happen once the context exists.
     themed: bool,
     /// The family the toolbar uses for its bold B. It is the real bold face once [`Self::prepare`] has
@@ -344,8 +350,6 @@ pub struct QuillApp {
     /// The plugins that are installed, which is what decides how a file is coloured and what icon
     /// it has.
     pub plugins: Plugins,
-    /// The revision the open file was last coloured at, so it is not coloured again for nothing.
-    coloured_revision: Option<u64>,
     /// The plugins' icons, decoded once each.
     icons: Icons,
     /// The repository the project is in, when it is in one, and the thread that runs git.
@@ -375,6 +379,14 @@ pub struct QuillApp {
     /// Where the gutter's own menu is open, when it is. Held here rather than in egui's memory so
     /// that a test can open it: a screenshot test cannot press the right mouse button.
     pub gutter_menu: Option<Pos2>,
+    /// Where a tab's own menu is open, and which pane's strip it was opened on. Held here for the
+    /// same reason the gutter's is.
+    ///
+    /// The entries in it all act on "the tab that is showing", which is what makes them ordinary
+    /// parameterless actions the View menu and the command line can ask for too — so opening the
+    /// menu shows the tab it was opened on first. The editing area's own menu already sets that
+    /// precedent: a right click outside the selection puts the caret there before opening.
+    pub tab_menu: Option<(Pos2, usize)>,
     /// The editing area's own menu, when it is open. Held here for the same reason the gutter's is,
     /// and it carries the colour wheel with it.
     pub text_menu: Option<text_menu::TextMenu>,
@@ -423,26 +435,17 @@ impl QuillApp {
             unsaved_settings: false,
             written_project: None,
             native_menu: None,
-            layout: Layout::default(),
-            laid_out_revision: 0,
-            laid_out_width: 0.0,
-            layout_stale: true,
+            revealed: None,
+            reveal_in_explorer: 0,
             editor_area: Rect::ZERO,
             zoom_pending: 1.0,
-            preview: None,
-            preview_layout: Layout::default(),
-            preview_revision: 0,
-            preview_width: 0.0,
             preview_images: PreviewImages::new(),
-            preview_pictures: Vec::new(),
             mermaid_scenes: MermaidScenes::new(),
-            preview_diagrams: Vec::new(),
             themed: false,
             bold_family: egui::FontFamily::Proportional,
             context: None,
             last_focus: Focus::Editor,
             plugins: Plugins::load(None).0,
-            coloured_revision: None,
             icons: Icons::new(),
             git: None,
             git_looked: false,
@@ -455,6 +458,7 @@ impl QuillApp {
             reveal_caret: false,
             gutter_menu: None,
             text_menu: None,
+            tab_menu: None,
             last_highlight: theme::color::HIGHLIGHT_YELLOW,
             marks: FileMarks::new(),
             control: None,
@@ -571,6 +575,13 @@ impl QuillApp {
         for path in &state.open_files {
             self.open_path_permanently(path);
         }
+        // The panes after the tabs, because a tab has to exist before it can be put in one. The tabs
+        // are opened in the order they were written, so the list lines up with them — and anything in
+        // it that would break an invariant is corrected rather than refused. See
+        // `OpenFiles::restore_panes`.
+        if !state.file_panes.is_empty() {
+            self.files.restore_panes(&state.file_panes, &state.pane_widths, state.active_pane);
+        }
         if let Some(path) = state.open_files.get(state.active_file) {
             if let Some(index) = self.files.index_of(path) {
                 self.show_tab(index);
@@ -597,6 +608,9 @@ impl QuillApp {
         ProjectState {
             open_files,
             active_file: active.unwrap_or(0),
+            file_panes: self.files.panes_of_tabs(),
+            pane_widths: self.files.pane_widths().to_vec(),
+            active_pane: self.files.focused_pane(),
             expanded_folders: self.tree.expanded_folders(),
             explorer_visible: self.explorer_visible,
             terminal_visible: self.terminal.visible,
@@ -651,7 +665,7 @@ impl QuillApp {
 
     /// The layout as it was last painted, which the tests assert against.
     pub fn layout(&self) -> &Layout {
-        &self.layout
+        &self.files.active().cached.layout
     }
 
     /// The rectangle the editing area last occupied.
@@ -816,6 +830,9 @@ impl QuillApp {
             terminal_visible: self.terminal.visible,
             terminal_tabs: self.terminal.tabs.count(),
             open_files: self.files.len(),
+            panes: self.files.pane_count(),
+            pane: self.files.focused_pane(),
+            tabs_in_pane: self.files.tabs_in(self.files.focused_pane()).len(),
             in_repository: self.git.is_some(),
             has_file: self.document().path().is_some(),
             annotated: self.files.active().blame.is_some(),
@@ -1006,6 +1023,41 @@ impl QuillApp {
                 self.files.previous();
                 self.forget_layout();
             }
+            // The panes. Each is one call on `OpenFiles`, which is where the rules about panes live,
+            // so a split made from a menu and a split made from the command line are the same split.
+            Action::SplitRight => {
+                self.files.split_right();
+                self.focus = Focus::Editor;
+            }
+            Action::MoveTabRight => {
+                if !self.files.move_tab(true) {
+                    self.message = Some("There is no pane to the right of this one.".to_owned());
+                }
+            }
+            Action::MoveTabLeft => {
+                if !self.files.move_tab(false) {
+                    self.message = Some("There is no pane to the left of this one.".to_owned());
+                }
+            }
+            Action::Unsplit => {
+                if !self.files.unsplit() {
+                    self.message = Some("The editing area is not split.".to_owned());
+                }
+            }
+            Action::UnsplitAll => {
+                if !self.files.unsplit_all() {
+                    self.message = Some("The editing area is not split.".to_owned());
+                }
+            }
+            Action::NextPane => {
+                self.files.next_pane();
+                self.focus = Focus::Editor;
+            }
+            Action::PreviousPane => {
+                self.files.previous_pane();
+                self.focus = Focus::Editor;
+            }
+            Action::SelectOpenFile => self.select_the_open_file(),
             Action::NewTerminalTab => {
                 self.terminal.visible = true;
                 self.new_terminal_tab();
@@ -1279,26 +1331,35 @@ impl QuillApp {
     /// mark the file as changed, for the same reasons setting the font does not: what Quill saves is
     /// plain text and carries no formatting.
     fn colour_the_open_file(&mut self) {
-        let revision = self.document().revision();
-        if self.coloured_revision == Some(revision) {
+        for pane in 0..self.files.pane_count() {
+            if let Some(index) = self.files.showing_in(pane) {
+                self.colour_the_file(index);
+            }
+        }
+    }
+
+    /// Colour one file. One in each pane is asked about every frame, because every pane is drawing.
+    fn colour_the_file(&mut self, index: usize) {
+        let revision = self.files.at(index).document.revision();
+        if self.files.at(index).coloured_revision == Some(revision) {
             return;
         }
-        let Some(path) = self.files.active().path().map(Path::to_path_buf) else {
-            self.coloured_revision = Some(revision);
+        let Some(path) = self.files.at(index).path().map(Path::to_path_buf) else {
+            self.files.at_mut(index).coloured_revision = Some(revision);
             return;
         };
         let Some(plugin) = self.plugins.for_path(&path) else {
-            self.coloured_revision = Some(revision);
+            self.files.at_mut(index).coloured_revision = Some(revision);
             return;
         };
         let base = quill_core::Color::rgb(color::TEXT.r(), color::TEXT.g(), color::TEXT.b());
-        let text = self.document().text().to_string();
+        let text = self.files.at(index).document.text().to_string();
         if text.len() > Self::COLOUR_LIMIT {
             self.message = Some(format!(
                 "{} is too large to colour, so it is shown as plain text.",
                 path.display()
             ));
-            self.coloured_revision = Some(revision);
+            self.files.at_mut(index).coloured_revision = Some(revision);
             return;
         }
         let theme = plugin.theme.clone();
@@ -1307,11 +1368,12 @@ impl QuillApp {
                 .into_iter()
                 .filter_map(|(range, token)| theme.colour(token).map(|colour| (range, colour)))
                 .collect();
-        self.document_mut().set_syntax(base, &spans);
+        let file = self.files.at_mut(index);
+        file.document.set_syntax(base, &spans);
         // `set_syntax` bumps the revision, so what is remembered is the revision *after* it, or the
         // next frame would colour it all over again for ever.
-        self.coloured_revision = Some(self.document().revision());
-        self.layout_stale = true;
+        file.coloured_revision = Some(file.document.revision());
+        file.cached.stale = true;
     }
 
     /// Write a bundled plugin out to the settings folder and load it back from there.
@@ -1326,7 +1388,9 @@ impl QuillApp {
                     "Installed {id} into {}",
                     Plugins::folder(&store, id).display()
                 ));
-                self.coloured_revision = None;
+                for file in self.files.iter_mut() {
+                    file.coloured_revision = None;
+                }
             }
             Err(problem) => self.message = Some(format!("{id} could not be installed: {problem}")),
         }
@@ -1883,15 +1947,12 @@ impl QuillApp {
         self.forget_layout();
     }
 
-    /// Throw away what was laid out, because the document it belonged to has gone.
+    /// Throw away what was laid out for the tab that is showing, because a different document has
+    /// taken it.
     fn forget_layout(&mut self) {
-        self.layout_stale = true;
-        self.preview = None;
-        // The revision counts changes to one document, so it starts again for the next one and two
-        // documents can be at the same number. Comparing revisions alone would leave the new file
-        // wearing the last one's colours, or none at all — the same trap `layout_stale` exists for.
-        self.coloured_revision = None;
-        self.files.active_mut().preview_scroll = 0.0;
+        let file = self.files.active_mut();
+        file.forget_what_was_worked_out();
+        file.preview_scroll = 0.0;
     }
 
     /// The name shown in the title bar and the status bar.
@@ -1934,17 +1995,17 @@ impl QuillApp {
 
     /// The Markdown preview as it was last laid out, which the tests assert against.
     pub fn preview_layout(&self) -> &Layout {
-        &self.preview_layout
+        &self.files.active().cached.preview_layout
     }
 
     /// The preview's text, for a test that wants to check what the parser produced.
     pub fn preview_text(&self) -> String {
-        self.preview.as_ref().map(|p| p.text.to_string()).unwrap_or_default()
+        self.files.active().cached.preview.as_ref().map(|p| p.text.to_string()).unwrap_or_default()
     }
 
     /// The pictures the preview is drawing, for a test.
     pub fn preview_pictures(&self) -> &[PlacedPicture] {
-        &self.preview_pictures
+        &self.files.active().cached.preview_pictures
     }
 
     /// Work the preview out again if the source or the width changed.
@@ -1961,10 +2022,11 @@ impl QuillApp {
     /// preview laid out.
     fn refresh_preview(&mut self, ctx: &egui::Context, width: f32) {
         let revision = self.document().revision();
-        if self.preview.is_some()
-            && !self.layout_stale
-            && revision == self.preview_revision
-            && (width - self.preview_width).abs() < 0.5
+        let cached = &self.files.active().cached;
+        if cached.preview.is_some()
+            && !cached.stale
+            && revision == cached.preview_revision
+            && (width - cached.preview_width).abs() < 0.5
         {
             return;
         }
@@ -1999,18 +2061,22 @@ impl QuillApp {
             colors,
             self.renderer.monospaced_family(),
         );
-        self.preview_pictures = self.read_the_pictures(ctx, &mut preview, width);
-        self.preview_diagrams = self.lay_the_diagrams_out(ctx, &mut preview, width);
-        self.preview_layout = layout(
+        let pictures = self.read_the_pictures(ctx, &mut preview, width);
+        let diagrams = self.lay_the_diagrams_out(ctx, &mut preview, width);
+        let laid = layout(
             &preview.text,
             &preview.chars,
             &preview.paragraphs,
             &self.renderer,
             width,
         );
-        self.preview = Some(preview);
-        self.preview_revision = revision;
-        self.preview_width = width;
+        let cached = &mut self.files.active_mut().cached;
+        cached.preview_pictures = pictures;
+        cached.preview_diagrams = diagrams;
+        cached.preview_layout = laid;
+        cached.preview = Some(preview);
+        cached.preview_revision = revision;
+        cached.preview_width = width;
     }
 
     /// Read every picture the preview names, and give each one's paragraph the room it needs.
@@ -2138,11 +2204,15 @@ impl QuillApp {
     /// the tick box in `Plugins` mean exactly the same thing.
     pub fn set_plugin_enabled(&mut self, id: &str, on: bool) {
         self.plugins.set_enabled(self.store.as_ref(), id, on);
-        self.coloured_revision = None;
-        // The preview is thrown away rather than kept, because whether a mermaid fence is a picture
-        // or a piece of code has just changed and the preview is built from that answer.
-        self.preview = None;
-        self.preview_diagrams.clear();
+        // Every open file, not only the one showing: a plugin is a setting for the window, and with
+        // panes there is more than one file being drawn.
+        for file in self.files.iter_mut() {
+            file.coloured_revision = None;
+            // The preview is thrown away rather than kept, because whether a mermaid fence is a
+            // picture or a piece of code has just changed and the preview is built from that answer.
+            file.cached.preview = None;
+            file.cached.preview_diagrams.clear();
+        }
         self.mermaid_scenes.forget();
     }
 
@@ -2162,28 +2232,35 @@ impl QuillApp {
 
     /// The diagrams the preview is drawing, for a test.
     pub fn preview_diagrams(&self) -> &[PlacedDiagram] {
-        &self.preview_diagrams
+        &self.files.active().cached.preview_diagrams
     }
 
-    /// Lay the document out if the text, the formatting or the width changed since the last time.
+    /// Lay the file that is showing out, if the text, the formatting or the width changed since the
+    /// last time.
+    ///
+    /// What was worked out is kept on the tab rather than on the window, so each pane's file is laid
+    /// out at that pane's width and nothing is laid out twice a frame. See `files::Cached`.
     fn refresh_layout(&mut self, width: f32) {
         let revision = self.document().revision();
-        if !self.layout_stale
-            && revision == self.laid_out_revision
-            && (width - self.laid_out_width).abs() < 0.5
+        let cached = &self.files.active().cached;
+        if !cached.stale
+            && revision == cached.laid_out_revision
+            && (width - cached.laid_out_width).abs() < 0.5
         {
             return;
         }
-        self.layout_stale = false;
-        self.layout = layout(
+        let laid = layout(
             self.document().text(),
             self.document().chars(),
             self.document().paragraphs(),
             &self.renderer,
             width,
         );
-        self.laid_out_revision = revision;
-        self.laid_out_width = width;
+        let cached = &mut self.files.active_mut().cached;
+        cached.stale = false;
+        cached.layout = laid;
+        cached.laid_out_revision = revision;
+        cached.laid_out_width = width;
     }
 
     /// Draw the whole window. Split out from the `eframe::App` implementation so the screenshot tests can
@@ -2208,6 +2285,8 @@ impl QuillApp {
         self.pump_control(ui.ctx());
         self.ask_git_about_the_open_file();
         self.colour_the_open_file();
+        // Before the explorer is drawn, so the folders it needs are already open on this frame.
+        self.follow_the_open_file();
         let full = ui.max_rect();
 
         // The window is one painted surface with rounded corners, because it has no operating system
@@ -2265,16 +2344,6 @@ impl QuillApp {
             Rect::from_min_size(upper.min, Vec2::new(explorer_width, upper.height()));
         let editing_area =
             Rect::from_min_max(Pos2::new(upper.left() + explorer_width, upper.top()), upper.max);
-        // The tabs belong to the editor, so the strip spans the editing area rather than the window:
-        // the explorer is to the left of it, which is where IntelliJ puts it too.
-        let tabs_rect = Rect::from_min_size(
-            editing_area.min,
-            Vec2::new(editing_area.width(), file_tabs::HEIGHT),
-        );
-        let editor_rect = Rect::from_min_max(
-            Pos2::new(editing_area.left(), tabs_rect.bottom()),
-            editing_area.max,
-        );
 
         // The menus, which the title bar draws when they are not in the screen's own bar.
         let menus = actions::menus(&self.menu_state());
@@ -2386,6 +2455,15 @@ impl QuillApp {
             let explorer_outcome = {
                 let open = self.files.active().path().map(std::path::Path::to_path_buf);
                 let unsaved = self.document().is_modified();
+                // True for the two frames after the file that is showing changed, which is when the
+                // list scrolls to it. Counted down rather than left on, because it is a one shot: a
+                // person who closed the folder holding the open file closed it deliberately.
+                let reveal = self.reveal_in_explorer > 0;
+                self.reveal_in_explorer = self.reveal_in_explorer.saturating_sub(1);
+                if self.reveal_in_explorer > 0 {
+                    // The second frame has to actually happen, and an idle window draws nothing.
+                    ui.ctx().request_repaint();
+                }
                 // Worked out for every row before the explorer is drawn, because decoding an icon
                 // needs the context mutably and the explorer already has the window borrowed.
                 let rows: Vec<PathBuf> = if self.filter.trim().is_empty() {
@@ -2420,6 +2498,7 @@ impl QuillApp {
                     &mut self.filter,
                     open.as_deref(),
                     unsaved,
+                    reveal,
                     self.settings.opacity,
                     &decorate,
                 )
@@ -2446,53 +2525,50 @@ impl QuillApp {
             }
         }
 
-        // The tabs, one for each open file.
-        {
-            let icons: Vec<Option<egui::TextureHandle>> = self
-                .files
-                .iter()
-                .map(|file| file.path().map(std::path::Path::to_path_buf))
-                .collect::<Vec<_>>()
-                .into_iter()
-                .map(|path| self.plugin_icon(ui.ctx(), path.as_deref()))
-                .collect();
-            let tabs: Vec<TabView> = self
-                .files
-                .iter()
-                .zip(icons)
-                .map(|(file, icon)| TabView {
-                    name: file.name(),
-                    modified: file.document.is_modified(),
-                    transient: file.transient,
-                    marker: file
-                        .path()
-                        .map(theme::file_marker)
-                        .unwrap_or(color::FILE_TEXT),
-                    icon,
-                })
-                .collect();
-            let active = self.files.active_index();
-            let opacity = self.settings.opacity;
-            let outcome = {
-                let mut tabs_ui = ui.new_child(egui::UiBuilder::new().max_rect(tabs_rect));
-                file_tabs::show(&mut tabs_ui, tabs_rect, &tabs, active, opacity)
-            };
-            if let Some(index) = outcome.show {
-                self.show_tab(index);
-                self.focus = Focus::Editor;
-            }
-            if let Some(index) = outcome.keep {
-                self.show_tab(index);
-                self.files.make_permanent(index);
-                self.focus = Focus::Editor;
-            }
-            if let Some(index) = outcome.close {
-                self.close_tab(index);
+        // The panes: a strip of tabs and an editing area each, left to right. One pane is the
+        // ordinary case and takes the same path as any other number.
+        //
+        // The loop **borrows the focus**: `files.active()` answers with the pane being drawn for as
+        // long as it is being drawn, which is what the four hundred lines of `show_editor` and
+        // `show_preview` already mean by it, so nothing had to have a pane index threaded through
+        // it. Two things must not follow the borrowed focus and are passed in instead — the keyboard,
+        // or every pane would take the same key presses and draw a caret, and `editor_area`, which
+        // the status bar reads on the frame after. See `tasks/task-1664-split-view-tdd.md` §6.
+        let pane_rects = self.pane_rects(editing_area);
+        let had_the_keyboard = self.files.focused_pane();
+        let mut keyboard = had_the_keyboard;
+        // A close can remove a pane and renumber the ones after it, so it is done once the loop has
+        // finished rather than underneath itself.
+        let mut close: Option<usize> = None;
+        for (pane, rect) in pane_rects.iter().copied().enumerate() {
+            self.files.focus_pane(pane);
+            if self.show_pane(ui, pane, pane == had_the_keyboard, rect, &mut close) {
+                keyboard = pane;
             }
         }
+        self.files.focus_pane(keyboard);
+        if let Some(index) = close {
+            self.close_tab(index);
+        }
 
-        // The editing area: the picture, the source, the preview, or both side by side.
-        self.show_editing_area(ui, editor_rect);
+        // The dividers between the panes, added after every pane for the reason
+        // `components::splitter` records: the editing area takes drags over the whole of its
+        // rectangle, so a divider added earlier sits underneath one and never sees the pointer.
+        for pane in 0..pane_rects.len().saturating_sub(1) {
+            let edge = Rect::from_min_size(
+                Pos2::new(pane_rects[pane].right(), pane_rects[pane].top()),
+                Vec2::new(1.0, pane_rects[pane].height()),
+            );
+            let name = format!("pane-{pane}");
+            let drag = splitter::show(ui, edge, &name, splitter::Axis::Upright);
+            if drag.delta != 0.0 && editing_area.width() > 1.0 {
+                let smallest = (size::EDITOR_PANE_MIN / editing_area.width()).min(0.45);
+                self.files.move_divider(pane, drag.delta / editing_area.width(), smallest);
+            }
+            if drag.reset {
+                self.files.reset_pane_widths();
+            }
+        }
 
         // The divider that sets the explorer's width. Added after the editing area rather than before it,
         // because the editing area takes drags over the whole of its rectangle and the divider overlaps its
@@ -2529,6 +2605,18 @@ impl QuillApp {
             }
             if outcome.close {
                 self.explorer_menu = None;
+            }
+        }
+
+        // A tab's own menu, drawn after the panes so it sits over them rather than under one.
+        if let Some((at, _)) = self.tab_menu {
+            let entries = actions::tab_menu(&self.menu_state());
+            let outcome = context_menu::show(ui, "tab", at, &entries);
+            if let Some(chosen) = outcome.chosen {
+                action = Some(chosen);
+            }
+            if outcome.close {
+                self.tab_menu = None;
             }
         }
 
@@ -2892,10 +2980,168 @@ impl QuillApp {
         for file in self.files.iter_mut() {
             file.document.set_base_style(change.clone());
         }
-        // The file that is showing has to be laid out again, and the preview thrown away so it is
-        // built from the new base style rather than the one it was made with.
-        self.layout_stale = true;
-        self.preview = None;
+        // Every file has to be laid out again, and every preview thrown away so it is built from
+        // the new base style rather than the one it was made with. Every file rather than only the
+        // one showing, which is what this used to do: with panes there is more than one on the
+        // screen, and a cache now belongs to the tab it describes.
+        for file in self.files.iter_mut() {
+            file.cached.stale = true;
+            file.cached.preview = None;
+        }
+    }
+
+    /// Where each pane goes, left to right, from the shares the panes were left at.
+    ///
+    /// The last pane is taken to the right hand edge rather than measured, so rounding cannot leave a
+    /// hairline of the window showing down the far side.
+    fn pane_rects(&self, area: Rect) -> Vec<Rect> {
+        let widths = self.files.pane_widths().to_vec();
+        let mut out = Vec::with_capacity(widths.len());
+        let mut left = area.left();
+        for (at, share) in widths.iter().enumerate() {
+            let right = if at + 1 == widths.len() {
+                area.right()
+            } else {
+                (left + area.width() * share).floor()
+            };
+            out.push(Rect::from_min_max(
+                Pos2::new(left, area.top()),
+                Pos2::new(right.max(left), area.bottom()),
+            ));
+            left = right;
+        }
+        if out.is_empty() {
+            out.push(area);
+        }
+        out
+    }
+
+    /// Draw one pane: its strip of tabs, and the editing area under it.
+    ///
+    /// `focused` says whether this is the pane with the keyboard, which is **not** the same question
+    /// as which pane `files` is focused on while this runs — see the note in `ui`. Returns true when
+    /// the pane was clicked in, which is what moves the keyboard to it.
+    ///
+    /// A close is reported rather than done, because closing a tab can empty a pane and renumber the
+    /// ones after it, and the loop this is called from is walking those numbers.
+    fn show_pane(
+        &mut self,
+        ui: &mut egui::Ui,
+        pane: usize,
+        focused: bool,
+        area: Rect,
+        close: &mut Option<usize>,
+    ) -> bool {
+        let tabs_rect =
+            Rect::from_min_size(area.min, Vec2::new(area.width(), file_tabs::HEIGHT));
+        let editor_rect =
+            Rect::from_min_max(Pos2::new(area.left(), tabs_rect.bottom()), area.max);
+        let mut took_the_keyboard = false;
+        // Everything in the pane is drawn into a `Ui` of its own, carrying the pane's number as its
+        // id salt. egui identifies a widget by its id, and every control inside asks for one with
+        // `ui.id().with(...)` — so without this the gutters of two panes, or their editing areas, or
+        // two previews, would be one widget as far as egui is concerned and one click would reach
+        // both. The alternative was passing a pane number into five components; one salt does it for
+        // everything, including whatever is added to a pane later.
+        let ui = &mut ui.new_child(
+            egui::UiBuilder::new().max_rect(area).id_salt(("editor-pane", pane)),
+        );
+
+        // The tabs in this pane, in the order they are drawn. The strip counts within itself, so what
+        // it reports is turned back into an index into the open files here.
+        let indices = self.files.tabs_in(pane);
+        let icons: Vec<Option<egui::TextureHandle>> = indices
+            .iter()
+            .map(|index| self.files.at(*index).path().map(std::path::Path::to_path_buf))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|path| self.plugin_icon(ui.ctx(), path.as_deref()))
+            .collect();
+        let tabs: Vec<TabView> = indices
+            .iter()
+            .zip(icons)
+            .map(|(index, icon)| {
+                let file = self.files.at(*index);
+                TabView {
+                    name: file.name(),
+                    modified: file.document.is_modified(),
+                    transient: file.transient,
+                    marker: file.path().map(theme::file_marker).unwrap_or(color::FILE_TEXT),
+                    icon,
+                }
+            })
+            .collect();
+        let active = self
+            .files
+            .showing_in(pane)
+            .and_then(|showing| indices.iter().position(|index| *index == showing))
+            .unwrap_or(0);
+        let opacity = self.settings.opacity;
+        let outcome = {
+            let mut tabs_ui = ui.new_child(egui::UiBuilder::new().max_rect(tabs_rect));
+            file_tabs::show(&mut tabs_ui, tabs_rect, &tabs, active, pane, focused, opacity)
+        };
+        let at = |within: usize| indices.get(within).copied();
+        if let Some(index) = outcome.show.and_then(at) {
+            self.show_tab(index);
+            self.focus = Focus::Editor;
+            took_the_keyboard = true;
+        }
+        if let Some(index) = outcome.keep.and_then(at) {
+            self.show_tab(index);
+            self.files.make_permanent(index);
+            self.focus = Focus::Editor;
+            took_the_keyboard = true;
+        }
+        if let Some(index) = outcome.close.and_then(at) {
+            *close = Some(index);
+        }
+        if let Some((within, where_)) = outcome.menu {
+            // The tab is shown first, so every entry in the menu can be about "the tab that is
+            // showing" and so be an action with no argument. See `actions::tab_menu`.
+            if let Some(index) = at(within) {
+                self.show_tab(index);
+                self.focus = Focus::Editor;
+                took_the_keyboard = true;
+            }
+            self.tab_menu = Some((where_, pane));
+        }
+
+        // The editing area: the picture, the source, the preview, or both side by side.
+        took_the_keyboard |= self.show_editing_area(ui, editor_rect, focused);
+        took_the_keyboard
+    }
+
+    /// Keep the explorer's selection on the file that is showing.
+    ///
+    /// Derived from the state rather than fired from each of the places a tab can change — there are
+    /// eleven of those today and the twelfth, added next month, would be the one that forgot. It
+    /// costs one comparison a frame.
+    fn follow_the_open_file(&mut self) {
+        let showing = self.files.active().path().map(Path::to_path_buf);
+        if showing == self.revealed {
+            return;
+        }
+        self.revealed = showing.clone();
+        let Some(path) = showing else {
+            return;
+        };
+        // Opening out the folders above it, so there is a row to select at all. `expand` walks the
+        // components and opens each folder; the file itself is not a folder, so it is left alone.
+        self.tree.expand(&path);
+        self.reveal_in_explorer = REVEAL_FRAMES;
+    }
+
+    /// Show the explorer, scrolled to the file that is showing. `View -> Select Opened File`.
+    fn select_the_open_file(&mut self) {
+        self.explorer_visible = true;
+        if let Some(path) = self.files.active().path().map(Path::to_path_buf) {
+            self.tree.expand(&path);
+        }
+        // The filter box is what the explorer draws instead of the tree, and a file that does not
+        // match it has no row to scroll to, so asking to be shown where a file is clears it.
+        self.filter.clear();
+        self.reveal_in_explorer = REVEAL_FRAMES;
     }
 
     /// Draw whatever the open tab holds into `area`.
@@ -2903,16 +3149,19 @@ impl QuillApp {
     /// A picture, the Markdown source, the preview, or the source and the preview side by side with a
     /// draggable divider between them. Split out of [`Self::ui`] because it is the one place the four
     /// answers are chosen between, and `ui` has enough to do laying the window out.
-    fn show_editing_area(&mut self, ui: &mut egui::Ui, area: Rect) {
+    fn show_editing_area(&mut self, ui: &mut egui::Ui, area: Rect, focused: bool) -> bool {
         if self.files.active().is_picture() {
-            self.editor_area = area;
-            self.show_picture(ui, area);
-            return;
+            if focused {
+                self.editor_area = area;
+            }
+            return self.show_picture(ui, area);
         }
         match self.view_mode() {
-            ViewMode::Raw => self.show_editor(ui, area),
+            ViewMode::Raw => return self.show_editor(ui, area, focused),
             ViewMode::Preview => {
-                self.editor_area = area;
+                if focused {
+                    self.editor_area = area;
+                }
                 self.show_preview(ui, area);
             }
             ViewMode::SideBySide => {
@@ -2923,7 +3172,7 @@ impl QuillApp {
                     Pos2::new(area.left() + split, area.top()),
                     area.max,
                 );
-                self.show_editor(ui, left);
+                let took = self.show_editor(ui, left, focused);
                 self.show_preview(ui, right);
                 // The split between the source and the preview is a pane like any other, so it is dragged.
                 let edge = Rect::from_min_size(
@@ -2940,20 +3189,23 @@ impl QuillApp {
                     self.panes.preview_fraction = 0.5;
                     self.unsaved_settings = true;
                 }
+                return took;
             }
         }
+        false
     }
 
     /// Draw the picture the open tab holds, and take the gestures that move and zoom it.
-    fn show_picture(&mut self, ui: &mut egui::Ui, area: Rect) {
+    fn show_picture(&mut self, ui: &mut egui::Ui, area: Rect) -> bool {
         let name = self.files.active().name();
         let Some(picture) = self.files.active_mut().picture.as_mut() else {
-            return;
+            return false;
         };
         let outcome = picture_view::show(ui, area, picture, &name);
         if outcome.take_focus {
             self.focus = Focus::Editor;
         }
+        outcome.take_focus
     }
 
     /// Draw whatever the open file's preview is: a Markdown page, or a drawn diagram.
@@ -3014,7 +3266,7 @@ impl QuillApp {
             self.files.active_mut().preview_scroll -= wheel;
         }
         let overflow =
-            (self.preview_layout.height - (area.height() - size::EDITOR_PADDING_Y * 2.0)).max(0.0);
+            (self.preview_layout().height - (area.height() - size::EDITOR_PADDING_Y * 2.0)).max(0.0);
         let scroll = self.files.active().preview_scroll.clamp(0.0, overflow);
         self.files.active_mut().preview_scroll = scroll;
 
@@ -3024,7 +3276,7 @@ impl QuillApp {
         );
         let mut painter_ui = ui.new_child(egui::UiBuilder::new().max_rect(area));
         painter_ui.set_clip_rect(ui.painter().clip_rect().intersect(area));
-        editor_view::paint_text(&painter_ui, &self.renderer, &self.preview_layout, origin);
+        editor_view::paint_text(&painter_ui, &self.renderer, self.preview_layout(), origin);
         self.paint_the_pictures(&painter_ui, origin);
         self.paint_the_diagrams(&painter_ui, origin, text_width);
     }
@@ -3035,9 +3287,9 @@ impl QuillApp {
     /// of the empty line it sits on, and at the left of the text where every other block starts.
     fn paint_the_pictures(&self, ui: &egui::Ui, origin: Pos2) {
         let painter = ui.painter();
-        for picture in &self.preview_pictures {
+        for picture in self.preview_pictures() {
             let Some(line) =
-                self.preview_layout.lines.iter().find(|line| line.paragraph == picture.paragraph)
+                self.preview_layout().lines.iter().find(|line| line.paragraph == picture.paragraph)
             else {
                 continue;
             };
@@ -3076,9 +3328,9 @@ impl QuillApp {
     /// After the text, like the pictures, so a diagram cannot be hidden behind the letters of the
     /// empty line it sits on.
     fn paint_the_diagrams(&self, ui: &egui::Ui, origin: Pos2, width: f32) {
-        for diagram in &self.preview_diagrams {
+        for diagram in self.preview_diagrams() {
             let Some(line) =
-                self.preview_layout.lines.iter().find(|line| line.paragraph == diagram.paragraph)
+                self.preview_layout().lines.iter().find(|line| line.paragraph == diagram.paragraph)
             else {
                 continue;
             };
@@ -3107,7 +3359,12 @@ impl QuillApp {
         }
     }
 
-    fn show_editor(&mut self, ui: &mut egui::Ui, area: Rect) {
+    /// Draw the source of the file that is showing into `area`.
+    ///
+    /// `focused` is whether this pane has the keyboard. Only that pane draws a caret and only that
+    /// pane reads the keyboard, or every pane would take the same key presses. Returns true when the
+    /// pane was clicked in, which is what moves the keyboard to it.
+    fn show_editor(&mut self, ui: &mut egui::Ui, area: Rect, focused: bool) -> bool {
         // The gutter takes the left of the editing area, and the text starts after it. With no
         // gutter the text keeps the padding it always had, so putting the numbers away leaves the
         // window looking exactly as it did before there were any.
@@ -3123,10 +3380,16 @@ impl QuillApp {
         let padding =
             if gutter_width > 0.0 { editor_view::PADDING } else { size::EDITOR_PADDING_X };
 
-        self.editor_area = area;
+        if focused {
+            // Only the focused pane, because this is what the status bar and `editor status` read on
+            // the frame after and they mean the pane that is being typed into.
+            self.editor_area = area;
+        }
         let response = ui.interact(area, ui.id().with("editor"), egui::Sense::click_and_drag());
-        if response.clicked() || response.drag_started() {
+        let mut took_the_keyboard = false;
+        if response.clicked() || response.drag_started() || response.secondary_clicked() {
             self.focus = Focus::Editor;
+            took_the_keyboard = true;
         }
         // Over the writing, the pointer is a vertical bar rather than an arrow, which is what it is in
         // every editor and what `task-1658` asks for. Only over the text itself: the gutter is a
@@ -3135,7 +3398,7 @@ impl QuillApp {
         if response.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
         }
-        let has_keyboard = self.focus == Focus::Editor;
+        let has_keyboard = self.focus == Focus::Editor && focused;
         let text_width = (area.width() - padding - size::EDITOR_PADDING_X).max(50.0);
         self.refresh_layout(text_width);
 
@@ -3143,11 +3406,13 @@ impl QuillApp {
         let origin = Pos2::new(area.left() + padding, area.top() + size::EDITOR_PADDING_Y - scroll);
         // Taken apart by field, because the input handlers want the document mutably while the
         // layout they measure against is borrowed at the same time, and a method on `self` would
-        // borrow the whole window.
-        let Self { files, layout, .. } = self;
-        let document = &mut files.active_mut().document;
-        let pointer_changed = editor_view::handle_pointer(&response, document, layout, origin);
-        let outcome = editor_view::handle_input(ui, document, layout, has_keyboard);
+        // borrow the whole window. Both now live on the same tab, and the two are separate fields of
+        // it, which is a borrow the compiler allows through one reference.
+        let file = self.files.active_mut();
+        let laid = &file.cached.layout;
+        let document = &mut file.document;
+        let pointer_changed = editor_view::handle_pointer(&response, document, laid, origin);
+        let outcome = editor_view::handle_input(ui, document, laid, has_keyboard);
         if let Some(text) = outcome.copy {
             ui.ctx().copy_text(text);
         }
@@ -3168,7 +3433,7 @@ impl QuillApp {
         if response.secondary_clicked() {
             if let Some(at) = response.interact_pointer_pos() {
                 let local = at - origin;
-                let offset = self.layout.offset_at(local.x, local.y);
+                let offset = self.layout().offset_at(local.x, local.y);
                 let selection = self.document().selection().range();
                 if !selection.contains(&offset) {
                     self.document_mut().apply(Command::PlaceCaret { offset, extend: false });
@@ -3199,8 +3464,8 @@ impl QuillApp {
         if wheel != 0.0 && response.hovered() {
             scroll -= wheel;
         }
-        if outcome.scroll_to_caret || self.reveal_caret {
-            let caret = self.layout.caret_at(self.document().selection().head);
+        if outcome.scroll_to_caret || (self.reveal_caret && focused) {
+            let caret = self.layout().caret_at(self.document().selection().head);
             let view_height = area.height() - size::EDITOR_PADDING_Y * 2.0;
             if caret.y < scroll {
                 scroll = caret.y;
@@ -3208,8 +3473,11 @@ impl QuillApp {
                 scroll = caret.y + caret.height - view_height;
             }
         }
-        self.reveal_caret = false;
-        let overflow = (self.layout.height - (area.height() - size::EDITOR_PADDING_Y * 2.0)).max(0.0);
+        if focused {
+            self.reveal_caret = false;
+        }
+        let overflow =
+            (self.layout().height - (area.height() - size::EDITOR_PADDING_Y * 2.0)).max(0.0);
         let scroll = scroll.clamp(0.0, overflow);
         self.files.active_mut().scroll = scroll;
 
@@ -3222,7 +3490,7 @@ impl QuillApp {
                 ui,
                 gutter_rect,
                 &self.gutter(),
-                &self.layout,
+                self.layout(),
                 origin.y,
                 self.document().text().byte_to_line(self.document().selection().head),
             );
@@ -3237,7 +3505,7 @@ impl QuillApp {
             &painter_ui,
             &self.renderer,
             self.document(),
-            &self.layout,
+            self.layout(),
             origin,
             editor_view::PaintStyle {
                 selection: color::TEXT_SELECTION,
@@ -3245,6 +3513,7 @@ impl QuillApp {
                 show_caret: has_keyboard,
             },
         );
+        took_the_keyboard
     }
 }
 
