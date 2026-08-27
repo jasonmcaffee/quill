@@ -197,8 +197,11 @@ window that owns them in memory.
 | `task-1703` | Make the agent's first guess work — verb and argument-name aliases |
 | `task-1704` | Make replies proportionate to what was asked |
 | `task-1705` | `terminal send` and `read` cannot target a tab, and the area has four conventions |
-| `task-1706` | There is no way to ask what is on the screen in words |
 | `task-1707` | `fold expand` opens one nesting level, so there is no way to open a whole function |
+
+Finding 9 — no way to ask what is on the screen in words — was raised and **deliberately not
+taken**. It is left in the findings above because it is what was observed, not because it is
+work that is waiting to be done.
 
 ## Running it again
 
