@@ -98,6 +98,15 @@ pub enum Action {
     /// The third of the three tiles the bottom of the window can hold, on exactly the same terms as
     /// the other two: showing one puts the other two away.
     ToggleDebugTile,
+    /// Move a panel to an edge of the window — `task-1697`.
+    ///
+    /// The same change the drag makes, so the pointer and the menu go down one path:
+    /// `QuillApp::dock_the_panel`. Where in that side is not part of the action, because a menu row
+    /// can only say "the left"; the drag is what says whether that means before or after whatever is
+    /// there already, and `quill-cli panel dock --position` is what says it in a script.
+    Dock { panel: crate::app::dock::Panel, side: crate::app::dock::Side },
+    /// Put every panel back where a new Quill has it.
+    ResetPanelLayout,
     /// Anything on the Run menu, or on the run widget in the title bar.
     Run(RunAction),
     /// Anything on the Run menu's debug half, the debug tile or the gutter's own menu.
@@ -781,6 +790,10 @@ pub struct MenuState {
     /// and `Markdown` over prose. The buttons take the same answer from the same function.
     pub preview_kind: crate::services::file_kind::PreviewKind,
     pub explorer_visible: bool,
+    /// Which edge each panel is docked to, so a panel's own menu can tick the side it is already on
+    /// — `task-1697`. The whole arrangement rather than four sides, because it is one value the
+    /// window already holds and its `Default` is the arrangement Quill ships with.
+    pub dock: crate::app::dock::Layout,
     pub line_numbers: bool,
     pub terminal_visible: bool,
     pub terminal_tabs: usize,
@@ -1445,6 +1458,10 @@ fn view_menu(state: &MenuState) -> Menu {
                 Action::ToggleDebugTile,
             )
             .checked(state.debug_tile_visible),
+            // The one row of `task-1697` that is worth a place in the bar. Moving a panel is a drag,
+            // or its own right click menu, or `quill-cli panel dock`; putting them all back is the
+            // thing somebody looks for in a menu, because by then they have lost one.
+            Entry::item("Reset Panel Layout", Action::ResetPanelLayout),
             Entry::item("New Terminal Tab", Action::NewTerminalTab),
             Entry::item("Close Terminal Tab", Action::CloseTerminalTab)
                 .enabled(state.terminal_tabs > 0),
@@ -1507,6 +1524,33 @@ pub fn terminal_tab_menu() -> Vec<Entry> {
         Entry::Separator,
         Entry::item("New Terminal Tab", Action::NewTerminalTab),
     ]
+}
+
+/// What a panel's own right click menu holds — `task-1697`.
+///
+/// Opened from the panel's header, which is also the handle it is dragged by, and from its button in
+/// the rail. Every entry names the panel it was opened on, so this takes one rather than acting on
+/// "the panel that is showing": all four can be showing at once.
+///
+/// The four `Move to` rows are **not** put on the `View` menu, and that is a decision rather than an
+/// omission. A submenu here is drawn *inline*, so four panels' four sides would be twenty rows added
+/// to a menu that already has thirty-odd and already scrolls — which is the exact fault `task-1686`
+/// records for the Edit menu, where three more rows pushed `Settings` off the bottom of the window.
+/// What does go on `View` is the one row worth a menu of its own, `Reset Panel Layout`, so there is
+/// always a way back that does not need the panel you have lost to be found first. The rest is
+/// `quill-cli panel`, which is a whole area of the catalogue and is what an agent reads.
+pub fn panel_menu(state: &MenuState, panel: crate::app::dock::Panel) -> Vec<Entry> {
+    use crate::app::dock::Side;
+    let mut entries: Vec<Entry> = Side::ALL
+        .into_iter()
+        .map(|side| {
+            Entry::item(&format!("Move to {}", side.label()), Action::Dock { panel, side })
+                .checked(state.dock.side_of(panel) == side)
+        })
+        .collect();
+    entries.push(Entry::Separator);
+    entries.push(Entry::item("Reset Panel Layout", Action::ResetPanelLayout));
+    entries
 }
 
 /// Whether the explorer's menu was opened over a row or over the empty space below the rows.

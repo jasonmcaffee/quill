@@ -12,7 +12,7 @@
 //! `dotnet tool install` are, which is the more common of the two orders and the one the .NET
 //! guidance asks for: a command holding subcommands is a **grouping**, and the verb underneath it
 //! is the action. Areas are what the window is made of, so somebody who can see Quill can guess the
-//! area: `tab`, `pane`, `editor`, `fold`, `terminal`, `run`, `debug`, `explorer`, `modal`,
+//! area: `tab`, `pane`, `panel`, `editor`, `fold`, `terminal`, `run`, `debug`, `explorer`, `modal`,
 //! `settings`, `plugins`,
 //! `git`, `window`, `project`, `action`. Six commands have no area, because they are about the CLI
 //! or about a whole Quill: `status`, `instances`, `launch`, `quit`, `commands` and `version`.
@@ -223,6 +223,7 @@ pub fn area_title(area: &'static str) -> &'static str {
         "editor" => "editor — the text in the tab that is showing",
         "highlight" => "highlight — the passages marked in the project's files",
         "fold" => "fold — the blocks collapsed in the tab that is showing",
+        "panel" => "panel — which edge of the window each panel is docked to",
         "terminal" => "terminal — the shells along the bottom",
         "run" => "run — the named commands the project is started with",
         "explorer" => "explorer — the file tree down the left",
@@ -247,6 +248,7 @@ pub fn area_note(area: &'static str) -> &'static str {
         "pane" => "The editing area can be split into panes side by side, each with its own tabs, which is IntelliJ's split view. `pane split` moves the tab that is showing into a new pane on the right — it moves rather than copies, because two tabs on one file would be two documents over one path. A pane holding only that tab keeps it and the new pane opens empty, ready for the next file: opening a file always lands in the pane that has the keyboard.",
         "editor" => "These are about the tab that is showing. Lines and columns count from 1, which is what the status bar shows.",
         "fold" => "A block that can be collapsed is a function, an `if`, a bracket that spans lines, a run of comments, an indented section, or a Markdown heading — worked out from the file itself, so nothing has to be written into it. Collapsing one hides its lines; the line numbers of everything still showing are unchanged, so `fold list` and `editor caret --line` speak the same language whatever is folded. `fold others` is the one to notice: it collapses everything that does not hold a marked passage, which is how to leave only the four places you care about on the screen.",
+        "panel" => "Quill has four panels — the explorer, the terminal, the run tile and the debug tile — and each of them can be docked to any edge of the window, which is what dragging its header does. A side holds an ordered row of panels laid out left to right, so `panel dock terminal left --position 1` puts the terminal beside the explorer rather than in place of it. The terminal, run and debug tiles all draw a character grid and two grids in one strip would be two half-sized grids, so showing one puts away the other tiles **on its own side** — move one somewhere else and they are both showing at once. `panel list` says where everything is, including the rectangle each occupies, which is what to read before working out where a click lands.",
         "highlight" => "A highlight is a colour behind a passage of text. It stays there until it is cleared, in this file and next time the project is opened, and it moves with the text as the file is edited. These work on a file whether it is open or not, so `highlight apply` can mark twenty passages across twenty files in one call.",
         "terminal" => "`terminal send` types into the shell and presses Enter; `terminal read --wait-for` is how to wait for what it did.",
         "run" => "A run configuration is a named command line, a folder and some environment variables, kept in the project. Starting one runs the program in a pseudoterminal, so `run output` is what it would have printed to a terminal — which is how to start a dev server, read the port out of its log, use it, and stop it, with nobody watching.",
@@ -899,6 +901,56 @@ pub const COMMANDS: &[Command] = &[
         arguments: NO_ARGUMENTS,
         flags: &[switch("selection", "Keep what is selected rather than what is marked, even when there are marks.")],
         examples: &["quill-cli fold others", "quill-cli fold others --selection"],
+        local: false,
+    },
+    // -------------------------------------------------------------------------------- the panels
+    Command {
+        area: "panel",
+        verb: "list",
+        summary: "Every panel Quill has — the explorer, the terminal, the run tile and the debug tile — which edge of the window each is docked to, where in that edge, how big it is, whether it is showing, and the rectangle it occupies on screen.",
+        arguments: NO_ARGUMENTS,
+        flags: NO_FLAGS,
+        examples: &["quill-cli panel list --json"],
+        local: false,
+    },
+    Command {
+        area: "panel",
+        verb: "dock",
+        summary: "Move a panel to an edge of the window: the same change dragging its header makes. A side can hold more than one panel, side by side, so the terminal can sit beside the explorer down the left.",
+        arguments: &[
+            argument("panel", true, "explorer, terminal, run or debug."),
+            argument("side", true, "left, right, top or bottom."),
+        ],
+        flags: &[option(
+            "position",
+            "number",
+            "Where in that side, counting the panels already there from the left, starting at 0. The end of the side when it is not given.",
+        )],
+        examples: &[
+            "quill-cli panel dock terminal right",
+            "quill-cli panel dock terminal left --position 0",
+        ],
+        local: false,
+    },
+    Command {
+        area: "panel",
+        verb: "size",
+        summary: "Set how wide or how tall a panel is. A panel at the left or the right is read by its width and one along the top or the bottom by its height, so both are kept and moving a panel does not lose the size it had on the other side.",
+        arguments: &[argument("panel", true, "explorer, terminal, run or debug.")],
+        flags: &[
+            option("width", "points", "How wide it is when it is a column at the left or the right."),
+            option("height", "points", "How tall it is when it is in a strip along the top or the bottom."),
+        ],
+        examples: &["quill-cli panel size debug --width 640", "quill-cli panel size terminal --height 320"],
+        local: false,
+    },
+    Command {
+        area: "panel",
+        verb: "reset",
+        summary: "Put every panel back where a new Quill has it: the explorer down the left, the three tiles along the bottom, each at its starting size.",
+        arguments: NO_ARGUMENTS,
+        flags: NO_FLAGS,
+        examples: &["quill-cli panel reset"],
         local: false,
     },
     // ----------------------------------------------------------------------------- the terminal

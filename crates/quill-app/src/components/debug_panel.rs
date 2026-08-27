@@ -102,11 +102,11 @@ pub struct DebugOutcome {
     pub remove_watch: Option<String>,
     /// An exception filter was ticked or unticked, and this is the whole set that is now on.
     pub filters: Option<Vec<String>>,
-    /// How far the top edge was dragged, in points. Positive is downwards, which makes the tile
-    /// shorter.
-    pub drag: f32,
-    /// The top edge was double clicked, which puts the tile back to its usual height.
-    pub reset_height: bool,
+    /// The tile is being carried to another edge of the window, or was right clicked on its header.
+    ///
+    /// The divider that resizes it is drawn by the window now rather than here, because since
+    /// `task-1697` the tile is not always along the bottom and its inner edge is not always its top.
+    pub grab: crate::components::dock::Grab,
 }
 
 /// The tile's own state: what is being typed into it, and where its divider is.
@@ -167,12 +167,6 @@ pub fn show(
     let painter = ui.painter_at(area);
     painter.rect_filled(area, CornerRadius::ZERO, crate::theme::faded(color::TOOLBAR, opacity));
 
-    // The top edge, which is dragged to change the height. Every pane in Quill is resized this way.
-    let edge = Rect::from_min_size(area.left_top(), Vec2::new(area.width(), 1.0));
-    let drag = splitter::show(ui, edge, "debug", splitter::Axis::Flat);
-    outcome.drag = drag.delta;
-    outcome.reset_height = drag.reset;
-
     let header = Rect::from_min_size(
         Pos2::new(area.left(), area.top() + 1.0),
         Vec2::new(area.width(), HEADER),
@@ -222,6 +216,10 @@ fn show_header(
     debug: Option<&DebugState>,
     outcome: &mut DebugOutcome,
 ) {
+    // The handle first, over the whole strip, so the tabs and the buttons added after it take the
+    // points they cover and this is left with the heading and the empty space beside it. See
+    // `components::dock` for why it has to be this way round.
+    outcome.grab = crate::components::dock::handle(ui, area, crate::app::dock::Panel::Debug);
     let painter = ui.painter_at(area);
     let heading =
         painter.layout_no_wrap("Debug".to_owned(), egui::FontId::proportional(12.0), color::TEXT_DIM);

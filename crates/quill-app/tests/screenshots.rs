@@ -9882,3 +9882,337 @@ fn a_tab_out_of_a_text_box_cannot_land_on_a_window_button() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// Rearranging the panels — `task-1697`.
+//
+// Every one of these drives the gesture a person makes: press on the panel's header, move the
+// pointer to an edge, let go. What is asserted is the window's own state read back — which side the
+// panel ended up on and what rectangle it was given — rather than what the drag reported, and the
+// picture is there so somebody can look at it and see that it is a panel rather than a stripe.
+
+/// Where the pointer has to be to grab a panel by its header.
+///
+/// The heading word rather than the middle of the strip, because the tabs and the buttons take the
+/// points they cover: the handle is added first and everything else is added on top of it, which is
+/// exactly what `components::dock` says it is left with.
+fn panel_handle(harness: &Harness<'static, QuillApp>, label: &str) -> egui::Pos2 {
+    let header = harness.get_by_label(label).rect();
+    egui::pos2(header.left() + 40.0, header.center().y)
+}
+
+/// Press on a panel's header and move the pointer to `to`, **without letting go**.
+///
+/// What a screenshot of the drop zones is taken of.
+fn carry(harness: &mut Harness<'static, QuillApp>, from: egui::Pos2, to: egui::Pos2) {
+    harness.input_mut().events.push(egui::Event::PointerMoved(from));
+    harness.run();
+    harness.input_mut().events.push(egui::Event::PointerButton {
+        pos: from,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::default(),
+    });
+    harness.run();
+    harness.input_mut().events.push(egui::Event::PointerMoved(to));
+    harness.run();
+}
+
+fn side_of(
+    harness: &Harness<'static, QuillApp>,
+    panel: quill_app::app::dock::Panel,
+) -> quill_app::app::dock::Side {
+    harness.state().panes.dock.side_of(panel)
+}
+
+#[test]
+fn dragging_the_terminals_header_to_the_right_makes_it_a_column_down_that_edge() {
+    use quill_app::app::dock::{Panel, Side};
+    let mut harness = with_terminal("A document with the terminal beside it.", 12, 80);
+    feed(&mut harness, b"jason.mcaffee@quill ~ % cargo build\r\n    Finished in 1.26s\r\n");
+    let from = panel_handle(&harness, "Move Terminal tile");
+    drag(&mut harness, from, egui::pos2(1160.0, 400.0));
+
+    assert_eq!(side_of(&harness, Panel::Terminal), Side::Right);
+    let rect = harness.state().panel_area(Panel::Terminal);
+    assert!(rect.height() > 400.0, "a column down the side is as tall as the body: {rect:?}");
+    assert!(rect.right() > 1170.0, "and it is against the right hand edge: {rect:?}");
+    // The document gave up the room rather than being covered by it.
+    assert!(harness.state().editor_area().right() <= rect.left() + 1.0);
+    harness.snapshot(shot("panel_terminal_docked_right"));
+}
+
+#[test]
+fn dragging_the_terminal_to_the_left_puts_it_beside_the_file_panel_rather_than_over_it() {
+    // The ticket's own second sentence: "drag it to the left, and it snaps to the very left, and is
+    // side by side with the file panel, or to the right of the side panel". Which of the two it is
+    // depends on which side of the explorer's middle the pointer let go — the rule a tab drag
+    // already follows.
+    use quill_app::app::dock::{Panel, Side};
+    let mut harness = with_terminal("", 12, 80);
+    let from = panel_handle(&harness, "Move Terminal tile");
+    drag(&mut harness, from, egui::pos2(200.0, 400.0));
+
+    assert_eq!(side_of(&harness, Panel::Terminal), Side::Left);
+    assert_eq!(
+        harness.state().panes.dock.panels_on(Side::Left),
+        vec![Panel::Explorer, Panel::Terminal],
+        "let go past the explorer's middle, so it lands after it"
+    );
+    let explorer = harness.state().panel_area(Panel::Explorer);
+    let terminal = harness.state().panel_area(Panel::Terminal);
+    assert!(explorer.width() > 0.0, "the explorer is still showing beside it");
+    assert!((explorer.right() - terminal.left()).abs() < 1.0, "no gap between the two columns");
+    harness.snapshot(shot("panel_terminal_docked_left_of_the_editor"));
+}
+
+#[test]
+fn letting_go_before_the_file_panels_middle_puts_the_terminal_in_front_of_it() {
+    use quill_app::app::dock::{Panel, Side};
+    let mut harness = with_terminal("", 12, 80);
+    let from = panel_handle(&harness, "Move Terminal tile");
+    drag(&mut harness, from, egui::pos2(90.0, 400.0));
+    assert_eq!(
+        harness.state().panes.dock.panels_on(Side::Left),
+        vec![Panel::Terminal, Panel::Explorer],
+        "let go before the explorer's middle, so it lands in front of it"
+    );
+}
+
+#[test]
+fn the_four_places_a_panel_can_be_dropped_are_drawn_while_it_is_in_the_air() {
+    let mut harness = with_terminal("Dragging the terminal somewhere else.", 12, 80);
+    let from = panel_handle(&harness, "Move Terminal tile");
+    // Held over the right hand edge rather than let go, which is the moment the ask is about:
+    // "there should be blue highlighted regions to indicate where I can drag to".
+    carry(&mut harness, from, egui::pos2(1160.0, 400.0));
+    harness.snapshot(shot("panel_drop_zones"));
+}
+
+#[test]
+fn a_panel_let_go_over_the_document_stays_where_it_was() {
+    // A drag can be thought better of, which is what the explorer's row drag and the tab drag both
+    // already promise. The editing area is not a dock host.
+    use quill_app::app::dock::{Panel, Side};
+    let mut harness = with_terminal("", 12, 80);
+    let from = panel_handle(&harness, "Move Terminal tile");
+    drag(&mut harness, from, egui::pos2(600.0, 300.0));
+    assert_eq!(side_of(&harness, Panel::Terminal), Side::Bottom);
+}
+
+#[test]
+fn the_file_panel_can_be_dragged_into_the_strip_along_the_bottom() {
+    use quill_app::app::dock::{Panel, Side};
+    let mut harness = harness("The explorer is going to the bottom of the window.");
+    let from = panel_handle(&harness, "Move Project");
+    drag(&mut harness, from, egui::pos2(600.0, 690.0));
+
+    assert_eq!(side_of(&harness, Panel::Explorer), Side::Bottom);
+    let rect = harness.state().panel_area(Panel::Explorer);
+    assert!(rect.left() < 60.0, "a strip starts at the left of the panes: {rect:?}");
+    assert!(rect.bottom() > 700.0, "and reaches the bottom of them: {rect:?}");
+    assert!(harness.state().editor_area().left() < 90.0, "the document has the left back: {}", harness.state().editor_area().left());
+    harness.snapshot(shot("panel_explorer_docked_bottom"));
+}
+
+#[test]
+fn a_panel_can_be_dragged_to_the_top_of_the_window() {
+    use quill_app::app::dock::{Panel, Side};
+    let mut harness = with_terminal("", 12, 80);
+    let from = panel_handle(&harness, "Move Terminal tile");
+    drag(&mut harness, from, egui::pos2(600.0, 60.0));
+    assert_eq!(side_of(&harness, Panel::Terminal), Side::Top);
+    let rect = harness.state().panel_area(Panel::Terminal);
+    assert!(rect.top() < 60.0, "a strip along the top starts at the top of the panes: {rect:?}");
+    harness.snapshot(shot("panel_terminal_docked_top"));
+}
+
+#[test]
+fn a_panel_that_has_moved_is_resized_by_the_edge_that_faces_the_document() {
+    use quill_app::app::dock::{Panel, Side};
+    let mut harness = with_terminal("", 12, 80);
+    harness.state_mut().dock_the_panel(Panel::Terminal, Side::Right, None);
+    harness.run();
+    let before = harness.state().panes.terminal_width;
+    // The divider is on its **left** now rather than along its top, because that is the edge between
+    // it and the document. Its name has not changed, which is what keeps `Resize terminal` meaning
+    // the same thing to a test and to assistive technology.
+    let handle = harness.get_by_label("Resize terminal").rect();
+    drag(&mut harness, handle.center(), egui::pos2(handle.center().x - 120.0, handle.center().y));
+    let after = harness.state().panes.terminal_width;
+    assert!(after > before + 100.0, "dragging it left made the column wider: {before} to {after}");
+    assert_eq!(
+        harness.state().panes.terminal_height,
+        settings::TERMINAL_HEIGHT,
+        "its other measurement is untouched"
+    );
+}
+
+#[test]
+fn two_tiles_on_two_different_sides_are_both_showing_at_once() {
+    // The rule `task-1683` wrote three times was "the bottom holds one of the three and never two",
+    // and its reason was that two grids in one strip are two half-sized grids. Since the rule is
+    // about a strip, it follows the strip.
+    use quill_app::app::dock::{Panel, Side};
+    let mut harness = with_terminal("", 12, 80);
+    harness.state_mut().dock_the_panel(Panel::Terminal, Side::Right, None);
+    harness.run();
+    harness.state_mut().show_the_run_tile(true);
+    harness.run();
+    assert!(harness.state().terminal.visible, "the terminal is on another side, so it stays");
+    assert!(harness.state().run.visible);
+
+    // And back on the same side they take turns again.
+    harness.state_mut().dock_the_panel(Panel::Terminal, Side::Bottom, None);
+    harness.run();
+    harness.state_mut().show_the_terminal_tile(true);
+    harness.run();
+    assert!(!harness.state().run.visible, "two grids never share one strip");
+}
+
+#[test]
+fn a_panels_own_menu_moves_it_and_reset_puts_every_panel_back() {
+    use quill_app::app::dock::{Panel, Side};
+    let mut harness = with_terminal("", 12, 80);
+    let header = harness.get_by_label("Move Terminal tile").rect();
+    harness.state_mut().panel_menu = Some((header.center(), Panel::Terminal));
+    harness.run();
+    harness.get_by_label("Move to Right").click();
+    harness.run();
+    assert_eq!(side_of(&harness, Panel::Terminal), Side::Right);
+
+    let ctx = harness.ctx.clone();
+    harness.state_mut().run_action(Action::ResetPanelLayout, &ctx);
+    harness.run();
+    assert_eq!(side_of(&harness, Panel::Terminal), Side::Bottom);
+    assert_eq!(side_of(&harness, Panel::Explorer), Side::Left);
+}
+
+#[test]
+fn a_panel_that_is_put_away_is_moved_from_its_button_in_the_rail() {
+    // A panel with no header has nothing to grab, so the rail's right click is the way back. It is
+    // also the only control that is in the same place whether a panel is showing or not.
+    use quill_app::app::dock::{Panel, Side};
+    let mut harness = harness("");
+    let ctx = harness.ctx.clone();
+    harness.state_mut().run_action(Action::ToggleExplorer, &ctx);
+    harness.run();
+    assert!(!harness.state().explorer_visible);
+    let button = harness.get_by_label("Project").rect();
+    harness.state_mut().panel_menu = Some((button.center(), Panel::Explorer));
+    harness.run();
+    harness.get_by_label("Move to Bottom").click();
+    harness.run();
+    assert_eq!(side_of(&harness, Panel::Explorer), Side::Bottom);
+}
+
+#[test]
+fn where_the_panels_are_survives_being_written_to_the_settings_file_and_read_back() {
+    use quill_app::app::dock::{Panel, Side};
+    let mut panes = settings::Panes::new();
+    panes.dock.dock(Panel::Terminal, Side::Right, None);
+    panes.dock.dock(Panel::Explorer, Side::Bottom, None);
+    let mut values = quill_app::services::store::Values::new();
+    panes.write_into(&mut values);
+    let read = settings::Panes::read_from(&values);
+    assert_eq!(read.dock.side_of(Panel::Terminal), Side::Right);
+    assert_eq!(read.dock.side_of(Panel::Explorer), Side::Bottom);
+}
+
+#[test]
+fn the_command_line_moves_a_panel_and_says_where_everything_is() {
+    use quill_app::app::dock::{Panel, Side};
+    let mut harness = with_terminal("", 12, 80);
+
+    let listed = did(&mut harness, "panel list");
+    let panels = listed["panels"].as_array().expect("a list of panels").clone();
+    assert_eq!(panels.len(), 4, "every panel is listed, showing or not");
+    let terminal = panels.iter().find(|it| it["panel"] == "terminal").expect("the terminal");
+    assert_eq!(terminal["side"], "bottom");
+    assert_eq!(terminal["showing"], true);
+    assert!(terminal["area"]["width"].as_f64().unwrap_or_default() > 100.0, "and where it is");
+
+    let moved = did(&mut harness, "panel dock terminal right");
+    assert_eq!(moved["side"], "right");
+    assert_eq!(side_of(&harness, Panel::Terminal), Side::Right);
+    // And the rectangle it reports is the one it was actually given.
+    let listed = did(&mut harness, "panel list");
+    let terminal = listed["panels"]
+        .as_array()
+        .expect("a list")
+        .iter()
+        .find(|it| it["panel"] == "terminal")
+        .cloned()
+        .expect("the terminal");
+    let rect = harness.state().panel_area(Panel::Terminal);
+    assert_eq!(terminal["area"]["width"].as_f64().unwrap_or_default() as f32, rect.width());
+
+    did(&mut harness, "panel reset");
+    assert_eq!(side_of(&harness, Panel::Terminal), Side::Bottom);
+}
+
+#[test]
+fn the_command_line_says_where_in_a_side_a_panel_goes() {
+    use quill_app::app::dock::{Panel, Side};
+    let mut harness = with_terminal("", 12, 80);
+    did(&mut harness, "panel dock terminal left --position 0");
+    assert_eq!(
+        harness.state().panes.dock.panels_on(Side::Left),
+        vec![Panel::Terminal, Panel::Explorer],
+        "position 0 is the outermost column"
+    );
+    did(&mut harness, "panel dock terminal left --position 1");
+    assert_eq!(
+        harness.state().panes.dock.panels_on(Side::Left),
+        vec![Panel::Explorer, Panel::Terminal]
+    );
+}
+
+#[test]
+fn a_panel_size_names_the_measurement_the_side_it_is_on_reads() {
+    use quill_app::app::dock::{Panel, Side};
+    let mut harness = with_terminal("", 12, 80);
+    did(&mut harness, "panel size terminal --width 500 --height 320");
+    assert_eq!(harness.state().panes.terminal_width, 500.0);
+    assert_eq!(harness.state().panes.terminal_height, 320.0);
+    // At the bottom the height is what is used; on the right the width is, and neither has been
+    // lost by moving it.
+    assert!((harness.state().panel_area(Panel::Terminal).height() - 320.0).abs() < 1.0);
+    did(&mut harness, "panel dock terminal right");
+    assert_eq!(side_of(&harness, Panel::Terminal), Side::Right);
+    assert!((harness.state().panel_area(Panel::Terminal).width() - 500.0).abs() < 1.0);
+}
+
+#[test]
+fn a_panel_nobody_has_is_refused_with_the_ones_quill_does_have() {
+    let mut harness = harness("");
+    assert_eq!(refused(&mut harness, "panel dock outline left"), "not-found");
+    assert_eq!(refused(&mut harness, "panel dock terminal sideways"), "usage");
+}
+
+#[test]
+fn status_says_which_edge_each_panel_is_on() {
+    // An agent that reads `status` and then works out where to click has to be told, because since
+    // `task-1697` the terminal is not necessarily along the bottom.
+    let mut harness = with_terminal("", 12, 80);
+    did(&mut harness, "panel dock terminal right");
+    let status = did(&mut harness, "status");
+    let panels = status["panels"].as_array().expect("the panels").clone();
+    let terminal = panels.iter().find(|it| it["panel"] == "terminal").expect("the terminal");
+    assert_eq!(terminal["side"], "right");
+}
+
+#[test]
+fn every_menu_row_for_moving_a_panel_can_be_run_from_the_command_line() {
+    // The four `Move to` rows are on a context menu rather than in the bar, so `action list` does
+    // not carry them — `action run` does, which is the guarantee the whole naming scheme exists for.
+    use quill_app::app::dock::{Panel, Side};
+    let mut harness = with_terminal("", 12, 80);
+    did(&mut harness, "action run dock-terminal-top");
+    assert_eq!(side_of(&harness, Panel::Terminal), Side::Top);
+    did(&mut harness, "action run dock-explorer-right");
+    assert_eq!(side_of(&harness, Panel::Explorer), Side::Right);
+    did(&mut harness, "action run reset-panel-layout");
+    assert_eq!(side_of(&harness, Panel::Terminal), Side::Bottom);
+    assert_eq!(side_of(&harness, Panel::Explorer), Side::Left);
+}

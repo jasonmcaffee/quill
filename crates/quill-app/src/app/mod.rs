@@ -17,6 +17,12 @@
 //!
 //! Two rules this file keeps to, and a later change should keep to as well.
 //!
+//! Where the panels actually are is a **value** rather than the run of `let`s this file used to
+//! spell out — `app::dock::Layout`, which edge each of the four is docked to and where in that edge,
+//! turned into rectangles by `app::dock::regions`. What is described above is that value's default.
+//! A change to the layout belongs in that module, where it can be tested with no window; this file
+//! draws what it is handed. See `tasks/task-1697-panel-docking-tdd.md`.
+//!
 //! Every pane is resized by dragging its edge, through `components::splitter`. The explorer, the split
 //! between the source and the preview, and the terminal all use it, and a new pane must use it too rather
 //! than growing a divider of its own.
@@ -30,6 +36,7 @@ pub mod actions;
 pub mod cli;
 pub mod completion;
 pub mod debug;
+pub mod dock;
 pub mod files;
 pub mod folding;
 pub mod git;
@@ -308,6 +315,19 @@ struct TabDrag {
     /// Where the pointer is now.
     at: Pos2,
     /// It was let go on this frame.
+    dropped: bool,
+}
+
+/// A whole panel being carried to another edge of the window — `task-1697`.
+///
+/// The same shape as [`TabDrag`] and for the same reason: the panel's header knows it is being
+/// dragged and where the pointer is, and it cannot know which edge that turned out to be, because
+/// the answer depends on where every *other* panel ended up. So the header reports, and
+/// [`QuillApp::settle_the_panel_drag`] decides once they have all been drawn.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct PanelDrag {
+    panel: dock::Panel,
+    at: Pos2,
     dropped: bool,
 }
 
@@ -725,6 +745,30 @@ pub struct QuillApp {
     /// every frame it is held and the window settles it once every pane has drawn, because a tab
     /// picked up in one pane is very often dropped on another and no one strip can see them all.
     tab_drag: Option<TabDrag>,
+    /// The **panel** being carried to another edge of the window, while one is — `task-1697`.
+    ///
+    /// Frame local for the same reason the tab drag is: each panel's header reports that it is in
+    /// the air, and `settle_the_panel_drag` decides where it landed once every panel has been drawn,
+    /// which is the first moment anything knows where all of them are.
+    panel_drag: Option<PanelDrag>,
+    /// The rectangle the panels are laid out inside: the body, less the rail down the far left.
+    ///
+    /// Recorded so that [`Self::panel_area`] can work out the rectangle a panel that is **not**
+    /// showing would have, which is what a run or a debug session started while its tile is put away
+    /// has to know — see `run_grid_size`.
+    pub(crate) panes_area: Rect,
+    /// Where each panel was drawn this frame, and what was left for the document.
+    ///
+    /// The one answer to "how big is the terminal", which `run_grid_size` and
+    /// `terminal_grid_size` read:
+    /// a tile on the right is as tall as the body and as wide as its column, and neither of those is
+    /// `panes.terminal_height`.
+    pub(crate) panel_rects: dock::Regions,
+    /// A panel's own menu, when it is open, and which panel it is about.
+    ///
+    /// Held here for the same reason the other four context menus are: a screenshot test cannot
+    /// press the right mouse button, so it sets this and the menu is drawn.
+    pub panel_menu: Option<(Pos2, dock::Panel)>,
     /// Where each pane's strip of tabs drew itself and its tabs, in pane order. Frame local, and
     /// rebuilt by the pane loop, which is the only thing that can know it.
     tab_strips: Vec<file_tabs::Strip>,
@@ -849,6 +893,10 @@ impl QuillApp {
             terminal_menu: None,
             tab_drag: None,
             tab_strips: Vec::new(),
+            panel_drag: None,
+            panes_area: Rect::ZERO,
+            panel_rects: dock::Regions { panels: [Rect::ZERO; 4], editor: Rect::ZERO },
+            panel_menu: None,
             last_highlight: theme::color::HIGHLIGHT_YELLOW,
             marks: FileMarks::new(),
             control: None,
@@ -1310,6 +1358,7 @@ impl QuillApp {
             can_preview: file_kind::preview_applies(self.document().path()),
             preview_kind: file_kind::preview_kind(self.document().path()),
             explorer_visible: self.explorer_visible,
+            dock: self.panes.dock,
             line_numbers: self.settings.line_numbers,
             terminal_visible: self.terminal.visible,
             terminal_tabs: self.terminal.tabs.count(),
@@ -1620,6 +1669,11 @@ impl QuillApp {
                 let showing = self.debug_panel.visible;
                 self.show_the_debug_tile(!showing);
             }
+            // `None` for the position: a menu row can only say "the left", and the end of that side
+            // is where a person who did not aim means. The drag is what says before or after, and
+            // `quill-cli panel dock --position` is what says it in a script.
+            Action::Dock { panel, side } => self.dock_the_panel(panel, side, None),
+            Action::ResetPanelLayout => self.reset_the_panel_layout(),
             Action::Debug(what) => self.debug_a_configuration(what),
             Action::ToggleRunTile => {
                 let showing = !self.run.visible;
@@ -2927,11 +2981,72 @@ impl QuillApp {
     pub fn show_the_run_tile(&mut self, showing: bool) {
         self.run.visible = showing;
         if showing {
-            self.terminal.visible = false;
-            self.debug_panel.visible = false;
+            self.put_the_other_tiles_away(dock::Panel::Run);
             self.focus = Focus::Terminal;
         } else if self.focus == Focus::Terminal {
             self.focus = Focus::Editor;
+        }
+    }
+
+    /// The rectangle a panel has, or **would** have if it were showing.
+    ///
+    /// The second half is what makes a run or a debug session started while its tile is put away
+    /// open its grid at the size it is about to be drawn at, which `run_grid_size` records as not
+    /// being a nicety: a pseudoconsole resized while its child is writing its first line loses that
+    /// line. The rectangle a hidden panel would have is the layout with it switched on, worked out
+    /// by the same function — which is why `dock::regions` takes what is showing rather than reading
+    /// the window.
+    pub fn panel_area(&self, panel: dock::Panel) -> Rect {
+        let rect = self.panel_rects.of(panel);
+        if rect.width() > 1.0 && rect.height() > 1.0 {
+            return rect;
+        }
+        if self.panes_area.width() <= 1.0 || self.panes_area.height() <= 1.0 {
+            return Rect::ZERO;
+        }
+        let mut showing = self.panels_showing();
+        showing[panel.index()] = true;
+        dock::regions(self.panes_area, &self.panes.dock, showing, &self.panes).of(panel)
+    }
+
+    /// Which panels are drawn at all, in [`dock::Panel::index`] order.
+    ///
+    /// The one place the four `visible` flags are gathered, so `regions`, `zones` and every command
+    /// that asks where a panel is are looking at the same four booleans.
+    pub fn panels_showing(&self) -> [bool; 4] {
+        let mut showing = [false; 4];
+        showing[dock::Panel::Explorer.index()] = self.explorer_visible;
+        showing[dock::Panel::Terminal.index()] = self.terminal.visible;
+        showing[dock::Panel::Run.index()] = self.run.visible;
+        showing[dock::Panel::Debug.index()] = self.debug_panel.visible;
+        showing
+    }
+
+    /// Whether a panel is showing.
+    pub fn panel_is_showing(&self, panel: dock::Panel) -> bool {
+        self.panels_showing()[panel.index()]
+    }
+
+    /// Put away the other tiles **that share this one's side**.
+    ///
+    /// `task-1683`'s rule, which used to be written out three times as "the bottom of the window
+    /// holds one of the three and never two". Its reason was that two character grids in one strip
+    /// are two half-sized grids — a reason about a *strip* — so since `task-1697` the rule follows
+    /// the strip: put the terminal on the right and it no longer competes with the run tile along
+    /// the bottom, and both are showing at once, which is the point of being able to move it. The
+    /// explorer is a list rather than a grid and never competes with anything.
+    fn put_the_other_tiles_away(&mut self, showing: dock::Panel) {
+        let side = self.panes.dock.side_of(showing);
+        for panel in self.panes.dock.panels_on(side) {
+            if panel == showing || !panel.is_a_tile() {
+                continue;
+            }
+            match panel {
+                dock::Panel::Terminal => self.terminal.visible = false,
+                dock::Panel::Run => self.run.visible = false,
+                dock::Panel::Debug => self.debug_panel.visible = false,
+                dock::Panel::Explorer => {}
+            }
         }
     }
 
@@ -2941,8 +3056,7 @@ impl QuillApp {
     pub fn show_the_terminal_tile(&mut self, showing: bool) {
         self.terminal.visible = showing;
         if showing {
-            self.run.visible = false;
-            self.debug_panel.visible = false;
+            self.put_the_other_tiles_away(dock::Panel::Terminal);
             self.open_terminal_tab();
             self.focus = Focus::Terminal;
         } else if self.focus == Focus::Terminal {
@@ -2959,8 +3073,7 @@ impl QuillApp {
     pub fn show_the_debug_tile(&mut self, showing: bool) {
         self.debug_panel.visible = showing;
         if showing {
-            self.run.visible = false;
-            self.terminal.visible = false;
+            self.put_the_other_tiles_away(dock::Panel::Debug);
             if self.focus == Focus::Terminal {
                 self.focus = Focus::Editor;
             }
@@ -3012,9 +3125,10 @@ impl QuillApp {
     /// Start another terminal, in the folder the explorer is showing, running the shell the settings
     /// name — or this machine's own when they name none.
     pub fn new_terminal_tab(&mut self) {
-        let rows = self.terminal_rows();
-        let cell = self.renderer.cell_metrics(self.settings.terminal_font_size);
-        let size = quill_terminal::session::Size::new(rows, 80).with_cell(cell.width, cell.height);
+        // Both measurements from the rectangle the tile really has, since `task-1697`: a terminal
+        // docked to the right is as tall as the body and as narrow as its column, and eighty columns
+        // is not a guess that survives being moved.
+        let size = self.terminal_grid_size();
         self.terminal.tabs.settings.shell = self.settings.shell();
         self.terminal.tabs.settings.working_directory = Some(self.tree.root().to_path_buf());
         let waker = self.waker();
@@ -3072,11 +3186,21 @@ impl QuillApp {
     }
 
     /// How many rows the terminal tile holds at its current height.
-    fn terminal_rows(&self) -> usize {
+    fn terminal_grid_size(&self) -> quill_terminal::session::Size {
         let cell = self.renderer.cell_metrics(self.settings.terminal_font_size);
-        (((self.panes.terminal_height - terminal_panel::FURNITURE) / cell.height).floor() as usize)
-            .max(1)
+        let tile = self.panel_area(dock::Panel::Terminal);
+        // The guess underneath is only ever reached before the window has drawn a frame at all,
+        // which is the same fallback `run_grid_size` keeps and for the same reason.
+        let size = match tile.width() > 1.0 && tile.height() > 1.0 {
+            true => tile.size(),
+            false => Vec2::new(
+                self.editor_area.width().max(600.0),
+                self.panes.height_of(dock::Panel::Terminal),
+            ),
+        };
+        terminal_panel::grid_size(size, cell)
     }
+
 
     /// What the terminal calls to have the window drawn again when new output arrives.
     ///
@@ -4784,6 +4908,10 @@ impl QuillApp {
         }
         self.zoom_taken = false;
         self.zoom_offered_to_the_keyboard = false;
+        // Frame local, like the tab drag: every panel that is drawn says whether it is in the air,
+        // and `settle_the_panel_drag` reads the answer once they all have. Cleared here rather than
+        // beside the tab drag because the explorer is drawn before that point.
+        self.panel_drag = None;
         // Before anything is drawn, so that what a command asked for is in the frame about to be
         // painted and therefore in the next screenshot.
         self.pump_control(ui.ctx());
@@ -4847,75 +4975,28 @@ impl QuillApp {
             Rect::from_min_size(body.min, Vec2::new(size::ACTIVITY_BAR, body.height()));
         let panes = Rect::from_min_max(Pos2::new(rail_rect.right(), body.top()), body.max);
 
-        // One tile takes the bottom of the panes across their whole width, as the terminal does in
-        // IntelliJ, and the explorer and the editing area share what is left. **One**: the terminal
-        // tile or the run tile, never both stacked, because two grids stacked take the editing area
-        // below the fold of anything.
-        let tile_height = if self.terminal.visible {
-            self.panes
-                .terminal_height
-                .clamp(settings::TERMINAL_MIN, (panes.height() - 120.0).max(settings::TERMINAL_MIN))
-        } else if self.run.visible {
-            self.panes
-                .run_height
-                .clamp(settings::RUN_MIN, (panes.height() - 120.0).max(settings::RUN_MIN))
-        } else if self.debug_panel.visible {
-            self.panes
-                .debug_height
-                .clamp(settings::DEBUG_MIN, (panes.height() - 120.0).max(settings::DEBUG_MIN))
-        } else {
-            0.0
-        };
-        let upper =
-            Rect::from_min_max(panes.min, Pos2::new(panes.right(), panes.bottom() - tile_height));
-        let terminal_rect =
-            Rect::from_min_max(Pos2::new(panes.left(), upper.bottom()), panes.max);
-        // Where the run tile is, recorded whether it is showing or not, so that a run started while
-        // it is put away is still opened at the size it will be drawn at. See `run_grid_size`.
-        self.run.tile = match self.run.visible {
-            true => terminal_rect,
-            // The rectangle it *would* have, which is what it will be given the moment something is
-            // run: showing the tile is what starting a run does.
-            false => Rect::from_min_max(
-                Pos2::new(
-                    panes.left(),
-                    panes.bottom()
-                        - self
-                            .panes
-                            .run_height
-                            .clamp(settings::RUN_MIN, (panes.height() - 120.0).max(settings::RUN_MIN)),
-                ),
-                panes.max,
-            ),
-        };
+        // Where every panel goes. Since `task-1697` this is not written out here: the shape of the
+        // window is a value — which edge each panel is docked to, and where in that edge — and
+        // `app::dock::regions` is the one function that turns it into rectangles. The default value
+        // gives exactly the arithmetic that used to be spelled out in this spot, and there is a test
+        // that says so.
+        let showing = self.panels_showing();
+        let placed = dock::regions(panes, &self.panes.dock, showing, &self.panes);
+        self.panes_area = panes;
+        self.panel_rects = placed;
+        let explorer_rect = placed.of(dock::Panel::Explorer);
+        let terminal_rect = placed.of(dock::Panel::Terminal);
+        let run_rect_tile = placed.of(dock::Panel::Run);
+        let debug_rect = placed.of(dock::Panel::Debug);
+        let editing_area = placed.editor;
 
-        // Where the debug tile is, recorded whether it is showing or not, for the reason the run
-        // tile's rectangle is recorded: a session started while it is put away still has to know how
-        // much room its tree will have.
-        self.debug_panel.tile = match self.debug_panel.visible {
-            true => terminal_rect,
-            false => Rect::from_min_max(
-                Pos2::new(
-                    panes.left(),
-                    panes.bottom()
-                        - self.panes.debug_height.clamp(
-                            settings::DEBUG_MIN,
-                            (panes.height() - 120.0).max(settings::DEBUG_MIN),
-                        ),
-                ),
-                panes.max,
-            ),
-        };
-
-        let explorer_width = if self.explorer_visible {
-            self.panes.explorer_width.clamp(settings::EXPLORER_MIN, settings::EXPLORER_MAX)
-        } else {
-            0.0
-        };
-        let explorer_rect =
-            Rect::from_min_size(upper.min, Vec2::new(explorer_width, upper.height()));
-        let editing_area =
-            Rect::from_min_max(Pos2::new(upper.left() + explorer_width, upper.top()), upper.max);
+        // Where the run and debug tiles are, recorded **whether they are showing or not**, so that a
+        // run or a session started while its tile is put away is still opened at the size it will be
+        // drawn at. See `run_grid_size` for what that is worth. The rectangle a hidden tile *would*
+        // have is the layout with it switched on, worked out by the same function — which is the
+        // whole reason that function takes `showing` rather than reading the window.
+        self.run.tile = self.panel_area(dock::Panel::Run);
+        self.debug_panel.tile = self.panel_area(dock::Panel::Debug);
 
         // The menus, which the title bar draws when they are not in the screen's own bar.
         let menus = actions::menus(&self.menu_state());
@@ -5003,12 +5084,17 @@ impl QuillApp {
                 debug_visible: self.debug_panel.visible,
             };
             let opacity = self.settings.opacity;
-            let chosen = {
+            let rail = {
                 let mut rail_ui = ui.new_child(egui::UiBuilder::new().max_rect(rail_rect));
                 activity_bar::show(&mut rail_ui, rail_rect, state, opacity)
             };
-            if let Some(chosen) = chosen {
+            if let Some(chosen) = rail.chosen {
                 action = Some(chosen);
+            }
+            // A right click on a rail button is the panel's own menu, which is the one way to move a
+            // panel that has been put away — `task-1697`.
+            if let Some((at, panel)) = rail.menu {
+                self.panel_menu = Some((at, panel));
             }
         }
 
@@ -5134,6 +5220,7 @@ impl QuillApp {
                 self.explorer_visible = false;
             }
             self.dragging_a_row = explorer_outcome.dragging;
+            self.note_a_panel_grab(dock::Panel::Explorer, explorer_outcome.grab);
             if let Some((at, path, directory)) = explorer_outcome.context_menu {
                 let aimed = match explorer_outcome.menu_over_empty_space {
                     true => actions::Aim::AtEmptySpace,
@@ -5222,25 +5309,9 @@ impl QuillApp {
             }
         }
 
-        // The divider that sets the explorer's width. Added after the editing area rather than before it,
-        // because the editing area takes drags over the whole of its rectangle and the divider overlaps its
-        // left edge: a widget added earlier would sit underneath and never be dragged.
-        if self.explorer_visible {
-            let edge = Rect::from_min_size(
-                Pos2::new(explorer_rect.right(), explorer_rect.top()),
-                Vec2::new(1.0, explorer_rect.height()),
-            );
-            let drag = splitter::show(ui, edge, "explorer", splitter::Axis::Upright);
-            if drag.delta != 0.0 {
-                self.panes.explorer_width = (self.panes.explorer_width + drag.delta)
-                    .clamp(settings::EXPLORER_MIN, settings::EXPLORER_MAX);
-                self.unsaved_settings = true;
-            }
-            if drag.reset {
-                self.panes.explorer_width = settings::EXPLORER_WIDTH;
-                self.unsaved_settings = true;
-            }
-        }
+        // The panels' own dividers are added once all four have been drawn — see the call to
+        // `show_the_panel_dividers` below the debug tile, and `components::splitter` for why a
+        // divider can never be added before the pane it belongs to.
 
         // The explorer's own menu, drawn after the explorer and the editing area so it sits over
         // both rather than under either.
@@ -5336,16 +5407,7 @@ impl QuillApp {
                     self.settings.opacity,
                 )
             };
-            if panel_outcome.drag != 0.0 {
-                let limit = (body.height() - 120.0).max(settings::TERMINAL_MIN);
-                self.panes.terminal_height =
-                    (self.panes.terminal_height - panel_outcome.drag).clamp(settings::TERMINAL_MIN, limit);
-                self.unsaved_settings = true;
-            }
-            if panel_outcome.reset_height {
-                self.panes.terminal_height = settings::TERMINAL_HEIGHT;
-                self.unsaved_settings = true;
-            }
+            self.note_a_panel_grab(dock::Panel::Terminal, panel_outcome.grab);
             if panel_outcome.take_focus {
                 self.focus = Focus::Terminal;
             }
@@ -5373,31 +5435,23 @@ impl QuillApp {
                 self.focus = Focus::Editor;
             }
         }
-        // The run tile, in the same place and never at the same time.
+        // The run tile. On the same side as the terminal it is never showing at the same time; on
+        // another side it is, which is what moving it is for.
         if self.run.visible {
             let panel_outcome = {
-                let mut panel_ui = ui.new_child(egui::UiBuilder::new().max_rect(terminal_rect));
-                panel_ui.set_clip_rect(terminal_rect);
+                let mut panel_ui = ui.new_child(egui::UiBuilder::new().max_rect(run_rect_tile));
+                panel_ui.set_clip_rect(run_rect_tile);
                 let font_size = self.settings.terminal_font_size;
                 run_panel::show(
                     &mut panel_ui,
-                    terminal_rect,
+                    run_rect_tile,
                     &mut self.run,
                     &self.renderer,
                     font_size,
                     self.settings.opacity,
                 )
             };
-            if panel_outcome.drag != 0.0 {
-                let limit = (body.height() - 120.0).max(settings::RUN_MIN);
-                self.panes.run_height =
-                    (self.panes.run_height - panel_outcome.drag).clamp(settings::RUN_MIN, limit);
-                self.unsaved_settings = true;
-            }
-            if panel_outcome.reset_height {
-                self.panes.run_height = settings::RUN_HEIGHT;
-                self.unsaved_settings = true;
-            }
+            self.note_a_panel_grab(dock::Panel::Run, panel_outcome.grab);
             if panel_outcome.take_focus {
                 self.focus = Focus::Terminal;
                 // Clicking a run's tab is choosing it, so the widget and the tile agree about what
@@ -5423,32 +5477,46 @@ impl QuillApp {
                 self.show_the_run_tile(false);
             }
         }
-        // The debug tile, in the same place and never at the same time as either of the other two.
+        // The debug tile, the third of the three.
         if self.debug_panel.visible {
             // Worked out before the tile is drawn, because it is what the tile says when there is no
             // session and because the search behind it is a cache the window owns.
             let idle = self.debug_idle();
             let outcome = {
-                let mut panel_ui = ui.new_child(egui::UiBuilder::new().max_rect(terminal_rect));
-                panel_ui.set_clip_rect(terminal_rect);
+                let mut panel_ui = ui.new_child(egui::UiBuilder::new().max_rect(debug_rect));
+                panel_ui.set_clip_rect(debug_rect);
                 let opacity = self.settings.opacity;
                 // The panel and the session are borrowed apart, which is what lets a component take
                 // its own state mutably and what it draws immutably — the shape every component in
                 // Quill has.
                 let DebugSplit { panel, debug } = split_the_debug(self);
-                debug_panel::show(&mut panel_ui, terminal_rect, panel, debug, &idle, opacity)
+                debug_panel::show(&mut panel_ui, debug_rect, panel, debug, &idle, opacity)
             };
-            if outcome.drag != 0.0 {
-                let limit = (body.height() - 120.0).max(settings::DEBUG_MIN);
-                self.panes.debug_height =
-                    (self.panes.debug_height - outcome.drag).clamp(settings::DEBUG_MIN, limit);
-                self.unsaved_settings = true;
-            }
-            if outcome.reset_height {
-                self.panes.debug_height = settings::DEBUG_HEIGHT;
-                self.unsaved_settings = true;
-            }
+            self.note_a_panel_grab(dock::Panel::Debug, outcome.grab);
             self.act_on_the_debug_tile(outcome, ui.ctx());
+        }
+
+        // One divider a panel, along the edge that faces the editing area. Added once every panel
+        // has been drawn, because a panel takes drags over the whole of its rectangle and a divider
+        // overlaps its edge: a widget added earlier sits underneath one and never sees the pointer.
+        // That is what `components::splitter` has always recorded, applied to four panels rather
+        // than to the explorer and whichever tile happened to be up.
+        self.show_the_panel_dividers(ui, panes);
+        // And where a panel being carried would land, drawn over everything else in the body because
+        // it is about to replace some of it. After the dividers, so a band is never drawn under one.
+        self.show_the_drop_zones(ui, panes);
+        self.settle_the_panel_drag(ui.ctx(), panes);
+
+        // A panel's own menu, drawn after every panel so it sits over them rather than under one.
+        if let Some((at, panel)) = self.panel_menu {
+            let entries = actions::panel_menu(&self.menu_state(), panel);
+            let outcome = context_menu::show(ui, "panel", at, &entries);
+            if let Some(chosen) = outcome.chosen {
+                action = Some(chosen);
+            }
+            if outcome.close {
+                self.panel_menu = None;
+            }
         }
         // What every program has said since the last frame, and the hard kill that follows a polite
         // stop nobody answered. Outside the `visible` test on purpose: a program that is running
@@ -6141,6 +6209,216 @@ impl QuillApp {
         // rather than the pane's: the pane was drawn already and a mark added to it would be under
         // the strip it is meant to be over.
         file_tabs::insertion_mark(ui.painter(), strip, position);
+    }
+
+    // ------------------------------------------------------------------------ moving a whole panel
+
+    /// Take down what a panel's header reported: that it is in the air, or that it was right clicked.
+    ///
+    /// Each panel says this as it is drawn and none of them can act on it, because where a panel
+    /// lands depends on where every *other* panel ended up — see [`Self::settle_the_panel_drag`].
+    fn note_a_panel_grab(&mut self, panel: dock::Panel, grab: crate::components::dock::Grab) {
+        if let Some(at) = grab.carrying {
+            self.panel_drag = Some(PanelDrag { panel, at, dropped: grab.dropped });
+        }
+        if let Some(at) = grab.menu {
+            self.panel_menu = Some((at, panel));
+        }
+    }
+
+    /// One divider a panel, along the edge that faces the editing area.
+    ///
+    /// A left column's is on its right and a right column's on its left, so in both cases the edge a
+    /// person reaches for is the one between the panel and the document; the sign of the drag follows
+    /// from the side, in this one place. A **strip** along the top or the bottom has one depth rather
+    /// than one a panel, so its divider runs the whole way across and moves every panel in it
+    /// together, with a divider between each pair of columns for their widths.
+    fn show_the_panel_dividers(&mut self, ui: &mut egui::Ui, panes: Rect) {
+        let showing = self.panels_showing();
+        for side in dock::Side::ALL {
+            let here: Vec<dock::Panel> = self
+                .panes
+                .dock
+                .panels_on(side)
+                .into_iter()
+                .filter(|panel| showing[panel.index()])
+                .filter(|panel| self.panel_rects.of(*panel).width() > 0.0)
+                .collect();
+            let Some(first) = here.first().copied() else {
+                continue;
+            };
+            if side.is_a_column() {
+                for panel in here {
+                    let rect = self.panel_rects.of(panel);
+                    let x = match side {
+                        dock::Side::Right => rect.left(),
+                        _ => rect.right(),
+                    };
+                    let sign = match side {
+                        dock::Side::Right => -1.0,
+                        _ => 1.0,
+                    };
+                    let line = Rect::from_min_size(
+                        Pos2::new(x, rect.top()),
+                        Vec2::new(1.0, rect.height()),
+                    );
+                    let drag = splitter::show(ui, line, panel.name(), splitter::Axis::Upright);
+                    self.act_on_a_panel_divider(panel, drag, sign, panes);
+                }
+                continue;
+            }
+            // A strip: the outer divider is the whole strip's, and it moves every panel in it.
+            let strip = here
+                .iter()
+                .map(|panel| self.panel_rects.of(*panel))
+                .fold(self.panel_rects.of(first), |whole, rect| whole.union(rect));
+            let (y, sign) = match side {
+                dock::Side::Top => (strip.bottom(), 1.0),
+                _ => (strip.top(), -1.0),
+            };
+            let line =
+                Rect::from_min_size(Pos2::new(strip.left(), y), Vec2::new(strip.width(), 1.0));
+            let drag = splitter::show(ui, line, first.name(), splitter::Axis::Flat);
+            for panel in here.iter().copied() {
+                self.act_on_a_panel_divider(panel, drag, sign, panes);
+            }
+            // And one between each pair of columns, for the width of the one on its left.
+            for panel in here.iter().copied().take(here.len().saturating_sub(1)) {
+                let rect = self.panel_rects.of(panel);
+                let line = Rect::from_min_size(
+                    Pos2::new(rect.right(), rect.top()),
+                    Vec2::new(1.0, rect.height()),
+                );
+                let id = format!("{} width", panel.name());
+                let drag = splitter::show(ui, line, &id, splitter::Axis::Upright);
+                if drag.delta != 0.0 {
+                    let room = (panes.width() - dock::EDITOR_MIN_WIDTH).max(1.0);
+                    let width = (self.panes.width_of(panel) + drag.delta).clamp(
+                        self.panes.min_width_of(panel),
+                        self.panes.max_width_of(panel).min(room),
+                    );
+                    self.panes.set_width_of(panel, width);
+                    self.unsaved_settings = true;
+                }
+                if drag.reset {
+                    self.panes.set_width_of(panel, Panes::new().width_of(panel));
+                    self.unsaved_settings = true;
+                }
+            }
+        }
+    }
+
+    /// What a drag on one panel's divider is worth, in whichever measurement its side reads.
+    fn act_on_a_panel_divider(
+        &mut self,
+        panel: dock::Panel,
+        drag: splitter::Drag,
+        sign: f32,
+        panes: Rect,
+    ) {
+        if drag.delta != 0.0 {
+            let room = match self.panes.dock.side_of(panel).is_a_column() {
+                true => panes.width() - dock::EDITOR_MIN_WIDTH,
+                false => panes.height() - dock::EDITOR_MIN_HEIGHT,
+            };
+            self.panes.resize(panel, drag.delta * sign, room);
+            self.unsaved_settings = true;
+        }
+        if drag.reset {
+            self.panes.reset_size_of(panel);
+            self.unsaved_settings = true;
+        }
+    }
+
+    /// The four places a panel in the air can be let go, and the one it would land in.
+    ///
+    /// The strong rectangle is **the layout**, not a picture of it: `dock::regions` run over the
+    /// arrangement as it would be after the drop, so the preview and the drop are one function
+    /// applied to one value and cannot come apart.
+    fn show_the_drop_zones(&mut self, ui: &mut egui::Ui, panes: Rect) {
+        let Some(drag) = self.panel_drag else {
+            return;
+        };
+        let showing = self.panels_showing();
+        let bands = dock::zones(panes, &self.panes.dock, showing, &self.panes);
+        let aimed =
+            dock::target(panes, &self.panes.dock, showing, &self.panes, drag.panel, drag.at);
+        let landing = match aimed {
+            Some((side, position)) => {
+                let after = self.panes.dock.with(drag.panel, side, Some(position));
+                dock::regions(panes, &after, showing, &self.panes).of(drag.panel)
+            }
+            None => Rect::ZERO,
+        };
+        crate::components::dock::zones(ui, &bands, aimed.map(|(side, _)| side), landing, drag.panel);
+    }
+
+    /// Where the panel that was let go actually landed.
+    ///
+    /// After every panel has been drawn, which is the earliest moment anything knows where all of
+    /// them are — `settle_the_tab_drag`'s shape, and it exists for the same reason.
+    fn settle_the_panel_drag(&mut self, ctx: &egui::Context, panes: Rect) {
+        let Some(drag) = self.panel_drag else {
+            return;
+        };
+        if !drag.dropped {
+            return;
+        }
+        self.panel_drag = None;
+        let showing = self.panels_showing();
+        // Let go over the document rather than over an edge, nothing happens: a drag can be thought
+        // better of, which is what the explorer's row drag and the tab drag both already promise.
+        if let Some((side, position)) =
+            dock::target(panes, &self.panes.dock, showing, &self.panes, drag.panel, drag.at)
+        {
+            self.dock_the_panel(drag.panel, side, Some(position));
+        }
+        ctx.request_repaint();
+    }
+
+    /// Move a panel to an edge of the window.
+    ///
+    /// The one place a panel moves, which is what the drag, the panel's own menu and `quill-cli
+    /// panel dock` all go through — `run_action`'s rule applied to a fifth thing.
+    pub fn dock_the_panel(
+        &mut self,
+        panel: dock::Panel,
+        side: dock::Side,
+        position: Option<usize>,
+    ) {
+        let before = self.panes.dock;
+        self.panes.dock.dock(panel, side, position);
+        if self.panes.dock == before {
+            return;
+        }
+        self.unsaved_settings = true;
+        // A tile arriving on a side puts the other tiles there away, for the reason two grids never
+        // shared the bottom of the window: two in one strip are two half-sized grids.
+        if panel.is_a_tile() && self.panel_is_showing(panel) {
+            self.put_the_other_tiles_away(panel);
+        }
+        self.message = Some(format!("{} is on the {}", panel.label(), side.name()));
+    }
+
+    /// Put every panel back where it started, which is what `Reset Panel Layout` means.
+    pub fn reset_the_panel_layout(&mut self) {
+        self.panes.dock.reset();
+        for panel in dock::Panel::ALL {
+            self.panes.reset_size_of(panel);
+        }
+        // And the other measurement of each, because `reset_size_of` sets the one its side reads and
+        // this is meant to put the whole arrangement back rather than half of it.
+        let fresh = Panes::new();
+        self.panes.explorer_width = fresh.explorer_width;
+        self.panes.explorer_height = fresh.explorer_height;
+        self.panes.terminal_width = fresh.terminal_width;
+        self.panes.terminal_height = fresh.terminal_height;
+        self.panes.run_width = fresh.run_width;
+        self.panes.run_height = fresh.run_height;
+        self.panes.debug_width = fresh.debug_width;
+        self.panes.debug_height = fresh.debug_height;
+        self.unsaved_settings = true;
+        self.message = Some("The panels are back where they started".to_owned());
     }
 
     /// Keep the explorer's selection on the file that is showing.

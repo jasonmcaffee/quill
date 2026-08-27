@@ -1153,6 +1153,70 @@ quill-cli fold others
 quill-cli fold others --selection
 ```
 
+## panel — which edge of the window each panel is docked to
+
+Quill has four panels — the explorer, the terminal, the run tile and the debug tile — and each of them can be docked to any edge of the window, which is what dragging its header does. A side holds an ordered row of panels laid out left to right, so `panel dock terminal left --position 1` puts the terminal beside the explorer rather than in place of it. The terminal, run and debug tiles all draw a character grid and two grids in one strip would be two half-sized grids, so showing one puts away the other tiles **on its own side** — move one somewhere else and they are both showing at once. `panel list` says where everything is, including the rectangle each occupies, which is what to read before working out where a click lands.
+
+### panel list
+
+```
+quill-cli panel list
+```
+
+Every panel Quill has — the explorer, the terminal, the run tile and the debug tile — which edge of the window each is docked to, where in that edge, how big it is, whether it is showing, and the rectangle it occupies on screen.
+
+```sh
+quill-cli panel list --json
+```
+
+### panel dock
+
+```
+quill-cli panel dock <panel> <side> [--position <number>]
+```
+
+Move a panel to an edge of the window: the same change dragging its header makes. A side can hold more than one panel, side by side, so the terminal can sit beside the explorer down the left.
+
+- `panel` — explorer, terminal, run or debug.
+- `side` — left, right, top or bottom.
+
+- `--position <number>` — Where in that side, counting the panels already there from the left, starting at 0. The end of the side when it is not given.
+
+```sh
+quill-cli panel dock terminal right
+quill-cli panel dock terminal left --position 0
+```
+
+### panel size
+
+```
+quill-cli panel size <panel> [--width <points>] [--height <points>]
+```
+
+Set how wide or how tall a panel is. A panel at the left or the right is read by its width and one along the top or the bottom by its height, so both are kept and moving a panel does not lose the size it had on the other side.
+
+- `panel` — explorer, terminal, run or debug.
+
+- `--width <points>` — How wide it is when it is a column at the left or the right.
+- `--height <points>` — How tall it is when it is in a strip along the top or the bottom.
+
+```sh
+quill-cli panel size debug --width 640
+quill-cli panel size terminal --height 320
+```
+
+### panel reset
+
+```
+quill-cli panel reset
+```
+
+Put every panel back where a new Quill has it: the explorer down the left, the three tiles along the bottom, each at its starting size.
+
+```sh
+quill-cli panel reset
+```
+
 ## terminal — the shells along the bottom
 
 `terminal send` types into the shell and presses Enter; `terminal read --wait-for` is how to wait for what it did.

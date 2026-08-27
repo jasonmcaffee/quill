@@ -805,6 +805,93 @@ never apply; dimmed is for one that could be used in a moment, and every one of 
 instant the pointer is over a row. `New -> Folder` is new beside it, with
 `quill-cli explorer new-file`, `new-folder` and `reload` for the agent the ticket is about.
 
+## A panel is dragged to an edge, and the blue rectangle is the layout rather than a picture of it
+
+`task-1697` asks that every panel be draggable to the top, bottom, left or right of the window, with
+blue regions showing where it can go — and, in its second sentence, that the terminal dropped on the
+left end up *"side by side with the file panel, or to the right of the side panel"*.
+`tasks/task-1697-panel-docking-tdd.md` is the design.
+
+**The shape of the window stopped being a run of `let`s and became a value.** `QuillApp::ui` used to
+spell the layout out — the tile takes the bottom of the panes, the explorer takes the left of what is
+left, the editing area takes the rest — and a terminal on the right is not a value that arithmetic
+can take. `app::dock::Layout` is which edge each of the four panels is docked to and where in that
+edge; `app::dock::regions` is the one function that turns it into rectangles, pure and tested with no
+window; and `the_default_layout_is_the_arithmetic_the_window_used_to_do_inline` pins that the default
+value produces exactly what was written out before, which is why all 345 screenshot tests were
+unchanged by the whole change.
+
+**Three rules settle every awkward case.** *Order is screen order, always along x* — on the left,
+order 0 is the outermost column; on the right it is the one nearest the document, because on the
+right "left to right" starts in the middle. That is what makes "where in this side did the pointer
+let go" one comparison for all four sides, and it is `file_tabs::Strip::position_at`'s rule word for
+word: **after every panel whose middle the pointer has passed**. *The strips are taken first, across
+the whole width, and the columns come out of what is left*, which is what Quill already did and what
+IntelliJ's bottom tool window does. And *a panel carries two measurements, and the side decides which
+is read* — a width for a column, a height for a strip — because one number cannot be both: the
+terminal is 260 points tall along the bottom and a 260 point wide column is half a terminal.
+
+**The blue rectangle is not a guess.** The four bands are drawn faintly because the ask says a person
+has to see there are four places; the strong one is `dock::regions` run over the layout **as it would
+be after the drop**, so the preview and the drop are one function applied to one value and cannot come
+apart. A preview that could disagree with the drop is a preview nobody can trust.
+
+**The handle is the panel's header, and it is added to the `Ui` first.** A tile's header already holds
+tabs that are dragged along their own strip; egui gives a pointer to the last widget that asked for
+the point — the rule `components::splitter` and `components::resize_edges` are written around — so
+adding the handle **first** and the tabs and buttons after it leaves the handle exactly the part
+nothing else wanted, the heading word and the empty space. That is IntelliJ's own handle. The drag is
+settled by `settle_the_panel_drag` **after every panel has been drawn**, which is the earliest moment
+anything knows where all of them are — `settle_the_tab_drag`'s shape, for the same reason.
+
+**Dropped over the document, nothing happens.** The editing area is not a dock host: a panel there
+would have to become a tab, which is a different feature. "A drag can be thought better of" is what
+the explorer's row drag and the tab drag already promise.
+
+**Two grids never share one strip, and that rule now follows the strip.** `task-1683` wrote "the
+bottom of the window holds one of the three tiles and never two" three times, in
+`show_the_run_tile`, `show_the_terminal_tile` and `show_the_debug_tile`. Its reason was about a
+*strip* — two character grids in one are two half-sized grids — so `put_the_other_tiles_away` puts
+away the other tiles **on the same side**. Move the terminal to the right and it no longer competes
+with the run tile at the bottom, and both are showing, which is the point of being able to move it.
+The explorer is a list rather than a grid and never competes with anything, which is what makes
+"side by side with the file panel" work at all.
+
+**Nothing reads a size field any more; everything reads the rectangle.** `run_grid_size` and
+`terminal_grid_size` ask `QuillApp::panel_area`, which answers with the rectangle a panel has — or the
+one it **would** have if it were showing, worked out by running `regions` with it switched on. That
+second half is what `task-1684` recorded as not being a nicety: a pseudoconsole resized while its
+child is writing its first line loses that line, so a run started while its tile is put away has to be
+opened at the size it is about to be drawn at. One divider a panel, along the edge that faces the
+document, generated from the regions rather than written out; a divider's id is the panel's name, so
+`Resize explorer` and `Resize terminal` go on meaning what they meant.
+
+**Where the panels are is a habit, so it lives in the person's settings** — `panes.<panel>.side` and
+`panes.<panel>.order` beside the sizes — and not in the project's `.quill`. That is the line
+`task-1693` drew: the window's *geometry* belongs to the project, because Quill's windows are one per
+project and a geometry kept per person would open the second window on top of the first; its *shape*
+is the same in every project somebody opens.
+
+**`egui_dock`, `egui_tiles` and `egui_docking` were weighed and refused**, and it is `task-1675`'s and
+`task-1685`'s verdict for the third time: the crate's output is shaped for a different consumer. They
+own the layout *and the tab bars*, where Quill draws its own furniture at absolute positions measured
+from `design/intial-design-screenshot.png`; and their shape is a **tree**, where `task-1664` already
+refused a tree of splitters for the editing area on the grounds that a row answers the ask and every
+operation on it is a small function with a unit test.
+
+**The four `Move to` rows are on the panel's own right click menu — its header, or its button in the
+rail — and deliberately not on `View`.** A submenu here is drawn *inline*, so four panels' four sides
+would be twenty rows added to a menu that already scrolls, which is the exact fault `task-1686`
+records for the Edit menu. `View` gets the one row worth a menu of its own, `Reset Panel Layout`, so
+there is always a way back. The rail's right click is the only way to move a panel that is **put
+away**, because a panel that is not showing has no header to grab; the rail itself does **not** follow
+its panel, because Quill has one rail on one edge and a rail that reshuffled itself on every drag
+would be a second thing moving while somebody was moving the first.
+
+`quill-cli panel list | dock | size | reset` is the command line half, and `status` says which edge
+each panel is on — an agent that reads it and then works out where to click has to be told, because
+the terminal is not necessarily along the bottom any more.
+
 ## A block is collapsed by hiding its lines, and the line numbers do not move
 
 `task-1686` asks for IntelliJ's fold arrows: a chevron beside the line number against a function, an
@@ -1906,10 +1993,11 @@ from inside one. `tools::offered` is where that is written down and
 `exactly_one_command_is_held_back...` fails if the list grows, because an exclusion nobody argued
 about is how "everything is reachable" quietly stops being true.
 
-**One tool an area is the default, and it was measured rather than assumed.** A hundred and thirty-six
-commands are a hundred and thirty-six tool definitions in an agent's context on every conversation —
-about **32,900 tokens**, against **11,900** for the eighteen area tools, which still carry every
-command's usage line and summary. `quill-cli mcp tools --count` prints both figures against the
+**One tool an area is the default, and it was measured rather than assumed.** A hundred and
+forty-five commands are a hundred and forty-five tool definitions in an agent's context on every
+conversation — about **35,200 tokens**, against **12,900** for the nineteen area tools, which still
+carry every command's usage line and summary. (It was 32,900 against 11,900 over a hundred and
+thirty-six commands when `task-1679` measured it; the ratio is what matters and it has not moved.) `quill-cli mcp tools --count` prints both figures against the
 catalogue as it is now, so the choice is never made against a number in a comment. `mcp.tools = every`
 is there for a client that permits tools by name, which is the one thing grouping really costs.
 
@@ -2221,6 +2309,11 @@ trade that away to be a shade nearer a screenshot.
   `recent.txt` that holds the windows to bring back and the trade-off in keeping a line when one
   closes, why the folders that are showing are asked rather than watched, and the two explorer marks
   that had been drawn as one.
+- `tasks/task-1697-panel-docking-tdd.md` — dragging a panel to an edge of the window: why the three
+  Rust docking crates are the wrong shape for a window that is measured against an image, the two
+  drop-target mechanics and why the edge band wins, why the highlight is the layout rather than a
+  picture of it, the two measurements a panel has to carry once it can be a column or a strip, and
+  the five things left out with the reason for each.
 - `tasks/task-1686-folding-tdd.md` — collapsing and expanding blocks: what IntelliJ, VS Code,
   CodeMirror and the Language Server Protocol each do about folding, the three tiers for deciding
   what is foldable and why the syntactic one is chosen again, why a hidden paragraph produces no

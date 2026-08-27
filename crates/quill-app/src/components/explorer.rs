@@ -131,6 +131,9 @@ pub struct ExplorerOutcome {
     /// True while a row is in the air, which is the one moment the window must not read the tree
     /// again — the entries under the drag would be rebuilt out from under it.
     pub dragging: bool,
+    /// The panel itself is being carried to another edge of the window, or its heading was right
+    /// clicked — `task-1697`. The heading is the handle, which is what the ask calls "the top bar".
+    pub grab: crate::components::dock::Grab,
 }
 
 /// One row as it was drawn, which is what the drop target is worked out from.
@@ -155,6 +158,16 @@ pub fn show(
     let mut outcome = ExplorerOutcome::default();
     let painter = ui.painter_at(area);
     painter.rect_filled(area, CornerRadius::ZERO, crate::theme::faded(color::EXPLORER, view.opacity));
+
+    // The heading strip is the handle this panel is carried to another edge by — `task-1697`, and
+    // it is what the ask means by "the top bar". Added **first**, so the project's own row and the
+    // hide button, which are added after it, take the points they cover: egui gives a pointer to the
+    // last widget that asked for it. See `components::dock`.
+    outcome.grab = crate::components::dock::handle(
+        ui,
+        Rect::from_min_max(area.min, Pos2::new(area.right(), area.top() + 36.0)),
+        crate::app::dock::Panel::Explorer,
+    );
 
     // The heading: the folder's name in small letter spaced capitals, then the button that hides the panel.
     let heading_y = area.top() + 22.0;

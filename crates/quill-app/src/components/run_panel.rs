@@ -438,11 +438,11 @@ pub struct RunOutcome {
     pub take_focus: bool,
     /// Text to put on the clipboard, from a copy or from a program asking.
     pub copy: Option<String>,
-    /// How far the top edge was dragged, in points. Positive is downwards, which makes the tile
-    /// shorter.
-    pub drag: f32,
-    /// The top edge was double clicked, which puts the tile back to its usual height.
-    pub reset_height: bool,
+    /// The tile is being carried to another edge of the window, or its header was right clicked.
+    ///
+    /// The divider that resizes it is drawn by the window now rather than here: since `task-1697`
+    /// the tile is not always along the bottom, so its inner edge is not always its top.
+    pub grab: crate::components::dock::Grab,
     /// The rerun button was pressed, for the run that is showing.
     pub rerun: bool,
     /// The stop button was pressed, which the tile has already acted on. Reported so the window
@@ -462,12 +462,6 @@ pub fn show(
     let mut outcome = RunOutcome::default();
     let painter = ui.painter_at(area);
     painter.rect_filled(area, CornerRadius::ZERO, crate::theme::faded(color::TOOLBAR, opacity));
-
-    // The top edge, which is dragged to change the height. Every pane in Quill is resized this way.
-    let edge = Rect::from_min_size(area.left_top(), Vec2::new(area.width(), 1.0));
-    let drag = splitter::show(ui, edge, "run", splitter::Axis::Flat);
-    outcome.drag = drag.delta;
-    outcome.reset_height = drag.reset;
 
     let header =
         Rect::from_min_size(Pos2::new(area.left(), area.top() + 1.0), Vec2::new(area.width(), HEADER));
@@ -504,6 +498,10 @@ pub fn show(
 
 /// The strip along the top: the word `Run`, the tabs, and the buttons for the tab that is showing.
 fn show_header(ui: &mut egui::Ui, area: Rect, panel: &mut RunPanel, outcome: &mut RunOutcome) {
+    // The handle first, over the whole strip, so the tabs and the buttons added after it take the
+    // points they cover and this is left with the heading and the empty space beside it. See
+    // `components::dock` for why it has to be this way round.
+    outcome.grab = crate::components::dock::handle(ui, area, crate::app::dock::Panel::Run);
     let painter = ui.painter_at(area);
     let heading =
         painter.layout_no_wrap("Run".to_owned(), egui::FontId::proportional(12.0), color::TEXT_DIM);

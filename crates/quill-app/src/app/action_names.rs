@@ -59,6 +59,10 @@ impl Action {
             Action::ToggleTerminal => "toggle-terminal".to_owned(),
             Action::ToggleRunTile => "toggle-run-tile".to_owned(),
             Action::ToggleDebugTile => "toggle-debug-tile".to_owned(),
+            // `dock-terminal-right`. Two words that both come from the value, so a name cannot drift
+            // from what it moves — the rule the whole file keeps.
+            Action::Dock { panel, side } => format!("dock-{}-{}", panel.name(), side.name()),
+            Action::ResetPanelLayout => "reset-panel-layout".to_owned(),
             Action::Run(what) => format!("run-{}", what.name()),
             Action::Debug(what) => format!("debug-{}", what.name()),
             Action::CloseTab => "close-tab".to_owned(),
@@ -122,6 +126,19 @@ impl Action {
             let named = path.as_ref().map(|named| named.to_string_lossy().to_string());
             return DebugAction::from_name(rest, named).map(Action::Debug);
         }
+        // `dock-<panel>-<side>`. Read from the back, because a panel's name never holds a hyphen
+        // and a side's never does either, so the last piece is the side and the rest is the panel.
+        if let Some(rest) = name.strip_prefix("dock-") {
+            if let Some((panel, side)) = rest.rsplit_once('-') {
+                if let (Some(panel), Some(side)) = (
+                    crate::app::dock::Panel::from_name(panel),
+                    crate::app::dock::Side::from_name(side),
+                ) {
+                    return Some(Action::Dock { panel, side });
+                }
+            }
+            return None;
+        }
         if let Some(rest) = name.strip_prefix("fold-") {
             return FoldAction::from_name(rest).map(Action::Fold);
         }
@@ -167,6 +184,7 @@ impl Action {
             "toggle-terminal" => Action::ToggleTerminal,
             "toggle-run-tile" => Action::ToggleRunTile,
             "toggle-debug-tile" => Action::ToggleDebugTile,
+            "reset-panel-layout" => Action::ResetPanelLayout,
             "close-tab" => Action::CloseTab,
             "next-tab" => Action::NextTab,
             "previous-tab" => Action::PreviousTab,
@@ -371,6 +389,12 @@ mod tests {
         // walked as well, because `task-1664` puts `Split Right` on it and the rule the tests keep is
         // that anything a menu can ask for can be asked for from the command line.
         walk(&actions::tab_menu(&state), &mut out);
+        // And a panel's own menu, for the same reason: `task-1697` puts the four `Move to` rows
+        // there rather than on the View menu, and the rule the tests keep is that anything a menu
+        // can ask for can be asked for from the command line.
+        for panel in crate::app::dock::Panel::ALL {
+            walk(&actions::panel_menu(&state, panel), &mut out);
+        }
         out
     }
 

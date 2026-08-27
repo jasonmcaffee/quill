@@ -14,6 +14,16 @@
 //! and never two stacked, so pressing any of them shows its own tile and puts the others away —
 //! which the window settles, not this file.
 //!
+//! Since `task-1697` a panel is not always where its button says it is: the terminal can be dragged
+//! to the right and the explorer to the bottom. **The rail does not follow it**, and that is a
+//! decision rather than an oversight — IntelliJ moves a tool window's stripe button to the side the
+//! window is on, and Quill has one rail on one edge, so its two groups say what a panel *is* (a
+//! list, or a tile with a grid in it) rather than where it happens to be. A rail that reshuffled
+//! itself on every drag would be a second thing moving while somebody was moving the first.
+//!
+//! What the rail did gain is a **right click**: it opens the panel's own menu, which is the only way
+//! to move a panel that has been put away, since a panel that is not showing has no header to grab.
+//!
 //! A button that is on is the pill every list in Quill draws for its chosen row — `SELECTED_ROW`, the row
 //! inset and rounded — rather than a filled `ACCENT` square. Three bright blue squares in a rail that is
 //! nearly always in that state would be the loudest thing in the window, and the pane being open is a
@@ -54,8 +64,23 @@ pub struct RailState {
     pub debug_visible: bool,
 }
 
+/// What the rail reported this frame.
+///
+/// Two things rather than one since `task-1697`: a **left** click is still the action the button
+/// stands for, and a **right** click opens that panel's own menu — the four `Move to` rows and
+/// `Reset Panel Layout`. The rail is a second place to reach a panel's menu because it is the one
+/// place a panel can be reached when it is put away, and because a header that is being used as a
+/// handle is a header somebody is already pointing at.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct RailOutcome {
+    pub chosen: Option<Action>,
+    /// A button was right clicked: where the pointer was, and which panel it is about. The git
+    /// button opens no menu, because the commit panel is a modal rather than a docked panel.
+    pub menu: Option<(Pos2, crate::app::dock::Panel)>,
+}
+
 /// Draw the rail into `area`, and report what was pressed.
-pub fn show(ui: &mut egui::Ui, area: Rect, state: RailState, opacity: f32) -> Option<Action> {
+pub fn show(ui: &mut egui::Ui, area: Rect, state: RailState, opacity: f32) -> RailOutcome {
     let painter = ui.painter_at(area);
     painter.rect_filled(area, CornerRadius::ZERO, crate::theme::faded(color::EXPLORER_FOOTER, opacity));
     painter.line_segment(
@@ -63,20 +88,28 @@ pub fn show(ui: &mut egui::Ui, area: Rect, state: RailState, opacity: f32) -> Op
         egui::Stroke::new(1.0, color::DIVIDER),
     );
 
-    let mut chosen = None;
+    let mut outcome = RailOutcome::default();
     // Six points in from the left rather than centred in the rail, because the outer six belong to
     // `components::resize_edges` and a button that reached into them would lose those clicks to the
     // window's own resize grip. The six left at the right hand side make it look centred anyway.
     let centre_x = area.left() + crate::components::resize_edges::EDGE + BUTTON / 2.0;
 
     // The panes at the side, from the top.
-    let top: [(&str, fn(&egui::Painter, Pos2, egui::Color32), bool, bool, Action); 2] = [
+    let top: [(
+        &str,
+        fn(&egui::Painter, Pos2, egui::Color32),
+        bool,
+        bool,
+        Action,
+        Option<crate::app::dock::Panel>,
+    ); 2] = [
         (
             "Project",
             icon::folder,
             state.explorer_visible,
             true,
             Action::ToggleExplorer,
+            Some(crate::app::dock::Panel::Explorer),
         ),
         (
             // Not `Git`: the menu bar already has a `Git`, and no two controls in one window may share
@@ -87,12 +120,19 @@ pub fn show(ui: &mut egui::Ui, area: Rect, state: RailState, opacity: f32) -> Op
             state.git_open,
             state.in_repository,
             Action::Git(GitAction::Commit),
+            // The commit panel is a modal rather than a docked panel, so it has no side to be moved
+            // to and its button opens no menu.
+            None,
         ),
     ];
-    for (index, (name, draw, on, enabled, action)) in top.into_iter().enumerate() {
+    for (index, (name, draw, on, enabled, action, panel)) in top.into_iter().enumerate() {
         let centre = Pos2::new(centre_x, area.top() + MARGIN + BUTTON / 2.0 + index as f32 * STEP);
-        if rail_button(ui, centre, name, draw, on, enabled) {
-            chosen = Some(action);
+        let pressed = rail_button(ui, centre, name, draw, on, enabled);
+        if pressed.clicked {
+            outcome.chosen = Some(action);
+        }
+        if let (Some(at), Some(panel)) = (pressed.menu, panel) {
+            outcome.menu = Some((at, panel));
         }
     }
 
@@ -107,20 +147,56 @@ pub fn show(ui: &mut egui::Ui, area: Rect, state: RailState, opacity: f32) -> Op
     // which a dozen accepted screenshots are of. The design's §9 says the debug button goes "below
     // the run tile's", and that would have taken the corner; the corner is the older promise, so the
     // new button goes above the run one instead.
-    let bottom: [(&str, fn(&egui::Painter, Pos2, egui::Color32), bool, Action); 3] = [
-        ("Terminal tile", icon::terminal, state.terminal_visible, Action::ToggleTerminal),
-        ("Run tile", icon::run, state.run_visible, Action::ToggleRunTile),
-        ("Debug tile", icon::bug, state.debug_visible, Action::ToggleDebugTile),
+    let bottom: [(
+        &str,
+        fn(&egui::Painter, Pos2, egui::Color32),
+        bool,
+        Action,
+        crate::app::dock::Panel,
+    ); 3] = [
+        (
+            "Terminal tile",
+            icon::terminal,
+            state.terminal_visible,
+            Action::ToggleTerminal,
+            crate::app::dock::Panel::Terminal,
+        ),
+        (
+            "Run tile",
+            icon::run,
+            state.run_visible,
+            Action::ToggleRunTile,
+            crate::app::dock::Panel::Run,
+        ),
+        (
+            "Debug tile",
+            icon::bug,
+            state.debug_visible,
+            Action::ToggleDebugTile,
+            crate::app::dock::Panel::Debug,
+        ),
     ];
-    for (index, (name, draw, on, action)) in bottom.into_iter().enumerate() {
+    for (index, (name, draw, on, action, panel)) in bottom.into_iter().enumerate() {
         let centre =
             Pos2::new(centre_x, area.bottom() - MARGIN - BUTTON / 2.0 - index as f32 * STEP);
-        if rail_button(ui, centre, name, draw, on, true) {
-            chosen = Some(action);
+        let pressed = rail_button(ui, centre, name, draw, on, true);
+        if pressed.clicked {
+            outcome.chosen = Some(action);
+        }
+        if let Some(at) = pressed.menu {
+            outcome.menu = Some((at, panel));
         }
     }
 
-    chosen
+    outcome
+}
+
+/// What one button in the rail reported.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+struct Pressed {
+    clicked: bool,
+    /// Where the pointer was when it was right clicked, which opens the panel's own menu.
+    menu: Option<Pos2>,
 }
 
 /// One button in the rail: a pill when what it opens is open, and a drawn icon.
@@ -131,7 +207,7 @@ fn rail_button(
     draw: fn(&egui::Painter, Pos2, egui::Color32),
     on: bool,
     enabled: bool,
-) -> bool {
+) -> Pressed {
     let hit = Rect::from_center_size(centre, Vec2::splat(BUTTON));
     let sense = if enabled { Sense::click() } else { Sense::hover() };
     let response = ui
@@ -154,7 +230,13 @@ fn rail_button(
     response.widget_info(|| {
         egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, on, name)
     });
-    response.clicked()
+    Pressed {
+        clicked: response.clicked(),
+        menu: match response.secondary_clicked() {
+            true => response.interact_pointer_pos().or_else(|| response.hover_pos()),
+            false => None,
+        },
+    }
 }
 
 #[cfg(test)]

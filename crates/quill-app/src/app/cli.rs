@@ -46,6 +46,7 @@ use quill_cli::protocol::{code, Reply, Request};
 
 use crate::app::actions::{Action, DebugAction, GitAction, HighlightColor, RunAction};
 use crate::app::debug::DebugState;
+use crate::app::dock;
 use crate::services::debuggers;
 use crate::app::{QuillApp, ViewMode};
 use quill_core::symbols::Role;
@@ -524,6 +525,7 @@ impl QuillApp {
             "editor" => self.cli_editor(request, verb, ctx),
             "highlight" => self.cli_highlight(request, verb),
             "fold" => self.cli_fold(request, verb),
+            "panel" => self.cli_panel(request, verb),
             "terminal" => self.cli_terminal(request, verb),
             "run" => self.cli_run(request, verb),
             "debug" => self.cli_debug(request, verb),
@@ -543,6 +545,174 @@ impl QuillApp {
         }
     }
 
+
+    /// `panel` — which edge of the window each panel is docked to — `task-1697`.
+    ///
+    /// The command line half of the drag. It goes through `dock_the_panel`, which is the one place a
+    /// panel moves, so a panel moved with the pointer and one moved from a script end up in exactly
+    /// the same state.
+    fn cli_panel(&mut self, request: &Request, verb: &str) -> Outcome {
+        match verb {
+            "list" => {
+                let rows: Vec<String> = dock::Panel::ALL
+                    .into_iter()
+                    .map(|panel| {
+                        let rect = self.panel_rects.of(panel);
+                        format!(
+                            "{}{:<9} {:<7} {}  {:>4} x {:<4}  {}",
+                            if self.panel_is_showing(panel) { "*" } else { " " },
+                            panel.name(),
+                            self.panes.dock.side_of(panel).name(),
+                            self.panes.dock.order_of(panel),
+                            self.panes.width_of(panel).round(),
+                            self.panes.height_of(panel).round(),
+                            match self.panel_is_showing(panel) {
+                                true => format!(
+                                    "at {:.0},{:.0} {:.0} x {:.0}",
+                                    rect.left(),
+                                    rect.top(),
+                                    rect.width(),
+                                    rect.height()
+                                ),
+                                false => "not showing".to_owned(),
+                            },
+                        )
+                    })
+                    .collect();
+                let panels: Vec<Value> = dock::Panel::ALL
+                    .into_iter()
+                    .map(|panel| {
+                        let rect = self.panel_rects.of(panel);
+                        json!({
+                            "panel": panel.name(),
+                            "label": panel.label(),
+                            "side": self.panes.dock.side_of(panel).name(),
+                            "position": self.panes.dock.order_of(panel),
+                            "showing": self.panel_is_showing(panel),
+                            "width": self.panes.width_of(panel),
+                            "height": self.panes.height_of(panel),
+                            "area": {
+                                "x": rect.left(),
+                                "y": rect.top(),
+                                "width": rect.width(),
+                                "height": rect.height(),
+                            },
+                        })
+                    })
+                    .collect();
+                let editor = self.panel_rects.editor;
+                lines(
+                    request,
+                    format!(
+                        "{} panels, {} showing",
+                        dock::Panel::ALL.len(),
+                        dock::Panel::ALL.iter().filter(|panel| self.panel_is_showing(**panel)).count()
+                    ),
+                    rows,
+                    json!({
+                        "panels": panels,
+                        "editor": {
+                            "x": editor.left(),
+                            "y": editor.top(),
+                            "width": editor.width(),
+                            "height": editor.height(),
+                        },
+                    }),
+                )
+            }
+            "dock" => {
+                let Some(panel) = self.cli_panel_named(request) else {
+                    return self.cli_no_such_panel(request);
+                };
+                let Some(side) = request.text("side").and_then(|side| dock::Side::from_name(side.trim())) else {
+                    return no(
+                        request,
+                        code::USAGE,
+                        "Say which edge to put it on: left, right, top or bottom.",
+                    );
+                };
+                let position = request.number("position").map(|at| at.max(0.0) as usize);
+                self.dock_the_panel(panel, side, position);
+                ok(
+                    request,
+                    format!("{} is on the {}", panel.label(), side.name()),
+                    json!({
+                        "panel": panel.name(),
+                        "side": side.name(),
+                        "position": self.panes.dock.order_of(panel),
+                        "showing": self.panel_is_showing(panel),
+                    }),
+                )
+            }
+            "size" => {
+                let Some(panel) = self.cli_panel_named(request) else {
+                    return self.cli_no_such_panel(request);
+                };
+                if let Some(width) = request.number("width") {
+                    let width = (width as f32)
+                        .clamp(self.panes.min_width_of(panel), self.panes.max_width_of(panel));
+                    self.panes.set_width_of(panel, width);
+                    self.unsaved_settings = true;
+                }
+                if let Some(height) = request.number("height") {
+                    let height = (height as f32).max(self.panes.min_height_of(panel));
+                    self.panes.set_height_of(panel, height);
+                    self.unsaved_settings = true;
+                }
+                ok(
+                    request,
+                    format!(
+                        "{} is {:.0} points wide and {:.0} tall",
+                        panel.label(),
+                        self.panes.width_of(panel),
+                        self.panes.height_of(panel)
+                    ),
+                    json!({
+                        "panel": panel.name(),
+                        "width": self.panes.width_of(panel),
+                        "height": self.panes.height_of(panel),
+                        "side": self.panes.dock.side_of(panel).name(),
+                    }),
+                )
+            }
+            "reset" => {
+                self.reset_the_panel_layout();
+                ok(
+                    request,
+                    "The panels are back where they started",
+                    json!({
+                        "panels": dock::Panel::ALL
+                            .into_iter()
+                            .map(|panel| json!({
+                                "panel": panel.name(),
+                                "side": self.panes.dock.side_of(panel).name(),
+                            }))
+                            .collect::<Vec<_>>(),
+                    }),
+                )
+            }
+            _ => no(
+                request,
+                code::UNKNOWN_COMMAND,
+                format!("There is no command called {}.", request.command),
+            ),
+        }
+    }
+
+    /// The panel a `panel` command names, if it names one Quill has.
+    fn cli_panel_named(&self, request: &Request) -> Option<dock::Panel> {
+        request.text("panel").and_then(|name| dock::Panel::from_name(name.trim()))
+    }
+
+    /// The refusal that names them all, which is what a caller who guessed wrong needs.
+    fn cli_no_such_panel(&self, request: &Request) -> Outcome {
+        let names: Vec<&str> = dock::Panel::ALL.iter().map(|panel| panel.name()).collect();
+        no(
+            request,
+            code::NOT_FOUND,
+            format!("There is no panel by that name. Quill has {}.", names.join(", ")),
+        )
+    }
 
     /// `fold` — the blocks collapsed in the tab that is showing.
     ///
@@ -821,6 +991,17 @@ impl QuillApp {
             "tabs": self.tabs_value(),
             "activeTab": self.files.active_index(),
             "panes": self.panes_value(),
+            // Which edge each panel is docked to, because since `task-1697` the terminal is not
+            // necessarily along the bottom and nothing driving the window can assume it is.
+            "panels": dock::Panel::ALL
+                .into_iter()
+                .map(|panel| json!({
+                    "panel": panel.name(),
+                    "side": self.panes.dock.side_of(panel).name(),
+                    "position": self.panes.dock.order_of(panel),
+                    "showing": self.panel_is_showing(panel),
+                }))
+                .collect::<Vec<_>>(),
             "editor": self.editor_value(),
             "explorer": {
                 "visible": self.explorer_visible,

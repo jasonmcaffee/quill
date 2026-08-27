@@ -206,6 +206,23 @@ and the icon in `TEXT_DIM`. Not a filled `ACCENT` square: a pane being open is a
 press, and three bright blue squares in a rail that is nearly always in that state would be the
 loudest thing in the window.
 
+**A place a panel can be dropped.** `components::dock::zones`, drawn only while a panel is being
+carried to another edge of the window. Nothing new in the palette: it is `ACCENT`, the one blue the
+design has, at three strengths rather than three colours — the four bands a person can aim at filled
+at 14 per cent with a one point edge at 55, and the one they are aiming at filled at 28 with a two
+point stroke at full strength. **What is drawn strongly is the rectangle the panel will actually
+occupy**, not the band the pointer has to be in: it is `app::dock::regions` run over the arrangement
+as it would be after the drop, so the preview cannot disagree with what happens. A plate in `ACCENT`
+carrying the panel's name sits in the middle of it, so a preview over an empty editing area still says
+what is about to happen there.
+
+**A panel's header is the handle it is moved by.** The heading word and the empty space beside it —
+which is what is left over once the tabs and the buttons have taken the points they cover, because
+the handle is added to the `Ui` **first** and they are added on top of it. `components::dock::handle`,
+and it is built with `Sense::CLICK | Sense::DRAG` rather than `Sense::click_and_drag()` so that it
+cannot take egui's keyboard focus: it covers a whole strip, a bare `Tab` would land on it, and a
+widget with the focus is pressed by `Space`.
+
 **A grip on the window's own edge.** `components::resize_edges`, and nothing is painted — the window
 already has its rounded rectangle, and a visible frame is what turning the decorations off was for.
 Four edges 6 points wide and four corners 16 points square, each setting the pointer for the direction

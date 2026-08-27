@@ -3,7 +3,9 @@
 //! Two structures, because they are two different things. [`Settings`] is what a person chooses in
 //! `Edit -> Settings`: the editor's font, the background opacity and the terminal's font size.
 //! [`Panes`] is where the draggable dividers were left, which nobody chooses in a dialog but which should
-//! still be there next time.
+//! still be there next time — and, since `task-1697`, which edge of the window each panel was left
+//! docked to. Both are the same kind of thing: the shape of somebody's window, which they arrange
+//! once and expect to find again in every project they open.
 //!
 //! Both are read from and written to the same file through [`crate::services::store`]. Names in the file
 //! are grouped with dots so that the file reads like the dialog: `appearance.font.size` is the size on
@@ -33,6 +35,33 @@ pub const RUN_MIN: f32 = TERMINAL_MIN;
 /// and a short shell should get both.
 pub const DEBUG_HEIGHT: f32 = 300.0;
 pub const DEBUG_MIN: f32 = 120.0;
+
+/// The other measurement each panel needs, now that a panel can be docked to any edge — `task-1697`.
+///
+/// A panel at the side is a column and is read by its **width**; a panel in a strip along the top or
+/// the bottom is read by its **height**. One number cannot be both: the terminal is 260 points tall
+/// along the bottom, and a 260 point wide column down the right is half a terminal. So each panel
+/// carries two, four of which already existed and four of which are these.
+///
+/// The explorer's height is a tile's height, because that is what it is when it is in a strip. The
+/// three tiles' widths are a comfortable terminal column — 420 points is about eighty columns of the
+/// monospaced face at its default size — and the debug tile's is wider because it holds two panes
+/// side by side and `debug_panel::PANE_MIN` says how narrow each of those can get.
+pub const EXPLORER_HEIGHT: f32 = TERMINAL_HEIGHT;
+pub const EXPLORER_HEIGHT_MIN: f32 = TERMINAL_MIN;
+pub const TERMINAL_WIDTH: f32 = 420.0;
+pub const TERMINAL_WIDTH_MIN: f32 = 220.0;
+pub const RUN_WIDTH: f32 = TERMINAL_WIDTH;
+pub const RUN_WIDTH_MIN: f32 = TERMINAL_WIDTH_MIN;
+pub const DEBUG_WIDTH: f32 = 520.0;
+pub const DEBUG_WIDTH_MIN: f32 = 300.0;
+
+/// The widest any panel but the explorer may be dragged.
+///
+/// The explorer keeps [`EXPLORER_MAX`], which is the number it has always had; the tiles are allowed
+/// more, because a terminal or a stack trace read down the side of the window is a thing somebody
+/// really does want half the width for.
+pub const PANEL_MAX_WIDTH: f32 = 900.0;
 
 /// How opaque the background is when Quill starts. Not fully opaque, so the transparency is visible
 /// without opening the settings. The design shows 83 per cent.
@@ -367,12 +396,28 @@ pub fn clamp_port(port: f32) -> u16 {
 pub struct Panes {
     /// How wide the explorer is.
     pub explorer_width: f32,
+    /// How tall the explorer is when it is in a strip along the top or the bottom — `task-1697`.
+    pub explorer_height: f32,
     /// How tall the terminal tile is.
     pub terminal_height: f32,
+    /// How wide the terminal tile is when it is a column at the side — `task-1697`.
+    pub terminal_width: f32,
     /// How tall the run tile is. Its own measurement — see [`RUN_HEIGHT`].
     pub run_height: f32,
+    /// How wide the run tile is as a column.
+    pub run_width: f32,
     /// How tall the debug tile is. Its own too — see [`DEBUG_HEIGHT`].
     pub debug_height: f32,
+    /// How wide the debug tile is as a column.
+    pub debug_width: f32,
+    /// Which edge each panel is docked to, and where in that edge — `task-1697`.
+    ///
+    /// It lives here, in the person's own settings, rather than in the project's `.quill`: the
+    /// window's *geometry* belongs to the project, because Quill's windows are one per project and a
+    /// geometry kept per person would open the second window on top of the first — but the window's
+    /// *shape* is a habit, and somebody who works with the terminal on the right wants it on the
+    /// right in every project.
+    pub dock: crate::app::dock::Layout,
     /// How much of the editing area the source takes in the side by side view, from 0.15 to 0.85.
     pub preview_fraction: f32,
     /// How much of the `Find in Files` modal the results take, the rest going to the preview of the
@@ -389,9 +434,14 @@ impl Panes {
     pub fn new() -> Self {
         Self {
             explorer_width: EXPLORER_WIDTH,
+            explorer_height: EXPLORER_HEIGHT,
             terminal_height: TERMINAL_HEIGHT,
+            terminal_width: TERMINAL_WIDTH,
             run_height: RUN_HEIGHT,
+            run_width: RUN_WIDTH,
             debug_height: DEBUG_HEIGHT,
+            debug_width: DEBUG_WIDTH,
+            dock: crate::app::dock::Layout::new(),
             preview_fraction: 0.5,
             find_split: crate::components::find_in_files::SPLIT,
             references_split: crate::components::references::SPLIT,
@@ -412,6 +462,19 @@ impl Panes {
         if let Some(height) = values.number("panes.debug.height") {
             panes.debug_height = height.max(DEBUG_MIN);
         }
+        if let Some(height) = values.number("panes.explorer.height") {
+            panes.explorer_height = height.max(EXPLORER_HEIGHT_MIN);
+        }
+        if let Some(width) = values.number("panes.terminal.width") {
+            panes.terminal_width = width.clamp(TERMINAL_WIDTH_MIN, PANEL_MAX_WIDTH);
+        }
+        if let Some(width) = values.number("panes.run.width") {
+            panes.run_width = width.clamp(RUN_WIDTH_MIN, PANEL_MAX_WIDTH);
+        }
+        if let Some(width) = values.number("panes.debug.width") {
+            panes.debug_width = width.clamp(DEBUG_WIDTH_MIN, PANEL_MAX_WIDTH);
+        }
+        panes.dock = crate::app::dock::Layout::read_from(values);
         if let Some(fraction) = values.number("panes.preview.fraction") {
             panes.preview_fraction = fraction.clamp(0.15, 0.85);
         }
@@ -435,9 +498,140 @@ impl Panes {
         values.set("panes.terminal.height", format!("{:.0}", self.terminal_height));
         values.set("panes.run.height", format!("{:.0}", self.run_height));
         values.set("panes.debug.height", format!("{:.0}", self.debug_height));
+        values.set("panes.explorer.height", format!("{:.0}", self.explorer_height));
+        values.set("panes.terminal.width", format!("{:.0}", self.terminal_width));
+        values.set("panes.run.width", format!("{:.0}", self.run_width));
+        values.set("panes.debug.width", format!("{:.0}", self.debug_width));
+        self.dock.write_into(values);
         values.set("panes.preview.fraction", format!("{:.3}", self.preview_fraction));
         values.set("panes.find.split", format!("{:.3}", self.find_split));
         values.set("panes.references.split", format!("{:.3}", self.references_split));
+    }
+
+    /// How wide `panel` asks to be when it is a column at the side of the window.
+    ///
+    /// The eight numbers above are four pairs, and these functions are the only place anything
+    /// outside this file has to know which of a pair to read — the side decides, and `app::dock` is
+    /// what asks. A fifth panel would be a fifth arm here and nowhere else.
+    pub fn width_of(&self, panel: crate::app::dock::Panel) -> f32 {
+        use crate::app::dock::Panel;
+        match panel {
+            Panel::Explorer => self.explorer_width,
+            Panel::Terminal => self.terminal_width,
+            Panel::Run => self.run_width,
+            Panel::Debug => self.debug_width,
+        }
+    }
+
+    /// How tall `panel` asks to be when it is in a strip along the top or the bottom.
+    pub fn height_of(&self, panel: crate::app::dock::Panel) -> f32 {
+        use crate::app::dock::Panel;
+        match panel {
+            Panel::Explorer => self.explorer_height,
+            Panel::Terminal => self.terminal_height,
+            Panel::Run => self.run_height,
+            Panel::Debug => self.debug_height,
+        }
+    }
+
+    /// Set a panel's width outright, which is what a divider **inside a strip** moves: there the
+    /// panels share one depth and it is their widths that a divider between two of them changes.
+    pub fn set_width_of(&mut self, panel: crate::app::dock::Panel, width: f32) {
+        use crate::app::dock::Panel;
+        match panel {
+            Panel::Explorer => self.explorer_width = width,
+            Panel::Terminal => self.terminal_width = width,
+            Panel::Run => self.run_width = width,
+            Panel::Debug => self.debug_width = width,
+        }
+    }
+
+    /// The same for a panel's height.
+    pub fn set_height_of(&mut self, panel: crate::app::dock::Panel, height: f32) {
+        use crate::app::dock::Panel;
+        match panel {
+            Panel::Explorer => self.explorer_height = height,
+            Panel::Terminal => self.terminal_height = height,
+            Panel::Run => self.run_height = height,
+            Panel::Debug => self.debug_height = height,
+        }
+    }
+
+    pub fn min_width_of(&self, panel: crate::app::dock::Panel) -> f32 {
+        use crate::app::dock::Panel;
+        match panel {
+            Panel::Explorer => EXPLORER_MIN,
+            Panel::Terminal => TERMINAL_WIDTH_MIN,
+            Panel::Run => RUN_WIDTH_MIN,
+            Panel::Debug => DEBUG_WIDTH_MIN,
+        }
+    }
+
+    pub fn max_width_of(&self, panel: crate::app::dock::Panel) -> f32 {
+        use crate::app::dock::Panel;
+        match panel {
+            Panel::Explorer => EXPLORER_MAX,
+            _ => PANEL_MAX_WIDTH,
+        }
+    }
+
+    pub fn min_height_of(&self, panel: crate::app::dock::Panel) -> f32 {
+        use crate::app::dock::Panel;
+        match panel {
+            Panel::Explorer => EXPLORER_HEIGHT_MIN,
+            Panel::Terminal => TERMINAL_MIN,
+            Panel::Run => RUN_MIN,
+            Panel::Debug => DEBUG_MIN,
+        }
+    }
+
+    /// Set the measurement the side this panel is on actually reads, by `by` points.
+    ///
+    /// One function, so a divider, `panel size` and the settings file cannot come to three different
+    /// answers about which of a pair a drag moved. `room` is how much there is to give, which is
+    /// what stops a panel being dragged past the edge of the window.
+    pub fn resize(&mut self, panel: crate::app::dock::Panel, by: f32, room: f32) {
+        use crate::app::dock::Panel;
+        if self.dock.side_of(panel).is_a_column() {
+            let most = self.max_width_of(panel).min(room.max(self.min_width_of(panel)));
+            let width = (self.width_of(panel) + by).clamp(self.min_width_of(panel), most);
+            match panel {
+                Panel::Explorer => self.explorer_width = width,
+                Panel::Terminal => self.terminal_width = width,
+                Panel::Run => self.run_width = width,
+                Panel::Debug => self.debug_width = width,
+            }
+        } else {
+            let most = room.max(self.min_height_of(panel));
+            let height = (self.height_of(panel) + by).clamp(self.min_height_of(panel), most);
+            match panel {
+                Panel::Explorer => self.explorer_height = height,
+                Panel::Terminal => self.terminal_height = height,
+                Panel::Run => self.run_height = height,
+                Panel::Debug => self.debug_height = height,
+            }
+        }
+    }
+
+    /// Put one panel back to the size it started at, which is what a double click on its divider means.
+    pub fn reset_size_of(&mut self, panel: crate::app::dock::Panel) {
+        use crate::app::dock::Panel;
+        let fresh = Panes::new();
+        if self.dock.side_of(panel).is_a_column() {
+            match panel {
+                Panel::Explorer => self.explorer_width = fresh.explorer_width,
+                Panel::Terminal => self.terminal_width = fresh.terminal_width,
+                Panel::Run => self.run_width = fresh.run_width,
+                Panel::Debug => self.debug_width = fresh.debug_width,
+            }
+        } else {
+            match panel {
+                Panel::Explorer => self.explorer_height = fresh.explorer_height,
+                Panel::Terminal => self.terminal_height = fresh.terminal_height,
+                Panel::Run => self.run_height = fresh.run_height,
+                Panel::Debug => self.debug_height = fresh.debug_height,
+            }
+        }
     }
 }
 
@@ -603,11 +797,18 @@ mod tests {
 
     #[test]
     fn pane_sizes_survive_being_written_and_read_back() {
+        let mut dock = crate::app::dock::Layout::new();
+        dock.dock(crate::app::dock::Panel::Terminal, crate::app::dock::Side::Right, None);
         let panes = Panes {
             explorer_width: 320.0,
+            explorer_height: 220.0,
             terminal_height: 400.0,
+            terminal_width: 380.0,
             run_height: 300.0,
+            run_width: 440.0,
             debug_height: 340.0,
+            debug_width: 560.0,
+            dock,
             preview_fraction: 0.3,
             find_split: 0.6,
             references_split: 0.4,
@@ -615,6 +816,23 @@ mod tests {
         let mut values = Values::new();
         panes.write_into(&mut values);
         assert_eq!(Panes::read_from(&values), panes);
+    }
+
+    #[test]
+    fn a_panel_is_resized_by_the_measurement_the_side_it_is_on_reads() {
+        use crate::app::dock::{Panel, Side};
+        let mut panes = Panes::new();
+        // At the bottom, where it starts, a drag moves its height.
+        panes.resize(Panel::Terminal, 40.0, 600.0);
+        assert_eq!(panes.terminal_height, TERMINAL_HEIGHT + 40.0);
+        assert_eq!(panes.terminal_width, TERMINAL_WIDTH, "the other measurement is untouched");
+        // On the right it is a column, so the same drag moves its width.
+        panes.dock.dock(Panel::Terminal, Side::Right, None);
+        panes.resize(Panel::Terminal, 40.0, 900.0);
+        assert_eq!(panes.terminal_width, TERMINAL_WIDTH + 40.0);
+        assert_eq!(panes.terminal_height, TERMINAL_HEIGHT + 40.0, "and that one is untouched now");
+        panes.reset_size_of(Panel::Terminal);
+        assert_eq!(panes.terminal_width, TERMINAL_WIDTH);
     }
 
     #[test]
