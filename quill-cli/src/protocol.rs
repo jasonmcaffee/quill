@@ -90,7 +90,13 @@ impl Request {
             token: value.get("token")?.as_str()?.to_owned(),
             command: value.get("command")?.as_str()?.to_owned(),
             arguments: match value.get("arguments") {
-                Some(Value::Object(map)) => map.clone(),
+                // The leading dashes come off here, at the window's front door, because this is
+                // where a request that somebody else wrote arrives. The usage lines say
+                // `[--permanent]`, so an agent reading the catalogue sends `--permanent`, and it
+                // means the same thing as `permanent`.
+                Some(Value::Object(map)) => {
+                    crate::catalogue::normalise_arguments(map.clone())
+                }
                 // An absent `arguments` is an empty one, so a command that takes nothing can be
                 // sent as `{"token":"...","command":"tab.next"}`.
                 None | Some(Value::Null) => Map::new(),

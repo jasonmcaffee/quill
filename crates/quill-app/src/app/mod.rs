@@ -3070,6 +3070,9 @@ impl QuillApp {
                 let revision = self.document().revision();
                 self.files.active_mut().marked_revision = Some(revision);
                 self.files.active_mut().breakpoints_at = Some(revision);
+                // What the file looked like at the moment it was read, so a later read can tell that
+                // something else has changed it since.
+                self.files.active_mut().note_what_is_on_disk();
                 self.message = None;
                 // A file that is not Markdown has nothing to preview, so the raw source is shown.
                 if !file_kind::is_markdown(Some(path)) {
@@ -3993,6 +3996,27 @@ impl QuillApp {
     /// what is on disk, but nothing in the entry says "and lose what I typed", and quietly losing an
     /// edit is not a thing an editor should do without asking. So a file with unsaved changes says
     /// so and is left alone.
+    /// Read the tab that is showing again when its file has changed underneath it.
+    ///
+    /// Quill watches nothing and a tab is owned by its `Document`, which is the right rule while
+    /// Quill is the only thing writing. It is the wrong answer the moment something else does: the tab
+    /// went on showing text that was no longer in the file, and `editor text` answered with it — so a
+    /// caller that wrote a file and read it back through the window was handed what it had replaced.
+    ///
+    /// Checked at the moment of use rather than watched, which is the rule
+    /// `services::symbol_index` already follows for a closed file. The cost is one `metadata` call on
+    /// the command that reads, and nothing at all on a frame.
+    ///
+    /// A tab with unsaved changes is never touched. Those belong to the person, and throwing them
+    /// away has no undo — `tab reload --discard` is how somebody says they mean it.
+    pub fn reread_if_the_file_changed(&mut self) {
+        if !self.files.active().the_file_changed_underneath() {
+            return;
+        }
+        let Some(path) = self.document().path().map(Path::to_path_buf) else { return };
+        self.reload_from_disk(&path, false);
+    }
+
     pub fn reload_from_disk(&mut self, path: &Path, discard: bool) -> bool {
         self.tree.reload();
         let Some(index) = self.files.index_of(path) else {
@@ -4020,6 +4044,7 @@ impl QuillApp {
                     file.scroll = 0.0;
                     file.forget_git();
                     file.forget_where_it_was_being_read();
+                    file.note_what_is_on_disk();
                 }
                 if index == self.files.active_index() {
                     self.forget_layout();
@@ -4178,6 +4203,7 @@ impl QuillApp {
         let name = file.name();
         match self.files.at_mut(index).document.save() {
             Ok(()) => {
+                self.files.at_mut(index).note_what_is_on_disk();
                 self.message = Some(format!("Saved {name}"));
                 // The disk is what the index holds for every file that is not open, and this one is
                 // about to stop being open.
@@ -4228,12 +4254,16 @@ impl QuillApp {
             // doing nothing.
             let target = self.tree.root().join("untitled.md");
             if self.document_mut().save_as(&target).is_ok() {
+                self.files.active_mut().note_what_is_on_disk();
                 self.tree.reload();
                 self.the_project_changed_on_disk();
             }
             return;
         }
         let _ = self.document_mut().save();
+        // Written by this tab, so this tab and the file agree again: without this the tab's own write
+        // would look like somebody else's change and the next read would re-read what it just wrote.
+        self.files.active_mut().note_what_is_on_disk();
         // The file on the disk is what the index holds for every file that is not open, and this
         // one is about to stop being open one day. Reading the project again is tens of
         // milliseconds on a thread, and saving is not something anybody does sixty times a second.

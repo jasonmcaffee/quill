@@ -5674,6 +5674,193 @@ fn a_command_line_that_will_not_parse_is_refused_before_anything_happens() {
     assert_eq!(harness.state().files.active().name(), before, "and nothing was opened");
 }
 
+/// Send a request the way something other than `quill-cli` sends one: a JSON object down the
+/// channel, read by `Request::from_json`.
+///
+/// The command line is not the only caller and the tests had only been driving it. An agent through
+/// the MCP server writes the `arguments` object itself, from the usage lines, which is where the
+/// two spellings of a name come from.
+fn over_the_wire(
+    harness: &mut Harness<'static, QuillApp>,
+    command: &str,
+    arguments: serde_json::Value,
+) -> quill_cli::protocol::Reply {
+    let ctx = harness.ctx.clone();
+    let request = quill_cli::protocol::Request::from_json(&serde_json::json!({
+        "token": "",
+        "command": command,
+        "arguments": arguments,
+    }))
+    .expect("a request that parses");
+    let reply = harness
+        .state_mut()
+        .run_cli_for_test(&request, &ctx)
+        .unwrap_or_else(|| panic!("`{command}` was not answered on the frame it was asked"));
+    harness.run();
+    reply
+}
+
+/// A flag spelled the way the usage line spells it takes effect, and a name no command has is
+/// refused rather than dropped.
+///
+/// Both halves were real faults found by driving Quill through the MCP tools. `tab open` with
+/// `--permanent` left the tab transient, so the next file opened replaced it; `run output` with
+/// `--tail` returned the whole screen. Neither said anything, which is what made them expensive —
+/// the reply was a success either way.
+#[test]
+fn a_value_named_the_way_the_usage_line_spells_it_takes_effect() {
+    let mut harness = harness_in(&sample_folder());
+    let readme = sample_folder().join("readme.md");
+    let notes = sample_folder().join("notes.txt");
+
+    let reply = over_the_wire(
+        &mut harness,
+        "tab.open",
+        serde_json::json!({ "path": readme.to_string_lossy(), "--permanent": true }),
+    );
+    assert!(reply.ok, "{}", reply.message);
+    let opened = over_the_wire(&mut harness, "tab.list", serde_json::json!({}));
+    let tabs = opened.result["tabs"].as_array().expect("the tabs").clone();
+    let readme_tab =
+        tabs.iter().find(|tab| tab["name"] == "readme.md").expect("readme.md is open");
+    assert_eq!(
+        readme_tab["transient"], false,
+        "--permanent is the same flag as permanent, so the tab is kept"
+    );
+
+    // And the proof that it means something: a transient tab is the one the next file replaces.
+    over_the_wire(
+        &mut harness,
+        "tab.open",
+        serde_json::json!({ "path": notes.to_string_lossy() }),
+    );
+    let after = over_the_wire(&mut harness, "tab.list", serde_json::json!({}));
+    let names: Vec<String> = after.result["tabs"]
+        .as_array()
+        .expect("the tabs")
+        .iter()
+        .map(|tab| tab["name"].as_str().unwrap_or_default().to_owned())
+        .collect();
+    assert!(names.contains(&"readme.md".to_owned()), "the permanent tab survived: {names:?}");
+}
+
+#[test]
+fn a_value_no_command_has_a_name_for_is_refused_rather_than_dropped() {
+    let mut harness = harness_in(&sample_folder());
+    let readme = sample_folder().join("readme.md");
+    let reply = over_the_wire(
+        &mut harness,
+        "tab.open",
+        serde_json::json!({ "path": readme.to_string_lossy(), "permanant": true }),
+    );
+    assert!(!reply.ok, "a misspelled name is not a success");
+    let failure = reply.error.expect("a refusal carries an error");
+    assert_eq!(failure.code, "usage");
+    assert!(failure.message.contains("permanant"), "{}", failure.message);
+    assert!(
+        failure.message.contains("permanent"),
+        "the refusal says what the command does take: {}",
+        failure.message
+    );
+}
+
+/// The other half of the same fault, and the worse one: a value that was dropped rather than read
+/// returned *more* than was asked for and called it a success. `editor text` is the same shape as the
+/// `run output --tail` that found it, and needs no process to prove it.
+#[test]
+fn a_range_is_read_however_the_names_are_spelled() {
+    let mut harness = harness(&format!("{}\n{}\n{}\n{}\n", "one", "two", "three", "four"));
+    let dashed = over_the_wire(
+        &mut harness,
+        "editor.text",
+        serde_json::json!({ "--from-line": 2, "--to-line": 3 }),
+    );
+    let plain = over_the_wire(
+        &mut harness,
+        "editor.text",
+        serde_json::json!({ "from-line": 2, "to-line": 3 }),
+    );
+    assert_eq!(dashed.result["fromLine"], 2, "the range was read: {}", dashed.result);
+    assert_eq!(dashed.result["toLine"], 3);
+    assert_eq!(
+        dashed.result["text"], plain.result["text"],
+        "--from-line 2 and from-line 2 are one request"
+    );
+    let text = dashed.result["text"].as_str().expect("the text");
+    assert!(text.contains("two") && text.contains("three"), "{text:?}");
+    assert!(!text.contains("one"), "the whole file is not what was asked for: {text:?}");
+}
+
+/// A file changed by something other than Quill is read again before it is answered about.
+///
+/// Found by driving Quill through the MCP tools while editing the same files from outside: the tab
+/// went on showing the version it had read, `editor text` answered with it, and the explorer did not
+/// list a file that was plainly on the disk. Both are the same fault — the window is the only writer
+/// it knows about — and both are fixed by the rule the symbol index already follows for a closed
+/// file: the disk-owned side is re-checked at the moment of use.
+#[test]
+fn a_file_changed_outside_quill_is_read_again_before_it_is_answered_about() {
+    let folder = std::env::temp_dir().join("quill-changed-underneath");
+    std::fs::remove_dir_all(&folder).ok();
+    std::fs::create_dir_all(&folder).expect("make the project");
+    let path = folder.join("notes.md");
+    std::fs::write(&path, "first\n").expect("write notes.md");
+
+    let mut harness = harness_in(&folder);
+    harness.state_mut().open_path_permanently(&path);
+    harness.run();
+    let first = over_the_wire(&mut harness, "editor.text", serde_json::json!({}));
+    assert_eq!(first.result["text"], "first\n");
+
+    // Something else rewrites it. Nothing tells Quill.
+    std::fs::write(&path, "second\n").expect("rewrite notes.md");
+    let second = over_the_wire(&mut harness, "editor.text", serde_json::json!({}));
+    assert_eq!(
+        second.result["text"], "second\n",
+        "the read is answered from the file rather than from what the tab last held"
+    );
+
+    // A file that appears is listed, which is the same fault seen through the explorer.
+    let another = folder.join("appeared.md");
+    std::fs::write(&another, "new\n").expect("write appeared.md");
+    let listed = over_the_wire(&mut harness, "explorer.files", serde_json::json!({}));
+    let files: Vec<String> = listed.result["files"]
+        .as_array()
+        .expect("the files")
+        .iter()
+        .map(|path| path.as_str().unwrap_or_default().to_owned())
+        .collect();
+    assert!(
+        files.iter().any(|listed| listed.ends_with("appeared.md")),
+        "a file written a moment ago is in the project: {files:#?}"
+    );
+    std::fs::remove_dir_all(&folder).ok();
+}
+
+/// Unsaved changes are never thrown away by the re-read. They are the person's, and there is no undo
+/// for losing them — `tab reload --discard` is how somebody says they mean it.
+#[test]
+fn a_tab_with_unsaved_changes_is_not_reread_from_the_file() {
+    let folder = std::env::temp_dir().join("quill-changed-underneath-dirty");
+    std::fs::remove_dir_all(&folder).ok();
+    std::fs::create_dir_all(&folder).expect("make the project");
+    let path = folder.join("notes.md");
+    std::fs::write(&path, "first\n").expect("write notes.md");
+
+    let mut harness = harness_in(&folder);
+    harness.state_mut().open_path_permanently(&path);
+    harness.run();
+    over_the_wire(&mut harness, "editor.insert", serde_json::json!({ "text": "mine " }));
+    assert!(harness.state().document().is_modified(), "the tab has unsaved changes");
+
+    std::fs::write(&path, "second\n").expect("rewrite notes.md");
+    let read = over_the_wire(&mut harness, "editor.text", serde_json::json!({}));
+    let text = read.result["text"].as_str().expect("the text");
+    assert!(text.contains("mine "), "the unsaved change is still there: {text:?}");
+    assert!(!text.contains("second"), "and the file did not overwrite it: {text:?}");
+    std::fs::remove_dir_all(&folder).ok();
+}
+
 #[test]
 fn every_command_in_the_catalogue_is_one_the_window_knows() {
     // The catalogue is shared, so the client will accept every command in it. This is the other half:
@@ -8441,6 +8628,21 @@ fn paused_harness(name: &str) -> Harness<'static, QuillApp> {
     harness
 }
 
+/// The reverse request js-debug sends, with the shape a real one has.
+///
+/// `__pendingTargetId` is the adapter's own handle for the program it has already started. It is
+/// passed through untouched, so it is written here as a real one is: opaque.
+// Two tests were written here against a `DebugState` that kept the connections a target had been
+// handed over from — `a_target_handed_over_is_debugged_by_the_session_it_was_handed_to` and
+// `the_run_ends_when_the_connection_it_was_launched_on_ends`. `task-1692` answers `startDebugging`
+// its own way, by dialling the adapter again and reading both connections onto one channel with the
+// child's replies tagged, so there is no retired connection for a test to read and the two could not
+// be carried across. What they were about is covered by
+// `session::tests::a_child_session_is_reported_with_the_configuration_that_opens_it`, by the rule
+// that an answer which is not one for one with what was asked is not taken, and by
+// `a_real_node_debugger_stops_at_a_breakpoint_and_reads_a_variable`, which runs a real
+// js-debug against a real Node program.
+
 #[test]
 fn the_gutter_draws_an_enabled_a_disabled_an_unverified_and_a_conditional_breakpoint() {
     let mut harness = debug_harness("gutter");
@@ -8935,6 +9137,190 @@ fn a_real_debugger_stops_at_a_breakpoint_and_reads_a_variable() {
 
     // Nothing ever orphans a child on purpose, which for a debugger is two of them: the adapter and
     // the program it is holding.
+    harness.state_mut().stop_debugging();
+    harness.state_mut().run.kill_everything();
+    std::fs::remove_dir_all(&folder).ok();
+}
+
+/// The same again with **js-debug**, which is the adapter that hands its target to a second session.
+///
+/// It earns a second real-adapter test rather than being folded into the one above, because what it
+/// proves is different. CodeLLDB debugs on the connection it was launched on, so it never exercises
+/// the handover; js-debug does nothing else. Before `startDebugging` was answered this test's program
+/// printed `Debugger attached.`, every breakpoint stayed unverified, and it waited for the sixty
+/// seconds and failed — which is exactly what a person driving Quill saw.
+///
+/// It also proves the address. js-debug's own default host is `localhost`, which resolves to `::1`
+/// before `127.0.0.1` on macOS, so an adapter left to its default binds where `quill_dap` never
+/// dials and this test cannot start a session at all.
+///
+/// **Skipped with a message on a machine with no js-debug.** There is nothing to look for on `PATH`:
+/// it ships as a `.js` file in a GitHub release asset rather than as a program, which is why
+/// `debug.node` has no default and why `tools/get-debug-adapter.sh` exists.
+#[test]
+fn a_real_node_debugger_stops_at_a_breakpoint_and_reads_a_variable() {
+    let Some(adapter) = std::env::var_os("QUILL_NODE_ADAPTER")
+        .map(std::path::PathBuf::from)
+        .filter(|path| path.is_file())
+    else {
+        eprintln!(
+            "skipped: no js-debug on this machine. `debug start` would say so too. \
+             `tools/get-debug-adapter.sh node` fetches one and prints the line; then point \
+             QUILL_NODE_ADAPTER at its dapDebugServer.js."
+        );
+        return;
+    };
+    let Some(node) = quill_app::services::debuggers::on_path("node") else {
+        eprintln!("skipped: no node on this machine, and js-debug is a script node runs.");
+        return;
+    };
+
+    let folder = std::env::temp_dir().join("quill-real-node-debug");
+    std::fs::remove_dir_all(&folder).ok();
+    std::fs::create_dir_all(&folder).expect("make the project");
+    let source = folder.join("counter.js");
+    // Line 6 is `return sum;`, reached once the loop has run, so `sum` is 1+2+3+4 by then.
+    std::fs::write(
+        &source,
+        "function total(upTo) {\n\
+        \x20 let sum = 0;\n\
+        \x20 for (let step = 1; step <= upTo; step++) {\n\
+        \x20   sum += step;\n\
+        \x20 }\n\
+        \x20 return sum;\n\
+         }\n\
+         \n\
+         const answer = total(4);\n\
+         console.log(answer);\n",
+    )
+    .expect("write counter.js");
+
+    let mut harness = harness_in(&folder);
+    let ctx = harness.ctx.clone();
+    harness.state_mut().settings.debug_adapters =
+        vec![("node".to_owned(), adapter.to_string_lossy().to_string())];
+    harness.state_mut().open_path_permanently(&source);
+    harness.run();
+
+    let set = harness
+        .state_mut()
+        .run_command_line(&format!("debug breakpoint add {} 6", source.display()), &ctx)
+        .expect("answered at once");
+    assert!(set.ok, "{}", set.message);
+
+    let command = format!(
+        "{} {}",
+        quill_app::services::run_configurations::quote_part(&node.to_string_lossy()),
+        quill_app::services::run_configurations::quote_part(&source.to_string_lossy())
+    );
+    harness.state_mut().run_configurations.add_permanent(configuration("counter", &command));
+    harness.state_mut().run_selected = Some("counter".to_owned());
+    choose(&mut harness, Action::Debug(DebugAction::Start(None)));
+    assert!(
+        harness.state().debug.is_some(),
+        "the session should have started: {:?}",
+        harness.state().message
+    );
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        harness.step();
+        let debug = harness.state().debug.as_ref().expect("the session");
+        if debug.is_ready() {
+            break;
+        }
+        assert!(
+            debug.is_alive(),
+            "the session ended without stopping: {:?}",
+            harness.state().message
+        );
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the program did not stop in sixty seconds; it is {}. \
+             Before `startDebugging` was answered this is where it hung for ever.",
+            debug.where_it_is()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+
+    let status = harness
+        .state_mut()
+        .run_command_line("debug status", &ctx)
+        .expect("answered at once");
+    assert!(status.ok, "{}", status.message);
+    assert_eq!(status.result["paused"], true);
+    assert_eq!(status.result["line"], 6, "{}", status.message);
+
+    let frames = harness
+        .state_mut()
+        .run_command_line("debug frames", &ctx)
+        .expect("answered at once");
+    let listed = frames.result["lines"].as_array().expect("the frames");
+    assert!(
+        listed.iter().any(|line| line.as_str().expect("a line").contains("counter.js:6")),
+        "the top frame should be the line it stopped on: {listed:#?}"
+    );
+
+    let variables = harness
+        .state_mut()
+        .run_command_line("debug variables", &ctx)
+        .expect("answered at once");
+    let printed: Vec<String> = variables.result["lines"]
+        .as_array()
+        .expect("the rows")
+        .iter()
+        .map(|line| line.as_str().unwrap_or_default().to_owned())
+        .collect();
+    assert!(
+        printed.iter().any(|line| line.contains("sum") && line.contains("10")),
+        "the debugger should have read `sum` as 10: {printed:#?}"
+    );
+
+    // And the program really moves when it is stepped, which is the stepping request going to the
+    // session attached to the target rather than to the one that launched it.
+    //
+    // Stepped **until the line changes** rather than once, because V8 steps by statement within a
+    // line: the first `next` from `return sum;` lands on line 6 again at a different column, which is
+    // correct and is not something a test should assert away. Six is far more than the two it takes
+    // and is a bound rather than a wait.
+    let mut moved = false;
+    for _ in 0..6 {
+        let before = harness
+            .state()
+            .debug
+            .as_ref()
+            .expect("the session")
+            .location()
+            .map(|(_, line)| line);
+        let stepped = harness
+            .state_mut()
+            .run_command_line("debug step-over", &ctx)
+            .expect("answered at once");
+        assert!(stepped.ok, "{}", stepped.message);
+        loop {
+            harness.step();
+            let debug = harness.state().debug.as_ref().expect("the session");
+            if debug.is_ready() {
+                break;
+            }
+            assert!(debug.is_alive(), "the session ended while stepping");
+            assert!(std::time::Instant::now() < deadline, "the step did not land in time");
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let after = harness
+            .state()
+            .debug
+            .as_ref()
+            .expect("the session")
+            .location()
+            .map(|(_, line)| line);
+        if after != before {
+            moved = true;
+            break;
+        }
+    }
+    assert!(moved, "stepping should have left the line the breakpoint was on");
+
     harness.state_mut().stop_debugging();
     harness.state_mut().run.kill_everything();
     std::fs::remove_dir_all(&folder).ok();

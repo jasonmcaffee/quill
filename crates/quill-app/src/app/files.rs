@@ -180,6 +180,36 @@ pub struct OpenFile {
     pub shown_at: u64,
     /// What has been laid out for this file, kept between frames.
     pub cached: Cached,
+    /// What the file looked like on disk the last time this tab read it or wrote it.
+    ///
+    /// A tab is owned by its `Document` and Quill deliberately watches nothing, which is right until
+    /// something else changes the file: the tab then goes on showing text that is no longer what is
+    /// there, and `editor text` answers with it. `QuillApp::reread_if_the_file_changed` compares this
+    /// against the folder before a read, which is the rule the symbol index already follows for a
+    /// closed file — the disk-owned side is re-checked at the moment of use.
+    ///
+    /// `None` for a tab that has never been saved, and for one whose file could not be measured.
+    pub disk: Option<DiskStamp>,
+}
+
+/// Enough of a file's metadata to tell that it has changed, without reading it.
+///
+/// The modified time and the length together. The time alone is not enough on a file system whose
+/// stamps have a coarse resolution, and the length alone misses an edit that kept it — neither is a
+/// hash, which would mean reading every byte of every open file to answer a question that is usually
+/// no.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiskStamp {
+    pub modified: Option<std::time::SystemTime>,
+    pub len: u64,
+}
+
+impl DiskStamp {
+    /// What is on disk now, or nothing when there is nothing there to measure.
+    pub fn of(path: &Path) -> Option<Self> {
+        let data = std::fs::metadata(path).ok()?;
+        Some(Self { modified: data.modified().ok(), len: data.len() })
+    }
 }
 
 impl OpenFile {
@@ -204,7 +234,31 @@ impl OpenFile {
             pane: 0,
             shown_at: 0,
             cached: Cached::fresh(),
+            disk: None,
         }
+    }
+
+    /// Note what the file looks like on disk now, which is what a later read is compared against.
+    ///
+    /// Called wherever this tab and the file agree: when it is opened, when it is read again, and
+    /// when it is written. A tab with no path has nothing to measure.
+    pub fn note_what_is_on_disk(&mut self) {
+        self.disk = self.document.path().and_then(DiskStamp::of);
+    }
+
+    /// True when the file has changed underneath this tab since it last read or wrote it.
+    ///
+    /// False for a tab with unsaved changes, which is not a question about the disk: those are the
+    /// person's, and throwing them away is what `tab reload --discard` is for. False also for a tab
+    /// that has never been saved and for a file that has been deleted — a tab whose file has gone
+    /// keeps what it has rather than being emptied.
+    pub fn the_file_changed_underneath(&self) -> bool {
+        if self.document.is_modified() {
+            return false;
+        }
+        let Some(was) = self.disk else { return false };
+        let Some(path) = self.document.path() else { return false };
+        DiskStamp::of(path).is_some_and(|now| now != was)
     }
 
     /// A tab holding a picture rather than text.
@@ -945,6 +999,42 @@ mod tests {
 
     fn names(files: &OpenFiles) -> Vec<String> {
         files.iter().map(OpenFile::name).collect()
+    }
+
+    /// A tab opened to keep is never taken away by opening another file, and asking for one that is
+    /// already open never turns it back into a preview.
+    ///
+    /// Written after a tab disappeared during a session driven through the MCP tools. The cause there
+    /// was a `--permanent` flag being dropped on the way in, so the tab was a preview and the next
+    /// file replaced it — which is correct behaviour for a preview and was not what had been asked
+    /// for. This pins the rule underneath it, so the two can never be confused again: preview tabs are
+    /// replaced, kept tabs are not, and `open` only ever upgrades.
+    #[test]
+    fn a_tab_opened_to_keep_is_not_replaced_by_the_next_file() {
+        let mut files = OpenFiles::new(document("first.md"));
+        files.open(document("kept.md"), true);
+        files.open(document("preview.md"), false);
+        assert_eq!(names(&files), ["first.md", "kept.md", "preview.md"]);
+
+        // A preview is what the next preview replaces.
+        files.open(document("another.md"), false);
+        assert_eq!(
+            names(&files),
+            ["first.md", "kept.md", "another.md"],
+            "the preview was reused and the kept tab was left alone"
+        );
+
+        // And asking for a file that is already open does not turn it into a preview.
+        files.open(document("kept.md"), false);
+        let kept = files.index_of(&std::env::temp_dir().join("quill-open-files").join("kept.md"));
+        let kept = kept.expect("kept.md is still open");
+        assert!(!files.at(kept).transient, "a kept tab stays kept");
+        files.open(document("third.md"), false);
+        assert!(
+            names(&files).contains(&"kept.md".to_owned()),
+            "and is still there afterwards: {:?}",
+            names(&files)
+        );
     }
 
     #[test]

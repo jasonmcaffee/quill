@@ -32,6 +32,24 @@ use crate::messages::Message;
 /// purpose: the person pressing stop has already decided.
 pub const GRACE: Duration = Duration::from_secs(2);
 
+/// Whether every frame in both directions is written to standard error.
+///
+/// `QUILL_DAP_TRACE=1` switches it on, read once. It exists because a protocol client with no way to
+/// see the conversation is guesswork to work on, and this is not hypothetical: it is what found
+/// `is_the_node_runtime` — the frames showed js-debug being told to run the node binary as a
+/// JavaScript file, which no state in the window could have shown. It is the same argument as reading
+/// the adapter's standard error rather than swallowing it, one level down.
+///
+/// Read through a `OnceLock` rather than per frame, because `variables` over a large structure is
+/// hundreds of frames and asking the environment each time would be work done for nothing in a
+/// session that is not being traced.
+fn tracing() -> bool {
+    static TRACING: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *TRACING.get_or_init(|| {
+        std::env::var("QUILL_DAP_TRACE").is_ok_and(|value| !matches!(value.as_str(), "" | "0"))
+    })
+}
+
 /// A function the thread calls to have the window drawn again.
 ///
 /// The same `Arc<dyn Fn() + Send + Sync>` the terminal and git already take. A `stopped` event that
@@ -230,6 +248,9 @@ impl Client {
             written.push(frame.clone());
             return true;
         }
+        if tracing() {
+            eprintln!("--> {frame}");
+        }
         let bytes = codec::encode(frame);
         if self.writer.write_all(&bytes).is_err() || self.writer.flush().is_err() {
             self.broken = true;
@@ -367,6 +388,9 @@ fn read_frames_as(
         match decoder.feed(&buffer[..read]) {
             Ok(messages) => {
                 for value in messages {
+                    if tracing() {
+                        eprintln!("<-- {value}");
+                    }
                     let message = Message::read(&value);
                     if sender.send(wrap(Box::new(message))).is_err() {
                         return;

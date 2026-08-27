@@ -80,7 +80,21 @@ const BACKSTOP: Duration = Duration::from_secs(120);
 /// Twenty times a second. A window that is drawing discards a repaint request for nothing, and a
 /// window that is not drawing needs one of them to get through — see the module comment. It stops
 /// the moment the request is picked up, so the ordinary case costs one extra wake at most.
-const NUDGE: Duration = Duration::from_millis(50);
+pub const NUDGE: Duration = Duration::from_millis(50);
+
+/// How long a request waits with no frame drawn before the wake stops being a repaint request.
+///
+/// `NUDGE` on its own was measured failing. A window on macOS held four requests for three hundred
+/// and fifty-nine seconds without drawing, which is seven thousand repaint requests asked for and
+/// lost, and `app::HEARTBEAT` did not recover it either — a repaint asked for after a delay is a
+/// timer the run loop fires from inside itself, and a run loop that is not running fires nothing.
+/// Activating the window recovered it every time, so what gets through is an event on the main run
+/// loop rather than another repaint request. [`super::wake::the_run_loop`] puts one there.
+///
+/// Half a second, which is `app::HEARTBEAT`: by then a window that is merely busy has drawn, so
+/// anything still silent is not drawing. It costs one post to the main queue every [`NUDGE`] for as
+/// long as that is true, and nothing at all in the ordinary case.
+const ESCALATE: Duration = Duration::from_millis(500);
 
 /// The largest amount taken off the caller's own deadline so that the window's refusal beats the
 /// client's socket timeout.
@@ -539,6 +553,35 @@ fn read_and_queue(
     reply
 }
 
+/// Ask for a frame, and ask a different way once asking this way has plainly stopped working.
+///
+/// A repaint request is the right wake and it is nearly always enough: the window is idle, the
+/// request arrives, one repaint draws a frame and the command is answered. It is the wrong wake for a
+/// run loop that is not running, which is a state a window really reaches — see [`ESCALATE`] for what
+/// was measured. So the rule is written by what has been seen rather than by what should work: while
+/// a frame has been drawn recently enough, ask for a repaint; once nothing has been drawn for
+/// `ESCALATE`, put something on the main run loop instead.
+///
+/// Split out from the loop above so it can be decided about on its own, which is what
+/// [`escalation_is_due`] is tested through.
+fn wake_or_escalate(wake: &Arc<dyn Fn() + Send + Sync>, health: &Arc<Health>) {
+    if escalation_is_due(health.since_the_last_frame()) {
+        let wake = wake.clone();
+        super::wake::the_run_loop(move || wake());
+        return;
+    }
+    wake();
+}
+
+/// Whether the wake should stop being a repaint request, from how long ago the last frame was.
+///
+/// `None` — no frame ever drawn — is **not** escalated. A window that has not drawn its first frame
+/// yet is starting up, which is the one time a silent window is ordinary, and the repaint request
+/// that is already being sent is what it is waiting for.
+fn escalation_is_due(since_the_last_frame: Option<Duration>) -> bool {
+    since_the_last_frame.is_some_and(|silent| silent >= ESCALATE)
+}
+
 /// Wait for the window's answer, waking it again for as long as it has not picked the request up.
 ///
 /// Three things are being watched at once and the module comment says why each matters. While the
@@ -595,7 +638,7 @@ fn wait_for_the_window(
         };
         if !over {
             if !picked_up {
-                wake();
+                wake_or_escalate(wake, health);
             }
             continue;
         }
@@ -649,6 +692,40 @@ fn token() -> String {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A window that is drawing gets the ordinary repaint request; one that has stopped gets an event
+    /// on its run loop instead. The rule is written by what was measured rather than by what should
+    /// work — seven thousand repaint requests reached a window that had not drawn for six minutes.
+    #[test]
+    fn the_wake_only_escalates_once_nothing_has_been_drawn_for_long_enough() {
+        assert!(!escalation_is_due(Some(Duration::ZERO)), "a window mid-frame is fine");
+        assert!(!escalation_is_due(Some(Duration::from_millis(100))));
+        assert!(
+            !escalation_is_due(Some(ESCALATE - Duration::from_millis(1))),
+            "a window that drew a moment ago is drawing"
+        );
+        assert!(escalation_is_due(Some(ESCALATE)));
+        assert!(escalation_is_due(Some(Duration::from_secs(359))), "what was measured");
+    }
+
+    /// A window that has never drawn a frame is starting up, which is the one time being silent is
+    /// ordinary. Escalating then would post to a run loop that is about to draw anyway.
+    #[test]
+    fn a_window_that_has_not_drawn_its_first_frame_is_not_escalated_to() {
+        assert!(!escalation_is_due(None));
+    }
+
+    /// A frame counted is a frame the escalation can see, so the two cannot come apart: `Health` is
+    /// what both the refusal sentence and this decision are read from.
+    #[test]
+    fn a_frame_clears_the_silence_the_escalation_is_measured_against() {
+        let health = Health::new();
+        assert_eq!(health.since_the_last_frame(), None, "nothing drawn yet");
+        health.a_frame_began();
+        let since = health.since_the_last_frame().expect("a frame has been drawn");
+        assert!(since < ESCALATE, "a frame just drawn is not silence: {since:?}");
+        assert!(!escalation_is_due(health.since_the_last_frame()));
+    }
 
     /// One server at a time, in a folder of its own.
     ///

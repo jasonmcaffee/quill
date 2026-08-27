@@ -40,6 +40,9 @@ image.workspace = true
 # with a lower case q. Nothing else here needs Objective C.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-foundation.workspace = true
+# Posting a block to the main dispatch queue, which is how a run loop that has stopped answering
+# repaint requests is woken. See `services/wake.rs`.
+dispatch2.workspace = true
 
 # Clearing the window's redirection surface, which is what lets the desktop show through on Windows.
 # See `services/windows_transparency.rs`.

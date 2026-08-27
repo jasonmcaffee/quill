@@ -35,6 +35,8 @@
 //! a command from this catalogue can always name every value with a flag and never has to count
 //! positions.
 
+use serde_json::{Map, Value};
+
 /// One value typed after the verb.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Argument {
@@ -113,6 +115,69 @@ impl Command {
     pub fn flag(&self, name: &str) -> Option<&'static Flag> {
         self.flags.iter().find(|flag| flag.name == name)
     }
+}
+
+/// A value's name with any leading dashes taken off.
+///
+/// The usage lines spell a flag `--permanent`, so that is what a caller writing a request from the
+/// catalogue sends it as, and `permanent` is the name the window reads. Both are the same name and
+/// this is where they are made the same name. Only the *leading* dashes go: `from-line` and
+/// `wait-for` have one in the middle and it is part of the name.
+pub fn argument_name(key: &str) -> &str {
+    key.trim_start_matches('-')
+}
+
+/// Every key with its leading dashes taken off.
+///
+/// A key already spelled without them wins, so a request carrying both `permanent` and
+/// `--permanent` keeps the one the window would have read and does not depend on which order a JSON
+/// object happened to be in.
+pub fn normalise_arguments(arguments: Map<String, Value>) -> Map<String, Value> {
+    if arguments.keys().all(|key| !key.starts_with('-')) {
+        return arguments;
+    }
+    let mut out = Map::new();
+    for (key, value) in &arguments {
+        if !key.starts_with('-') {
+            out.insert(key.clone(), value.clone());
+        }
+    }
+    for (key, value) in arguments {
+        let name = argument_name(&key);
+        if !out.contains_key(name) {
+            out.insert(name.to_owned(), value);
+        }
+    }
+    out
+}
+
+/// Every name this command takes a value under: its positional arguments and its flags.
+///
+/// One list rather than two, because the wire has one object and the window reads a positional and a
+/// flag through the same name — which is what the module's own documentation says the client's job
+/// is.
+pub fn value_names(command: &Command) -> Vec<&'static str> {
+    let mut names: Vec<&'static str> = command.arguments.iter().map(|value| value.name).collect();
+    names.extend(command.flags.iter().map(|flag| flag.name));
+    names
+}
+
+/// The keys in a request that this command has no value called.
+///
+/// A mistyped name is a request that did something other than what it said, and the client already
+/// refuses one on the command line — "a mistyped flag quietly treated as text is a command that did
+/// the wrong thing without saying so". A request that arrives over the wire from an agent has the
+/// same fault and had no such answer, so this is that rule made available to the window and to the
+/// MCP server. Keys are compared after [`normalise_arguments`], so a spelling with dashes is not
+/// what makes one unknown.
+pub fn unknown_arguments(command: &Command, arguments: &Map<String, Value>) -> Vec<String> {
+    let known = value_names(command);
+    arguments
+        .keys()
+        .map(|key| argument_name(key))
+        .filter(|name| !known.contains(name))
+        .map(str::to_owned)
+        .collect()
 }
 
 /// Find a command by what a person typed or by what goes over the wire.
@@ -1755,6 +1820,105 @@ pub const COMMANDS: &[Command] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    fn given(pairs: Value) -> Map<String, Value> {
+        pairs.as_object().expect("an object").clone()
+    }
+
+    /// The usage lines spell every flag with two dashes, so that is what a caller writing a request
+    /// from the catalogue sends. Both spellings are one name.
+    #[test]
+    fn a_name_written_with_dashes_is_the_same_name_as_one_without() {
+        assert_eq!(argument_name("--permanent"), "permanent");
+        assert_eq!(argument_name("-permanent"), "permanent");
+        assert_eq!(argument_name("permanent"), "permanent");
+        assert_eq!(argument_name("--from-line"), "from-line", "only the leading dashes go");
+        assert_eq!(argument_name("wait-for"), "wait-for");
+    }
+
+    #[test]
+    fn the_dashes_come_off_every_key_and_the_values_are_kept() {
+        let normalised = normalise_arguments(given(json!({
+            "--permanent": true,
+            "--from-line": 46,
+            "path": "README.md",
+        })));
+        assert_eq!(normalised.get("permanent"), Some(&json!(true)));
+        assert_eq!(normalised.get("from-line"), Some(&json!(46)));
+        assert_eq!(normalised.get("path"), Some(&json!("README.md")));
+        assert_eq!(normalised.len(), 3, "no key is left behind and none is duplicated");
+    }
+
+    /// A request carrying both spellings keeps the one the window reads, whichever order the object
+    /// happened to be in.
+    #[test]
+    fn a_name_sent_both_ways_keeps_the_spelling_the_window_reads() {
+        let normalised = normalise_arguments(given(json!({
+            "--tail": 40,
+            "tail": 3,
+        })));
+        assert_eq!(normalised.get("tail"), Some(&json!(3)));
+        assert_eq!(normalised.len(), 1);
+    }
+
+    #[test]
+    fn a_map_with_no_dashes_in_it_is_left_exactly_as_it_was() {
+        let plain = given(json!({ "path": "a.rs", "permanent": true }));
+        assert_eq!(normalise_arguments(plain.clone()), plain);
+    }
+
+    /// The fault this closes: a value the command has no name for used to be dropped, and the
+    /// command ran as though it had not been sent.
+    #[test]
+    fn a_name_the_command_does_not_have_is_reported_rather_than_dropped() {
+        let open = find("tab open").expect("tab open");
+        assert_eq!(
+            unknown_arguments(open, &given(json!({ "path": "a.rs", "permanant": true }))),
+            vec!["permanant".to_owned()],
+            "a misspelling is unknown"
+        );
+        assert!(
+            unknown_arguments(open, &given(json!({ "path": "a.rs", "--permanent": true })))
+                .is_empty(),
+            "the dashes are not what makes a name unknown"
+        );
+        assert!(
+            unknown_arguments(open, &given(json!({ "path": "a.rs", "permanent": true }))).is_empty()
+        );
+    }
+
+    /// Both a positional and a flag arrive under their own name, so both are known names.
+    #[test]
+    fn a_positional_and_a_flag_are_both_names_a_value_may_arrive_under() {
+        let output = find("run output").expect("run output");
+        let names = value_names(output);
+        assert!(names.contains(&"name"), "the positional: {names:?}");
+        assert!(names.contains(&"tail"), "a flag: {names:?}");
+        assert!(unknown_arguments(output, &given(json!({ "name": "dev", "tail": 20 }))).is_empty());
+    }
+
+    /// Every command's own names have to be names it can be sent, or the refusal above would refuse
+    /// a request the window itself reads.
+    #[test]
+    fn no_command_has_two_values_by_one_name() {
+        for command in COMMANDS {
+            let names = value_names(command);
+            for (at, name) in names.iter().enumerate() {
+                assert!(
+                    !names[at + 1..].contains(name),
+                    "{} has two values called {name}",
+                    command.typed()
+                );
+                assert_eq!(
+                    argument_name(name),
+                    *name,
+                    "{}'s {name} is written with the dashes a caller's key has them taken off",
+                    command.typed()
+                );
+            }
+        }
+    }
 
     #[test]
     fn every_command_has_a_summary_and_an_example() {

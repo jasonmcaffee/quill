@@ -506,6 +506,42 @@ and some enums and collections render poorly. The registry entry says so, the se
 when it starts, and the variables tree shows what the adapter says rather than pretending. The GNU
 toolchain's DWARF is fully readable, and Rust 1.85+ ships LLDB formatters that improve the MSVC case.
 
+**js-debug hands its target to a second session, so there is more than one.** This was on the list of
+things deliberately left out, and it could not be: it is not a feature, it is how js-debug works at
+all. The session that takes the `launch` starts the program, prints `Debugger attached.` and then
+sends the `startDebugging` reverse request, which asks the client to open **another** connection to
+the same adapter and give it the configuration handed over. That second session is the one that
+attaches to the target, verifies the breakpoints, sends `stopped` and answers a `stackTrace`. With
+the request ignored, every JavaScript program printed `Debugger attached.` and then waited for ever
+with every breakpoint unverified.
+
+So `DebugState` holds one active session and a list of the connections that handed their target over.
+The active one is the newest and is the only one anything is drawn from. The retired ones are kept
+open, because the adapter goes on using them and `terminated` arrives down the one that was launched,
+and exactly two things they say are acted on: their output, and their ending — which ends the run
+whatever the session showing the stack believes. `debug stop` stops all of them, because one program
+with two connections watching it is still one program to leave behind.
+
+`AdapterCommand::already_running` is what makes the second connection a socket rather than a second
+adapter, and `takes_a_second_session` is the question a stdio adapter answers no to: its session is
+its standard streams, so there is no second one to open. `a_target_handed_over_is_debugged_by_the_session_it_was_handed_to`
+is the scripted test and `a_real_node_debugger_stops_at_a_breakpoint_and_reads_a_variable` is the real
+one, which earns its place beside the lldb test because CodeLLDB debugs on the connection it was
+launched on and never exercises any of this.
+
+**Two things about js-debug that are the machine's rather than the protocol's**, both found by
+driving it and both now with a test. Its default listen host is `localhost`, which resolves to `::1`
+before `127.0.0.1` on macOS, so an adapter left to its default binds where `quill_dap` never dials —
+the host is passed on its command line, from `quill_dap::SERVER_HOST`, so the two ends cannot
+disagree. And a run configuration names node by the path `run add` found on `PATH`, which under nvm is
+long and has no `.exe` on the end; read as the script rather than as the runtime, js-debug was told to
+run the node binary as a JavaScript file and the program died with `Cannot find module`.
+`is_the_node_runtime` compares the file stem, splitting both separators because a configuration
+written on one platform is read on the other.
+
+`QUILL_DAP_TRACE=1` writes every frame in both directions to standard error. It is what found the
+second of those: no state in the window could have shown it, and the frames showed it at once.
+
 Deliberately not here, each with its reason in §13 of the TDD: **attach** (launch only; the protocol
 work is attach-ready and attach is its own ticket), **more than one session**, **Python** (no Python
 plugin ships, so a `python` entry no manifest could name would be dead code), **Smart Step Into**,
@@ -607,6 +643,12 @@ that would install it — in fields under `--json`, because the alternative was 
 `services/debuggers.rs`, which is exactly what the ticket describes somebody doing. The adapter search
 reads directories, so the window caches it for `ADAPTER_SEARCH_TTL`: five seconds, because the
 commonest thing to happen next is an install running in the tile beside the message that offered it.
+
+**Quill still fetches nothing.** `tools/get-debug-adapter.sh <node|lldb>` is the macOS and Linux half
+of `get-debug-adapter.ps1`, and js-debug is the reason it had to exist: it ships as a `.js` file inside
+a GitHub release asset, so there is nothing on `PATH` to look for and nothing a package manager
+installs, and a person told to set `debug.node` had no way at all to get the thing it names. The
+refusal names the script.
 
 ## A block is collapsed by hiding its lines, and the line numbers do not move
 
@@ -1207,6 +1249,29 @@ asked for so as not to overshoot, the harness calls a frame a quarter of a secon
 heartbeat at or under that becomes "repaint immediately" and makes `Harness::run` spin until it gives
 up.
 
+**Neither the heartbeat nor the repeated wake was enough**, and a window was measured again in the
+same state and worse: three hundred and fifty-nine seconds without a frame, on macOS, with four
+requests queued. `control::NUDGE` asks for a repaint twenty times a second while a request is on the
+queue, so that is seven thousand repaint requests asked for and lost, and the heartbeat did not recover
+it either — a repaint asked for after a delay is a timer the run loop fires from inside itself, and a
+run loop that is not running fires nothing. Both mechanisms are repaint requests to a loop that has
+stopped reading them.
+
+**What did recover it, every time, was activating the window** from outside the process. So the thing
+that gets through is an event the operating system puts on the main run loop rather than a repaint
+request, and `services::wake::the_run_loop` puts one there: on macOS it posts a block to the main
+dispatch queue, which the main run loop is a consumer of, so the post wakes the loop *and* the closure
+runs on the main thread — where a `request_repaint` is handled directly instead of going through the
+proxy and the user event `eframe` discards as outdated. Both halves matter.
+
+It is an escalation rather than the ordinary path. While a frame has been drawn within
+`control::ESCALATE` the wake is the repaint request it always was; only once nothing has been drawn for
+half a second does the wake change. `the_wake_only_escalates_once_nothing_has_been_drawn_for_long_enough`
+is the test, and it tests the **decision** — when to escalate — because whether a run loop wakes is not
+something a test with no run loop can assert. Elsewhere the escalation is the repaint request, since
+the hang has only ever been seen here and a wake written for a mechanism nobody has measured failing
+would be a guess with a platform dependency attached.
+
 ## A run configuration is a named command, and a run is a terminal with a program in it
 
 `task-1683` asks for IntelliJ's run configurations and `task-1684` is the implementation. A
@@ -1585,6 +1650,35 @@ describes a command that no longer exists. `cargo run -p quill-cli --example ref
 second test parses every example in the catalogue and checks it runs the command it is filed under,
 because the examples are what an agent copies.
 
+**A value the command has no name for is refused, and a name written with dashes is the same name.**
+The usage lines spell every flag `--permanent`, so that is what a caller writing a request from the
+catalogue sends — and an `arguments` object is written by hand by anything that is not `quill-cli`,
+which the MCP server always is. Those keys used to be accepted and dropped: `tab open --permanent` left
+the tab transient so the next file replaced it, and `run output --tail 40` returned the whole screen.
+Both replied that they had worked. The leading dashes come off in `Request::from_json` and in the MCP
+tool's own reader, which needs them off too because the driver reads `timeout` and `no-wait` itself; and
+a key no argument and no flag of that command is named by is a `usage` refusal naming what the command
+does take. The client already refused a mistyped `--flag` on the command line — "a mistyped flag
+quietly treated as text is a command that did the wrong thing without saying so" — and this is that
+same rule reaching the wire.
+
+**The disk-owned side is re-checked at the moment of use, and the command line is a moment of use.**
+Quill watches nothing and a tab is owned by its `Document`, which is right while Quill is the only
+writer and wrong the moment something else writes: a tab went on showing text no longer in the file and
+`editor text` answered with it, and `explorer files` did not list a file plainly on the disk. So the
+`editor` commands read the file again first when it has changed underneath and the tab has no unsaved
+changes — `OpenFile::the_file_changed_underneath`, a modified time and a length rather than a hash —
+and `explorer files` and `explorer tree` walk the folder before answering. Unsaved changes are never
+touched: those are the person's and losing them has no undo, which is what `tab reload --discard` is
+for.
+
+**`run output` reads the scrollback, not the screen.** Its summary promises what a run has *written*,
+and `Screen::text` is what is *showing* — so a program that printed more lines than the tile is tall had
+the start of its output scrolled off and unreachable at any `tail`, which is exactly the dev server
+whose port had gone past. `Session::written_text` reads the history as well, bounded before the rows are
+built so a `tail` of twenty over ten thousand lines builds twenty strings. `terminal read` still reads
+the screen, because that is what its own summary says it does.
+
 `QuillApp::run_cli` is to the command line what `run_action` is to the menus: **the one place a
 command turns into a change**, and wherever there is already a way in it uses it. So a thing done
 from the command line and the same thing done by hand are the same thing.
@@ -1610,6 +1704,13 @@ So **the wake repeats while the request is on the queue and stops the moment the
 `Pending::taken` is what says which, set by `Server::take`, so a command the window is *holding* —
 `terminal read --wait-for`, a git action — costs no wakes at all for the minutes it may wait, and
 `pump_control` is already keeping the window drawing for those. Do not go back to waking once.
+
+**And repeating it is still not enough**, which a later measurement showed: three hundred and
+fifty-nine seconds with no frame and four requests queued, which is seven thousand repaint requests
+lost rather than one. Once nothing has been drawn for `ESCALATE` the wake stops being a repaint request
+at all and becomes an event on the main run loop — see "The window wakes itself up" for what was
+measured and why that is the thing that gets through. The escalation is only ever reached by a window
+that has stopped drawing, so the ordinary path is unchanged.
 
 **A request the caller gave up on is thrown away rather than applied later.** The caller says how
 long it will wait in `deadline_ms`, because a client that gives up says nothing — it stops reading —

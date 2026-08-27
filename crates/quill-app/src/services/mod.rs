@@ -27,6 +27,7 @@ pub mod store;
 pub mod symbol_index;
 pub mod text_renderer;
 pub mod text_search;
+pub mod wake;
 
 // Letting the desktop show through the window needs a DirectComposition swapchain and a cleared
 // redirection surface on Windows, and nothing at all anywhere else.

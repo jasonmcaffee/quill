@@ -558,6 +558,62 @@ impl Session {
         self.term.lock().selection_to_string().filter(|text| !text.is_empty())
     }
 
+    /// Everything the program has written that the terminal still holds: the scrollback and then the
+    /// screen, one line each, oldest first.
+    ///
+    /// [`Screen::text`] is what is *showing*, which is the right answer for a painter and for a test
+    /// asserting on a prompt. It is the wrong answer for a caller that wants what a program wrote,
+    /// because a program that printed more lines than the tile is tall has had the start of its output
+    /// scrolled off the top — and `run output` promises what a run has written. A dev server whose
+    /// port scrolled past could not be asked for its port at all.
+    ///
+    /// `most_recent` bounds the answer to that many lines from the end. `None` is everything, which
+    /// [`SCROLLBACK`] already bounds.
+    pub fn written_text(&self, most_recent: Option<usize>) -> String {
+        let term = self.term.lock();
+        let columns = term.columns();
+        let screen_lines = term.screen_lines() as i32;
+        let history = term.history_size() as i32;
+        let grid = term.grid();
+        let row_text = |line: i32| {
+            let row = &grid[Line(line)];
+            let mut text = String::new();
+            for column in 0..columns {
+                let cell = &row[Column(column)];
+                if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                    continue;
+                }
+                text.push(cell.c);
+                if let Some(marks) = cell.zerowidth() {
+                    text.extend(marks);
+                }
+            }
+            text.trim_end().to_owned()
+        };
+
+        // The last line with something on it, which is where counting back from the end starts. The
+        // rows under it are the empty part of the screen rather than output — after `line60\r\n` the
+        // cursor is on a fresh blank row — so a bound applied before they were dropped would spend
+        // one of the lines asked for on a blank.
+        let oldest = -history;
+        let mut last = screen_lines - 1;
+        while last >= oldest && row_text(last).is_empty() {
+            last -= 1;
+        }
+        if last < oldest {
+            return String::new();
+        }
+        // Bounded before the rows are read rather than after, so a `tail` of 20 over ten thousand
+        // lines of history builds twenty strings instead of ten thousand. A blank line *between* two
+        // lines of output is output and is kept.
+        let first = match most_recent {
+            Some(0) => return String::new(),
+            Some(wanted) => (last + 1 - wanted as i32).max(oldest),
+            None => oldest,
+        };
+        (first..=last).map(row_text).collect::<Vec<String>>().join("\n")
+    }
+
     /// A point in the grid from a row on the screen, taking the scrollback into account.
     fn point_at(&self, row: usize, column: usize) -> Point {
         let term = self.term.lock();
@@ -782,6 +838,53 @@ mod tests {
         assert_eq!(screen.row_text(0), "hello, terminal");
         assert_eq!(screen.rows, 16);
         assert_eq!(screen.columns, 40);
+    }
+
+    /// A program that writes more lines than the screen is tall has scrolled the first of them off
+    /// the top. They are still what it wrote, and this is what reads them.
+    ///
+    /// The fault it closes: `run output` read the screen, so a `tail` of 70 over sixty lines of
+    /// output answered with the sixteen that happened to be showing and called it a success.
+    #[test]
+    fn what_scrolled_off_the_top_is_still_what_the_program_wrote() {
+        let mut session = detached();
+        for line in 1..=60 {
+            session.feed(format!("line{line}\r\n").as_bytes());
+        }
+
+        let showing = session.snapshot().text();
+        assert!(!showing.contains("line1\n"), "line1 has scrolled off the screen: {showing:?}");
+
+        let written = session.written_text(None);
+        let lines: Vec<&str> = written.lines().collect();
+        assert_eq!(lines.first(), Some(&"line1"), "the oldest line is still readable");
+        assert_eq!(lines.last(), Some(&"line60"), "and so is the newest");
+        assert_eq!(lines.len(), 60, "every line once: {}", lines.len());
+    }
+
+    /// The bound is over everything written rather than over what is showing, which is the whole
+    /// point of reading the scrollback.
+    #[test]
+    fn the_last_so_many_lines_are_counted_from_the_end_of_everything_written() {
+        let mut session = detached();
+        for line in 1..=60 {
+            session.feed(format!("line{line}\r\n").as_bytes());
+        }
+        assert_eq!(session.written_text(Some(3)).lines().collect::<Vec<_>>(), [
+            "line58", "line59", "line60"
+        ]);
+        // More than there is is everything there is, not an error and not a padded answer.
+        assert_eq!(session.written_text(Some(500)).lines().count(), 60);
+        assert_eq!(session.written_text(Some(0)), "");
+    }
+
+    /// A blank line between two lines of output is output. The run of them under the last thing
+    /// written is the empty part of the screen, and is not.
+    #[test]
+    fn a_blank_line_in_the_middle_is_kept_and_the_empty_screen_below_is_not() {
+        let mut session = detached();
+        session.feed(b"first\r\n\r\nthird\r\n");
+        assert_eq!(session.written_text(None), "first\n\nthird");
     }
 
     #[test]

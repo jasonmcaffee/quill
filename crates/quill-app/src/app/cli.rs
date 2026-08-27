@@ -164,6 +164,45 @@ fn no(request: &Request, code: &str, message: impl Into<String>) -> Outcome {
     Outcome::Reply(Reply::failed(&request.command, code, message))
 }
 
+/// A value the command has no name for is refused, rather than being dropped and the command run as
+/// though it had not been sent.
+///
+/// A caller that misspells a name gets a reply saying so instead of a success that did something
+/// other than what was asked. `run output --tail 40` written with the dashes intact used to return
+/// the whole screen and say it had worked, and `tab open --permanent` used to leave the tab
+/// transient — both of them silently, which is the fault this closes. The dashes themselves are not
+/// what makes a name unknown: they are taken off when the request is read.
+///
+/// A command this version does not have is left alone, because the answer to that is the sentence
+/// naming the command, which the area dispatch below already writes.
+fn unknown_argument_refusal(request: &Request) -> Option<Outcome> {
+    let command = quill_cli::catalogue::find(&request.command)?;
+    let unknown = quill_cli::catalogue::unknown_arguments(command, &request.arguments);
+    if unknown.is_empty() {
+        return None;
+    }
+    let takes = quill_cli::catalogue::value_names(command);
+    let says = match takes.is_empty() {
+        true => format!("{} takes no values.", command.typed()),
+        false => format!("{} takes {}.", command.typed(), takes.join(", ")),
+    };
+    Some(no(
+        request,
+        code::USAGE,
+        format!("{} has no {}. {says}", command.typed(), either(&unknown)),
+    ))
+}
+
+/// `a`, `a or b`, `a, b or c` — one name read as a name and three read as a list.
+fn either(names: &[String]) -> String {
+    match names {
+        [] => String::new(),
+        [only] => only.clone(),
+        [first, second] => format!("{first} or {second}"),
+        [rest @ .., last] => format!("{} or {last}", rest.join(", ")),
+    }
+}
+
 /// Nothing but a sentence, which is what most commands that change something answer with.
 fn done(request: &Request, message: impl Into<String>) -> Outcome {
     ok(request, message, Value::Null)
@@ -470,6 +509,9 @@ impl QuillApp {
 
     /// Run one command. The single place a command line request turns into a change.
     fn run_cli(&mut self, request: &Request, ctx: &egui::Context) -> Outcome {
+        if let Some(refusal) = unknown_argument_refusal(request) {
+            return refusal;
+        }
         let (area, verb) = match request.command.split_once('.') {
             Some((area, verb)) => (area, verb),
             None => ("", request.command.as_str()),
@@ -910,6 +952,9 @@ impl QuillApp {
             "show" => match self.cli_find_tab(request, "tab") {
                 Ok(index) => {
                     self.show_tab(index);
+                    // Bringing a tab forward is a moment of use, so its file is checked too: a tab
+                    // left open while something else rewrote its file is showing the old text.
+                    self.reread_if_the_file_changed();
                     done(request, format!("Showing {}", self.files.active().name()))
                 }
                 Err(outcome) => outcome,
@@ -1762,6 +1807,11 @@ impl QuillApp {
     // --------------------------------------------------------------------------------- the editor
 
     fn cli_editor(&mut self, request: &Request, verb: &str, ctx: &egui::Context) -> Outcome {
+        // The file is read again first when something else has changed it, so a caller that wrote it
+        // and asked the window about it is answered with what is there rather than with what the tab
+        // last read. An edit is included on purpose: one made on top of stale text and then saved
+        // would write the stale text back over somebody else's change.
+        self.reread_if_the_file_changed();
         match verb {
             "status" => ok(request, self.editor_sentence(), self.editor_value()),
             "text" => self.cli_editor_text(request),
@@ -3269,22 +3319,19 @@ impl QuillApp {
 
     /// What a run has written, with the blank lines under it trimmed away and at most `tail` lines
     /// kept. `None` when there is no such run.
+    ///
+    /// The scrollback is read, not just the screen. A program that printed more lines than the run
+    /// tile is tall has had the start of its output scrolled off the top, and reading only what was
+    /// showing meant a `tail` larger than the tile's height silently answered with the tile's height
+    /// — so a dev server whose port had scrolled past could not be asked for its port. What the
+    /// terminal still holds is [`quill_terminal::SCROLLBACK`] lines.
     fn run_output(&self, name: Option<&str>, tail: Option<usize>) -> Option<String> {
         let index = match name {
             Some(name) => self.run.index_of(name)?,
             None => self.run.active_index(),
         };
         let run = self.run.at(index)?;
-        let whole = run.session.snapshot().text();
-        let mut rows: Vec<&str> = whole.lines().collect();
-        while rows.last().is_some_and(|row| row.trim().is_empty()) {
-            rows.pop();
-        }
-        if let Some(tail) = tail {
-            let from = rows.len().saturating_sub(tail);
-            rows = rows[from..].to_vec();
-        }
-        Some(rows.join("\n"))
+        Some(run.session.written_text(tail))
     }
 
     /// Everything about running, which every one of these commands answers with.
@@ -4283,6 +4330,7 @@ impl QuillApp {
 
     fn cli_explorer_tree(&mut self, request: &Request) -> Outcome {
         let limit = request.whole("limit").unwrap_or(200);
+        self.tree.reload();
         let rows = self.tree.rows();
         let shown: Vec<Value> = rows
             .iter()
@@ -4319,8 +4367,18 @@ impl QuillApp {
         )
     }
 
+    /// Every file in the project, read from the folder rather than from what the tree last held.
+    ///
+    /// The folder is walked again first, because the caller is very often the thing that just wrote
+    /// the file it is asking about. Quill reloads the tree after each of its own file operations, and
+    /// nothing told it about anybody else's — so a file written a moment ago by an agent, a build or a
+    /// `git checkout` was missing from the answer and from `Go to File` with it. It is the rule the
+    /// index already follows for a closed file: **the disk-owned side is re-checked at the moment of
+    /// use.** Measured at 20 ms over Quill's own repository, which is what a read from a command line
+    /// can afford where a walk on every frame could not.
     fn cli_explorer_files(&mut self, request: &Request) -> Outcome {
         let limit = request.whole("limit").unwrap_or(500);
+        self.tree.reload();
         let all = self.tree.all_files();
         let shown: Vec<String> =
             all.iter().take(limit).map(|path| path.to_string_lossy().to_string()).collect();

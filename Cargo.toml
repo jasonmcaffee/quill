@@ -54,6 +54,8 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
     "NSProcessInfo",
     "NSString",
 ] }
+# Already in the tree under the objc2 crates; named here because `services/wake.rs` uses it directly.
+dispatch2 = { version = "0.3", default-features = false, features = ["std"] }
 
 [profile.release]
 opt-level = 3

@@ -353,7 +353,11 @@ pub fn resolve(shape: Shape, name: &str, given: &Map<String, Value>) -> Result<C
                 )));
             };
             let mut arguments = match given.get("arguments") {
-                Some(Value::Object(map)) => map.clone(),
+                // The leading dashes come off here rather than only at the window's front door,
+                // because the driver reads some of these names itself — `timeout` for how long to
+                // wait and `no-wait` for whether to wait at all — and it has to see the same names
+                // the window will. An agent writing a call from the usage line sends `--timeout`.
+                Some(Value::Object(map)) => catalogue::normalise_arguments(map.clone()),
                 // An absent or null `arguments` is an empty one, exactly as it is on the wire, so a
                 // command that takes nothing is called with the verb alone.
                 None | Some(Value::Null) => Map::new(),
