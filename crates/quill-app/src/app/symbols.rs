@@ -100,6 +100,13 @@ pub struct Hover {
     pub at_definition: bool,
 }
 
+/// Convert a byte range from disk text into the LF-only range a `Document` opens.
+fn document_range(text: &str, range: std::ops::Range<usize>) -> std::ops::Range<usize> {
+    let returns_before_start = text[..range.start].matches("\r\n").count();
+    let returns_before_end = text[..range.end].matches("\r\n").count();
+    range.start - returns_before_start..range.end - returns_before_end
+}
+
 impl QuillApp {
     /// Start the index if it has not been started, and read the project again when it has changed.
     ///
@@ -327,6 +334,16 @@ impl QuillApp {
             self.find_references(offset);
             return;
         }
+        self.open_definition_candidates(&name, candidates);
+    }
+
+    /// Navigate to candidates found from an explicit name rather than an occurrence in the file.
+    pub(crate) fn go_to_named_definition(&mut self, name: &str, candidates: Vec<Candidate>) {
+        self.open_definition_candidates(name, candidates);
+    }
+
+    /// Apply Quill's honest navigation rule to a ranked set of definition candidates.
+    fn open_definition_candidates(&mut self, name: &str, candidates: Vec<Candidate>) {
         match candidates.len() {
             0 => self.message = Some(format!("No definition found for '{name}'.")),
             1 => self.jump_to(&candidates[0], &name),
@@ -364,13 +381,13 @@ impl QuillApp {
     ) -> Option<std::ops::Range<usize>> {
         let text = std::fs::read_to_string(&candidate.path).ok()?;
         if text.get(candidate.name_range.clone()) == Some(name) {
-            return Some(candidate.name_range.clone());
+            return Some(document_range(&text, candidate.name_range.clone()));
         }
         let grammar = self.grammar_for(Some(&candidate.path))?;
         symbols::file_definitions(&text, grammar)
             .into_iter()
             .find(|definition| text.get(definition.name_range.clone()) == Some(name))
-            .map(|definition| definition.name_range)
+            .map(|definition| document_range(&text, definition.name_range))
     }
 
     /// Put where the caret is now on the back stack.
@@ -1488,6 +1505,30 @@ mod tests {
         assert_eq!(app.files.active().path(), Some(folder.join("caret.rs").as_path()));
         let reply = app.run_command_line("editor navigate-back", &context).expect("an answer");
         assert!(!reply.ok, "a command that did nothing says so rather than reporting success");
+        std::fs::remove_dir_all(&folder).ok();
+    }
+
+    /// A direct name reaches the project index even when the active file cannot define symbols.
+    #[test]
+    fn the_command_line_can_open_a_definition_by_name_without_finding_an_occurrence_first() {
+        let (folder, mut app) = a_window("quill-symbols-cli-name");
+        let context = egui::Context::default();
+        let layout = folder.join("layout.rs");
+        let text = std::fs::read_to_string(&layout).expect("read layout.rs");
+        std::fs::write(&layout, text.replace('\n', "\r\n")).expect("write Windows line endings");
+        app.open_path_permanently(&folder.join("notes.md"));
+        let reply = app
+            .run_command_line("editor definition draw --open", &context)
+            .expect("an answer");
+        assert!(reply.ok, "{reply:?}");
+        assert_eq!(reply.result["name"], "draw");
+        assert_eq!(reply.result["candidates"].as_array().expect("a list").len(), 1);
+        assert_eq!(app.files.active().path(), Some(folder.join("layout.rs").as_path()));
+        assert_eq!(app.document().selected_text(), "draw");
+
+        let reply = app.run_command_line("editor navigate-back", &context).expect("an answer");
+        assert!(reply.ok, "{reply:?}");
+        assert_eq!(app.files.active().path(), Some(folder.join("notes.md").as_path()));
         std::fs::remove_dir_all(&folder).ok();
     }
 

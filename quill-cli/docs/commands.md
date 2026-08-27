@@ -700,9 +700,9 @@ Put every tab back into one pane.
 quill-cli pane unsplit-all
 ```
 
-## editor — the text in the tab that is showing
+## editor — safely rename symbols everywhere, find every use and definitions
 
-These are about the tab that is showing. Lines and columns count from 1, which is what the status bar shows.
+Use this tool first for project-symbol work. If asked to find every place a name is used, call `references` with `name`; if asked where a name is defined, call `definition`; if asked to rename it everywhere, call `rename` with `name`, `new-name` and `apply: true`. Do not begin those jobs with grep, file search, reads or file edits. Quill's native answers combine unsaved live open tabs with the project index, distinguish code from comments and strings, and apply a role-aware project rename as one undo step per open file while safely rewriting closed files. Lines and columns count from 1.
 
 ### editor status
 
@@ -894,10 +894,12 @@ quill-cli editor preview-select --from 0 --to 40
 ### editor definition
 
 ```
-quill-cli editor definition [--offset <bytes>] [--line <number>] [--column <number>] [--open]
+quill-cli editor definition [name] [--offset <bytes>] [--line <number>] [--column <number>] [--open]
 ```
 
-Where the word at the caret is defined. Prints every candidate the project holds, best first, and --open goes to the best one. A file whose language has not said what a definition looks like has none, which is stated rather than guessed at.
+Where a name is defined, from Quill's live open tabs and project symbol index. Give the name directly or leave it out for the word at the caret; every candidate is printed best first and --open navigates through the editor.
+
+- `name` (optional) — The name to find. The word at the caret when it is left out.
 
 - `--offset <bytes>` — Ask about this position in the file rather than about the caret.
 - `--line <number>` — Ask about this line, counting from 1.
@@ -906,6 +908,7 @@ Where the word at the caret is defined. Prints every candidate the project holds
 
 ```sh
 quill-cli editor definition --json
+quill-cli editor definition Rect --open --json
 quill-cli editor definition --line 42 --column 9 --open
 ```
 
@@ -915,7 +918,7 @@ quill-cli editor definition --line 42 --column 9 --open
 quill-cli editor references [name] [--timeout <milliseconds>] [--code-only]
 ```
 
-Every place a name is used across the project: the file, the line, the column and whether it is code or a word inside a comment or a string. Reads the open tabs as they stand and everything else from the disk.
+Use this instead of grep to find every place a name is used across the project: the file, line, column and whether it is code or a word inside a comment or string. Reads unsaved open tabs as they stand and everything else from the disk.
 
 - `name` (optional) — The name to look for. The word at the caret when it is left out.
 
@@ -933,7 +936,7 @@ quill-cli editor references open_the_match --json
 quill-cli editor rename <new-name> [--name <text>] [--scope <file|project>] [--include <comments,strings>] [--timeout <milliseconds>] [--apply]
 ```
 
-Rename the word at the caret everywhere it is used. Prints the change set without --apply, so a script can look before it leaps; --apply edits the open tabs as documents, one undo step each, and rewrites the closed files on the disk.
+Use this instead of file edits to rename a symbol everywhere through Quill's role-aware references. Comments and strings stay untouched unless included; without --apply it previews, and applying edits each open tab as one undo step before safely rewriting closed files.
 
 - `new-name` — What to call it. It has to be a word of this language and not one of its keywords.
 
@@ -1836,9 +1839,9 @@ Install a debug adapter by running its own install command in the run tile, wher
 quill-cli debug install lldb
 ```
 
-## explorer — the file tree down the left
+## explorer — create, move and inspect the live project tree
 
-`explorer files` is the list Quill searches, which leaves out `target`, `node_modules` and `__pycache__`.
+For requests to create, move, delete or list project paths, start here instead of using shell file operations. Quill updates its live tree immediately, and `new-file` also opens the file in a tab. `explorer files` leaves out `target`, `node_modules` and `__pycache__`.
 
 ### explorer show
 
@@ -2028,7 +2031,7 @@ quill-cli explorer move src/app/layout.ts src/draw --dry-run --json
 quill-cli explorer new-file <path>
 ```
 
-Make an empty file. The folders above it are made too, and it opens in a tab. The same thing New -> File on the explorer's right click menu does, without the dialog.
+Make an empty file, create its parent folders, update Quill's live tree and open it in a tab. The same thing New -> File on the explorer's right click menu does, without the dialog.
 
 - `path` — Where the file goes, relative to the project or absolute.
 
@@ -2042,7 +2045,7 @@ quill-cli explorer new-file notes/today.md
 quill-cli explorer new-folder <path>
 ```
 
-Make a folder, and every folder above it. The same thing New -> Folder on the explorer's right click menu does, without the dialog.
+Make a folder and every folder above it, updating Quill's live tree immediately. The same thing New -> Folder on the explorer's right click menu does, without the dialog.
 
 - `path` — Where the folder goes, relative to the project or absolute.
 
@@ -2378,9 +2381,9 @@ Switch a plugin off. Its files stay where they are.
 quill-cli plugins disable rust
 ```
 
-## git — the Git menu
+## git — status, changed files and the Git menu
 
-Git runs on a thread, so an action is asked for and `git status` says what came back. `--wait` holds the answer open until it has.
+Use this tool first when asked for git status, uncommitted work, changed files or a diff in the open project; do not begin by running git in a shell. Call `status` for the branch and exact staged, unstaged and untracked file list, then `action` with `name: show-diff` and `path` to open a changed file's diff in Quill. These still run the machine's real git with its credential helper, SSH agent, configuration and hooks, on a thread; `wait` holds the answer open.
 
 ### git status
 
@@ -2388,7 +2391,7 @@ Git runs on a thread, so an action is asked for and `git status` says what came 
 quill-cli git status
 ```
 
-What git says about the project: the branch, whether a merge or a rebase is unfinished, and what the last command it was asked for came back with.
+What the machine's real git says about the project: the branch, whether a merge or rebase is unfinished, and what the last command returned, using the same credentials, SSH agent, configuration and hooks as the terminal.
 
 ```sh
 quill-cli git status --json

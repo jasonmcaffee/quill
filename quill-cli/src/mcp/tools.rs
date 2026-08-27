@@ -124,7 +124,7 @@ pub fn as_json(shape: Shape) -> Vec<Value> {
 
 /// One tool an area, the verbs as an `enum` and the usage lines in the description.
 fn grouped() -> Vec<Tool> {
-    let mut out = Vec::new();
+    let mut out = semantic_aliases();
     let mut areas: Vec<&'static str> = vec![""];
     areas.extend(catalogue::areas());
     for area in areas {
@@ -163,6 +163,18 @@ fn grouped() -> Vec<Tool> {
     out
 }
 
+/// The semantic commands generic agent tools otherwise compete with directly.
+fn semantic_aliases() -> Vec<Tool> {
+    commands()
+        .into_iter()
+        .filter(|command| {
+            command.area == "editor"
+                && matches!(command.verb, "definition" | "references" | "rename")
+        })
+        .map(command_tool)
+        .collect()
+}
+
 /// What the agent reads instead of `docs/commands.md`: the area's own paragraph, then one usage
 /// line and one summary a command.
 fn area_description(area: &'static str, commands: &[&'static Command]) -> String {
@@ -185,16 +197,18 @@ fn area_description(area: &'static str, commands: &[&'static Command]) -> String
 
 /// One tool a command, every argument and every flag a property of its own.
 fn every() -> Vec<Tool> {
-    commands()
-        .into_iter()
-        .map(|command| Tool {
-            name: tool_name(command.area, command.verb),
-            title: format!("Quill: {}", command.typed()),
-            description: command_description(command),
-            schema: command_schema(command),
-            target: Target::One(command),
-        })
-        .collect()
+    commands().into_iter().map(command_tool).collect()
+}
+
+/// Describe one catalogue command as a narrow MCP tool with named arguments.
+fn command_tool(command: &'static Command) -> Tool {
+    Tool {
+        name: tool_name(command.area, command.verb),
+        title: format!("Quill: {}", command.typed()),
+        description: command_description(command),
+        schema: command_schema(command),
+        target: Target::One(command),
+    }
 }
 
 fn command_description(command: &Command) -> String {
@@ -506,6 +520,51 @@ mod tests {
             // Every tool can say which window it means, in both shapes.
             assert!(properties.contains_key("instance"), "{} cannot name an instance", tool.name);
         }
+    }
+
+    /// Pin the optional name and the short reasons to choose Quill over generic file tools.
+    #[test]
+    fn the_changed_tools_advertise_the_native_answers_an_agent_cannot_get_from_files() {
+        let every = tools(Shape::Every);
+        let definition = every
+            .iter()
+            .find(|tool| tool.name == "quill_editor_definition")
+            .expect("the definition tool");
+        assert!(definition.schema["properties"].get("name").is_some());
+        assert!(
+            !definition.schema
+                .get("required")
+                .and_then(Value::as_array)
+                .is_some_and(|required| required.iter().any(|name| name == "name")),
+            "the caret stays the default"
+        );
+
+        let grouped = tools(Shape::Grouped);
+        for name in [
+            "quill_editor_definition",
+            "quill_editor_references",
+            "quill_editor_rename",
+        ] {
+            let alias = grouped
+                .iter()
+                .find(|tool| tool.name == name)
+                .unwrap_or_else(|| panic!("{name} is a narrow grouped alias"));
+            assert!(matches!(alias.target, Target::One(_)), "{name} resolves directly");
+        }
+        let described = |name: &str, words: &[&str]| {
+            let description = grouped
+                .iter()
+                .find(|tool| tool.name == name)
+                .unwrap_or_else(|| panic!("{name} is offered"))
+                .description
+                .as_str();
+            for word in words {
+                assert!(description.contains(word), "{name} should name {word}: {description}");
+            }
+        };
+        described("quill_editor", &["live open tabs", "comments and strings", "undo step"]);
+        described("quill_git", &["credential helper", "SSH agent", "hooks"]);
+        described("quill_explorer", &["live tree", "opens the file in a tab"]);
     }
 
     #[test]

@@ -2424,26 +2424,15 @@ impl QuillApp {
             ),
         }
     }
-    /// `quill-cli editor definition` — where the word at the caret is defined.
+    /// `quill-cli editor definition [name]` — where a name is defined.
     ///
-    /// Through the same functions the menu entry goes through, so a definition found from the
-    /// command line and one found by clicking are the same answer. `--open` is the jump itself, and
-    /// it goes through `go_to_definition` rather than opening a file directly, so the pivot to the
-    /// references on the definition and the back stack both work from a script.
+    /// With no name it goes through the same function the menu entry uses, including the pivot to
+    /// references when the caret is on the definition. A named request needs no occurrence in the
+    /// active file and still uses the same ranked candidates and navigation history.
     fn cli_editor_definition(&mut self, request: &Request) -> Outcome {
-        if !self.definitions_apply_here() {
-            return no(
-                request,
-                code::NOT_APPLICABLE,
-                "This file's language has not said what a definition looks like, so there is none to go to.",
-            );
-        }
-        let offset = match self.cli_offset(request) {
-            Ok(offset) => offset,
-            Err(problem) => return no(request, code::USAGE, problem),
-        };
-        let Some(name) = self.symbol_at(offset) else {
-            return no(request, code::NOT_APPLICABLE, "There is no symbol at that position.");
+        let (name, offset, named) = match self.cli_definition_target(request) {
+            Ok(target) => target,
+            Err(problem) => return problem,
         };
         let path = self.files.active().path().map(Path::to_path_buf);
         let candidates = self.candidates_for(&name, path.as_deref(), offset);
@@ -2464,7 +2453,10 @@ impl QuillApp {
             })
             .collect();
         if request.switch("open") {
-            self.go_to_definition(offset);
+            match named {
+                true => self.go_to_named_definition(&name, candidates),
+                false => self.go_to_definition(offset),
+            }
             let sentence = self
                 .message
                 .clone()
@@ -2477,6 +2469,25 @@ impl QuillApp {
             many => format!("'{name}' has {many} candidate definitions"),
         };
         ok(request, sentence, json!({ "name": name, "candidates": rows }))
+    }
+
+    /// Resolve the exact name a definition request asks about, keeping the caret as the default.
+    fn cli_definition_target(&mut self, request: &Request) -> Result<(String, usize, bool), Outcome> {
+        if let Some(name) = request.text("name").filter(|name| !name.trim().is_empty()) {
+            return Ok((name.trim().to_owned(), self.caret_offset(), true));
+        }
+        if !self.definitions_apply_here() {
+            return Err(no(
+                request,
+                code::NOT_APPLICABLE,
+                "This file's language has not said what a definition looks like, so there is none to go to.",
+            ));
+        }
+        let offset = self.cli_offset(request).map_err(|problem| no(request, code::USAGE, problem))?;
+        let name = self.symbol_at(offset).ok_or_else(|| {
+            no(request, code::NOT_APPLICABLE, "There is no symbol at that position.")
+        })?;
+        Ok((name, offset, false))
     }
 
     /// `quill-cli editor complete` — the names the word being typed could become.

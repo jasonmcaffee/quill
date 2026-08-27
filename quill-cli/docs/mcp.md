@@ -42,11 +42,13 @@ There are two shapes, and `mcp.tools` chooses:
 
 | `mcp.tools` | | |
 |---|---|---|
-| `grouped` | **the default** | One tool an area — `quill_tab`, `quill_editor`, `quill_git` — with the area's verbs as an `enum` and every usage line and summary in the description. |
+| `grouped` | **the default** | One tool an area — `quill_tab`, `quill_editor`, `quill_git` — plus narrow generated aliases for semantic definition, references, and rename. Area verbs are an `enum`; every usage line and summary stays in the description. |
 | `every` | | One tool a command — `quill_tab_open` — with every argument and flag a typed property. |
 
-`grouped` costs an agent roughly a third of the context `every` does, on every conversation the
-server is connected to, and still names every command Quill has. `every` is there because a client
+`grouped` costs an agent less than half the context `every` does, on every conversation the server
+is connected to, and still names every command Quill has. The three aliases make the native semantic
+answer as specific as a generic grep or edit tool without removing the compatible `quill_editor`
+entry. `every` is there because a client
 that permits tools by name — Claude Code does — can only say "may open tabs, may not quit" if
 `tab open` is a tool of its own.
 
@@ -54,8 +56,8 @@ that permits tools by name — Claude Code does — can only say "may open tabs,
 
 ```sh
 $ quill-cli mcp tools --count
-grouped     18 tools    47684 bytes   11921 tokens (roughly)
-every      136 tools   131623 bytes   32905 tokens (roughly)
+grouped     22 tools    58454 bytes   14613 tokens (roughly)
+every      147 tools   144153 bytes   36038 tokens (roughly)
 ```
 
 Two properties are on **every** tool in both shapes, because both are about the call rather than
