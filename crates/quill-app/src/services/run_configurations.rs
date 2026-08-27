@@ -150,6 +150,10 @@ pub fn found_on_path(program: &str, directory: &Path) -> bool {
 /// name as written is tried first, so a command naming `node.exe` outright is not looked for as
 /// `node.exe.COM`.
 fn with_extensions(candidate: &Path) -> impl Iterator<Item = PathBuf> + '_ {
+    // Added to on Windows alone, by the `PATHEXT` loop below, so everywhere else the `mut` is
+    // unused and warns. Said here rather than dropped, because dropping it would stop Windows
+    // compiling.
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut spellings = vec![candidate.to_path_buf()];
     #[cfg(windows)]
     {
