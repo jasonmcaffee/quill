@@ -12,6 +12,7 @@ pub mod breakpoints;
 pub mod completion;
 pub mod cursor;
 pub mod document;
+pub mod expressions;
 pub mod folding;
 pub mod highlights;
 pub mod imports;

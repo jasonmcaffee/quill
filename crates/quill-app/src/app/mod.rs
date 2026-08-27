@@ -40,6 +40,7 @@ pub mod dock;
 pub mod files;
 pub mod folding;
 pub mod git;
+pub mod hover_value;
 pub mod symbols;
 
 use std::collections::HashMap;
@@ -800,6 +801,18 @@ pub struct QuillApp {
     /// its caret, because the pane loop borrows the focus and no one else can know where that caret
     /// ended up on the screen. Read after the loop, which is where the popup is drawn.
     completion_anchor: Option<completion::CompletionAnchor>,
+    /// The value tooltip, when one is open. One at most, for the completion popup's reason: it
+    /// belongs to the pane the pointer is in, and the pointer is only ever in one. See
+    /// `app::hover_value`.
+    pub value_tooltip: Option<hover_value::ValueTooltipState>,
+    /// Which stop's execution point has already been jumped to, so the jump happens once a stop
+    /// rather than once a frame. See [`QuillApp::follow_the_execution_point`].
+    followed_stop: Option<(u64, PathBuf, usize)>,
+    /// The expression the pointer is resting on and since when, which is all the delay needs.
+    pub(crate) hover_rest: Option<hover_value::Resting>,
+    /// True while a popup `Debug -> Show Value` asked for is waiting to be told where the caret
+    /// ended up on the screen — `completion_anchor`'s problem, solved in the same place.
+    pub(crate) caret_tooltip: bool,
 }
 
 impl QuillApp {
@@ -904,6 +917,10 @@ impl QuillApp {
             cli_waiting: Vec::new(),
             completion: None,
             completion_anchor: None,
+            value_tooltip: None,
+            followed_stop: None,
+            hover_rest: None,
+            caret_tooltip: false,
         }
     }
 
@@ -2002,6 +2019,7 @@ impl QuillApp {
             DebugAction::ToggleBreakpoint => self.toggle_breakpoint_here(),
             DebugAction::EditBreakpoint => self.open_the_breakpoint_dialog(),
             DebugAction::ToggleBreakpointEnabled => self.toggle_the_breakpoint_enabled(),
+            DebugAction::ShowValue => self.show_the_value_at_the_caret(),
             DebugAction::EvaluateExpression => self.open_the_expression_box(),
             DebugAction::ToggleTile => {
                 let showing = self.debug_panel.visible;
@@ -2831,6 +2849,20 @@ impl QuillApp {
         }
     }
 
+    /// Whether the place the program is stopped is somewhere this window has not jumped to yet.
+    ///
+    /// `None` for the location means the frames have not come back; there is nothing to jump to yet
+    /// and the next frame asks again.
+    fn the_execution_point_has_not_been_followed(&self) -> bool {
+        let Some(debug) = self.debug.as_ref() else {
+            return false;
+        };
+        let Some((path, line)) = debug.location() else {
+            return false;
+        };
+        self.followed_stop != Some((debug.stops(), path, line))
+    }
+
     /// Take everything the adapter has said and act on it.
     ///
     /// Called once a frame, beside the git worker's own poll and the run tile's `settle`, which is
@@ -2870,7 +2902,14 @@ impl QuillApp {
                 _ => {}
             }
         }
-        if paused {
+        // **Once a stop, not once a frame.** Being paused is a state that lasts, and a window that
+        // jumped every frame it was true put the caret back on the stopped line sixty times a second
+        // — so the caret could not be moved at all while a program was stopped, which is a fault
+        // nothing noticed until `task-1696` asked for the word at the caret and always found the
+        // first one on the line. The key is the stop's own number *and* where it turned out to be,
+        // because the frames arrive a round trip after the `stopped` event and a loop stopping twice
+        // on one line is two stops.
+        if paused && self.the_execution_point_has_not_been_followed() {
             // The temporary breakpoint `Run to Cursor` made has done its job.
             self.clear_the_run_to_breakpoint();
             self.follow_the_execution_point();
@@ -2952,6 +2991,9 @@ impl QuillApp {
         let Some((path, line)) = debug.location() else {
             return;
         };
+        // Written down before the early return below, so a frame in a library with no source is not
+        // asked about again on every frame either.
+        self.followed_stop = Some((debug.stops(), path.clone(), line));
         if !path.exists() {
             // A frame in a library Quill has no source for. The tile still lists it; there is simply
             // nowhere to jump to, and saying nothing is better than saying something wrong.
@@ -5244,6 +5286,9 @@ impl QuillApp {
         // key the popup takes never reaches `editor_view::handle_input`. Everything else flows
         // through untouched.
         self.route_the_completion_keys(ui);
+        // And the value tooltip's one key, in the same place and for the same reason: `Escape` there
+        // means "put the popup away" and must not also reach the editing area behind it.
+        self.route_the_value_tooltip_keys(ui);
         // The explorer's own keys, for the same reason and in the same place: they are read before
         // any pane is drawn, and only while the explorer has the keyboard, so `Delete` can never
         // mean two things at once.
@@ -5282,6 +5327,9 @@ impl QuillApp {
         // anything knows where that pane's caret ended up, and one popup drawn here can never be
         // underneath a divider or drawn twice in a split view.
         self.show_the_completion(ui);
+        // The value tooltip, drawn from the geometry the pane recorded, after the loop for exactly
+        // the reason above. `task-1696`.
+        self.show_the_value_tooltip(ui);
         // A gesture nobody was pointing at belongs to the pane being typed into. Here rather than
         // in the loop, because a pane earlier in the row must not take a gesture aimed at one
         // later in it, and which pane the pointer is over is not known until they are all drawn.
@@ -7027,8 +7075,16 @@ impl QuillApp {
         }
         let revision = self.files.at(index).document.text_revision();
         let frame = debug.frame;
+        // **And what the debugger has read**, which is the third thing this depends on and was
+        // missing until `task-1696`: the variables arrive a round trip after the stop, so a key made
+        // of the text and the frame alone cached the empty answer the first ask produced.
+        let reads = debug.reads();
         if let Some(cached) = self.inline_cache.as_ref() {
-            if cached.revision == revision && cached.frame == frame && cached.path == path {
+            if cached.revision == revision
+                && cached.frame == frame
+                && cached.reads == reads
+                && cached.path == path
+            {
                 return cached.values.clone();
             }
         }
@@ -7058,14 +7114,18 @@ impl QuillApp {
             }
             rows.push((paragraph, format!("{} = {}", &text[word.clone()], elide_value(value))));
         }
-        self.inline_cache = Some(InlineValues { revision, frame, path, values: rows.clone() });
+        self.inline_cache =
+            Some(InlineValues { revision, frame, reads, path, values: rows.clone() });
         rows
     }
 
     /// The inline values of the file that is showing, for a test to look at without drawing a frame.
+    ///
+    /// It deliberately does **not** throw the cache away first, which it used to: what a test wants
+    /// to see is what the window is really drawing, and clearing the cache hid `task-1696`'s finding
+    /// that the key was missing the one thing these are built from — the debugger's own answers.
     pub fn inline_values_for_test(&mut self) -> Vec<(usize, String)> {
         let index = self.files.active_index();
-        self.inline_cache = None;
         self.inline_values(index)
     }
 
@@ -7247,6 +7307,12 @@ impl QuillApp {
         // what makes the click feel instantaneous: the answer is already in hand, and only a word
         // that really has somewhere to go is underlined.
         let symbol = self.symbol_under_the_pointer(ui, &response, origin, focused);
+        // The other half of that gesture, and its opposite number: with the modifier **up**, a
+        // pointer resting on a name while the program is paused asks the debugger what it holds.
+        // Two affordances on one word would be two promises the one click cannot both keep, so
+        // `value_under_the_pointer` does nothing at all while the modifier is held. `task-1696`.
+        self.value_under_the_pointer(ui, &response, origin, area, focused);
+        self.remember_where_the_value_tooltip_hangs(origin, area);
         if symbol.resolved() {
             // A hand rather than the writing bar, which is what says the word is a link.
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -7507,6 +7573,8 @@ fn write_the_edits(path: &Path, edits: &[(std::ops::Range<usize>, String)]) -> R
 pub(crate) struct InlineValues {
     revision: u64,
     frame: Option<i64>,
+    /// How many answers the debugger had given when these were worked out.
+    reads: u64,
     path: PathBuf,
     values: Vec<(usize, String)>,
 }

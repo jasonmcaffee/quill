@@ -173,6 +173,10 @@ pub enum Event {
     /// A value was changed in the running program, and this is the value **as the debugger now sees
     /// it** rather than what was typed.
     VariableSet { reference: i64, name: String, result: Result<Variable, String> },
+    /// The same, for a value that was named by an **expression** rather than by a row that had
+    /// already been read. `task-1696`: this is what changing the root of a value tooltip answers
+    /// with, since that row has no container reference for `setVariable` to name it by.
+    ExpressionSet { expression: String, result: Result<Variable, String> },
     /// The adapter refused something. Its own message, never one of Quill's.
     Failed { command: String, message: String },
     /// Run this in the client's own terminal and answer with the process id. See §7.2: this is what
@@ -231,6 +235,7 @@ enum Awaiting {
     Scopes { frame: i64 },
     Variables { reference: i64 },
     SetVariable { reference: i64, name: String },
+    SetExpression { expression: String },
     Evaluate { id: u64 },
     Stepping(Step),
     Ending,
@@ -523,6 +528,36 @@ impl Session {
         ))
     }
 
+    /// Assign to whatever an expression names in the running program.
+    ///
+    /// **The other half of [`Session::set_variable`], and each is used where it is the only one that
+    /// can do the job.** A row that was read out of `variables` has a container reference and a name
+    /// and is set by `setVariable`; a value that was reached by `evaluate` — the root of a value
+    /// tooltip, a watch — has neither, and `setExpression` names it by the expression itself.
+    ///
+    /// Gated on the capability for the reason every optional feature here is: a control whose
+    /// capability is absent is absent, so this is not reached from the window at all, and a caller
+    /// that asks anyway is refused rather than left waiting for an answer that will never come.
+    pub fn set_expression(&mut self, expression: &str, value: &str) -> Result<Outcome, String> {
+        if !self.capabilities.set_expression {
+            return Err(
+                "This debugger cannot assign to an expression while the program is running."
+                    .to_owned(),
+            );
+        }
+        if !self.state.is_paused() {
+            return Err("The program is not stopped.".to_owned());
+        }
+        Ok(self.ask(
+            Request::SetExpression {
+                expression: expression.to_owned(),
+                value: value.to_owned(),
+                frame: self.frame,
+            },
+            Awaiting::SetExpression { expression: expression.to_owned() },
+        ))
+    }
+
     /// End it, politely.
     ///
     /// `terminate` first when the adapter offered it — the graceful request, which lets a program
@@ -785,6 +820,13 @@ impl Session {
                     events: vec![Event::VariableSet { reference, name, result: Ok(answered) }],
                 }
             }
+            Some(Awaiting::SetExpression { expression }) => Outcome {
+                frames: Vec::new(),
+                events: vec![Event::ExpressionSet {
+                    expression,
+                    result: Ok(messages::read_set_variable(&body)),
+                }],
+            },
             Some(Awaiting::Evaluate { id }) => Outcome {
                 frames: Vec::new(),
                 events: vec![Event::Evaluated {
@@ -816,6 +858,9 @@ impl Session {
                 name,
                 result: Err(said),
             },
+            Some(Awaiting::SetExpression { expression }) => {
+                Event::ExpressionSet { expression, result: Err(said) }
+            }
             _ => Event::Failed { command: command.to_owned(), message: said },
         };
         Outcome { frames: Vec::new(), events: vec![event] }
@@ -897,7 +942,48 @@ mod tests {
             "supportsConditionalBreakpoints": true,
             "supportsLogPoints": true,
             "supportsTerminateRequest": true,
+            "supportsEvaluateForHovers": true,
+            "supportsSetExpression": true,
         })
+    }
+
+    /// A paused session whose adapter answered `initialize` with the bare minimum: no
+    /// `setExpression`, no `evaluate` for hovers. `task-1696` §7's absent control is tested against
+    /// this one.
+    fn plain_session() -> Session {
+        let mut session = Session::new(json!({ "program": "app.exe" }));
+        let opening = session.begin();
+        session.on_message(response(
+            seq_of(&opening, "initialize"),
+            "initialize",
+            json!({ "supportsConfigurationDoneRequest": true }),
+        ));
+        let configuring = session.on_message(Message::Initialized);
+        session.on_message(response(
+            seq_of(&configuring, "configurationDone"),
+            "configurationDone",
+            Value::Null,
+        ));
+        let stopped = session.on_message(Message::Stopped(Stopped {
+            reason: "breakpoint".to_owned(),
+            thread: Some(1),
+            description: None,
+            text: None,
+            all_threads: true,
+        }));
+        session.on_message(response(
+            seq_of(&stopped, "threads"),
+            "threads",
+            json!({ "threads": [{ "id": 1, "name": "main" }] }),
+        ));
+        session.on_message(response(
+            seq_of(&stopped, "stackTrace"),
+            "stackTrace",
+            json!({ "stackFrames": [
+                { "id": 1000, "name": "main", "line": 14, "source": { "path": "src/main.rs" } }
+            ]}),
+        ));
+        session
     }
 
     fn commands(outcome: &Outcome) -> Vec<String> {
@@ -1622,5 +1708,79 @@ mod tests {
             said.events,
             vec![Event::Failed { command: "stackTrace".to_owned(), message: "no stack".to_owned() }]
         );
+    }
+
+
+    /// The `hover` context reaches the wire as it was given. `task-1696` §5.4: the context the
+    /// specification put there for exactly this, which adapters use to answer cheaply and without
+    /// side effects.
+    #[test]
+    fn the_hover_context_reaches_the_wire() {
+        let mut session = paused_session();
+        let asked = session.evaluate(1, "self.items.count", "hover");
+        assert_eq!(commands(&asked), vec!["evaluate"]);
+        assert_eq!(asked.frames[0]["arguments"]["context"], "hover");
+        assert_eq!(asked.frames[0]["arguments"]["expression"], "self.items.count");
+        assert_eq!(
+            asked.frames[0]["arguments"]["frameId"], 1000,
+            "resolved against the frame that is showing, or it is a different variable"
+        );
+    }
+
+    /// `setExpression` is shaped as the specification says, and it carries the frame for the same
+    /// reason `evaluate` does.
+    #[test]
+    fn set_expression_names_its_target_by_the_expression() {
+        let mut session = paused_session();
+        let asked = session.set_expression("self.items.count", "9").expect("offered");
+        assert_eq!(commands(&asked), vec!["setExpression"]);
+        assert_eq!(asked.frames[0]["arguments"]["expression"], "self.items.count");
+        assert_eq!(asked.frames[0]["arguments"]["value"], "9");
+        assert_eq!(asked.frames[0]["arguments"]["frameId"], 1000);
+        // And the answer is the value **as the debugger now sees it**, which is `setVariable`'s own
+        // rule: a debugger that rounded a float is telling the truth.
+        let answered = session.on_message(response(
+            seq_of(&asked, "setExpression"),
+            "setExpression",
+            json!({ "value": "9", "type": "usize" }),
+        ));
+        match answered.events.as_slice() {
+            [Event::ExpressionSet { expression, result: Ok(value) }] => {
+                assert_eq!(expression, "self.items.count");
+                assert_eq!(value.value, "9");
+                assert_eq!(value.kind.as_deref(), Some("usize"));
+            }
+            other => panic!("one ExpressionSet, not {other:?}"),
+        }
+    }
+
+    /// **A control whose capability is absent is absent**, and a caller that asks anyway is refused
+    /// rather than left waiting for an answer that will never come.
+    #[test]
+    fn an_adapter_that_cannot_set_an_expression_is_never_sent_one() {
+        let mut session = plain_session();
+        assert!(!session.capabilities().set_expression);
+        assert!(!session.capabilities().evaluate_for_hovers);
+        let refused = session.set_expression("count", "9");
+        assert!(refused.is_err(), "refused rather than sent");
+    }
+
+    /// The adapter's own words, never Quill's — the rule `quill-git` keeps about git's stderr.
+    #[test]
+    fn a_refused_assignment_carries_the_debuggers_own_sentence() {
+        let mut session = paused_session();
+        let asked = session.set_expression("PI", "3").expect("offered");
+        let answered = session.on_message(refusal(
+            seq_of(&asked, "setExpression"),
+            "setExpression",
+            "cannot assign to a constant",
+        ));
+        match answered.events.as_slice() {
+            [Event::ExpressionSet { expression, result: Err(said) }] => {
+                assert_eq!(expression, "PI");
+                assert_eq!(said, "cannot assign to a constant");
+            }
+            other => panic!("one refused ExpressionSet, not {other:?}"),
+        }
     }
 }

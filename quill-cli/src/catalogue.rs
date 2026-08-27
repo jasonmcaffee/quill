@@ -1325,6 +1325,37 @@ pub const COMMANDS: &[Command] = &[
     },
     Command {
         area: "debug",
+        verb: "hover",
+        summary: "What a person sees when they rest the pointer on a name while the program is stopped: the expression Quill reads at that position, its value and type, and its children as a tree. Reads the name plus the field path in front of it, so a point on `count` in `self.items.count` asks about the whole of it. Unlike `evaluate`, the answer can be walked into with --expand.",
+        arguments: NO_ARGUMENTS,
+        flags: &[
+            option("offset", "bytes", "Ask about this position in the file rather than about the caret."),
+            option("line", "number", "Ask about this line, counting from 1."),
+            option("column", "number", "The column on that line. 1 when it is left out."),
+            option("expression", "text", "Ask about this expression outright rather than about a position, which is how a value from `evaluate` is expanded."),
+            option("expand", "path", "Open this row and read its children, naming it the way the rows are printed - self.items/0."),
+            option("timeout", "milliseconds", "How long to wait for the debugger. 10000 by default."),
+        ],
+        examples: &[
+            "quill-cli debug hover --line 42 --column 9 --json",
+            "quill-cli debug hover --expression self.items --expand self.items/0",
+        ],
+        local: false,
+    },
+    Command {
+        area: "debug",
+        verb: "set-expression",
+        summary: "Assign to whatever an expression names in the running program. The other half of `set-value`: that one names a row that has already been read, and this one names the target in the program's own language, so it reaches a value nothing has opened yet. A debugger that cannot compile an assignment still changes a plain variable it has already shown, and says so plainly when it can do neither.",
+        arguments: &[
+            argument("expression", true, "What to assign to, in the program's own language - self.items.count."),
+            rest("value", true, "The new value, in the program's own language."),
+        ],
+        flags: NO_FLAGS,
+        examples: &["quill-cli debug set-expression self.items.count 7"],
+        local: false,
+    },
+    Command {
+        area: "debug",
         verb: "evaluate",
         summary: "Evaluate an expression in the frame that is showing. The debugger's own answer, or its own refusal.",
         arguments: &[rest("expression", true, "The expression. Everything after the verb is taken as it was typed, so it needs no quotes.")],

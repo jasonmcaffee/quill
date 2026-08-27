@@ -41,3 +41,4 @@ pub mod terminal_panel;
 pub mod text_menu;
 pub mod text_tools;
 pub mod title_bar;
+pub mod value_tooltip;

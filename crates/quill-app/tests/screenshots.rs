@@ -8725,6 +8725,11 @@ fn capabilities() -> serde_json::Value {
         "supportsConditionalBreakpoints": true,
         "supportsLogPoints": true,
         "supportsTerminateRequest": true,
+        // `task-1696`: the two the value tooltip asks about. A real CodeLLDB and a real js-debug
+        // both offer them, and with them absent the popup would fall back to the `watch` context and
+        // draw its root with no field — which is a different test, not this fixture's job.
+        "supportsEvaluateForHovers": true,
+        "supportsSetExpression": true,
     })
 }
 
@@ -8947,6 +8952,119 @@ fn the_execution_point_and_the_inline_values_are_drawn_over_the_source() {
     );
 
     harness.snapshot(shot("debug_execution_point"));
+}
+
+/// `task-1696`: the value tooltip, asked for at the caret and answered as a debugger answers.
+///
+/// It is driven through `Debug -> Show Value` rather than by moving a pointer, because what the
+/// pointer adds is a 350 ms rest and a rectangle — both of which are unit tested with no window —
+/// and both paths end in the same `open_the_value_tooltip`.
+#[test]
+fn the_value_tooltip_shows_a_structure_and_opens_it_into_its_fields() {
+    let mut harness = paused_harness("hover");
+    // Line 4 is `let total = attempts + items.len();`. The caret goes on `items`, which is where a
+    // pointer resting on that word would put the question.
+    let text = harness.state().document().text().to_string();
+    let offset = text.find("items.len()").expect("the call is in the file");
+    // A frame is drawn between the two on purpose. The execution point is followed **once a stop**
+    // rather than once a frame — before `task-1696` this jump ran every frame it was true, so the
+    // caret could not be moved at all while a program was stopped and this would ask about the first
+    // word on the stopped line every time.
+    harness.state_mut().document_mut().apply(quill_core::Command::PlaceCaret {
+        offset: offset + 2,
+        extend: false,
+    });
+    harness.run();
+    assert_eq!(
+        harness.state().document().selection().head,
+        offset + 2,
+        "a stopped program does not take the caret back on every frame"
+    );
+    choose(&mut harness, Action::Debug(DebugAction::ShowValue));
+    harness.run();
+
+    // The expression it read is the whole field path ending at the pointer, which is what IntelliJ
+    // shows the value of.
+    let asking = harness
+        .state()
+        .value_tooltip
+        .as_ref()
+        .unwrap_or_else(|| panic!("a tooltip: msg={:?} hover={:?}", harness.state().message, harness.state().debug.as_ref().and_then(|d| d.hover.as_ref()).map(|h| h.expression.clone())))
+        .expression
+        .clone();
+    assert_eq!(asking, "items", "the word the caret is on");
+
+    let evaluate = asked_for(&mut harness, "evaluate");
+    feed_debug(
+        &mut harness,
+        answer(
+            evaluate,
+            "evaluate",
+            serde_json::json!({
+                "result": "Vec<i32>(len:3)",
+                "type": "alloc::vec::Vec<i32>",
+                "variablesReference": 41
+            }),
+        ),
+    );
+    // The root opens itself, which is what a person means by "show me the object" — so the children
+    // are asked for with no click at all.
+    let children = asked_for(&mut harness, "variables");
+    feed_debug(
+        &mut harness,
+        answer(
+            children,
+            "variables",
+            serde_json::json!({ "variables": [
+                { "name": "[0]", "value": "1", "type": "i32", "variablesReference": 0 },
+                { "name": "[1]", "value": "2", "type": "i32", "variablesReference": 0 },
+                { "name": "[2]", "value": "3", "type": "i32", "variablesReference": 0 }
+            ]}),
+        ),
+    );
+
+    // `Value:` rather than `Variable:`, because the tile is showing the same variable at the
+    // same moment and two controls must not share a name.
+    harness.get_by_label("Value: items = Vec<i32>(len:3)");
+    harness.get_by_label("Value: [1] = 2");
+    harness.snapshot(shot("debug_value_tooltip"));
+}
+
+/// A row being typed over. The field is `show_row`'s, which is the same function the tile draws its
+/// own rows with, so this is one control in two places rather than two that resemble each other.
+#[test]
+fn a_row_of_the_value_tooltip_can_be_typed_over() {
+    let mut harness = paused_harness("hover-edit");
+    let text = harness.state().document().text().to_string();
+    let offset = text.find("attempts + items").expect("line 4 is in the file");
+    // A frame is drawn between the two on purpose. The execution point is followed **once a stop**
+    // rather than once a frame — before `task-1696` this jump ran every frame it was true, so the
+    // caret could not be moved at all while a program was stopped and this would ask about the first
+    // word on the stopped line every time.
+    harness.state_mut().document_mut().apply(quill_core::Command::PlaceCaret {
+        offset: offset + 2,
+        extend: false,
+    });
+    harness.run();
+    choose(&mut harness, Action::Debug(DebugAction::ShowValue));
+    harness.run();
+    let evaluate = asked_for(&mut harness, "evaluate");
+    feed_debug(
+        &mut harness,
+        answer(evaluate, "evaluate", serde_json::json!({ "result": "3", "type": "i32" })),
+    );
+
+    // The root of a tooltip has no container reference, so `setVariable` cannot name it and
+    // `setExpression` is what changes it. The adapter offered it, so the field is drawn.
+    harness
+        .state_mut()
+        .value_tooltip
+        .as_mut()
+        .expect("a tooltip")
+        .editing = Some(("attempts".to_owned(), "9".to_owned()));
+    harness.run();
+    harness.get_by_label("Set Value: attempts");
+    harness.snapshot(shot("debug_value_tooltip_editing"));
 }
 
 #[test]

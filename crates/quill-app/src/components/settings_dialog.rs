@@ -16,7 +16,9 @@ use crate::components::modal;
 use crate::components::mcp_page::{self, McpState};
 use crate::components::plugins_page::{self, PluginsOutcome, PluginsState};
 use crate::services::plugins::Plugins;
-use crate::settings::{Page, Settings, Suggestions, FONT_SIZES, MIN_OPACITY, TERMINAL_FONT_SIZES};
+use crate::settings::{
+    Page, Settings, Suggestions, ValueTooltip, FONT_SIZES, MIN_OPACITY, TERMINAL_FONT_SIZES,
+};
 use crate::theme::{color, icon, size};
 
 /// How large the window is, before it is shrunk to fit a small Quill window.
@@ -473,6 +475,24 @@ fn editor_page(ui: &mut egui::Ui, area: Rect, settings: &mut Settings) -> bool {
         area,
         pen,
         "A list of names appears under the caret once two letters of a word have been typed, in a file whose language a plugin claims. Off, nothing appears until you ask: Ctrl+Space, or Complete Word on the Edit menu, which work either way.",
+    );
+    pen += 44.0;
+    pen = section(ui, area, pen, "Debugger");
+    // The same shape as the pair above, for the same reason: `manual` is already the off switch,
+    // because Show Value and the command line work either way.
+    let row = row_at(area, pen);
+    let mut automatic = settings.value_tooltip.is_automatic();
+    if checkbox(ui, row, "Show value tooltip", &mut automatic) {
+        settings.value_tooltip =
+            if automatic { ValueTooltip::Automatic } else { ValueTooltip::Manual };
+        changed = true;
+    }
+    pen += 32.0;
+    note(
+        ui,
+        area,
+        pen,
+        "While a program is stopped, resting the pointer on a name shows what it holds, and a structure opens into its fields, which can be typed over. Off, nothing appears until you ask: Show Value on the Debug menu.",
     );
     changed
 }

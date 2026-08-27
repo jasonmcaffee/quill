@@ -805,6 +805,87 @@ never apply; dimmed is for one that could be used in a moment, and every one of 
 instant the pointer is over a row. `New -> Folder` is new beside it, with
 `quill-cli explorer new-file`, `new-folder` and `reload` for the agent the ticket is about.
 
+## The value under the pointer, and the two things that were only working by accident
+
+Rest the pointer on a name while a program is stopped and a small tree appears under it holding what
+that name holds; a structure opens into its fields; a value can be typed over. `task-1696` asks for
+IntelliJ's value tooltip and `tasks/task-1696-value-tooltip-tdd.md` is the design.
+
+**What the pointer is over is a field path, not a word.** `quill_core::expressions::at` takes the
+identifier `FileSymbols::identifier_at` already answers with and walks **backwards** over `.` and
+`->`, so a point on `count` in `self.items.count` asks about the whole of it and a point on `items`
+asks about `self.items` — the sub-expression that *ends* at the pointer, which is IntelliJ's own
+rule. It will not cross `::` (a path is not a field access, and a rule that did would hand the
+debugger a module name at every `use` line), a bracket (matching brackets is a parser and this tier
+has not got one), or a line break. `self` and `this` are **keywords**, so a pointer resting on one
+alone asks nothing: the alternative is a list of the keywords that happen to be values, which is a
+list of languages inside Quill, and the segment walk reads the text through
+`Grammar::is_word_character` so `self.items` is read whole anyway.
+
+**One question, asked one way.** `evaluate` in the `hover` context the specification put there for
+exactly this, gated on `supportsEvaluateForHovers` and falling back to `watch` — a fallback rather
+than a refusal, because that capability says *the hover context is meaningful here*, not
+*expressions can be evaluated here*. Answering out of the locals the tile has already fetched was
+weighed and refused: it would answer only when that scope happened to be open, so the same hover
+would work or not depending on what else was on the screen.
+
+**Nothing is asked until the pointer has rested for `HOVER_DELAY`**, 350 ms. Without it, sweeping
+along one line fires four `evaluate` requests at a debugger — wasteful, and against CodeLLDB worse
+than wasteful, since an expression that does not resolve ends its session. It is a constant rather
+than a setting because IntelliJ's setting exists to turn a *distraction* down and the tick box in
+`Settings -> Editor -> Debugger` already turns it off. **The modifier is Go to Definition's**, so
+with `Ctrl/Cmd` held there is no tooltip at all: modifier down asks *where is this defined* and
+modifier up asks *what does this hold*, one key apart.
+
+**The popup is an `egui::Area` drawn after the pane loop**, which is `components::completion`'s
+decision made a fourth time, and it never takes the keyboard — one key, `Escape`. Its rows are
+`debug_panel::show_row`, the same function the tile draws its variables with, so a row means one
+thing in both places; they are named `Value: …` there rather than `Variable: …`, because the tile is
+very often showing the same variable at the same moment and **two controls must not share a name**.
+It lives while the pointer is inside the **union** of the word's box and its own, grown by
+`HOVER_SLACK` — the union, because it hangs a gap below the letters and a rule that asked only about
+the popup would close it in the gap the pointer has to cross.
+
+**Which side of the word it goes is settled once and then kept.** Opening a row makes the tree
+taller, and a popup that re-decided every frame leapt from below the word to above it the moment
+somebody clicked a disclosure triangle — taking the rows out from under the pointer walking down
+them, which then closed it. Measured on a real window before it was fixed.
+
+**Changing the root is not the same request as changing a child, and there are two ways to do it.**
+A child came from `variables` and has a container reference, which is what `setVariable` takes and
+what the tile already sends. The root came from an `evaluate` and has neither, so it wants
+`setExpression` — and **CodeLLDB 1.12.3 does not offer `supportsSetExpression`**, which was measured
+rather than assumed. So the fallback: when the expression is a name the paused frame's own scopes
+already hold, `setVariable` on that scope. That is not an approximation of the assignment; it is byte
+for byte the request the tile sends when the same row is typed over there. A field path on such an
+adapter has no field, which is the absent-control rule intact.
+
+`quill-cli debug hover` is the agent's half and takes a **position** — `--line`, `--column`, or the
+caret — which is the part `debug evaluate` cannot do: it does the reading above, so an agent told the
+program stopped at `src/main.rs:42` can ask what the third word on that line holds without working
+out what that word is. `--expand` walks into the answer, which is also the only way to open a value
+`debug evaluate` returned as `expandable: true`. `quill-cli debug set-expression` is the write half.
+
+### Two things this found that had been wrong all along
+
+Neither is about tooltips, and both were invisible until something asked what word the caret was on.
+
+**The execution point was being followed on every frame rather than on every stop.**
+`take_the_debug_replies` acted on `debug.is_paused()`, which is a *state that lasts* rather than an
+event, so the caret was put back on the stopped line sixty times a second — and therefore could not
+be moved at all while a program was paused. It is keyed on `DebugState::stops()` **and** the location
+the frames came back with, because the frames arrive a round trip after the `stopped` event and a
+loop stopping twice on one line is two stops.
+
+**The inline values were only being refreshed by accident**, and fixing the paragraph above is what
+exposed it: they vanished. `InlineValues`'s key was the text revision, the frame and the path, and
+none of those moves when the `variables` answer arrives — so the first ask cached an empty answer and
+nothing ever asked again. It looked correct only because the every-frame jump was re-colouring the
+file, and `Document::colour_by` moves the **text revision** as a side effect. The key now carries
+`DebugState::reads()`, which counts the answers a value is built from. That same fact is why the
+popup remembers the *letters* it was asked about rather than a text revision: keyed on the revision
+it put itself away on the first frame after it opened.
+
 ## A panel is dragged to an edge, and the blue rectangle is the layout rather than a picture of it
 
 `task-1697` asks that every panel be draggable to the top, bottom, left or right of the window, with
@@ -2309,6 +2390,13 @@ trade that away to be a shade nearer a screenshot.
   `recent.txt` that holds the windows to bring back and the trade-off in keeping a line when one
   closes, why the folders that are showing are asked rather than watched, and the two explorer marks
   that had been drawn as one.
+- `tasks/task-1696-value-tooltip-tdd.md` — the value under the pointer: what IntelliJ's value
+  tooltip, its delay setting and its Quick Evaluate chord each are and which of them is worth
+  copying, the backwards field-path reading and the three things it will not cross, why the question
+  is always asked rather than answered out of the locals already fetched, the two requests a value
+  can be changed with and the adapter that offers only one of them, and the two faults it found in
+  work that had shipped — a caret that could not be moved while a program was paused, and inline
+  values that were only being refreshed by accident.
 - `tasks/task-1697-panel-docking-tdd.md` — dragging a panel to an edge of the window: why the three
   Rust docking crates are the wrong shape for a window that is measured against an image, the two
   drop-target mechanics and why the edge band wins, why the highlight is the layout rather than a

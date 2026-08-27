@@ -138,6 +138,44 @@ impl Suggestions {
     }
 }
 
+/// Whether the debugger's value tooltip appears without being asked for.
+///
+/// IntelliJ's `Show value tooltip`, in `Suggestions`' shape and for its reason: `manual` is already
+/// the off switch, because `Debug -> Show Value` and `quill-cli debug hover` work either way, so a
+/// third value meaning "off altogether" would take away a control that never interrupts anybody.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ValueTooltip {
+    /// The popup arrives when the pointer has rested on a name for `HOVER_DELAY`. IntelliJ's default.
+    #[default]
+    Automatic,
+    /// Nothing appears unless it is asked for.
+    Manual,
+}
+
+impl ValueTooltip {
+    /// The word the settings file, the command line and a test spell it with.
+    pub fn name(self) -> &'static str {
+        match self {
+            ValueTooltip::Automatic => "automatic",
+            ValueTooltip::Manual => "manual",
+        }
+    }
+
+    /// Read a value, or nothing when the file holds something this version does not have.
+    pub fn parse(name: &str) -> Option<Self> {
+        match name.trim().to_lowercase().as_str() {
+            "automatic" => Some(ValueTooltip::Automatic),
+            "manual" => Some(ValueTooltip::Manual),
+            _ => None,
+        }
+    }
+
+    /// True when the popup is allowed to arrive on its own, which is what the tick box shows.
+    pub fn is_automatic(self) -> bool {
+        self == ValueTooltip::Automatic
+    }
+}
+
 /// One page of the Settings window, and the group it is listed under.
 ///
 /// The list on the left of the window is built from this, so adding a page is one variant and one match
@@ -191,7 +229,7 @@ impl Page {
     pub fn sections(self) -> &'static [&'static str] {
         match self {
             Page::Appearance => &["Font", "Background"],
-            Page::Editor => &["Gutter", "Suggestions"],
+            Page::Editor => &["Gutter", "Suggestions", "Debugger"],
             Page::Plugins => &["Marketplace", "Installed", "Colour Scheme", "Syntax"],
             Page::Terminal => &["Font", "Shell"],
             Page::Mcp => &["Install", "Server", "Configuration"],
@@ -228,6 +266,8 @@ pub struct Settings {
     pub line_numbers: bool,
     /// Whether the completion popup arrives while you type, or waits to be asked.
     pub suggestions: Suggestions,
+    /// Whether the debugger's value tooltip arrives when the pointer rests on a name.
+    pub value_tooltip: ValueTooltip,
     /// Whether this Quill hosts the MCP server over HTTP, so an agent can reach it at a URL.
     pub mcp_enabled: bool,
     /// The port it listens on when it does.
@@ -261,6 +301,10 @@ impl Settings {
             // ticket asked for: suggestions that arrive rather than ones you have to remember to
             // ask for.
             suggestions: Suggestions::Automatic,
+            // On, which is what IntelliJ's own `Show value tooltip` is: the whole point of the
+            // feature is that the value is there when you look at the name, rather than being
+            // something to remember to ask for.
+            value_tooltip: ValueTooltip::Automatic,
             // Off, and the reason is worth writing down rather than being read off as timidity.
             // The MCP server an agent launches over its own pipes needs no port and no setting: it
             // lives as long as the conversation and nothing is listening when nobody is asking,
@@ -296,6 +340,9 @@ impl Settings {
         }
         if let Some(on) = values.flag("editor.line_numbers") {
             settings.line_numbers = on;
+        }
+        if let Some(chosen) = values.text("debug.value_tooltip").and_then(ValueTooltip::parse) {
+            settings.value_tooltip = chosen;
         }
         if let Some(chosen) = values.text("editor.suggestions").and_then(Suggestions::parse) {
             settings.suggestions = chosen;
@@ -335,6 +382,7 @@ impl Settings {
         }
         values.set("editor.line_numbers", if self.line_numbers { "true" } else { "false" });
         values.set("editor.suggestions", self.suggestions.name());
+        values.set("debug.value_tooltip", self.value_tooltip.name());
         values.set("mcp.enabled", if self.mcp_enabled { "true" } else { "false" });
         values.set("mcp.port", self.mcp_port.to_string());
         values.set("mcp.tools", self.mcp_tools.name());
@@ -669,6 +717,7 @@ mod tests {
             terminal_shell: "pwsh.exe".to_owned(),
             line_numbers: false,
             suggestions: Suggestions::Manual,
+            value_tooltip: ValueTooltip::Manual,
             mcp_enabled: true,
             mcp_port: 9001,
             mcp_tools: quill_cli::mcp::Shape::Every,

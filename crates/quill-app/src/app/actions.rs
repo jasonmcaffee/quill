@@ -443,6 +443,9 @@ pub enum DebugAction {
     /// IntelliJ's `Disable Breakpoint`, which is a different thing from removing one: a disabled
     /// breakpoint keeps its condition and is drawn hollow.
     ToggleBreakpointEnabled,
+    /// Show the value of the name at the caret in a popup, which is the value tooltip asked for by
+    /// hand. `Ctrl/Cmd+Alt+F8`, which is IntelliJ's own Quick Evaluate chord. `task-1696`.
+    ShowValue,
     /// Open the expression box. `Alt+F8`.
     EvaluateExpression,
     /// Show the debug tile along the bottom, or put it away.
@@ -473,6 +476,7 @@ impl DebugAction {
             DebugAction::ToggleBreakpoint => "toggle-breakpoint",
             DebugAction::EditBreakpoint => "edit-breakpoint",
             DebugAction::ToggleBreakpointEnabled => "toggle-breakpoint-enabled",
+            DebugAction::ShowValue => "show-value",
             DebugAction::EvaluateExpression => "evaluate",
             DebugAction::ToggleTile => "toggle-tile",
             DebugAction::InstallAdapter(_) => "install",
@@ -495,6 +499,7 @@ impl DebugAction {
             "toggle-breakpoint" => DebugAction::ToggleBreakpoint,
             "edit-breakpoint" => DebugAction::EditBreakpoint,
             "toggle-breakpoint-enabled" => DebugAction::ToggleBreakpointEnabled,
+            "show-value" => DebugAction::ShowValue,
             "evaluate" => DebugAction::EvaluateExpression,
             "toggle-tile" => DebugAction::ToggleTile,
             "install" => DebugAction::InstallAdapter(named.unwrap_or_default()),
@@ -1048,6 +1053,14 @@ fn debug_entries(state: &MenuState, chosen: &Option<String>) -> Vec<Entry> {
             Action::Debug(DebugAction::ToggleBreakpoint),
             Shortcut::control(egui::Key::F8),
         ),
+    );
+    entries.push(
+        Entry::with_shortcut(
+            "Show Value",
+            Action::Debug(DebugAction::ShowValue),
+            Shortcut { key: egui::Key::F8, command: true, shift: false, alt: true, ctrl: false },
+        )
+        .enabled(state.debug_paused),
     );
     entries.push(
         Entry::with_shortcut(

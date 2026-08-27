@@ -49,6 +49,14 @@ pub enum Request {
     Scopes { frame: i64 },
     Variables { reference: i64 },
     SetVariable { reference: i64, name: String, value: String },
+    /// Assign to whatever an **expression** names, which is what changes a value that was reached by
+    /// `evaluate` rather than by `variables`.
+    ///
+    /// `task-1696`: the root of a value tooltip has no container reference, because it came from an
+    /// `evaluate` — so `setVariable`, which names its target by a reference and a name, cannot reach
+    /// it at all. This is the request the protocol added for exactly that case, and it is used
+    /// exactly there. See `Capabilities::set_expression`.
+    SetExpression { expression: String, value: String, frame: Option<i64> },
     /// Evaluate an expression in a frame. `context` is `watch` for the watch list and `repl` for the
     /// expression box, which is the distinction the specification draws and adapters act on.
     Evaluate { expression: String, frame: Option<i64>, context: String },
@@ -75,6 +83,7 @@ impl Request {
             Request::Scopes { .. } => "scopes",
             Request::Variables { .. } => "variables",
             Request::SetVariable { .. } => "setVariable",
+            Request::SetExpression { .. } => "setExpression",
             Request::Evaluate { .. } => "evaluate",
             Request::Continue { .. } => "continue",
             Request::Next { .. } => "next",
@@ -122,6 +131,18 @@ impl Request {
             Request::Variables { reference } => json!({ "variablesReference": reference }),
             Request::SetVariable { reference, name, value } => {
                 json!({ "variablesReference": reference, "name": name, "value": value })
+            }
+            Request::SetExpression { expression, value, frame } => {
+                let mut body = Map::new();
+                body.insert("expression".to_owned(), json!(expression));
+                body.insert("value".to_owned(), json!(value));
+                // The frame is what `self.items` is resolved against, and an adapter given none
+                // resolves in the global scope — which is a different variable or no variable at
+                // all. Sent whenever there is one, exactly as `evaluate` sends it.
+                if let Some(frame) = frame {
+                    body.insert("frameId".to_owned(), json!(frame));
+                }
+                Value::Object(body)
             }
             Request::Evaluate { expression, frame, context } => {
                 let mut body = Map::new();
@@ -240,6 +261,9 @@ impl VerifiedBreakpoint {
 pub struct Capabilities {
     pub configuration_done: bool,
     pub set_variable: bool,
+    /// Whether the adapter takes `setExpression`, which is the only way to assign to something that
+    /// was reached by an expression rather than by a row that has already been read.
+    pub set_expression: bool,
     pub conditional_breakpoints: bool,
     pub log_points: bool,
     pub terminate_request: bool,
@@ -260,6 +284,7 @@ impl Capabilities {
         Self {
             configuration_done: flag("supportsConfigurationDoneRequest"),
             set_variable: flag("supportsSetVariable"),
+            set_expression: flag("supportsSetExpression"),
             conditional_breakpoints: flag("supportsConditionalBreakpoints"),
             log_points: flag("supportsLogPoints"),
             terminate_request: flag("supportsTerminateRequest"),
@@ -659,6 +684,9 @@ pub fn read_breakpoints(body: &Value) -> Vec<VerifiedBreakpoint> {
 /// The `setVariable` answer, which is the value **as the debugger now sees it** rather than what was
 /// typed — a debugger that rounded a float or interned a string is telling the truth about what the
 /// program holds.
+///
+/// `setExpression` answers with the same three fields, so it is read by this too rather than by a
+/// second function that would have to be kept the same.
 pub fn read_set_variable(body: &Value) -> Variable {
     Variable {
         name: String::new(),

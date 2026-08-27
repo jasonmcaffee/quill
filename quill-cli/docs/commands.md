@@ -1712,6 +1712,41 @@ Change a variable in the running program. The answer is the value as the debugge
 quill-cli debug set-value Locals/count 7
 ```
 
+### debug hover
+
+```
+quill-cli debug hover [--offset <bytes>] [--line <number>] [--column <number>] [--expression <text>] [--expand <path>] [--timeout <milliseconds>]
+```
+
+What a person sees when they rest the pointer on a name while the program is stopped: the expression Quill reads at that position, its value and type, and its children as a tree. Reads the name plus the field path in front of it, so a point on `count` in `self.items.count` asks about the whole of it. Unlike `evaluate`, the answer can be walked into with --expand.
+
+- `--offset <bytes>` — Ask about this position in the file rather than about the caret.
+- `--line <number>` — Ask about this line, counting from 1.
+- `--column <number>` — The column on that line. 1 when it is left out.
+- `--expression <text>` — Ask about this expression outright rather than about a position, which is how a value from `evaluate` is expanded.
+- `--expand <path>` — Open this row and read its children, naming it the way the rows are printed - self.items/0.
+- `--timeout <milliseconds>` — How long to wait for the debugger. 10000 by default.
+
+```sh
+quill-cli debug hover --line 42 --column 9 --json
+quill-cli debug hover --expression self.items --expand self.items/0
+```
+
+### debug set-expression
+
+```
+quill-cli debug set-expression <expression> <value>
+```
+
+Assign to whatever an expression names in the running program. The other half of `set-value`: that one names a row that has already been read, and this one names the target in the program's own language, so it reaches a value nothing has opened yet. A debugger that cannot compile an assignment still changes a plain variable it has already shown, and says so plainly when it can do neither.
+
+- `expression` — What to assign to, in the program's own language - self.items.count.
+- `value` — The new value, in the program's own language. Everything after it on the line belongs to it.
+
+```sh
+quill-cli debug set-expression self.items.count 7
+```
+
 ### debug evaluate
 
 ```

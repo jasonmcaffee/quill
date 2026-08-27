@@ -127,6 +127,58 @@ pub struct Watch {
     pub result: Option<Result<Variable, String>>,
 }
 
+/// A value tooltip's question, and the tree it turned into.
+///
+/// `task-1696`. It is deliberately **not** a second watch: a watch is durable and is asked again at
+/// every stop, and this is about a moment — the pointer is resting somewhere now. So it is thrown
+/// away when the program resumes rather than re-asked, which is what IntelliJ's own tooltip does.
+///
+/// Its rows are the tile's [`Row`], built by the same walk over the same [`DebugState::fetched`]
+/// map, because a `variablesReference` is global to the stop: a structure opened in the tile and
+/// then pointed at is already read, and the popup opens on it instantly.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HoverValue {
+    /// What labels the question, so an answer arriving after the pointer has moved on lands nowhere
+    /// rather than in a popup about something else.
+    pub id: u64,
+    /// The expression as `quill_core::expressions::at` read it, which is also the root row's key.
+    pub expression: String,
+    /// The debugger's answer, its refusal, or nothing while it is still being asked.
+    pub answer: Option<Result<Variable, String>>,
+    /// Which rows are open, by their path of names below the root.
+    ///
+    /// Its own set rather than [`DebugState::opened`]: the two trees have different roots, so a key
+    /// like `items/0` would mean two things at once.
+    opened: HashSet<String>,
+    /// The flattened tree, rebuilt whenever what it is built from moves.
+    pub rows: Vec<Row>,
+}
+
+impl HoverValue {
+    fn new(id: u64, expression: &str) -> Self {
+        Self {
+            id,
+            expression: expression.to_owned(),
+            answer: None,
+            opened: HashSet::new(),
+            rows: Vec::new(),
+        }
+    }
+
+    /// True while the debugger has not answered yet, which is what the popup says instead of a value.
+    pub fn is_waiting(&self) -> bool {
+        self.answer.is_none()
+    }
+
+    /// The debugger's refusal, when that is what came back.
+    pub fn refusal(&self) -> Option<&str> {
+        match self.answer.as_ref() {
+            Some(Err(said)) => Some(said.as_str()),
+            _ => None,
+        }
+    }
+}
+
 /// Everything the window knows about the session it is running.
 pub struct DebugState {
     client: Client,
@@ -171,6 +223,8 @@ pub struct DebugState {
     next_question: u64,
     /// The one-off expression asked from `Evaluate Expression`, and its answer.
     pub evaluated: Option<(u64, String, Option<Result<Variable, String>>)>,
+    /// The value tooltip's question, while there is one. `task-1696`.
+    pub hover: Option<HoverValue>,
     /// The offsets sent for each file, in the order they were sent, so the adapter's answers — which
     /// come back as a list in that order — can be matched to lines.
     sent: HashMap<PathBuf, Vec<usize>>,
@@ -184,6 +238,21 @@ pub struct DebugState {
     pub message: Option<String>,
     /// Set once the stop button has been pressed, so a second press is the hard one.
     stopping: bool,
+    /// How many times what the window draws a value from has changed.
+    ///
+    /// `task-1696`: the inline values are worked out once and cached, and until now the key was the
+    /// text revision and the frame — neither of which moves when the **variables** arrive, which is a
+    /// round trip after the stop. So the first ask cached an empty answer and nothing ever asked
+    /// again. It only appeared to work because the execution-point jump was running every frame and
+    /// re-colouring the file, which moves the text revision as a side effect.
+    reads: u64,
+    /// How many times this session has stopped.
+    ///
+    /// `task-1696`: what makes "jump to where the program stopped" happen **once a stop** rather than
+    /// once a frame. Being paused is a state that lasts, so a window that acted on it every frame put
+    /// the caret back on the stopped line sixty times a second — which is a caret nobody can move
+    /// while a program is paused, and it is why `Debug -> Show Value` could never find a word.
+    stops: u64,
 }
 
 impl DebugState {
@@ -227,12 +296,15 @@ impl DebugState {
             watches: Vec::new(),
             next_question: 1,
             evaluated: None,
+            hover: None,
             sent: HashMap::new(),
             answered: HashMap::new(),
             filters: Vec::new(),
             output: Vec::new(),
             message: None,
             stopping: false,
+            reads: 0,
+            stops: 0,
         })
     }
 
@@ -265,12 +337,15 @@ impl DebugState {
             watches: Vec::new(),
             next_question: 1,
             evaluated: None,
+            hover: None,
             sent: HashMap::new(),
             answered: HashMap::new(),
             filters: Vec::new(),
             output: Vec::new(),
             message: None,
             stopping: false,
+            reads: 0,
+            stops: 0,
         }
     }
 
@@ -306,6 +381,16 @@ impl DebugState {
     /// `debug status` all use.
     pub fn where_it_is(&self) -> String {
         self.session.where_it_is()
+    }
+
+    /// How many times the program has stopped. See the field.
+    pub fn stops(&self) -> u64 {
+        self.stops
+    }
+
+    /// How many times what a value is read from has changed. See the field.
+    pub fn reads(&self) -> u64 {
+        self.reads
     }
 
     pub fn is_paused(&self) -> bool {
@@ -504,6 +589,180 @@ impl DebugState {
         Ok(())
     }
 
+    /// Ask what an expression holds, for the value tooltip. `task-1696` §5.4.
+    ///
+    /// **Context `hover` when the adapter offered it, and `watch` when it did not.** The first is the
+    /// context the specification put there for exactly this — adapters read it as permission to
+    /// answer cheaply and without side effects. The second is a fallback rather than a refusal,
+    /// because `supportsEvaluateForHovers` says *the hover context is meaningful here*, not
+    /// *expressions can be evaluated here*, and an adapter that would happily answer should not be
+    /// left drawing nothing.
+    ///
+    /// There is exactly one of these in flight. Asking a second replaces the first, and the first's
+    /// answer then lands nowhere, because every answer carries the id it was asked with.
+    pub fn ask_the_hover(&mut self, expression: &str) {
+        let expression = expression.trim();
+        if expression.is_empty() || !self.is_paused() {
+            return;
+        }
+        let id = self.take_question();
+        let context = match self.capabilities().evaluate_for_hovers {
+            true => "hover",
+            false => "watch",
+        };
+        self.hover = Some(HoverValue::new(id, expression));
+        let outcome = self.session.evaluate(id, expression, context);
+        self.send(outcome);
+    }
+
+    /// True when the value tooltip has everything it was going to be given.
+    ///
+    /// [`Self::is_ready`]'s argument made once more, for the same reason: an `evaluate` answer and
+    /// the `variables` its children come from are two round trips, and a command that reported the
+    /// first would hand a script a value it could not read a field out of. So the question is *has
+    /// every row that is open had its children answered*, which is right for a value with no
+    /// children, one whose children arrived, and one still being read.
+    pub fn hover_is_ready(&self) -> bool {
+        let Some(hover) = self.hover.as_ref() else {
+            return false;
+        };
+        if hover.answer.is_none() {
+            return false;
+        }
+        hover
+            .rows
+            .iter()
+            .all(|row| !row.expanded || self.fetched.contains_key(&row.reference))
+    }
+
+    /// Put the value tooltip away.
+    pub fn forget_the_hover(&mut self) {
+        self.hover = None;
+    }
+
+    /// Open or close a row of the value tooltip, which is [`Self::toggle_row`] for the other tree.
+    pub fn toggle_hover_row(&mut self, key: &str) {
+        let Some(hover) = self.hover.as_ref() else {
+            return;
+        };
+        let Some(row) = hover.rows.iter().find(|row| row.key == key).cloned() else {
+            return;
+        };
+        if !row.has_children() {
+            return;
+        }
+        let open = !hover.opened.contains(key);
+        if let Some(hover) = self.hover.as_mut() {
+            match open {
+                true => hover.opened.insert(key.to_owned()),
+                false => hover.opened.remove(key),
+            };
+        }
+        if open && !self.fetched.contains_key(&row.reference) {
+            let outcome = self.session.expand(row.reference);
+            self.send(outcome);
+        }
+        self.rebuild_hover_rows();
+    }
+
+    /// Whether the **root** of a value tooltip can be assigned to.
+    ///
+    /// It came from an `evaluate`, so it has no container reference and `setVariable` cannot name it
+    /// by itself. Two ways round that, in order, and the second is why this is not simply one
+    /// capability flag:
+    ///
+    /// 1. **`setExpression`**, which names its target by the expression. The protocol added it for
+    ///    exactly this case.
+    /// 2. **The scope the name is already in.** Measured: **CodeLLDB 1.12.3 does not offer
+    ///    `supportsSetExpression`** — it offers `setVariable` and nothing else — so on the adapter
+    ///    Quill's own registry prefers, the first way alone would mean the commonest thing anybody
+    ///    wants to change, a bare local, could not be changed from the popup at all. When the
+    ///    expression is a name the paused frame's own scopes hold, `setVariable` on that scope is
+    ///    not an approximation of the assignment: it is the identical request the debug tile sends
+    ///    when the same row is typed over there.
+    ///
+    /// Anything else — `self.items.count` on an adapter with no `setExpression` — has no field, which
+    /// is Quill's rule that a control which can never apply is absent. The children of a tooltip are
+    /// unaffected either way, because they came from `variables`.
+    pub fn can_set_the_root(&self) -> bool {
+        if self.capabilities().set_expression {
+            return true;
+        }
+        if !self.capabilities().set_variable {
+            return false;
+        }
+        self.hover
+            .as_ref()
+            .is_some_and(|hover| self.scope_holding(&hover.expression).is_some())
+    }
+
+    /// The reference of the first scope that has been read and holds a variable of this name.
+    ///
+    /// Only what has already been fetched, which is what makes it honest: it answers about rows the
+    /// debugger has really shown rather than guessing that a name is a local.
+    fn scope_holding(&self, name: &str) -> Option<i64> {
+        for scope in &self.scopes {
+            if let Some(children) = self.fetched.get(&scope.reference) {
+                if children.iter().any(|child| child.name == name) {
+                    return Some(scope.reference);
+                }
+            }
+        }
+        None
+    }
+
+    /// Assign to whatever an expression names in the running program.
+    ///
+    /// The command line's half of the root row's edit, and the one thing `set_value` cannot do: a
+    /// row that has never been read has no container reference for `setVariable` to name it by.
+    pub fn set_expression(&mut self, expression: &str, value: &str) -> Result<(), String> {
+        let outcome = self.assign_to_an_expression(expression, value)?;
+        self.send(outcome);
+        Ok(())
+    }
+
+    /// The request that changes what an expression names — see [`Self::can_set_the_root`] for which
+    /// of the two it is and why there are two.
+    fn assign_to_an_expression(
+        &mut self,
+        expression: &str,
+        value: &str,
+    ) -> Result<Outcome, String> {
+        if self.capabilities().set_expression {
+            return self.session.set_expression(expression, value);
+        }
+        match self.scope_holding(expression) {
+            Some(reference) => self.session.set_variable(reference, expression, value),
+            // The adapter's own limitation, said plainly rather than dressed up: it can change a row
+            // it has shown and cannot compile an assignment.
+            None => Err(format!(
+                "{} cannot assign to {expression}: it changes a variable it has read rather than an expression.",
+                self.described
+            )),
+        }
+    }
+
+    /// Change a value from the value tooltip.
+    ///
+    /// **Two requests, and which one is used is decided by what the row is rather than by a
+    /// preference.** The root is named by its expression and needs `setExpression`; everything below
+    /// it has a container and a name, which is exactly what `setVariable` takes and what the tile
+    /// already sends.
+    pub fn set_hover_value(&mut self, key: &str, value: &str) -> Result<(), String> {
+        let Some(hover) = self.hover.as_ref() else {
+            return Err("There is nothing to change.".to_owned());
+        };
+        let Some(row) = hover.rows.iter().find(|row| row.key == key).cloned() else {
+            return Err("There is no such row.".to_owned());
+        };
+        let outcome = match row.depth {
+            0 => self.assign_to_an_expression(&row.name, value)?,
+            _ => self.session.set_variable(row.container, &row.name, value)?,
+        };
+        self.send(outcome);
+        Ok(())
+    }
+
     /// End the session: politely the first time, and for good the second.
     pub fn stop(&mut self) {
         let hard = self.stopping;
@@ -612,11 +871,15 @@ impl DebugState {
                 self.rows.clear();
                 self.frames.clear();
                 self.frame = None;
+                // The tooltip is about a moment and the moment has passed — and every reference in
+                // it died with the resume. IntelliJ dismisses its own on a step for the same reason.
+                self.hover = None;
                 for watch in &mut self.watches {
                     watch.result = None;
                 }
             }
             Event::Stopped(stopped) => {
+                self.stops += 1;
                 self.message = Some(match stopped.description.as_deref() {
                     Some(said) => said.to_owned(),
                     None => format!("Stopped on {}", stopped.reason),
@@ -632,6 +895,7 @@ impl DebugState {
                 if self.frame != Some(frame) {
                     return;
                 }
+                self.reads += 1;
                 // The first scope that is not expensive is **open**, which is what the pane opens
                 // showing and is the one the session fetched unprompted. Registers — which lldb
                 // marks expensive — waits to be asked for, and so does a second Locals-like group.
@@ -647,8 +911,10 @@ impl DebugState {
                 self.rebuild_rows();
             }
             Event::Variables { reference, variables } => {
+                self.reads += 1;
                 self.fetched.insert(reference, variables);
                 self.rebuild_rows();
+                self.rebuild_hover_rows();
             }
             Event::Breakpoints { path, answered } => {
                 let path = PathBuf::from(path);
@@ -697,6 +963,13 @@ impl DebugState {
                 self.output.drain(..over);
             }
             Event::Evaluated { id, result } => {
+                // The tooltip first, because it is the one whose question is replaced rather than
+                // kept: an answer whose id is nobody's is an answer to a hover the pointer has
+                // already left, and it lands nowhere.
+                if self.hover.as_ref().is_some_and(|hover| hover.id == id) {
+                    self.take_the_hover_answer(result);
+                    return;
+                }
                 if let Some(watch) = self.watches.iter_mut().find(|watch| watch.id == id) {
                     watch.result = Some(result);
                     return;
@@ -717,7 +990,37 @@ impl DebugState {
                             row.reference = answered.reference;
                         }
                     }
+                    self.reads += 1;
+                    // A tooltip's **root** is changed by this request too, on an adapter with no
+                    // `setExpression` — and its value comes from the `evaluate` answer rather than
+                    // from `fetched`, so it has to be told as well.
+                    if let Some(hover) = self.hover.as_mut() {
+                        if hover.expression == name {
+                            if let Some(Ok(value)) = hover.answer.as_mut() {
+                                value.value = answered.value.clone();
+                                value.reference = answered.reference;
+                            }
+                        }
+                    }
                     self.rebuild_rows();
+                    self.rebuild_hover_rows();
+                }
+                Err(said) => self.message = Some(said),
+            },
+            // The other half of the pair above, for a value that was named by an expression rather
+            // than by a row that had already been read. Its answer is the value **as the debugger
+            // now sees it**, which is the same rule.
+            Event::ExpressionSet { expression, result } => match result {
+                Ok(answered) => {
+                    if let Some(hover) = self.hover.as_mut() {
+                        if hover.expression == expression {
+                            if let Some(Ok(value)) = hover.answer.as_mut() {
+                                value.value = answered.value.clone();
+                                value.reference = answered.reference;
+                            }
+                        }
+                    }
+                    self.rebuild_hover_rows();
                 }
                 Err(said) => self.message = Some(said),
             },
@@ -730,6 +1033,7 @@ impl DebugState {
                 self.rows.clear();
                 self.fetched.clear();
                 self.frame = None;
+                self.hover = None;
                 for watch in &mut self.watches {
                     watch.result = None;
                 }
@@ -833,7 +1137,7 @@ impl DebugState {
                 is_scope: true,
             });
             if expanded {
-                self.push_children(&mut rows, scope.reference, &key, 1);
+                self.push_children(&mut rows, scope.reference, &key, 1, &self.opened);
             }
         }
         // What each row's value was, so the next stop can mark what moved. Written after the tree is
@@ -841,14 +1145,88 @@ impl DebugState {
         self.rows = rows;
     }
 
+    /// Build the value tooltip's rows: the answer as the root, and whatever is open below it.
+    ///
+    /// The root is a `Row` like any other — the expression as its name, the debugger's `result` as
+    /// its value — and it is **not** a scope, because a scope is a heading and this is a value that
+    /// can be assigned to.
+    fn rebuild_hover_rows(&mut self) {
+        let Some(hover) = self.hover.as_ref() else {
+            return;
+        };
+        let Some(Ok(value)) = hover.answer.as_ref() else {
+            if let Some(hover) = self.hover.as_mut() {
+                hover.rows.clear();
+            }
+            return;
+        };
+        let key = hover.expression.clone();
+        let expanded = hover.opened.contains(&key);
+        let opened = hover.opened.clone();
+        let mut rows = vec![Row {
+            key: key.clone(),
+            depth: 0,
+            name: key.clone(),
+            value: value.value.clone(),
+            kind: value.kind.clone(),
+            reference: value.reference,
+            container: 0,
+            expanded,
+            // A tooltip is about now, so there is no last time to have been different from.
+            changed: false,
+            is_scope: false,
+        }];
+        if expanded {
+            self.push_children(&mut rows, value.reference, &key, 1, &opened);
+        }
+        if let Some(hover) = self.hover.as_mut() {
+            hover.rows = rows;
+        }
+    }
+
+    /// Put the debugger's answer into the tooltip, and open the root when it has children.
+    ///
+    /// **The root opens itself**, which is what a person means by "show me the object": pointing at
+    /// a struct shows its fields with no click. Nothing deeper is opened unasked and nothing deeper
+    /// is fetched, which is `task-1687` §8.3's lazy model untouched.
+    fn take_the_hover_answer(&mut self, result: Result<Variable, String>) {
+        let mut expand = 0;
+        if let Some(hover) = self.hover.as_mut() {
+            if let Ok(value) = &result {
+                if value.reference != 0 {
+                    hover.opened.insert(hover.expression.clone());
+                    expand = value.reference;
+                }
+            }
+            hover.answer = Some(result);
+        }
+        if expand != 0 && !self.fetched.contains_key(&expand) {
+            let outcome = self.session.expand(expand);
+            self.send(outcome);
+        }
+        self.rebuild_hover_rows();
+    }
+
     /// The children of one reference, and theirs, as far as they are open.
-    fn push_children(&self, rows: &mut Vec<Row>, reference: i64, parent: &str, depth: usize) {
+    ///
+    /// `opened` is passed in rather than read off `self`, because there are two trees now — the
+    /// tile's, rooted on the frame's scopes, and the value tooltip's, rooted on an expression — and
+    /// they keep separate answers to what is open. Everything else about them is the same, which is
+    /// why this is one walk rather than two.
+    fn push_children(
+        &self,
+        rows: &mut Vec<Row>,
+        reference: i64,
+        parent: &str,
+        depth: usize,
+        opened: &HashSet<String>,
+    ) {
         let Some(children) = self.fetched.get(&reference) else {
             return;
         };
         for child in children {
             let key = format!("{parent}/{}", child.name);
-            let expanded = self.opened.contains(&key);
+            let expanded = opened.contains(&key);
             let changed = self
                 .previous
                 .get(&key)
@@ -866,7 +1244,7 @@ impl DebugState {
                 is_scope: false,
             });
             if expanded {
-                self.push_children(rows, child.reference, &key, depth + 1);
+                self.push_children(rows, child.reference, &key, depth + 1, opened);
             }
         }
     }
@@ -962,5 +1340,254 @@ mod tests {
             }],
         });
         assert!(state.verified(&path, 10).expect("an answer").verified);
+    }
+
+    // ------------------------------------------------------------------ the value tooltip, task-1696
+
+    /// What the adapter would have said.
+    fn answer(request_seq: i64, command: &str, body: serde_json::Value) -> quill_dap::Message {
+        quill_dap::Message::Response {
+            seq: 500 + request_seq,
+            request_seq,
+            command: command.to_owned(),
+            success: true,
+            message: None,
+            body,
+        }
+    }
+
+    fn seq_of(asked: &[serde_json::Value], command: &str) -> i64 {
+        asked
+            .iter()
+            .find(|frame| frame["command"] == command)
+            .and_then(|frame| frame["seq"].as_i64())
+            .unwrap_or_else(|| panic!("a {command} was sent, out of {asked:?}"))
+    }
+
+    fn capabilities() -> serde_json::Value {
+        serde_json::json!({
+            "supportsConfigurationDoneRequest": true,
+            "supportsSetVariable": true,
+            "supportsEvaluateForHovers": true,
+            "supportsSetExpression": true,
+        })
+    }
+
+    /// A detached session driven to a stop, with one frame and nothing read of it yet.
+    fn paused_state(capabilities: serde_json::Value) -> DebugState {
+        let mut state = DebugState::detached("lldb", Configuration::new("app", "app.exe"));
+        state.begin();
+        let asked = state.requested();
+        state.feed(answer(seq_of(&asked, "initialize"), "initialize", capabilities));
+        state.requested();
+        state.feed(quill_dap::Message::Initialized);
+        let asked = state.requested();
+        state.feed(answer(seq_of(&asked, "configurationDone"), "configurationDone", serde_json::Value::Null));
+        state.feed(quill_dap::Message::Stopped(quill_dap::Stopped {
+            reason: "breakpoint".to_owned(),
+            thread: Some(1),
+            description: None,
+            text: None,
+            all_threads: true,
+        }));
+        let asked = state.requested();
+        state.feed(answer(
+            seq_of(&asked, "threads"),
+            "threads",
+            serde_json::json!({ "threads": [{ "id": 1, "name": "main" }] }),
+        ));
+        state.feed(answer(
+            seq_of(&asked, "stackTrace"),
+            "stackTrace",
+            serde_json::json!({ "stackFrames": [
+                { "id": 1000, "name": "main", "line": 4, "source": { "path": "main.rs" } }
+            ]}),
+        ));
+        let asked = state.requested();
+        state.feed(answer(
+            seq_of(&asked, "scopes"),
+            "scopes",
+            serde_json::json!({ "scopes": [{ "name": "Locals", "variablesReference": 7, "expensive": false }] }),
+        ));
+        let asked = state.requested();
+        state.feed(answer(
+            seq_of(&asked, "variables"),
+            "variables",
+            serde_json::json!({ "variables": [
+                { "name": "items", "value": "Vec(3)", "type": "Vec<i32>", "variablesReference": 17 }
+            ]}),
+        ));
+        state
+    }
+
+    /// The hover context is asked for when the adapter offered it, and `watch` when it did not — a
+    /// fallback rather than a refusal, because an adapter that would happily answer should not be
+    /// left drawing nothing.
+    #[test]
+    fn the_hover_is_asked_in_the_context_the_adapter_offered() {
+        let mut state = paused_state(capabilities());
+        state.ask_the_hover("self.items");
+        let asked = state.requested();
+        assert_eq!(asked[0]["arguments"]["context"], "hover");
+
+        let mut plain = paused_state(serde_json::json!({ "supportsConfigurationDoneRequest": true }));
+        plain.ask_the_hover("self.items");
+        let asked = plain.requested();
+        assert_eq!(asked[0]["arguments"]["context"], "watch");
+    }
+
+    /// **The root opens itself**, which is what a person means by "show me the object": pointing at a
+    /// struct shows its fields with no click at all. Nothing deeper is opened unasked.
+    #[test]
+    fn a_hover_whose_answer_has_children_opens_itself_and_reads_them() {
+        let mut state = paused_state(capabilities());
+        state.ask_the_hover("items");
+        let asked = state.requested();
+        state.feed(answer(
+            seq_of(&asked, "evaluate"),
+            "evaluate",
+            serde_json::json!({ "result": "Vec(3)", "type": "Vec<i32>", "variablesReference": 41 }),
+        ));
+        // The children were asked for without anything being clicked.
+        let asked = state.requested();
+        assert_eq!(seq_of(&asked, "variables") > 0, true);
+        assert!(!state.hover_is_ready(), "not until the children have come back");
+        state.feed(answer(
+            seq_of(&asked, "variables"),
+            "variables",
+            serde_json::json!({ "variables": [
+                { "name": "[0]", "value": "1", "type": "i32", "variablesReference": 0 },
+                { "name": "[1]", "value": "2", "type": "i32", "variablesReference": 0 }
+            ]}),
+        ));
+        assert!(state.hover_is_ready());
+        let hover = state.hover.as_ref().expect("a hover");
+        let names: Vec<&str> = hover.rows.iter().map(|row| row.name.as_str()).collect();
+        assert_eq!(names, vec!["items", "[0]", "[1]"]);
+        assert_eq!(hover.rows[0].depth, 0);
+        assert_eq!(hover.rows[1].key, "items/[0]");
+        assert!(!hover.rows[0].is_scope, "a value that can be assigned to, not a heading");
+    }
+
+    /// **Two requests, and which one is used is decided by what the row is.** The root came from an
+    /// `evaluate` and has no container reference for `setVariable` to name it by; a child came from
+    /// `variables` and is set the way the tile sets one.
+    #[test]
+    fn the_root_is_set_by_an_expression_and_a_child_by_its_container() {
+        let mut state = paused_state(capabilities());
+        state.ask_the_hover("items");
+        let asked = state.requested();
+        state.feed(answer(
+            seq_of(&asked, "evaluate"),
+            "evaluate",
+            serde_json::json!({ "result": "Vec(3)", "type": "Vec<i32>", "variablesReference": 41 }),
+        ));
+        let asked = state.requested();
+        state.feed(answer(
+            seq_of(&asked, "variables"),
+            "variables",
+            serde_json::json!({ "variables": [
+                { "name": "[0]", "value": "1", "type": "i32", "variablesReference": 0 }
+            ]}),
+        ));
+        state.requested();
+
+        state.set_hover_value("items", "vec![]").expect("the adapter offers setExpression");
+        let asked = state.requested();
+        assert_eq!(asked[0]["command"], "setExpression");
+        assert_eq!(asked[0]["arguments"]["expression"], "items");
+
+        state.set_hover_value("items/[0]", "9").expect("a child is set by its container");
+        let asked = state.requested();
+        assert_eq!(asked[0]["command"], "setVariable");
+        assert_eq!(asked[0]["arguments"]["variablesReference"], 41);
+        assert_eq!(asked[0]["arguments"]["name"], "[0]");
+    }
+
+    /// **Measured against CodeLLDB 1.12.3, which does not offer `supportsSetExpression`.** A bare
+    /// name the paused frame's own scopes hold is set by `setVariable` on that scope — which is not
+    /// an approximation of the assignment but the identical request the tile sends when the same row
+    /// is typed over there.
+    #[test]
+    fn a_bare_name_is_set_through_its_scope_where_the_adapter_has_no_set_expression() {
+        let mut state = paused_state(serde_json::json!({
+            "supportsConfigurationDoneRequest": true,
+            "supportsSetVariable": true,
+        }));
+        state.ask_the_hover("items");
+        let asked = state.requested();
+        state.feed(answer(
+            seq_of(&asked, "evaluate"),
+            "evaluate",
+            serde_json::json!({ "result": "Vec(3)", "type": "Vec<i32>" }),
+        ));
+        state.requested();
+        assert!(state.can_set_the_root(), "Locals holds a variable called `items`");
+        state.set_hover_value("items", "vec![]").expect("through the scope it is in");
+        let asked = state.requested();
+        assert_eq!(asked[0]["command"], "setVariable");
+        assert_eq!(asked[0]["arguments"]["variablesReference"], 7, "the Locals scope");
+        assert_eq!(asked[0]["arguments"]["name"], "items");
+    }
+
+    /// And anything that is not a name the frame holds has no field at all, which is Quill's rule
+    /// that a control which can never apply is absent.
+    #[test]
+    fn a_field_path_cannot_be_set_where_the_adapter_has_no_set_expression() {
+        let mut state = paused_state(serde_json::json!({
+            "supportsConfigurationDoneRequest": true,
+            "supportsSetVariable": true,
+        }));
+        state.ask_the_hover("basket.label");
+        let asked = state.requested();
+        state.feed(answer(
+            seq_of(&asked, "evaluate"),
+            "evaluate",
+            serde_json::json!({ "result": "fruit", "type": "String" }),
+        ));
+        assert!(!state.can_set_the_root());
+        assert!(state.set_hover_value("basket.label", "pear").is_err());
+    }
+
+    /// Every `variablesReference` dies on resume, so the tooltip goes with them: a value from the
+    /// last stop drawn beside a tree that cannot be opened is worse than nothing. IntelliJ dismisses
+    /// its own on a step for the same reason.
+    #[test]
+    fn resuming_puts_the_tooltip_away() {
+        let mut state = paused_state(capabilities());
+        state.ask_the_hover("items");
+        let asked = state.requested();
+        state.feed(answer(
+            seq_of(&asked, "evaluate"),
+            "evaluate",
+            serde_json::json!({ "result": "Vec(3)", "variablesReference": 41 }),
+        ));
+        assert!(state.hover.is_some());
+        state.step(quill_dap::Step::Over).expect("stopped, so it can step");
+        assert!(state.hover.is_none(), "and every reference in it went with the resume");
+    }
+
+    /// An answer that arrives after the pointer has moved on lands nowhere rather than in a popup
+    /// about something else. Every question carries the id it was asked with.
+    #[test]
+    fn an_answer_to_a_question_nobody_is_asking_any_more_lands_nowhere() {
+        let mut state = paused_state(capabilities());
+        state.ask_the_hover("items");
+        let first = state.requested();
+        state.ask_the_hover("attempts");
+        let second = state.requested();
+        // The first question is answered late, after the pointer moved to another name.
+        state.feed(answer(
+            seq_of(&first, "evaluate"),
+            "evaluate",
+            serde_json::json!({ "result": "Vec(3)" }),
+        ));
+        assert!(state.hover.as_ref().expect("a hover").is_waiting(), "still about `attempts`");
+        state.feed(answer(
+            seq_of(&second, "evaluate"),
+            "evaluate",
+            serde_json::json!({ "result": "3" }),
+        ));
+        assert_eq!(state.hover.as_ref().expect("a hover").rows[0].value, "3");
     }
 }

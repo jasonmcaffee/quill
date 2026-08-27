@@ -126,6 +126,12 @@ pub enum Waiting {
     /// it exists for. The id is what the session labelled the question with, so an answer that lands
     /// after another was asked cannot be mistaken for this one.
     DebugEvaluate { expression: String, id: u64, until: Instant },
+    /// `debug hover` waiting for the tree the value tooltip shows. `task-1696`.
+    ///
+    /// Its own kind rather than [`Waiting::DebugEvaluate`], because what it waits for is not the
+    /// same thing: an `evaluate` answer is one round trip and a *tree* is that plus the `variables`
+    /// its children come from, which is what `DebugState::hover_is_ready` counts.
+    DebugHover { id: u64, expand: Option<String>, until: Instant },
 }
 
 /// A rename a command asked for, waiting for the search that will find what it changes.
@@ -150,7 +156,8 @@ impl Waiting {
             | Waiting::References { until, .. }
             | Waiting::Git { until }
             | Waiting::DebugPause { until, .. }
-            | Waiting::DebugEvaluate { until, .. } => *until,
+            | Waiting::DebugEvaluate { until, .. }
+            | Waiting::DebugHover { until, .. } => *until,
         }
     }
 }
@@ -375,6 +382,41 @@ impl QuillApp {
                     Err(problem) => Reply::failed(&request.command, code::NOT_APPLICABLE, problem),
                 })
             }
+            Waiting::DebugHover { id, expand, .. } => {
+                let id = *id;
+                {
+                    let debug = self.debug.as_ref()?;
+                    let hover = debug.hover.as_ref()?;
+                    if hover.id != id {
+                        return None;
+                    }
+                    if !debug.hover_is_ready() {
+                        // A session that ended is an answer too: nothing is going to evaluate
+                        // anything now, and saying so at once is what stops a script waiting out
+                        // the timeout.
+                        if debug.is_alive() {
+                            return None;
+                        }
+                        return Some(Reply::failed(
+                            &request.command,
+                            code::NOT_APPLICABLE,
+                            "The session ended before it answered.",
+                        ));
+                    }
+                }
+                // **A row cannot be opened before there is a tree to open it in.** `--expand` on a
+                // question that had to be asked is applied here, once the answer is in, and then the
+                // wait goes round again for the children — which is what makes one command enough
+                // where two round trips are needed. A row the expression does not have is a toggle
+                // that does nothing, and the next pass answers.
+                if let Some(key) = expand.take() {
+                    if let Some(debug) = self.debug.as_mut() {
+                        debug.toggle_hover_row(&key);
+                    }
+                    return None;
+                }
+                Some(self.hover_reply(request))
+            }
             Waiting::DebugPause { command, .. } => {
                 // A build that has to finish first is not an answer yet; a build that failed is, and
                 // saying so at once is what stops a caller waiting out a timeout for a session that
@@ -452,6 +494,15 @@ impl QuillApp {
                     code::TIMED_OUT,
                     format!("The debugger did not answer {expression} in time."),
                 );
+            }
+            Waiting::DebugHover { .. } => {
+                let said = self
+                    .debug
+                    .as_ref()
+                    .and_then(|debug| debug.hover.as_ref())
+                    .map(|hover| format!("The debugger did not answer {} in time.", hover.expression))
+                    .unwrap_or_else(|| "The debugger did not answer in time.".to_owned());
+                return Reply::failed("debug.hover", code::TIMED_OUT, said);
             }
             Waiting::DebugPause { command, .. } => {
                 let command = command.clone();
@@ -3574,6 +3625,8 @@ impl QuillApp {
             "frames" => self.cli_debug_frames(request),
             "variables" => self.cli_debug_variables(request),
             "set-value" => self.cli_debug_set_value(request),
+            "set-expression" => self.cli_debug_set_expression(request),
+            "hover" => self.cli_debug_hover(request),
             "evaluate" => self.cli_debug_evaluate(request),
             "watch" => self.cli_debug_watch(request),
             "output" => self.cli_debug_output(request),
@@ -3859,6 +3912,146 @@ impl QuillApp {
         };
         match debug.set_value(&key, &value) {
             Ok(()) => ok(request, format!("Setting {key} to {value}"), self.debug_value()),
+            Err(problem) => no(request, code::NOT_APPLICABLE, problem),
+        }
+    }
+
+    /// `debug hover`: what a person sees when they rest the pointer on a name.
+    ///
+    /// **The half that is new is the position.** `debug evaluate` already asks the debugger about a
+    /// string somebody typed; what this adds is `quill_core::expressions`' reading — an agent that
+    /// has just been told the program stopped at `src/main.rs:42` can ask what the third word on
+    /// that line holds without first working out what that word is. It goes through the same
+    /// function the popup and the menu entry do, so the three cannot come to different conclusions.
+    ///
+    /// It is also the only way to walk into a value that was reached by an expression: `debug
+    /// evaluate` answers `expandable: true` and there is nothing to expand it with. `--expand` is
+    /// that, naming a row the way `debug variables --expand` already does.
+    fn cli_debug_hover(&mut self, request: &Request) -> Outcome {
+        if self.debug.as_ref().is_none_or(|debug| !debug.is_paused()) {
+            return no(request, code::NOT_APPLICABLE, "The program is not stopped.");
+        }
+        // Named outright, which is what makes a value from `debug evaluate` expandable at all.
+        let wanted = match request.text("expression") {
+            Some(expression) => expression,
+            None => {
+                let offset = match self.cli_offset(request) {
+                    Ok(offset) => offset,
+                    Err(problem) => return no(request, code::USAGE, problem),
+                };
+                let index = self.files.active_index();
+                let Some(range) = self.expression_at(index, offset) else {
+                    return no(
+                        request,
+                        code::NOT_FOUND,
+                        "There is no name there to ask about. A keyword, a number, an operator and anything inside a comment or a string are all nothing to a debugger.",
+                    );
+                };
+                self.files.at(index).document.text().byte_slice(range).to_string()
+            }
+        };
+        // Already open on this expression, so it is not asked again: `--expand` on the row it is
+        // already showing is the commonest second call there is.
+        let asking = self
+            .debug
+            .as_ref()
+            .and_then(|debug| debug.hover.as_ref())
+            .is_none_or(|hover| hover.expression != wanted);
+        if let Some(debug) = self.debug.as_mut() {
+            if asking {
+                debug.ask_the_hover(&wanted);
+            }
+        }
+        // A question that was already open can be expanded now; one that has just been asked has
+        // no tree yet, so the row is opened once the answer arrives — see the wait below.
+        let mut expand = request.text("expand");
+        if !asking {
+            if let Some(key) = expand.take() {
+                if let Some(debug) = self.debug.as_mut() {
+                    debug.toggle_hover_row(&key);
+                }
+            }
+        }
+        let id = self
+            .debug
+            .as_ref()
+            .and_then(|debug| debug.hover.as_ref())
+            .map(|hover| hover.id)
+            .unwrap_or_default();
+        if expand.is_none() && self.debug.as_ref().is_some_and(DebugState::hover_is_ready) {
+            return Outcome::Reply(self.hover_reply(request));
+        }
+        Outcome::Hold(Waiting::DebugHover {
+            id,
+            expand,
+            until: waits_for(request, "timeout", DEFAULT_WAIT),
+        })
+    }
+
+    /// The value tooltip as it stands, in the shape `debug variables` prints a tree in.
+    fn hover_reply(&self, request: &Request) -> Reply {
+        let Some(hover) = self.debug.as_ref().and_then(|debug| debug.hover.as_ref()) else {
+            return Reply::failed(&request.command, code::NOT_APPLICABLE, "Nothing is being debugged.");
+        };
+        if let Some(said) = hover.refusal() {
+            return Reply::failed(&request.command, code::NOT_APPLICABLE, said);
+        }
+        let rows: Vec<String> = hover
+            .rows
+            .iter()
+            .map(|row| {
+                let indent = "  ".repeat(row.depth);
+                match &row.kind {
+                    Some(kind) => format!("{indent}{}: {kind} = {}", row.name, row.value),
+                    None => format!("{indent}{} = {}", row.name, row.value),
+                }
+            })
+            .collect();
+        let root = hover.rows.first();
+        let said = match root {
+            Some(row) => format!("{} = {}", hover.expression, row.value),
+            None => format!("{} has no value here", hover.expression),
+        };
+        let mut result = Map::new();
+        result.insert("expression".to_owned(), json!(hover.expression));
+        result.insert("value".to_owned(), json!(root.map(|row| row.value.clone())));
+        result.insert("type".to_owned(), json!(root.and_then(|row| row.kind.clone())));
+        result.insert(
+            "rows".to_owned(),
+            json!(hover
+                .rows
+                .iter()
+                .map(|row| json!({
+                    "path": row.key,
+                    "depth": row.depth,
+                    "name": row.name,
+                    "value": row.value,
+                    "type": row.kind,
+                    "expandable": row.has_children(),
+                    "expanded": row.expanded,
+                }))
+                .collect::<Vec<_>>()),
+        );
+        result.insert("lines".to_owned(), json!(rows));
+        Reply::done(&request.command, said, Value::Object(result))
+    }
+
+    /// `debug set-expression`: assign to whatever an expression names.
+    ///
+    /// The other half of `debug set-value`, and each is used where it is the only one that can do
+    /// the job — see `DebugState::set_hover_value`.
+    fn cli_debug_set_expression(&mut self, request: &Request) -> Outcome {
+        let Some(expression) = request.text("expression") else {
+            return no(request, code::USAGE, "Say which expression to assign to.");
+        };
+        let Some(value) = request.text("value") else {
+            return no(request, code::USAGE, "Say what to set it to.");
+        };
+        let Some(debug) = self.debug.as_mut() else {
+            return no(request, code::NOT_APPLICABLE, "Nothing is being debugged.");
+        };
+        match debug.set_expression(&expression, &value) {
+            Ok(()) => ok(request, format!("Setting {expression} to {value}"), self.debug_value()),
             Err(problem) => no(request, code::NOT_APPLICABLE, problem),
         }
     }
@@ -5328,6 +5521,7 @@ impl QuillApp {
             "terminal.shell" => self.settings.terminal_shell.clone(),
             "editor.line_numbers" => self.settings.line_numbers.to_string(),
             "editor.suggestions" => self.settings.suggestions.name().to_owned(),
+            "debug.value_tooltip" => self.settings.value_tooltip.name().to_owned(),
             "mcp.enabled" => self.settings.mcp_enabled.to_string(),
             "mcp.port" => self.settings.mcp_port.to_string(),
             "mcp.tools" => self.settings.mcp_tools.name().to_owned(),
@@ -5386,6 +5580,11 @@ impl QuillApp {
                 settings.suggestions = crate::settings::Suggestions::parse(value).ok_or_else(|| {
                     format!("{name} wants automatic or manual, and {value} is neither.")
                 })?
+            }
+            "debug.value_tooltip" => {
+                settings.value_tooltip = crate::settings::ValueTooltip::parse(value).ok_or_else(
+                    || format!("{name} wants automatic or manual, and {value} is neither."),
+                )?
             }
             // Not checked against the machine, for `terminal.shell`'s reason: a path may name
             // something installed a moment from now, and when it is wrong the status bar says so in
@@ -5899,6 +6098,11 @@ const SETTINGS: &[SettingKey] = &[
         help: "Whether the completion popup arrives as you type. Ctrl+Space works either way.",
     },
     SettingKey {
+        name: "debug.value_tooltip",
+        accepts: "automatic or manual",
+        help: "Whether resting the pointer on a name while the program is stopped shows its value. Show Value on the Debug menu works either way.",
+    },
+    SettingKey {
         name: "mcp.enabled",
         accepts: "true or false",
         help: "Whether this Quill serves MCP over HTTP. An agent that launches the server itself needs neither this nor a port.",
@@ -5960,6 +6164,7 @@ fn fresh_value(name: &str, fresh: &crate::settings::Settings) -> String {
         "terminal.shell" => fresh.terminal_shell.clone(),
         "editor.line_numbers" => fresh.line_numbers.to_string(),
         "editor.suggestions" => fresh.suggestions.name().to_owned(),
+        "debug.value_tooltip" => fresh.value_tooltip.name().to_owned(),
         "mcp.enabled" => fresh.mcp_enabled.to_string(),
         "mcp.port" => fresh.mcp_port.to_string(),
         "mcp.tools" => fresh.mcp_tools.name().to_owned(),

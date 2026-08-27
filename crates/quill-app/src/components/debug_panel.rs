@@ -31,7 +31,7 @@ pub const HEADER: f32 = terminal_panel::HEADER;
 /// How tall one row of the frames list and the variables tree is. The style guide's list row.
 const ROW: f32 = size::ROW;
 /// How far each level of the tree is indented.
-const INDENT: f32 = 14.0;
+pub const INDENT: f32 = 14.0;
 /// How wide the frames pane is by default, as a proportion of the tile.
 const FRAMES_SHARE: f32 = 0.34;
 /// The narrowest either pane is allowed to be, so a divider dragged to the edge still leaves
@@ -41,7 +41,7 @@ const PANE_MIN: f32 = 140.0;
 const WATCH_HEADER: f32 = 24.0;
 /// A value longer than this is elided in the tree, because a row that is a paragraph long pushes
 /// every other row off the screen and cannot be read anyway.
-const VALUE_LIMIT: usize = 220;
+pub const VALUE_LIMIT: usize = 220;
 
 /// What the tile draws when there is no session, which is when it has the most to say.
 ///
@@ -73,6 +73,19 @@ pub struct Missing {
     pub sentence: String,
     /// The command that would install it, empty when Quill has nothing to offer.
     pub install: String,
+}
+
+/// What the person did in one row of a variables tree.
+///
+/// Its own type rather than the whole of [`DebugOutcome`], because [`show_row`] is drawn in two
+/// places now: the tile's tree, and the value tooltip `task-1696` hangs off a name in the source.
+/// One row means one thing in both, which is the rule the disclosure triangle already follows.
+#[derive(Debug, Default, PartialEq)]
+pub struct RowOutcome {
+    /// A row was opened or closed.
+    pub toggle_row: Option<String>,
+    /// A row was given a new value.
+    pub set_value: Option<(String, String)>,
 }
 
 /// What the person did in the tile.
@@ -527,23 +540,30 @@ fn show_tree(
     let mut scroll = ui.new_child(egui::UiBuilder::new().max_rect(area));
     scroll.set_clip_rect(ui.painter().clip_rect().intersect(area));
     egui::ScrollArea::vertical().id_salt("debug-variables").show(&mut scroll, |ui| {
+        let mut rows = RowOutcome::default();
         for row in &debug.rows {
             let (rect, response) =
                 ui.allocate_exact_size(Vec2::new(area.width(), ROW), Sense::click());
-            show_row(ui, rect, response, row, panel, can_set, outcome);
+            show_row(ui, rect, response, row, &mut panel.editing, can_set, "Variable", &mut rows);
         }
+        outcome.toggle_row = rows.toggle_row;
+        outcome.set_value = rows.set_value;
     });
 }
 
-/// One row of the tree: the disclosure triangle, the name, the type and the value.
-fn show_row(
+/// One row of a variables tree: the disclosure triangle, the name, the type and the value.
+///
+/// `editing` is the row being edited and what has been typed into it, passed in rather than read off
+/// the tile — the value tooltip has a tree too, and it is the same row drawn the same way.
+pub fn show_row(
     ui: &mut egui::Ui,
     rect: Rect,
     response: egui::Response,
     row: &Row,
-    panel: &mut DebugPanel,
+    editing: &mut Option<(String, String)>,
     can_set: bool,
-    outcome: &mut DebugOutcome,
+    what: &str,
+    outcome: &mut RowOutcome,
 ) {
     if response.hovered() {
         ui.painter().rect_filled(
@@ -593,7 +613,7 @@ fn show_row(
 
     // The cell being edited, which is what `Set Value` turns a row into. `field_text_rect` is what
     // stops it being the sixth field in Quill to put its words against its own top edge.
-    if let Some((key, typed)) = panel.editing.as_mut() {
+    if let Some((key, typed)) = editing.as_mut() {
         if *key == row.key {
             let field = Rect::from_min_size(
                 Pos2::new(pen, rect.top() + 2.0),
@@ -616,15 +636,15 @@ fn show_row(
                     .font(egui::FontId::monospace(11.5)),
             );
             editor.request_focus();
-            let name = format!("Set value: {}", row.name);
+            let name = format!("Set {what}: {}", row.name);
             editor.widget_info(|| {
                 egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &name)
             });
             if ui.input(|input| input.key_pressed(egui::Key::Enter)) {
                 outcome.set_value = Some((row.key.clone(), typed.clone()));
-                panel.editing = None;
+                *editing = None;
             } else if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
-                panel.editing = None;
+                *editing = None;
             }
             return;
         }
@@ -649,9 +669,12 @@ fn show_row(
         );
     }
 
+    // `what` is what this row is called where it is drawn — `Variable` in the tile, `Value` in the
+    // value tooltip — because **two controls must not share a name**: the same variable is in both
+    // trees at once the moment somebody points at a name the tile is already showing.
     let accessible = match row.is_scope {
         true => format!("Scope: {}", row.name),
-        false => format!("Variable: {} = {}", row.name, elide(&row.value)),
+        false => format!("{what}: {} = {}", row.name, elide(&row.value)),
     };
     response.widget_info(|| {
         egui::WidgetInfo::selected(egui::WidgetType::Button, true, row.expanded, &accessible)
@@ -660,7 +683,7 @@ fn show_row(
     // when the adapter said it can change a value, which is the rule every optional control here
     // follows — a control whose capability is absent is absent.
     if response.double_clicked() && can_set && !row.is_scope {
-        panel.editing = Some((row.key.clone(), row.value.clone()));
+        *editing = Some((row.key.clone(), row.value.clone()));
     } else if response.clicked() && row.has_children() {
         outcome.toggle_row = Some(row.key.clone());
     }
@@ -769,7 +792,7 @@ fn tint(enabled: bool) -> egui::Color32 {
 ///
 /// A row that is a paragraph long pushes every other row off the screen and cannot be read anyway.
 /// The whole of it is still what `debug variables` prints, because a command line has no width.
-fn elide(value: &str) -> String {
+pub fn elide(value: &str) -> String {
     let flat = value.replace('\n', " ");
     match flat.chars().count() > VALUE_LIMIT {
         true => format!("{}\u{2026}", flat.chars().take(VALUE_LIMIT).collect::<String>()),
