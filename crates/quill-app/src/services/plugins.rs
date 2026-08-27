@@ -302,6 +302,19 @@ impl Plugins {
         self.for_path(path)?.debug_adapter.as_deref()
     }
 
+    /// The languages this debugger debugs, as the plugins that are switched on say.
+    ///
+    /// The other direction of [`Plugins::debugger_for`], and it exists for `quill-cli debug
+    /// adapters`: an agent asking whether it can debug wants to know what `lldb` is *for* here,
+    /// which is a question only the manifests can answer.
+    pub fn languages_debugged_by(&self, adapter: &str) -> Vec<String> {
+        self.installed
+            .iter()
+            .filter(|plugin| plugin.enabled && plugin.debug_adapter.as_deref() == Some(adapter))
+            .map(|plugin| plugin.name.clone())
+            .collect()
+    }
+
     /// True when any plugin that is switched on names a debugger at all, which is what decides
     /// whether the debug tile can ever be reached in this project.
     pub fn any_debugger(&self) -> bool {

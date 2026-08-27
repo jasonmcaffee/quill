@@ -13,6 +13,7 @@ pub mod file_tree;
 pub mod icons;
 pub mod imports;
 pub mod launcher;
+pub mod locators;
 pub mod mcp;
 pub mod mermaid_scene;
 pub mod native_menu;

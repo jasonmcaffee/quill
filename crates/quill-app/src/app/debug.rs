@@ -34,6 +34,48 @@ use quill_dap::{AdapterCommand, Client, Reply};
 
 use crate::services::run_configurations::Configuration;
 
+/// A build that has to finish before there is a program to debug, and the thread running it.
+///
+/// `task-1692`: `cargo run` is a build tool, so debugging it means asking cargo what it built first.
+/// The build runs **on a thread**, the way `quill-git` runs git, because a cold `cargo build` of this
+/// repository is minutes and the window draws throughout it. The reply arrives on a channel and is
+/// taken in `QuillApp::take_the_debug_replies`, beside every other thread's replies.
+///
+/// Reading structured output out of the run tile instead was considered and rejected in the TDD: the
+/// tile is a ConPTY, and JSON that has been through a terminal's line wrapping is not JSON.
+pub struct PendingBuild {
+    /// The configuration this is a build *of*, which is what the session will be named after and what
+    /// keeps its own command line — the derived binary is the launch request's business only.
+    pub configuration: Configuration,
+    /// The debugger the built program will be given to.
+    pub adapter: String,
+    /// The file the session was started for, when it was `Debug Current File`.
+    pub for_file: Option<PathBuf>,
+    /// The `--bin` name, which picks one artifact out of a workspace that built several.
+    pub wanted: Option<String>,
+    /// The debuggee's own arguments, which never reached the build command.
+    pub program_args: Vec<String>,
+    /// What the tile says while it runs — `Building quill`.
+    pub what: String,
+    /// The command line, so the tile and the output can say what was really run.
+    pub command: String,
+    /// When it started, which is what the tile counts up from.
+    pub started: std::time::Instant,
+    /// The build's answer, once there is one.
+    pub replies: std::sync::mpsc::Receiver<Built>,
+}
+
+/// What a build came back with.
+pub enum Built {
+    /// The program cargo said it made.
+    Program(PathBuf),
+    /// The build failed, and this is what the compiler said — its own words, verbatim, which is the
+    /// rule `quill-git` already follows about git's standard error.
+    Failed(String),
+    /// The build worked and produced no program at all, which is a library crate.
+    Nothing,
+}
+
 /// How many lines of the adapter's own output are kept when it is not going to the run tile.
 ///
 /// A fallback rather than the usual path — §7.2 says the debuggee runs in the run tile — so this is a
@@ -89,6 +131,15 @@ pub struct Watch {
 pub struct DebugState {
     client: Client,
     session: Session,
+    /// How the adapter was started, kept so a **child session** can dial the same server again. See
+    /// [`DebugState::adopt_child`], which is what makes js-debug work at all.
+    command: AdapterCommand,
+    /// What wakes the window, kept for the same reason: a child session's reader is a second thread
+    /// and it has to be able to draw what it reads.
+    waker: quill_dap::Waker,
+    /// True once [`Self::adopt_child`] has moved the session onto a child connection, which is what
+    /// makes the parent's messages something to ignore rather than something to act on.
+    child_open: bool,
     /// A snapshot of the configuration this was started from, for the same reason `Run` keeps one:
     /// editing a configuration mid-session must change what the next session does and never what
     /// this one says about itself.
@@ -148,7 +199,7 @@ impl DebugState {
         configuration: Configuration,
         waker: quill_dap::Waker,
     ) -> Result<Self, String> {
-        let mut client = Client::start(command, waker)?;
+        let mut client = Client::start(command, waker.clone())?;
         let described = client.described().to_owned();
         let mut session = Session::new(launch);
         let opening = session.begin();
@@ -158,6 +209,9 @@ impl DebugState {
         Ok(Self {
             client,
             session,
+            command: command.clone(),
+            waker,
+            child_open: false,
             configuration,
             adapter: adapter.to_owned(),
             described,
@@ -193,6 +247,9 @@ impl DebugState {
         Self {
             client: Client::detached(),
             session: Session::new(serde_json::Value::Null),
+            command: AdapterCommand::stdio("a scripted adapter", Vec::new()),
+            waker: std::sync::Arc::new(|| {}),
+            child_open: false,
             configuration,
             adapter: adapter.to_owned(),
             described: "a scripted adapter".to_owned(),
@@ -481,11 +538,15 @@ impl DebugState {
         let mut for_the_window = Vec::new();
         for reply in self.client.poll() {
             match reply {
-                Reply::Message(message) => {
+                // Once a child session is open, the parent is only telemetry — and its sequence
+                // numbers are its own, so feeding them to the child's state machine would match a
+                // parent's response to whatever the child was waiting for. `task-1692`.
+                Reply::Message(_) if self.child_open => continue,
+                Reply::Message(message) | Reply::FromChild(message) => {
                     let outcome = self.session.on_message(*message);
                     self.client.write_all(&outcome.frames);
                     for event in outcome.events {
-                        if matches!(event, Event::RunInTerminal { .. }) {
+                        if matches!(event, Event::RunInTerminal { .. } | Event::StartDebugging { .. }) {
                             for_the_window.push(event);
                             continue;
                         }
@@ -590,7 +651,20 @@ impl DebugState {
                 self.rebuild_rows();
             }
             Event::Breakpoints { path, answered } => {
-                self.answered.insert(PathBuf::from(path), answered);
+                let path = PathBuf::from(path);
+                // **An answer with a different number of entries than were sent is not an answer
+                // about them**, and taking it would throw away the ids the real answer carried —
+                // which is what a later `breakpoint` event uses to say one has bound.
+                //
+                // js-debug sends `initialized` **twice** on a child session, so the breakpoints go
+                // out twice, and it answers the second `setBreakpoints` for a file with an empty
+                // list. Measured on `task-1692`, where the effect was a breakpoint that stopped the
+                // program and was still drawn hollow.
+                let expected = self.sent.get(&path).map(Vec::len).unwrap_or_default();
+                if answered.len() != expected && self.answered.contains_key(&path) {
+                    return;
+                }
+                self.answered.insert(path, answered);
             }
             Event::BreakpointChanged(changed) => {
                 // A breakpoint that bound after the fact — a library that has just loaded. Matched
@@ -667,7 +741,53 @@ impl DebugState {
             // Answered by the window, which owns the run tile. `take_replies` hands it up rather
             // than letting it reach here.
             Event::RunInTerminal { .. } => {}
+            // Both are the window's: one needs the run tile and the other needs the breakpoints
+            // re-sent once the child is open, and neither is this type's business.
+            Event::StartDebugging { .. } => {}
         }
+    }
+
+    /// Open the child session the adapter asked for, and speak to that from now on.
+    ///
+    /// **js-debug puts the program in a session of its own.** The parent answers `launch` and then
+    /// sends `startDebugging`; the program runs under the child, and a client that ignores it is left
+    /// with a session that has no threads, never stops, and whose breakpoints answer
+    /// `provisionalBreakpoint` for ever — which is exactly what a `node` configuration did before
+    /// `task-1692` measured it.
+    ///
+    /// So: answer the parent, dial the same server again, and run the handshake on the new connection
+    /// with the configuration the adapter handed over — it carries `__pendingTargetId`, which is the
+    /// only thing tying this connection to the program that is already waiting. The caller re-sends
+    /// the breakpoints afterwards, because the child has never been told about any of them.
+    pub fn adopt_child(
+        &mut self,
+        request_seq: i64,
+        request: &str,
+        configuration: serde_json::Value,
+    ) -> Result<(), String> {
+        let answer = self.session.answer_start_debugging(request_seq, true);
+        self.client.write_to_parent(&answer);
+        self.client.adopt_child(&self.command, self.waker.clone())?;
+        self.child_open = true;
+        let mut body = match configuration {
+            serde_json::Value::Object(fields) => fields,
+            _ => serde_json::Map::new(),
+        };
+        body.insert("request".to_owned(), serde_json::json!(request));
+        self.session = Session::new(serde_json::Value::Object(body));
+        // Everything the parent said about this program was about the parent. The child is a session
+        // that has never been asked anything.
+        self.threads.clear();
+        self.frames.clear();
+        self.frame = None;
+        self.scopes.clear();
+        self.fetched.clear();
+        self.rows.clear();
+        self.sent.clear();
+        self.answered.clear();
+        let opening = self.session.begin();
+        self.client.write_all(&opening.frames);
+        Ok(())
     }
 
     /// Ask every watch again, which is what a stop and a change of frame both mean.
@@ -801,5 +921,46 @@ mod tests {
         };
         assert!(!row.has_children());
         assert_eq!(row.key.split('/').next(), Some("Locals"));
+    }
+
+    /// **An answer with a different number of entries than were sent is not an answer about them.**
+    ///
+    /// js-debug sends `initialized` twice on a child session and answers the second
+    /// `setBreakpoints` for a file with an empty list; taking that threw away the ids the real
+    /// answer carried, and a breakpoint that stopped the program went on being drawn hollow.
+    /// `task-1692` measured it.
+    #[test]
+    fn an_answer_that_is_not_one_for_one_with_what_was_sent_is_not_taken() {
+        let mut state = DebugState::detached("node", Configuration::new("Test", "node app.js"));
+        let path = PathBuf::from(r"C:\p\app.js");
+        state.sent.insert(path.clone(), vec![10]);
+        state.absorb(Event::Breakpoints {
+            path: path.to_string_lossy().to_string(),
+            answered: vec![VerifiedBreakpoint {
+                id: Some(1),
+                verified: false,
+                line: Some(3),
+                message: Some("breakpoint.provisionalBreakpoint".to_owned()),
+            }],
+        });
+        assert_eq!(state.verified(&path, 10).map(|known| known.id), Some(Some(1)));
+        // The empty second answer changes nothing, so the id survives for the `breakpoint` event
+        // that says it has bound.
+        state.absorb(Event::Breakpoints {
+            path: path.to_string_lossy().to_string(),
+            answered: Vec::new(),
+        });
+        assert_eq!(state.verified(&path, 10).map(|known| known.id), Some(Some(1)));
+        // And a real answer, one for one with what was sent, still replaces it.
+        state.absorb(Event::Breakpoints {
+            path: path.to_string_lossy().to_string(),
+            answered: vec![VerifiedBreakpoint {
+                id: Some(1),
+                verified: true,
+                line: Some(3),
+                message: None,
+            }],
+        });
+        assert!(state.verified(&path, 10).expect("an answer").verified);
     }
 }

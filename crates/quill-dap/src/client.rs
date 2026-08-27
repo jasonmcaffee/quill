@@ -45,6 +45,11 @@ pub enum Reply {
     /// `variables` answer over a large structure is far bigger than every other variant, and an enum
     /// is as large as its largest arm.
     Message(Box<Message>),
+    /// One message the **child** session sent, once [`Client::adopt_child`] has opened one. A
+    /// variant rather than a flag because the two connections share one channel and their sequence
+    /// numbers are their own: a parent's late response fed to the child's state machine would be
+    /// matched to whatever the child happened to be waiting for.
+    FromChild(Box<Message>),
     /// The adapter wrote something that is not the protocol. The session ends, because there is no
     /// way to know where the next frame starts.
     Broken(String),
@@ -71,6 +76,14 @@ pub struct Client {
     /// session actually asked for and answers *that*, with the seq the session really used, exactly
     /// as an adapter would. Nothing is assumed about the order or the numbering.
     written: Option<Vec<Value>>,
+    /// The sender the reader threads push onto, kept so a **second** connection can be read onto the
+    /// same channel. See [`Client::adopt_child`].
+    sender: Sender<Reply>,
+    /// The parent's writer, once the client has moved to a child session.
+    ///
+    /// Kept because the request that asked for the child arrived on the parent and has to be
+    /// answered there, and because letting it drop would close a socket the adapter is still using.
+    parent: Option<Box<dyn Write + Send>>,
 }
 
 /// A pipe and a thread have nothing worth printing, so this says what was started and stops there.
@@ -89,6 +102,7 @@ impl Client {
     pub fn start(command: &AdapterCommand, waker: Waker) -> Result<Self, String> {
         let connection = adapter::start(command)?;
         let (sender, receiver) = std::sync::mpsc::channel::<Reply>();
+        let kept = sender.clone();
         let reader = connection.reader;
         // The adapter's own standard error, on a thread of its own. It is not the protocol and it
         // never completes a frame, so it cannot share the decoder — but it is where an adapter
@@ -116,7 +130,53 @@ impl Client {
             stopping: None,
             broken: false,
             written: None,
+            sender: kept,
+            parent: None,
         })
+    }
+
+    /// Open the child session an adapter asked for, and speak to **that** from now on.
+    ///
+    /// js-debug puts the program in a session of its own and sends `startDebugging`; the client
+    /// dials the same server again, and everything after that — the handshake, the breakpoints, the
+    /// stops — happens on the new connection. `task-1692` measured what happens without it: a parent
+    /// session with no threads, no stops, and a breakpoint that answers `provisionalBreakpoint` and
+    /// never binds.
+    ///
+    /// The parent's writer is kept rather than dropped, because the request came from there and
+    /// closing that socket would take the adapter down with it. Both connections are read onto the
+    /// **same channel**, so the window still drains one queue in one place: after the child is open
+    /// the parent says nothing but telemetry, which is already an ordinary `output` event.
+    ///
+    /// Only a server-shaped adapter can do this — there is one socket to dial again, where a stdio
+    /// child has only the pipes it was started with — and js-debug is the only adapter here that
+    /// asks. So a `program` is never started a second time: `connect` is what this dials with.
+    pub fn adopt_child(&mut self, command: &AdapterCommand, waker: Waker) -> Result<(), String> {
+        let connection = adapter::connect(command)?;
+        let reader = connection.reader;
+        let sender = self.sender.clone();
+        std::thread::Builder::new()
+            .name("quill-dap-child".to_owned())
+            .spawn(move || read_child_frames(reader, sender, waker))
+            .map_err(|problem| {
+                format!("Quill could not start a thread to read the child session: {problem}")
+            })?;
+        let parent = std::mem::replace(&mut self.writer, connection.writer);
+        self.parent = Some(parent);
+        self.broken = false;
+        Ok(())
+    }
+
+    /// Write one frame to the **parent** connection, which is where a reverse request came from.
+    ///
+    /// Nothing at all when there is no parent, which is every session that never adopted a child:
+    /// the ordinary writer is the only one there is, and [`Client::write`] is what answers on it.
+    pub fn write_to_parent(&mut self, frame: &Value) -> bool {
+        let Some(parent) = self.parent.as_mut() else {
+            return self.write(frame);
+        };
+        let body = codec::encode(frame);
+        parent.write_all(&body).and_then(|()| parent.flush()).is_ok()
     }
 
     /// A client with no adapter behind it, fed messages directly.
@@ -133,9 +193,9 @@ impl Client {
     /// which is what the terminal's fixed bytes are.
     pub fn detached() -> Self {
         let (sender, receiver) = std::sync::mpsc::channel::<Reply>();
-        // The sender is kept alive on purpose: a dropped one would make the channel say the thread
-        // has gone, and a detached client has no thread to have gone.
-        std::mem::forget(sender);
+        // A second one is kept alive on purpose: a channel with no senders left says the thread has
+        // gone, and a detached client has no thread to have gone.
+        std::mem::forget(sender.clone());
         Self {
             replies: receiver,
             writer: Box::new(Vec::new()),
@@ -144,6 +204,8 @@ impl Client {
             stopping: None,
             broken: false,
             written: Some(Vec::new()),
+            sender,
+            parent: None,
         }
     }
 
@@ -270,7 +332,26 @@ fn read_errors(mut errors: Box<dyn Read + Send>, sender: Sender<Reply>, waker: W
 }
 
 /// The reader thread: bytes in, [`Reply`]s out, and the window woken after each.
-fn read_frames(mut reader: Box<dyn Read + Send>, sender: Sender<Reply>, waker: Waker) {
+fn read_frames(reader: Box<dyn Read + Send>, sender: Sender<Reply>, waker: Waker) {
+    read_frames_as(reader, sender, waker, Reply::Message)
+}
+
+/// The same, tagging what it reads as the **child** session's.
+///
+/// Two connections push onto one channel, so the channel has to say which one a message came from:
+/// after a child is adopted the parent goes on sending telemetry with a numbering of its own, and
+/// feeding that to the child's state machine matches the wrong response to the wrong request. See
+/// [`Client::adopt_child`].
+fn read_child_frames(reader: Box<dyn Read + Send>, sender: Sender<Reply>, waker: Waker) {
+    read_frames_as(reader, sender, waker, Reply::FromChild)
+}
+
+fn read_frames_as(
+    mut reader: Box<dyn Read + Send>,
+    sender: Sender<Reply>,
+    waker: Waker,
+    wrap: fn(Box<Message>) -> Reply,
+) {
     let mut decoder = Decoder::new();
     // Eight kilobytes, which holds every frame an adapter sends but the largest `variables` answer
     // in one read. The decoder does not care how much arrives at once; this is simply less work per
@@ -287,7 +368,7 @@ fn read_frames(mut reader: Box<dyn Read + Send>, sender: Sender<Reply>, waker: W
             Ok(messages) => {
                 for value in messages {
                     let message = Message::read(&value);
-                    if sender.send(Reply::Message(Box::new(message))).is_err() {
+                    if sender.send(wrap(Box::new(message))).is_err() {
                         return;
                     }
                 }
@@ -412,7 +493,7 @@ mod tests {
     fn the_grace_only_starts_running_once_the_polite_stop_has_been_sent() {
         // A client over a socket nothing answers on cannot be built, so this exercises the timing
         // through the same fields with a client that was built from a scripted pipe.
-        let (_sender, receiver) = std::sync::mpsc::channel();
+        let (sender, receiver) = std::sync::mpsc::channel();
         let mut client = Client {
             replies: receiver,
             writer: Box::new(Vec::new()),
@@ -421,6 +502,8 @@ mod tests {
             stopping: None,
             broken: false,
             written: None,
+            sender,
+            parent: None,
         };
         assert!(client.stopping_in().is_none(), "nothing is waiting yet");
         assert!(!client.grace_ran_out());
@@ -434,7 +517,7 @@ mod tests {
 
     #[test]
     fn a_write_to_a_pipe_that_has_gone_is_false_rather_than_a_panic() {
-        let (_sender, receiver) = std::sync::mpsc::channel();
+        let (sender, receiver) = std::sync::mpsc::channel();
         let mut client = Client {
             replies: receiver,
             writer: Box::new(Broken),
@@ -443,6 +526,8 @@ mod tests {
             stopping: None,
             broken: false,
             written: None,
+            sender,
+            parent: None,
         };
         assert!(!client.write(&serde_json::json!({ "seq": 1 })));
         assert!(!client.write(&serde_json::json!({ "seq": 2 })), "and stays false");
@@ -462,7 +547,7 @@ mod tests {
 
     #[test]
     fn an_adapter_quill_did_not_start_is_never_reported_as_dead() {
-        let (_sender, receiver) = std::sync::mpsc::channel();
+        let (sender, receiver) = std::sync::mpsc::channel();
         let mut client = Client {
             replies: receiver,
             writer: Box::new(Vec::new()),
@@ -471,6 +556,8 @@ mod tests {
             stopping: None,
             broken: false,
             written: None,
+            sender,
+            parent: None,
         };
         assert!(client.is_running(), "its being there is not a question this can answer");
     }

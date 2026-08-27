@@ -4805,6 +4805,98 @@ fn the_run_widget_draws_its_three_states_in_the_title_bar() {
     report(results);
 }
 
+/// `task-1692`: the two buttons at the top right, in IntelliJ's order, and the rule that decides
+/// whether the second one is there at all.
+#[test]
+fn the_title_bar_carries_a_run_button_and_a_debug_button_beside_it() {
+    // The picture is `run_widget_idle`, which is this scene; what is asserted here is the rule that
+    // decides whether the second button is drawn at all.
+    // A configuration a debugger can take: `node server.js` names js-debug through the command line
+    // itself, which is what `debuggers::adapter_for` reads.
+    let mut both = harness("");
+    both.state_mut()
+        .run_configurations
+        .add_permanent(configuration("Dev server", "node server.js --port 3000"));
+    both.state_mut().run_selected = Some("Dev server".to_owned());
+    both.run();
+    both.get_by_label("Run the selected configuration");
+    both.get_by_label("Debug the selected configuration");
+
+    // And one nothing can debug has one button, which is Quill's rule for a control that cannot
+    // apply: absent rather than dimmed. Nothing here names a debugger — not the command line, not
+    // the plugins, and not the untitled document that is showing.
+    let mut plain = harness("");
+    plain.state_mut().run_configurations.add_permanent(configuration("Format", "black app"));
+    plain.state_mut().run_selected = Some("Format".to_owned());
+    plain.run();
+    plain.get_by_label("Run the selected configuration");
+    assert!(
+        plain.query_by_label("Debug the selected configuration").is_none(),
+        "there is nothing here a debugger could take"
+    );
+}
+
+/// The bug button sends the same `Action` the `Run` menu and `Shift+F9` send, which is what
+/// `QuillApp::debug_a_configuration` being the one place means.
+#[test]
+fn the_widgets_debug_button_starts_the_chosen_configuration_under_a_debugger() {
+    let mut pressed = harness("");
+    pressed
+        .state_mut()
+        .run_configurations
+        .add_permanent(configuration("Dev server", "node server.js"));
+    pressed.state_mut().run_selected = Some("Dev server".to_owned());
+    pressed.run();
+    pressed.get_by_label("Debug the selected configuration").click();
+    pressed.run();
+    // What happens next depends on what this machine has installed, and the test may not: what is
+    // being proved is that the press reached the debugger at all, which either a session or a
+    // sentence about the adapter shows.
+    let said = pressed.state().message.clone().unwrap_or_default();
+    assert!(
+        pressed.state().debug.is_some() || said.contains("node"),
+        "the press reached the debugger: {said}"
+    );
+}
+
+/// A debugger this machine has not got is a panel that says what is missing and offers the command,
+/// rather than an empty box — `task-1692` §7.1.
+///
+/// What was found is seeded rather than searched for, because a picture that depended on whether the
+/// machine running the test had CodeLLDB installed would not be a baseline at all.
+#[test]
+fn the_debug_tile_says_what_is_missing_and_offers_to_install_it() {
+    let mut harness = harness("");
+    harness
+        .state_mut()
+        .run_configurations
+        .add_permanent(configuration("App", r"target\debugpp.exe"));
+    harness.state_mut().run_selected = Some("App".to_owned());
+    harness.state_mut().debug_adapters.insert(
+        "lldb".to_owned(),
+        (
+            std::time::Instant::now(),
+            quill_app::services::debuggers::Report {
+                name: "lldb",
+                found: None,
+                configured: false,
+                programs: vec!["codelldb", "lldb-dap"],
+                languages: vec!["Rust".to_owned()],
+                comes_from: "lldb-dap ships with LLVM, and codelldb is the CodeLLDB extension's adapter",
+                install: "winget install --id LLVM.LLVM -e".to_owned(),
+                settings_key: "debug.lldb".to_owned(),
+                caveat: "",
+            },
+        ),
+    );
+    choose(&mut harness, Action::Debug(DebugAction::ToggleTile));
+    harness.run();
+    assert!(harness.state().debug_panel.visible);
+    harness.get_by_label("Install");
+    harness.get_by_label("Copy command");
+    harness.snapshot(shot("debug_tile_missing_adapter"));
+}
+
 #[test]
 fn with_nothing_to_run_the_widget_is_the_play_button_that_opens_the_dialog() {
     // Present, because the way to discover the feature has to be visible; small, because it is not

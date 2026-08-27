@@ -1248,6 +1248,24 @@ pub const COMMANDS: &[Command] = &[
         examples: &["quill-cli debug status --json", "quill-cli debug status --wait-for-pause"],
         local: false,
     },
+    Command {
+        area: "debug",
+        verb: "adapters",
+        summary: "Which debuggers this Quill drives, where each one is on this machine, what is missing, and the command that installs it. The first thing to run when a debug session will not start: it answers in fields under --json, so nothing has to be guessed at from a refusal.",
+        arguments: NO_ARGUMENTS,
+        flags: NO_FLAGS,
+        examples: &["quill-cli debug adapters", "quill-cli debug adapters --json"],
+        local: false,
+    },
+    Command {
+        area: "debug",
+        verb: "install",
+        summary: "Install a debug adapter by running its own install command in the run tile, where it can be watched with `run output` and stopped. Quill itself downloads nothing: what runs is a package manager, or an editor's extension installer, named by `debug adapters`.",
+        arguments: &[argument("adapter", true, "Which debugger: lldb or node.")],
+        flags: NO_FLAGS,
+        examples: &["quill-cli debug install lldb"],
+        local: false,
+    },
     // ----------------------------------------------------------------------------- the explorer
     Command {
         area: "explorer",

@@ -436,6 +436,13 @@ pub enum DebugAction {
     EvaluateExpression,
     /// Show the debug tile along the bottom, or put it away.
     ToggleTile,
+    /// Install the named debug adapter, by running its own install command in the run tile.
+    ///
+    /// `task-1692`: an adapter that is missing is one press away from being installed, and the press
+    /// runs a visible command in a terminal rather than the editor reaching out for anything. The
+    /// name is the adapter's — `lldb`, `node` — and an empty one means the one the session that could
+    /// not start was asking for.
+    InstallAdapter(String),
 }
 
 impl DebugAction {
@@ -457,6 +464,7 @@ impl DebugAction {
             DebugAction::ToggleBreakpointEnabled => "toggle-breakpoint-enabled",
             DebugAction::EvaluateExpression => "evaluate",
             DebugAction::ToggleTile => "toggle-tile",
+            DebugAction::InstallAdapter(_) => "install",
         }
     }
 
@@ -478,6 +486,7 @@ impl DebugAction {
             "toggle-breakpoint-enabled" => DebugAction::ToggleBreakpointEnabled,
             "evaluate" => DebugAction::EvaluateExpression,
             "toggle-tile" => DebugAction::ToggleTile,
+            "install" => DebugAction::InstallAdapter(named.unwrap_or_default()),
             _ => return None,
         })
     }
@@ -486,6 +495,9 @@ impl DebugAction {
     pub fn configuration(&self) -> Option<&str> {
         match self {
             DebugAction::Start(named) => named.as_deref(),
+            // Not a configuration but an adapter's name, which travels in the same field because it
+            // is the same thing to the command line: the one word this entry is about.
+            DebugAction::InstallAdapter(adapter) => Some(adapter.as_str()).filter(|name| !name.is_empty()),
             _ => None,
         }
     }

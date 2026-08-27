@@ -95,7 +95,7 @@ impl AdapterCommand {
 
 /// The two ends of a started adapter: something to write frames into, something to read them out of,
 /// and the child process to stop when the session ends.
-pub(crate) struct Connection {
+pub struct Connection {
     pub(crate) writer: Box<dyn Write + Send>,
     pub(crate) reader: Box<dyn Read + Send>,
     /// The adapter's own standard error, when it has one.
@@ -150,6 +150,18 @@ fn start_stdio(command: &AdapterCommand) -> Result<Connection, String> {
     })
 }
 
+/// Dial a server-shaped adapter that is **already running**, without starting anything.
+///
+/// What a child session is opened with: js-debug's `startDebugging` means "there is a second session
+/// waiting on the port you are already talking to", so the program must not be started again.
+pub fn connect(command: &AdapterCommand) -> Result<Connection, String> {
+    let Transport::Port(port) = command.transport else {
+        return Err("Only a server-shaped adapter can be connected to a second time.".to_owned());
+    };
+    let dialled = AdapterCommand { program: None, ..command.clone() };
+    start_server(&dialled, port)
+}
+
 fn start_server(command: &AdapterCommand, port: u16) -> Result<Connection, String> {
     // The server's own output is not the protocol — it is `node` complaining, or the server saying
     // which port it took — so it is swallowed rather than mixed into the frames. An adapter that
@@ -162,22 +174,43 @@ fn start_server(command: &AdapterCommand, port: u16) -> Result<Connection, Strin
         .as_mut()
         .and_then(|child| child.stderr.take())
         .map(|errors| Box::new(BufReader::new(errors)) as Box<dyn Read + Send>);
-    let address: SocketAddr = ([127, 0, 0, 1], port).into();
+    // **Both spellings of localhost, in that order.** js-debug binds whatever `localhost` resolves to
+    // on the machine, and on Windows that is `::1` before `127.0.0.1` — measured on `task-1692`,
+    // where a perfectly healthy adapter refused every connection until the second address was tried.
+    // A client that knew only the dotted quad is a client that cannot talk to the adapter it just
+    // started.
+    let addresses: [SocketAddr; 2] =
+        [([127, 0, 0, 1], port).into(), (std::net::Ipv6Addr::LOCALHOST, port).into()];
     let started = Instant::now();
     let stream = loop {
-        match TcpStream::connect(address) {
-            Ok(stream) => break stream,
-            Err(problem) if started.elapsed() >= CONNECT_GRACE => {
-                let mut child = child;
-                if let Some(child) = child.as_mut() {
-                    let _ = child.kill();
+        let mut refused = None;
+        let mut connected = None;
+        for address in addresses {
+            match TcpStream::connect(address) {
+                Ok(stream) => {
+                    connected = Some(stream);
+                    break;
                 }
-                return Err(format!(
-                    "Quill could not reach the debug adapter on 127.0.0.1:{port}: {problem}"
-                ));
+                Err(problem) => refused = Some(problem),
             }
-            Err(_) => std::thread::sleep(CONNECT_PAUSE),
         }
+        if let Some(stream) = connected {
+            break stream;
+        }
+        if started.elapsed() >= CONNECT_GRACE {
+            let mut child = child;
+            if let Some(child) = child.as_mut() {
+                let _ = child.kill();
+            }
+            let problem = match refused {
+                Some(problem) => problem.to_string(),
+                None => "nothing answered".to_owned(),
+            };
+            return Err(format!(
+                "Quill could not reach the debug adapter on 127.0.0.1:{port} or [::1]:{port}: {problem}"
+            ));
+        }
+        std::thread::sleep(CONNECT_PAUSE);
     };
     // Nagle's algorithm holds a small write back waiting for a second one, and every frame here is a
     // small write that the other end is waiting on. A stepping request delayed by forty milliseconds

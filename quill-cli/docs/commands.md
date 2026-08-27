@@ -1710,6 +1710,33 @@ quill-cli debug status --json
 quill-cli debug status --wait-for-pause
 ```
 
+### debug adapters
+
+```
+quill-cli debug adapters
+```
+
+Which debuggers this Quill drives, where each one is on this machine, what is missing, and the command that installs it. The first thing to run when a debug session will not start: it answers in fields under --json, so nothing has to be guessed at from a refusal.
+
+```sh
+quill-cli debug adapters
+quill-cli debug adapters --json
+```
+
+### debug install
+
+```
+quill-cli debug install <adapter>
+```
+
+Install a debug adapter by running its own install command in the run tile, where it can be watched with `run output` and stopped. Quill itself downloads nothing: what runs is a package manager, or an editor's extension installer, named by `debug adapters`.
+
+- `adapter` — Which debugger: lldb or node.
+
+```sh
+quill-cli debug install lldb
+```
+
 ## explorer — the file tree down the left
 
 `explorer files` is the list Quill searches, which leaves out `target`, `node_modules` and `__pycache__`.

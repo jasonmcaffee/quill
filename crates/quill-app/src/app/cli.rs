@@ -46,6 +46,7 @@ use quill_cli::protocol::{code, Reply, Request};
 
 use crate::app::actions::{Action, DebugAction, GitAction, HighlightColor, RunAction};
 use crate::app::debug::DebugState;
+use crate::services::debuggers;
 use crate::app::{QuillApp, ViewMode};
 use quill_core::symbols::Role;
 
@@ -334,7 +335,20 @@ impl QuillApp {
                     Err(problem) => Reply::failed(&request.command, code::NOT_APPLICABLE, problem),
                 })
             }
-            Waiting::DebugPause { .. } => {
+            Waiting::DebugPause { command, .. } => {
+                // A build that has to finish first is not an answer yet; a build that failed is, and
+                // saying so at once is what stops a caller waiting out a timeout for a session that
+                // is never going to exist.
+                if self.debug.is_none() {
+                    if self.debug_build.is_some() {
+                        return None;
+                    }
+                    let said = self
+                        .message
+                        .clone()
+                        .unwrap_or_else(|| "Nothing was started.".to_owned());
+                    return Some(Reply::failed(command, code::NOT_APPLICABLE, said));
+                }
                 let debug = self.debug.as_ref()?;
                 // An ended session is an answer too, and a better one than waiting out the timeout:
                 // a program that ran to completion is never going to stop, and saying so at once is
@@ -3312,6 +3326,13 @@ impl QuillApp {
     /// that takes is a fact about the program rather than about Quill.
     const DEBUG_WAIT: Duration = Duration::from_millis(30_000);
 
+    /// How long `debug start --wait-for-pause` waits when a locator has to build the program first.
+    ///
+    /// Ten minutes, because a cold `cargo build` of a real workspace is minutes and a caller that
+    /// gave up after thirty seconds would report a failure of a build that was working perfectly.
+    /// The same reasoning as [`Self::DEBUG_WAIT`], one step further out.
+    const BUILD_WAIT: Duration = Duration::from_millis(600_000);
+
     fn cli_debug(&mut self, request: &Request, verb: &str) -> Outcome {
         match verb {
             "start" => self.cli_debug_start(request),
@@ -3329,6 +3350,8 @@ impl QuillApp {
             "watch" => self.cli_debug_watch(request),
             "output" => self.cli_debug_output(request),
             "status" => self.cli_debug_status(request),
+            "adapters" => self.cli_debug_adapters(request),
+            "install" => self.cli_debug_install(request),
             _ => unknown(request),
         }
     }
@@ -3357,7 +3380,9 @@ impl QuillApp {
         let Some(said) = self.message.clone() else {
             return ok(request, "Debugging", self.debug_value());
         };
-        if self.debug.is_none() {
+        // Unless a locator is building the program first, which is neither: `cargo run` has no
+        // session yet and has not failed. `task-1692`.
+        if self.debug.is_none() && self.debug_build.is_none() {
             return no(request, code::NOT_APPLICABLE, said);
         }
         self.wait_for_a_pause(request, said)
@@ -3421,9 +3446,16 @@ impl QuillApp {
         if self.debug.as_ref().is_some_and(DebugState::is_ready) {
             return ok(request, said, self.debug_value());
         }
+        // A locator's build comes first, and a cold `cargo build` of a real project is minutes
+        // rather than seconds — so the wait is the build's, not a step's. A caller that says
+        // `--timeout` still gets exactly what it asked for.
+        let usual = match self.debug_build.is_some() {
+            true => Self::BUILD_WAIT,
+            false => Self::DEBUG_WAIT,
+        };
         Outcome::Hold(Waiting::DebugPause {
             command: request.command.clone(),
-            until: waits_for(request, "timeout", Self::DEBUG_WAIT),
+            until: waits_for(request, "timeout", usual),
         })
     }
 
@@ -3681,6 +3713,14 @@ impl QuillApp {
     /// carried whole, which is `quill-git`'s rule about git's standard error.
     fn cli_debug_output(&mut self, request: &Request) -> Outcome {
         let Some(debug) = self.debug.as_ref() else {
+            // What was said while there was no session to hold it, which is a failed build's
+            // compiler errors — the reason a session never started belongs where somebody looking
+            // for the reason will look. `task-1692`.
+            if !self.debug_output.is_empty() {
+                let rows = self.debug_output.clone();
+                let count = rows.len();
+                return lines(request, format!("{count} lines"), rows, Value::Null);
+            }
             return no(request, code::NOT_APPLICABLE, "Nothing is being debugged.");
         };
         let mut rows: Vec<String> = debug
@@ -3696,8 +3736,124 @@ impl QuillApp {
         lines(request, format!("{count} lines"), rows, Value::Null)
     }
 
+    /// `debug adapters` — the doctor, and the one command to run before any of the others.
+    ///
+    /// It exists because the alternative was reading `services/debuggers.rs`, which is what
+    /// `task-1692`'s first sentence describes somebody doing. Every debugger this version drives,
+    /// where each one really is on this machine, what is missing, and the command that would install
+    /// it — in fields under `--json`, because an agent deciding between "start a session" and "tell
+    /// the person to install something" should not have to read prose to do it.
+    fn cli_debug_adapters(&mut self, request: &Request) -> Outcome {
+        self.forget_the_adapter_search();
+        let names: Vec<&str> = debuggers::ALL.iter().map(|entry| entry.name).collect();
+        let mut rows: Vec<String> = Vec::new();
+        let mut adapters: Vec<Value> = Vec::new();
+        let mut found = 0;
+        for name in names {
+            let report = self.adapter_report(name);
+            let where_it_is = match &report.found {
+                Some(path) => path.display().to_string(),
+                None => String::new(),
+            };
+            match report.found.is_some() {
+                true => {
+                    found += 1;
+                    rows.push(format!("{:<8} found    {where_it_is}", report.name));
+                }
+                false => rows.push(format!("{:<8} missing  {}", report.name, report.comes_from)),
+            }
+            if !report.languages.is_empty() {
+                rows.push(format!("{:<8} used by  {}", "", report.languages.join(", ")));
+            }
+            rows.push(format!("{:<8} looked   {}", "", report.programs.join(", ")));
+            if report.found.is_none() && !report.install.is_empty() {
+                rows.push(format!("{:<8} install  {}", "", report.install));
+            }
+            if !report.caveat.is_empty() {
+                rows.push(format!("{:<8} note     {}", "", report.caveat));
+            }
+            adapters.push(json!({
+                "name": report.name,
+                "found": report.found.is_some(),
+                "path": where_it_is,
+                "configured": report.configured,
+                "programs": report.programs,
+                "languages": report.languages,
+                "comes_from": report.comes_from,
+                "install": report.install,
+                "settings_key": report.settings_key,
+                "caveat": report.caveat,
+            }));
+        }
+        let total = adapters.len();
+        lines(
+            request,
+            format!("{found} of {total} debug adapters are installed"),
+            rows,
+            json!({ "adapters": adapters }),
+        )
+    }
+
+    /// `debug install <adapter>` — the Install button's own path, which is what makes the button
+    /// allowed to exist: everything reachable by hand is reachable from the command line.
+    ///
+    /// It runs a package manager or an editor's extension installer **in the run tile**, so the
+    /// install is a visible program that `run output` can read and `run stop` can stop. Quill itself
+    /// still fetches nothing.
+    fn cli_debug_install(&mut self, request: &Request) -> Outcome {
+        let Some(name) = request.text("adapter") else {
+            return no(request, code::USAGE, "Say which debugger to install.");
+        };
+        let Some(entry) = debuggers::find(&name) else {
+            let known: Vec<&str> = debuggers::ALL.iter().map(|entry| entry.name).collect();
+            return no(
+                request,
+                code::NOT_FOUND,
+                format!("This version of Quill drives {}.", known.join(" and ")),
+            );
+        };
+        let command = entry.install_command();
+        if command.is_empty() {
+            return no(
+                request,
+                code::NOT_APPLICABLE,
+                format!(
+                    "Quill has no way to install {name} here. {}. Set debug.{name} to it once you have one.",
+                    entry.comes_from
+                ),
+            );
+        }
+        self.message = None;
+        self.debug_a_configuration(DebugAction::InstallAdapter(name.clone()));
+        let said = self.message.clone().unwrap_or_else(|| format!("Installing {name}"));
+        match self.run.index_of(&format!("Install {name}")) {
+            Some(_) => ok(request, said, json!({ "adapter": name, "command": command })),
+            // The run would not start, and the reason is what the status bar was given.
+            None => no(request, code::NOT_APPLICABLE, said),
+        }
+    }
+
     fn cli_debug_status(&mut self, request: &Request) -> Outcome {
         if self.debug.is_none() {
+            // A build in flight is not "nothing": a caller polling status through a `cargo build`
+            // has to be able to tell it from a session that never started.
+            if let Some(pending) = self.debug_build.as_ref() {
+                let said = format!("{} for {}", pending.what, pending.configuration.name);
+                let value = json!({
+                    "running": false,
+                    "state": "building",
+                    "building": pending.command,
+                    "seconds": pending.started.elapsed().as_secs(),
+                    "configuration": pending.configuration.name,
+                });
+                if request.switch("wait-for-pause") {
+                    return Outcome::Hold(Waiting::DebugPause {
+                        command: request.command.clone(),
+                        until: waits_for(request, "timeout", Self::BUILD_WAIT),
+                    });
+                }
+                return ok(request, said, value);
+            }
             return ok(
                 request,
                 "Nothing is being debugged.",

@@ -184,6 +184,14 @@ pub enum Event {
         args: Vec<String>,
         env: Vec<(String, String)>,
     },
+    /// The adapter has put the program in a session of its own and is asking the client to open it.
+    ///
+    /// js-debug's model, and the reason a `node` configuration used to connect and then do nothing:
+    /// the parent session it left behind has no threads and never stops, and its breakpoints stay
+    /// `provisional`. The client answers this by dialling the same adapter a second time and running
+    /// the handshake again with `configuration` — which carries js-debug's own `__pendingTargetId`,
+    /// the only thing that ties the new connection to the program that is already running.
+    StartDebugging { seq: i64, request: String, configuration: serde_json::Value },
     /// The session is over, with the code the program chose if it chose one.
     Ended { code: Option<i32> },
 }
@@ -546,6 +554,15 @@ impl Session {
         }
     }
 
+    /// The answer to the adapter's `startDebugging`: the client has opened the child session.
+    ///
+    /// Written on the **parent's** connection, because that is where the request came from — which
+    /// is why the client keeps the parent's writer once it has moved to the child.
+    pub fn answer_start_debugging(&mut self, request_seq: i64, opened: bool) -> Value {
+        let seq = self.take_seq();
+        messages::start_debugging_response(seq, request_seq, opened)
+    }
+
     /// The adapter has gone — its process died, or the pipe broke.
     ///
     /// An ending rather than an error, because a debuggee that ran to completion takes its adapter
@@ -603,6 +620,10 @@ impl Session {
                     events: vec![Event::RunInTerminal { seq, title, cwd, args, env }],
                 }
             }
+            Message::StartDebugging { seq, request, configuration } => Outcome {
+                frames: Vec::new(),
+                events: vec![Event::StartDebugging { seq, request, configuration }],
+            },
             Message::Other { .. } => Outcome::default(),
         }
     }
@@ -1373,6 +1394,31 @@ mod tests {
         assert_eq!(answered.frames[0]["type"], "response");
         assert_eq!(answered.frames[0]["request_seq"], 40);
         assert_eq!(answered.frames[0]["body"]["processId"], 1234);
+    }
+
+    /// js-debug's second reverse request, and the one that makes node debugging work at all: the
+    /// program is in a session of its own and the client is being told to open it.
+    #[test]
+    fn a_child_session_is_reported_with_the_configuration_that_opens_it() {
+        let mut session = paused_session();
+        let asked = session.on_message(Message::StartDebugging {
+            seq: 7,
+            request: "launch".to_owned(),
+            configuration: json!({ "type": "pwa-node", "__pendingTargetId": "abc123" }),
+        });
+        let Event::StartDebugging { seq, request, configuration } = &asked.events[0] else {
+            panic!("the child session");
+        };
+        assert_eq!(*seq, 7);
+        assert_eq!(request, "launch");
+        // `__pendingTargetId` is the only thing tying the new connection to the program that is
+        // already waiting, so it has to reach the client whole.
+        assert_eq!(configuration["__pendingTargetId"], "abc123");
+        let answered = session.answer_start_debugging(7, true);
+        assert_eq!(answered["type"], "response");
+        assert_eq!(answered["command"], "startDebugging");
+        assert_eq!(answered["request_seq"], 7);
+        assert_eq!(answered["success"], true);
     }
 
     /// The exception filters are the adapter's own, and an adapter that offers none is never sent

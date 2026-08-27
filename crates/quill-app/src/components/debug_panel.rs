@@ -43,9 +43,45 @@ const WATCH_HEADER: f32 = 24.0;
 /// every other row off the screen and cannot be read anyway.
 const VALUE_LIMIT: usize = 220;
 
+/// What the tile draws when there is no session, which is when it has the most to say.
+///
+/// An empty box is what the feature looked like to somebody who had not read the documentation —
+/// `task-1692`'s first sentence — so the tile answers the three questions there are: is something
+/// happening, is there a debugger on this machine, and what do I press.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Idle {
+    /// Nothing is happening and everything is in place, so it says what starts one.
+    Ready(String),
+    /// A locator's build is running, and this is what it is and how long it has been going.
+    Building { what: String, seconds: u64 },
+    /// There is no adapter on this machine, so it says what is missing and offers the command.
+    Missing(Missing),
+}
+
+impl Default for Idle {
+    fn default() -> Self {
+        Idle::Ready(String::new())
+    }
+}
+
+/// A debugger this machine has not got.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Missing {
+    /// The adapter's own name, which is what the Install button asks for.
+    pub adapter: String,
+    /// What was looked for and where it comes from, as the registry entry says it.
+    pub sentence: String,
+    /// The command that would install it, empty when Quill has nothing to offer.
+    pub install: String,
+}
+
 /// What the person did in the tile.
 #[derive(Debug, Default, PartialEq)]
 pub struct DebugOutcome {
+    /// The Install button was pressed, and this is the adapter it is about.
+    pub install: Option<String>,
+    /// The Copy button was pressed, and this is the command to put on the clipboard.
+    pub copy: Option<String>,
     /// The tile was put away.
     pub hide: bool,
     /// The `Console` button was pressed, so the run tile should come up in this one's place.
@@ -124,6 +160,7 @@ pub fn show(
     area: Rect,
     panel: &mut DebugPanel,
     debug: Option<&DebugState>,
+    idle: &Idle,
     opacity: f32,
 ) -> DebugOutcome {
     let mut outcome = DebugOutcome::default();
@@ -150,9 +187,9 @@ pub fn show(
     let body = Rect::from_min_max(Pos2::new(area.left(), header.bottom() + 1.0), area.max);
     let Some(debug) = debug else {
         // A tile with no session says what would start one, which is what the run tile's empty grid
-        // does rather than showing an empty list nobody can act on.
-        let message = "Nothing is being debugged. Press Debug in the title bar, or set a breakpoint and press Shift+F9.";
-        empty(ui, body, message);
+        // does rather than showing an empty list nobody can act on. Since `task-1692` it also says
+        // what is *stopping* one, and offers the command that would fix it.
+        show_idle(ui, body, idle, &mut outcome);
         return outcome;
     };
 
@@ -632,6 +669,53 @@ fn show_row(
 }
 
 /// A pane with nothing in it says why, in the quiet colour and in the middle.
+/// What the tile draws with no session: a sentence, and where there is something to press, buttons.
+///
+/// Three states and one function, because they are three answers to the same question — "why is
+/// nothing being debugged" — and a person reads them in the same place.
+fn show_idle(ui: &mut egui::Ui, area: Rect, idle: &Idle, outcome: &mut DebugOutcome) {
+    let missing = match idle {
+        Idle::Ready(message) => return empty(ui, area, message),
+        Idle::Building { what, seconds } => {
+            return empty(ui, area, &format!("{what}\u{2026} {seconds}s"))
+        }
+        Idle::Missing(missing) => missing,
+    };
+    // The sentence, wrapped, sitting above the buttons rather than centred in the whole tile: with
+    // something to press underneath it, the pair reads as one thing.
+    let text = ui.painter_at(area).layout(
+        missing.sentence.clone(),
+        egui::FontId::proportional(12.0),
+        color::TEXT_FAINT,
+        (area.width() - 64.0).max(120.0),
+    );
+    let has_a_command = !missing.install.is_empty();
+    let buttons = match has_a_command {
+        true => 30.0,
+        false => 0.0,
+    };
+    let size = text.size();
+    let top = area.center().y - (size.y + buttons) / 2.0;
+    ui.painter_at(area).galley(Pos2::new(area.center().x - size.x / 2.0, top), text, color::TEXT_FAINT);
+    if !has_a_command {
+        return;
+    }
+    // `Install` runs the command in the run tile, where it can be watched; `Copy command` is for
+    // somebody who would rather run it themselves, which is a reasonable thing to want of a command
+    // that installs software.
+    const INSTALL: f32 = 96.0;
+    const COPY: f32 = 108.0;
+    let row = Pos2::new(area.center().x - (INSTALL + COPY + 6.0) / 2.0, top + size.y + 8.0);
+    let install = Rect::from_min_size(row, Vec2::new(INSTALL, 22.0));
+    let copy = Rect::from_min_size(Pos2::new(install.right() + 6.0, row.y), Vec2::new(COPY, 22.0));
+    if crate::components::modal::button(ui, install, "Install", true, true) {
+        outcome.install = Some(missing.adapter.clone());
+    }
+    if crate::components::modal::button(ui, copy, "Copy command", true, false) {
+        outcome.copy = Some(missing.install.clone());
+    }
+}
+
 fn empty(ui: &egui::Ui, area: Rect, message: &str) {
     let painter = ui.painter_at(area);
     let label = painter.layout(

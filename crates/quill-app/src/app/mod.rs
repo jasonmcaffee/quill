@@ -35,6 +35,8 @@ pub mod folding;
 pub mod git;
 pub mod symbols;
 
+use std::collections::HashMap;
+
 use crate::services::symbol_index::Indexer;
 
 use std::path::{Path, PathBuf};
@@ -72,7 +74,7 @@ use crate::components::terminal_panel::{self, TerminalPanel};
 use crate::components::text_menu;
 use crate::components::text_tools;
 use crate::components::title_bar::{self, MenuPlacement};
-use crate::app::debug::DebugState;
+use crate::app::debug::{Built, DebugState, PendingBuild};
 use crate::services::breakpoint_store::BreakpointStore;
 use crate::services::debuggers;
 use crate::services::file_kind;
@@ -84,6 +86,7 @@ use crate::services::run_configurations::{self, Configuration, Origin, RunConfig
 use crate::services::file_tree::FileTree;
 use crate::services::file_clipboard::FileClipboard;
 use crate::services::launcher;
+use crate::services::locators;
 use crate::services;
 use crate::services::icons::Icons;
 use crate::services::plugins::Plugins;
@@ -374,6 +377,14 @@ pub const KEYBOARD_HOLDER: &str = "quill-keyboard-holder";
 /// counted on, which is why the heartbeat is a delay rather than a thread calling `request_repaint`.
 pub const HEARTBEAT: std::time::Duration = std::time::Duration::from_millis(500);
 
+/// How long an adapter search is believed before it is done again.
+///
+/// It exists because the commonest thing to happen next, when there is no adapter, is an install
+/// running in the tile beside the message that offered it — so the message has to notice. Five
+/// seconds is short enough that a finished install is reflected while somebody is still looking at
+/// it, and long enough that a few directory reads are not part of drawing a frame.
+pub const ADAPTER_SEARCH_TTL: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Keep egui's keyboard focus on a widget of Quill's own, so that pressing `Tab` or an arrow key
 /// cannot hand the keyboard to a button.
 ///
@@ -567,6 +578,18 @@ pub struct QuillApp {
     /// first version of this does not, which is what keeps every pane of the tile free of a session
     /// chooser above it. See `app::debug`.
     pub debug: Option<DebugState>,
+    /// The build that has to finish before a session can start, when there is one. `task-1692`:
+    /// `cargo run` names a build tool, so Debug asks cargo what it built before it debugs anything.
+    pub debug_build: Option<PendingBuild>,
+    /// What was found the last time each adapter was looked for, and when. The search reads
+    /// directories and a frame may not, so it is cached here — and because an install running in the
+    /// tile beside it changes the answer, the cache **goes stale on its own** after
+    /// [`ADAPTER_SEARCH_TTL`] rather than waiting to be told.
+    pub debug_adapters: HashMap<String, (std::time::Instant, debuggers::Report)>,
+    /// What was said about debugging while there was no session to hold it — which in practice is a
+    /// failed build's compiler errors. `debug output` reads it before the session's own output, so
+    /// the reason a session never started is in the place somebody would look for it.
+    pub debug_output: Vec<String>,
     /// The project's breakpoints, as `.quill/breakpoints.conf` holds them. The authority for every
     /// file that is **not** open; a file that is open is owned by its document and pushed in here
     /// whenever it changes — the highlights' rule, unchanged. See `services::breakpoint_store`.
@@ -735,6 +758,9 @@ impl QuillApp {
             unsaved_run_configurations: false,
             debug_panel: DebugPanel::new(),
             debug: None,
+            debug_build: None,
+            debug_output: Vec::new(),
+            debug_adapters: HashMap::new(),
             breakpoints: BreakpointStore::new(),
             evaluate: None,
             breakpoint_dialog: None,
@@ -1824,7 +1850,55 @@ impl QuillApp {
                 let showing = self.debug_panel.visible;
                 self.show_the_debug_tile(!showing);
             }
+            DebugAction::InstallAdapter(adapter) => self.install_an_adapter(&adapter),
         }
+    }
+
+    /// Install a debug adapter, by running its own install command in the run tile.
+    ///
+    /// **The editor still fetches nothing.** What runs is a package manager or an editor's extension
+    /// installer, named by the registry entry, in a visible terminal with a program in it that can be
+    /// watched, read with `run output` and stopped — which is every other run's rules, applied to
+    /// this one. `task-1692` §7.1, and `tools/release.ps1` installing `gh` with winget is the same
+    /// move made a year earlier.
+    ///
+    /// The configuration it makes is a temporary, so it is offered again if it has to be run again
+    /// and is never written into the project's own file. What was selected before is put back
+    /// afterwards: installing something is not choosing what the play button does.
+    fn install_an_adapter(&mut self, adapter: &str) {
+        let adapter = match adapter.trim().is_empty() {
+            // An empty name means "the one that could not start", which is the adapter the file that
+            // is showing would use — the same question the refusal itself asked.
+            true => match self.document().path().and_then(|path| self.plugins.debugger_for(path)) {
+                Some(named) => named.to_owned(),
+                None => {
+                    self.message = Some("Say which debugger to install.".to_owned());
+                    return;
+                }
+            },
+            false => adapter.trim().to_owned(),
+        };
+        let Some(entry) = debuggers::find(&adapter) else {
+            self.message = Some(format!("This version of Quill does not know a debugger called {adapter}."));
+            return;
+        };
+        let command = entry.install_command();
+        if command.is_empty() {
+            self.message = Some(format!(
+                "Quill has no way to install {adapter} here. {}. Set {} to it once you have one.",
+                entry.comes_from,
+                format_args!("debug.{adapter}")
+            ));
+            return;
+        }
+        let was_selected = self.run_selected.clone();
+        self.forget_the_adapter_search();
+        let configuration = Configuration::new(&format!("Install {adapter}"), &command);
+        match self.start_a_run(configuration) {
+            Ok(()) => self.message = Some(format!("Installing {adapter}: {command}")),
+            Err(problem) => self.message = Some(problem),
+        }
+        self.run_selected = was_selected;
     }
 
     /// Start a configuration under its debugger.
@@ -1836,28 +1910,252 @@ impl QuillApp {
     /// `for_file` names the file the session was started for, which is what decides which language's
     /// debugger to use when the configuration is a temporary made from `run.file`.
     fn start_debugging(&mut self, configuration: Configuration, for_file: Option<PathBuf>) {
-        let path = for_file.or_else(|| self.document().path().map(Path::to_path_buf));
-        let Some(adapter) = path.as_deref().and_then(|path| self.plugins.debugger_for(path)) else {
+        let Some(adapter) = self.adapter_for(&configuration, for_file.as_deref()) else {
             self.message = Some(
-                "This file's language has not said which debugger to use, so there is nothing to start."
+                "Nothing has said which debugger to use for this configuration, so there is nothing to start."
                     .to_owned(),
             );
             return;
         };
-        let adapter = adapter.to_owned();
+        // A configuration that names a build tool is built first and debugged second — `cargo run`
+        // is the commonest configuration there is, and refusing it was `task-1692`'s second sentence.
+        if let Some(build) = locators::locate(&configuration.command) {
+            self.begin_a_build(build, configuration, adapter, for_file);
+            return;
+        }
+        self.launch_a_session(configuration, adapter, None);
+    }
+
+    /// What the debug tile says when there is no session: a build in flight, a debugger this machine
+    /// has not got, or the invitation to press Debug.
+    ///
+    /// Worked out each frame from a **cached** search, because looking for an adapter reads
+    /// directories — the extension folders, LLVM's install locations — and a frame may not.
+    /// [`Self::forget_the_adapter_search`] is what makes an install take effect.
+    pub(crate) fn debug_idle(&mut self) -> debug_panel::Idle {
+        if let Some(pending) = self.debug_build.as_ref() {
+            return debug_panel::Idle::Building {
+                what: pending.what.clone(),
+                seconds: pending.started.elapsed().as_secs(),
+            };
+        }
+        let ready = debug_panel::Idle::Ready(
+            "Nothing is being debugged. Press the bug button in the title bar, or set a breakpoint and press Shift+F9."
+                .to_owned(),
+        );
+        // Which adapter this project would use, asked of the configuration the buttons would start.
+        let Some(configuration) =
+            self.configuration_named(None).or_else(|| self.suggestions().into_iter().next())
+        else {
+            return ready;
+        };
+        let Some(adapter) = self.adapter_for(&configuration, None) else {
+            return ready;
+        };
+        let report = self.adapter_report(&adapter);
+        if report.is_found() {
+            return ready;
+        }
+        debug_panel::Idle::Missing(debug_panel::Missing {
+            sentence: format!(
+                "Debugging {} needs {}. {}.",
+                report.name,
+                report.programs.join(" or "),
+                report.comes_from
+            ),
+            adapter: report.name.to_owned(),
+            install: report.install,
+        })
+    }
+
+    /// What was found the last time this adapter was looked for.
+    ///
+    /// The search is cached because it reads directories and the tile asks every frame; it is
+    /// forgotten whenever something could have changed it, which is an install finishing or the
+    /// settings being written.
+    pub(crate) fn adapter_report(&mut self, adapter: &str) -> debuggers::Report {
+        if let Some((looked, known)) = self.debug_adapters.get(adapter) {
+            if looked.elapsed() < ADAPTER_SEARCH_TTL {
+                return known.clone();
+            }
+        }
+        let Some(entry) = debuggers::find(adapter) else {
+            return debuggers::Report {
+                name: "",
+                found: None,
+                configured: false,
+                programs: Vec::new(),
+                languages: Vec::new(),
+                comes_from: "this version of Quill does not know it",
+                install: String::new(),
+                settings_key: format!("debug.{adapter}"),
+                caveat: "",
+            };
+        };
+        let override_path = self.settings.debug_adapter(adapter).map(str::to_owned);
+        let mut report = debuggers::report(entry, override_path.as_deref());
+        report.languages = self.plugins.languages_debugged_by(adapter);
+        self.debug_adapters.insert(adapter.to_owned(), (std::time::Instant::now(), report.clone()));
+        report
+    }
+
+    /// Look for the adapters again next time somebody asks, because something that could have
+    /// changed the answer has happened — an install has finished, or the settings have moved.
+    pub(crate) fn forget_the_adapter_search(&mut self) {
+        self.debug_adapters.clear();
+    }
+
+    /// Which debugger a configuration is given to.
+    ///
+    /// **The configuration first, the open file only as a fallback.** Asking the open file first is
+    /// what made debugging a Node server while reading `README.md` answer that the file's language
+    /// had named no debugger — a refusal about the wrong thing. `debuggers::adapter_for` reads the
+    /// command line, the plugins answer for a program whose extension one of them claims, and the
+    /// file that is showing is what is left.
+    pub(crate) fn adapter_for(
+        &self,
+        configuration: &Configuration,
+        for_file: Option<&Path>,
+    ) -> Option<String> {
+        if let Some((program, _)) = configuration.program_and_arguments() {
+            if let Some(named) = debuggers::adapter_for(&program) {
+                return Some(named.to_owned());
+            }
+            if let Some(named) = self.plugins.debugger_for(Path::new(&program)) {
+                return Some(named.to_owned());
+            }
+        }
+        let path = for_file.map(Path::to_path_buf).or_else(|| self.document().path().map(Path::to_path_buf));
+        path.as_deref().and_then(|path| self.plugins.debugger_for(path)).map(str::to_owned)
+    }
+
+    /// Start the build a locator asked for, on a thread.
+    ///
+    /// The window is woken when it finishes, exactly as the git worker wakes it, and nothing else
+    /// waits: the editor draws, the tile counts the seconds, and pressing Debug again replaces the
+    /// build the way starting a second session replaces the first.
+    fn begin_a_build(
+        &mut self,
+        build: locators::Build,
+        configuration: Configuration,
+        adapter: String,
+        for_file: Option<PathBuf>,
+    ) {
+        let root = self.tree.root().to_path_buf();
+        let folder = configuration.working_directory(&root);
+        let (sender, replies) = std::sync::mpsc::channel();
+        let waker = self.waker();
+        let command = build.command();
+        let wanted = build.wanted.clone();
+        let program = build.program.clone();
+        let args = build.args.clone();
+        std::thread::spawn(move || {
+            let answer = match std::process::Command::new(&program)
+                .args(&args)
+                .current_dir(&folder)
+                .output()
+            {
+                Ok(output) if output.status.success() => {
+                    let printed = String::from_utf8_lossy(&output.stdout);
+                    match locators::executable(&printed, wanted.as_deref()) {
+                        Some(program) => Built::Program(program),
+                        None => Built::Nothing,
+                    }
+                }
+                // The compiler's own words, which is what `--message-format=json-render-diagnostics`
+                // puts on standard error and is more use than anything Quill could write instead.
+                Ok(output) => Built::Failed(String::from_utf8_lossy(&output.stderr).to_string()),
+                Err(problem) => Built::Failed(format!("{program} would not start: {problem}")),
+            };
+            let _ = sender.send(answer);
+            waker();
+        });
+        // A build replaces whatever was being debugged, because Debug always means "this, now".
+        self.stop_debugging();
+        self.debug_output.clear();
+        self.message = Some(format!("{}\u{2026}", build.what));
+        self.debug_build = Some(PendingBuild {
+            configuration,
+            adapter,
+            for_file,
+            wanted: build.wanted,
+            program_args: build.program_args,
+            what: build.what,
+            command,
+            started: std::time::Instant::now(),
+            replies,
+        });
+        self.show_the_debug_tile(true);
+    }
+
+    /// Take the build's answer, once there is one, and start the session it was for.
+    ///
+    /// Called once a frame from [`Self::take_the_debug_replies`], which is where every other thread's
+    /// replies are already taken.
+    fn take_the_build(&mut self) {
+        let Some(pending) = self.debug_build.as_ref() else {
+            return;
+        };
+        let Ok(answer) = pending.replies.try_recv() else {
+            return;
+        };
+        let pending = self.debug_build.take().expect("just looked at it");
+        match answer {
+            Built::Program(program) => {
+                let built = (program.to_string_lossy().to_string(), pending.program_args);
+                self.launch_a_session(pending.configuration, pending.adapter, Some(built));
+            }
+            Built::Failed(said) => {
+                // The compiler's words go where an adapter's words go, so `debug output` carries
+                // them and nothing has to be read off a terminal.
+                self.debug_output.extend(said.lines().map(str::to_owned));
+                self.message = Some("The build failed \u{2014} see the debug output.".to_owned());
+            }
+            Built::Nothing => {
+                self.message =
+                    Some(format!("Nothing to debug: `{}` built no program.", pending.command));
+            }
+        }
+    }
+
+    /// Start the adapter and open the session, once there is a program to give it.
+    ///
+    /// `built` is what a locator produced, and it stands in for the configuration's command line in
+    /// the launch request **only** — the configuration keeps its own command, so the play button
+    /// still runs `cargo run` and the tile still says so.
+    fn launch_a_session(
+        &mut self,
+        configuration: Configuration,
+        adapter: String,
+        built: Option<(String, Vec<String>)>,
+    ) {
         let root = self.tree.root().to_path_buf();
         let override_path = self.settings.debug_adapter(&adapter).map(str::to_owned);
-        // The refusal is one sentence naming what was looked for and where it comes from, built by
-        // the registry entry that knew — never an error dialog and never a dead button.
+        // The refusal is one sentence naming what was looked for, where it comes from and the
+        // command that installs it, built by the registry entry that knew — never an error dialog
+        // and never a dead button.
         let prepared = match debuggers::prepare(
             &adapter,
             &configuration,
             &root,
             override_path.as_deref(),
+            built,
         ) {
             Ok(prepared) => prepared,
             Err(refusal) => {
                 self.message = Some(refusal.message());
+                // And the tile comes up saying it, with the Install button under it. A sentence in
+                // the status bar is what a person misses; `task-1692`'s whole complaint is that
+                // pressing Debug looked like nothing happening.
+                //
+                // A session that has already ended is thrown away first, because the tile draws the
+                // offer only where there is no session at all — and the empty panes of a program
+                // that finished a minute ago are worth less than the reason this one never started.
+                if self.debug.as_ref().is_some_and(|debug| !debug.is_alive()) {
+                    self.debug = None;
+                }
+                self.forget_the_adapter_search();
+                self.show_the_debug_tile(true);
                 return;
             }
         };
@@ -2244,9 +2542,16 @@ impl QuillApp {
     /// One function rather than twelve arms in the middle of `ui`, for the reason the run tile's
     /// outcome is settled in one place: the tile decides nothing and this decides everything, so
     /// pressing `Step Over` in the tile and pressing `F8` are the same call.
-    fn act_on_the_debug_tile(&mut self, outcome: debug_panel::DebugOutcome) {
+    fn act_on_the_debug_tile(&mut self, outcome: debug_panel::DebugOutcome, ctx: &egui::Context) {
         if outcome.hide {
             self.show_the_debug_tile(false);
+        }
+        if let Some(adapter) = outcome.install {
+            self.debug_a_configuration(DebugAction::InstallAdapter(adapter));
+        }
+        if let Some(command) = outcome.copy {
+            ctx.copy_text(command.clone());
+            self.message = Some(format!("Copied: {command}"));
         }
         if outcome.console {
             // One press, both directions: the debuggee's terminal is the run tile, and two grids
@@ -2374,6 +2679,9 @@ impl QuillApp {
     /// Called once a frame, beside the git worker's own poll and the run tile's `settle`, which is
     /// where every other thread's replies are already taken.
     fn take_the_debug_replies(&mut self, ctx: &egui::Context) {
+        // A build that has finished is what starts the session, so it is asked first — and it is
+        // asked whether or not a session exists, which the early return below would have skipped.
+        self.take_the_build();
         let Some(debug) = self.debug.as_mut() else {
             return;
         };
@@ -2384,8 +2692,25 @@ impl QuillApp {
             self.message = Some(said);
         }
         for event in asked {
-            if let quill_dap::Event::RunInTerminal { seq, title, cwd, args, env } = event {
-                self.run_the_debuggee(seq, &title, &cwd, args, env);
+            match event {
+                quill_dap::Event::RunInTerminal { seq, title, cwd, args, env } => {
+                    self.run_the_debuggee(seq, &title, &cwd, args, env);
+                }
+                // js-debug's child session. Opening it is the session's own business; re-sending the
+                // breakpoints is the window's, because the child has never been told about any of
+                // them and the store is what knows them all. `task-1692`.
+                quill_dap::Event::StartDebugging { seq, request, configuration } => {
+                    let opened = self
+                        .debug
+                        .as_mut()
+                        .map(|debug| debug.adopt_child(seq, &request, configuration));
+                    match opened {
+                        Some(Ok(())) => self.send_every_breakpoint(),
+                        Some(Err(problem)) => self.message = Some(problem),
+                        None => {}
+                    }
+                }
+                _ => {}
             }
         }
         if paused {
@@ -4937,6 +5262,9 @@ impl QuillApp {
         }
         // The debug tile, in the same place and never at the same time as either of the other two.
         if self.debug_panel.visible {
+            // Worked out before the tile is drawn, because it is what the tile says when there is no
+            // session and because the search behind it is a cache the window owns.
+            let idle = self.debug_idle();
             let outcome = {
                 let mut panel_ui = ui.new_child(egui::UiBuilder::new().max_rect(terminal_rect));
                 panel_ui.set_clip_rect(terminal_rect);
@@ -4945,7 +5273,7 @@ impl QuillApp {
                 // its own state mutably and what it draws immutably — the shape every component in
                 // Quill has.
                 let DebugSplit { panel, debug } = split_the_debug(self);
-                debug_panel::show(&mut panel_ui, terminal_rect, panel, debug, opacity)
+                debug_panel::show(&mut panel_ui, terminal_rect, panel, debug, &idle, opacity)
             };
             if outcome.drag != 0.0 {
                 let limit = (body.height() - 120.0).max(settings::DEBUG_MIN);
@@ -4957,7 +5285,7 @@ impl QuillApp {
                 self.panes.debug_height = settings::DEBUG_HEIGHT;
                 self.unsaved_settings = true;
             }
-            self.act_on_the_debug_tile(outcome);
+            self.act_on_the_debug_tile(outcome, ui.ctx());
         }
         // What every program has said since the last frame, and the hard kill that follows a polite
         // stop nobody answered. Outside the `visible` test on purpose: a program that is running
@@ -5257,10 +5585,23 @@ impl QuillApp {
                 .and_then(|path| path.file_name())
                 .map(|name| name.to_string_lossy().to_string())
         });
+        // The bug button is there when the configuration the play button would start resolves to a
+        // debugger — asked of the thing the button acts on rather than of whichever tab is focused,
+        // so it does not come and go as tabs are switched. `task-1692` §4.
+        let debuggable = self
+            .configuration_named(None)
+            .or_else(|| self.suggestions().into_iter().next())
+            .and_then(|configuration| {
+                let adapter = self.adapter_for(&configuration, None)?;
+                debuggers::can_debug(&adapter, &configuration.command).then_some(())
+            })
+            .is_some()
+            || self.debug_applies_here();
         run_widget::WidgetState {
             selected: self.run_selected.clone(),
             rows,
             running,
+            debuggable,
             current_file,
         }
     }
@@ -5276,6 +5617,8 @@ impl QuillApp {
 
     /// A setting changed, so put it into effect and write it down.
     fn apply_settings(&mut self, before: &Settings) {
+        // A `debug.<name>` may have moved, and the search that found the old one is now a lie.
+        self.forget_the_adapter_search();
         if self.settings.font_family != before.font_family || self.settings.font_size != before.font_size
         {
             self.set_the_font_everywhere();

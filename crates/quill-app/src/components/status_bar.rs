@@ -98,23 +98,61 @@ pub fn show(ui: &egui::Ui, area: Rect, status: &Status<'_>, opacity: f32) {
         );
     }
 
-    // A message, when there is one, sits after the caret position and before the right hand end.
-    if let Some(message) = message {
-        pen += 12.0;
-        label(&painter, &mut pen, "\u{2502}".to_owned(), color::DIVIDER);
-        pen += 10.0;
-        label(&painter, &mut pen, message.to_owned(), color::TEXT_CONTROL);
-    }
-
     // The font, or the picture's size, sits against the right edge, and the branch sits before it,
-    // which is where every editor with a status bar puts it.
+    // which is where every editor with a status bar puts it. Worked out before the message is drawn,
+    // because where they end is what says how much room the message has.
     let galley = painter.layout_no_wrap(detail.to_owned(), font.clone(), color::TEXT_DIM);
     let mut right = area.right() - 16.0 - galley.size().x;
     painter.galley(Pos2::new(right, middle - galley.size().y / 2.0), galley, color::TEXT_DIM);
     if let Some(git) = git {
-        let galley = painter.layout_no_wrap(git.to_owned(), font, color::TEXT_CONTROL);
+        let galley = painter.layout_no_wrap(git.to_owned(), font.clone(), color::TEXT_CONTROL);
         right -= 18.0 + galley.size().x;
         crate::theme::icon::branch(&painter, Pos2::new(right - 12.0, middle), color::TEXT_DIM);
         painter.galley(Pos2::new(right, middle - galley.size().y / 2.0), galley, color::TEXT_CONTROL);
+    }
+
+    // A message, when there is one, sits after the caret position and **before whatever the right
+    // hand end took**, cut short with an ellipsis rather than drawn over the branch and the font. A
+    // long one used to be drawn straight through them: `task-1692`'s refusals name a program, where
+    // it comes from and the command that installs it, so a sentence longer than the bar stopped
+    // being the rare case it had been.
+    if let Some(message) = message {
+        pen += 12.0;
+        label(&painter, &mut pen, "\u{2502}".to_owned(), color::DIVIDER);
+        pen += 10.0;
+        // Clear of the branch icon as well, which is drawn twelve points to the left of `right`.
+        let room = right - 26.0 - pen;
+        if room > 24.0 {
+            let galley = elided(&painter, message, &font, room);
+            painter.galley(Pos2::new(pen, middle - galley.size().y / 2.0), galley, color::TEXT_CONTROL);
+        }
+    }
+}
+
+/// `message` laid out in one line, cut short with an ellipsis when it will not fit in `room`.
+///
+/// Measured rather than counted, because the font is proportional and a count of characters would be
+/// wrong by a word either way. The first guess is the proportion that fits and the loop takes one
+/// character at a time from there, which is a handful of layouts for a long sentence and none at all
+/// for the usual message, which fits whole.
+fn elided(
+    painter: &egui::Painter,
+    message: &str,
+    font: &egui::FontId,
+    room: f32,
+) -> std::sync::Arc<egui::Galley> {
+    let whole = painter.layout_no_wrap(message.to_owned(), font.clone(), color::TEXT_CONTROL);
+    if whole.size().x <= room {
+        return whole;
+    }
+    let characters: Vec<char> = message.chars().collect();
+    let mut keep = ((characters.len() as f32) * (room / whole.size().x)).floor() as usize;
+    loop {
+        let cut: String = characters.iter().take(keep).collect::<String>() + "\u{2026}";
+        let galley = painter.layout_no_wrap(cut, font.clone(), color::TEXT_CONTROL);
+        if galley.size().x <= room || keep == 0 {
+            return galley;
+        }
+        keep -= 1;
     }
 }

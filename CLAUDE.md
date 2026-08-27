@@ -507,11 +507,106 @@ when it starts, and the variables tree shows what the adapter says rather than p
 toolchain's DWARF is fully readable, and Rust 1.85+ ships LLDB formatters that improve the MSVC case.
 
 Deliberately not here, each with its reason in §13 of the TDD: **attach** (launch only; the protocol
-work is attach-ready and attach is its own ticket), **more than one session**, **deriving a Cargo
-project's binary**, **Python** (no Python plugin ships, so a `python` entry no manifest could name
-would be dead code), **Smart Step Into**, **Force variants**, **stepping filters**, **Reset Frame**,
-**data breakpoints**, **memory and disassembly views**, **hot code replace**, and **downloading
-adapters**.
+work is attach-ready and attach is its own ticket), **more than one session**, **Python** (no Python
+plugin ships, so a `python` entry no manifest could name would be dead code), **Smart Step Into**,
+**Force variants**, **stepping filters**, **Reset Frame**, **data breakpoints**, **memory and
+disassembly views**, **hot code replace**, and **downloading adapters**.
+
+## Everything before the first pause is the half that used to fail
+
+`task-1692` reported an agent that had to read Quill's source, download a debugger and write code to
+debug anything. None of that was about the debugger above: it was about the four places the feature
+did nothing *before* a session had started, and each of them is now the opposite.
+`tasks/task-1692-debugging-out-of-the-box-tdd.md` is the design.
+
+**Two buttons at the top right, which is IntelliJ's pair.** `run_widget` is `[ Name ▾ ] [▶] [🐞] [■]`,
+and the bug is present when **the configuration the play button would start resolves to a debugger** —
+`QuillApp::adapter_for` asked of the thing the button acts on, not of whichever tab has focus. So a
+Rust or a Node project always shows both and a vault of Markdown shows one, which keeps the rule that
+a control is absent when it cannot apply without a button that comes and goes as tabs are switched.
+Debug was `Shift+F9` and a menu entry before, which is a feature that is invisible to anybody who has
+not read the documentation.
+
+**The debugger comes from the configuration, and the open file is only the fallback.**
+`debuggers::adapter_for` reads the command line — cargo is `lldb`, the npm family and a `.js` or `.ts`
+path are `node`, an `.exe` or a path with no extension is `lldb` — then the plugins answer for the
+program's own extension, and the file that is showing is what is left. Asking the open file first is
+what made debugging a Node server while reading `README.md` answer that the file's language had named
+no debugger, which is a refusal about the wrong thing entirely.
+
+**`cargo run` is built and then debugged, which is Zed's locator and was `task-1687` §13's own
+deferral.** `services::locators` rewrites the command — `cargo run --release -- --fast` becomes
+`cargo build --release --message-format=json-render-diagnostics`, and `--fast` goes to the debuggee —
+runs it **on a thread**, the way `quill-git` runs git, and takes the binary out of cargo's own
+`compiler-artifact` lines. `cargo test` gets `--no-run` and its filter goes to the test binary, which
+is how a failing test is debugged. Deriving `target/debug/<crate>` by convention instead is wrong for
+workspaces, examples, tests, custom profiles and renamed binaries; asking cargo costs one process and
+is always right. A failed build's compiler errors go to `debug output` verbatim, `debug status`
+answers `state: building`, and `debug start --wait-for-pause` waits the build out rather than a
+stepping verb's thirty seconds. **npm gets no locator on purpose**: js-debug runs a command line
+through its own runtime, so `npm run dev` already debugs.
+
+**An adapter is looked for where installers really put it, not only on `PATH`.**
+`debuggers::well_known` reads the VS Code family's extension folders (CodeLLDB and js-debug, six
+editors), `C:\Program Files\LLVM\bin`, `%LOCALAPPDATA%\Programs\LLVM\bin`, Visual Studio's bundled
+LLVM, homebrew, Xcode, `/usr/lib/llvm-*` and Debian's versioned `lldb-dap-20` names. Versions sort by
+their numbers rather than as text, because `1.11.4` sorts under `1.9.0` as a string and the answer
+would be a year-old CodeLLDB on a machine that has both. This is what makes `node` work without
+`debug.node` being set, which it required before — an adapter that would not start until it had been
+configured is an adapter nobody starts.
+
+**A missing adapter offers the command that gets one.** The refusal carries it, the debug tile draws
+it with `Install` and `Copy command`, and `quill-cli debug install <adapter>` is the same path — which
+is what makes the button allowed to exist at all. `Debugger::install_command` picks against the
+machine: with `code` on `PATH` it installs **CodeLLDB**, which is the adapter the registry prefers
+anyway and a fiftieth of the download, and otherwise `winget install --id LLVM.LLVM -e`. Pressing it
+starts a **temporary run configuration**, so the install is a visible program in the run tile that
+`run output` reads and `run stop` stops. **The editor still fetches nothing**: a package manager the
+person pressed a button for, in a terminal they can watch, is not the editor reaching out, and it is
+the move `tools/release.ps1` already makes when it installs `gh` with winget.
+
+**Three things measured about js-debug, and node debugging did not work without any of them.**
+The `node` entry had never been run against a real js-debug — `debug.node` was unset on the machine
+that built it — and `task-1692` found all three by running it.
+
+- **js-debug binds `::1`, not `127.0.0.1`.** Its own banner says `Debug server listening at ::1:8123`.
+  `adapter::start_server` tries both spellings of localhost now; before, a perfectly healthy adapter
+  was "actively refused".
+- **The program runs in a session of its own.** js-debug answers `launch` on the parent and then asks
+  the client to open a child with `startDebugging`, whose `configuration` carries a
+  `__pendingTargetId`. A client that drops that request is left with a parent that has no threads,
+  never stops, and whose breakpoints answer `provisionalBreakpoint` for ever — which is precisely
+  what pressing Debug on a `.js` file used to do. `Client::adopt_child` dials the same server again
+  and `DebugState::adopt_child` runs the handshake there; the window re-sends the breakpoints,
+  because the child has never been told about any of them. Both connections are read onto **one**
+  channel and the child's messages are **tagged** — `Reply::FromChild` — because the two connections
+  number their own requests and a parent's late response fed to the child's state machine matches the
+  wrong request.
+- **It sends `initialized` twice on a child session**, so the breakpoints go out twice, and it answers
+  the second `setBreakpoints` for a file with an **empty list**. Taking that threw away the ids the
+  real answer carried, which is what a later `breakpoint` event uses to say one has bound — so a
+  breakpoint that stopped the program went on being drawn hollow. An answer that is not one for one
+  with what was sent is not an answer about it, and is not taken.
+
+**And the install command for js-debug is a release asset, not the extension.** Measured:
+`code --install-extension ms-vscode.js-debug` answers "already installed", because js-debug is one of
+VS Code's *built-in* extensions — and that copy ships no `dapDebugServer.js` at all, since VS Code
+runs js-debug in process. The standalone DAP server is `js-debug-dap-vN.tar.gz` on the
+vscode-js-debug releases, and [`JS_DEBUG_FETCH`] unpacks it beside CodeLLDB. On Windows it names
+`%SystemRoot%\System32\tar.exe` by its full path, because a machine with Git for Windows ahead of it
+on `PATH` has a different `tar` that answered `gzip: stdin: unexpected end of file` on an archive
+Windows' own tar unpacked without complaint.
+
+**A long message in the status bar is cut short rather than drawn over the branch name.** It always
+could have been; these refusals — a program, where it comes from, and the command that installs it —
+are what made it the ordinary case rather than the rare one.
+
+**`quill-cli debug adapters` is the doctor, and it is what an agent runs first.** Every debugger this
+version drives, where each one really is, what is missing, the languages that use it and the command
+that would install it — in fields under `--json`, because the alternative was reading
+`services/debuggers.rs`, which is exactly what the ticket describes somebody doing. The adapter search
+reads directories, so the window caches it for `ADAPTER_SEARCH_TTL`: five seconds, because the
+commonest thing to happen next is an install running in the tile beside the message that offered it.
 
 ## A block is collapsed by hiding its lines, and the line numbers do not move
 

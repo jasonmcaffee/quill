@@ -1,5 +1,5 @@
-//! The run widget at the right of the title bar: the chosen configuration's name, a play button,
-//! and a stop square while it runs.
+//! The run widget at the right of the title bar: the chosen configuration's name, a play button, a
+//! bug button, and a stop square while it runs.
 //!
 //! `tasks/task-1683-run-configurations-tdd.md` §6.2. It sits between the project's name and the
 //! text tools, **inside the height the title bar already has** — the bar's height never changes, so
@@ -16,6 +16,14 @@
 //!   the rule `controls::flyout` records: egui keeps at most one popup open at a time.
 //! - **Play**, running the selected configuration. With none selected it opens the dialog instead,
 //!   which is what `Add Configuration...` means without a second control meaning it.
+//! - **Debug**, the bug beside it, running the same configuration under its debugger — `task-1692`,
+//!   and IntelliJ's own pair in IntelliJ's own order. It is present when the configuration the play
+//!   button would start **resolves to a debugger at all**, which `QuillApp::run_widget_state` works
+//!   out: a Rust or a Node project therefore always shows both buttons, and a vault of Markdown and
+//!   CSS shows one, because there is nothing there to step through and never will be. That is
+//!   Quill's rule for a control that cannot apply, asked of the thing the button acts on rather than
+//!   of whichever tab happens to be focused — a button that came and went as tabs were switched
+//!   would be worse than either answer.
 //! - **Stop**, drawn **only while the selected configuration runs** — a control absent when it
 //!   cannot apply.
 //!
@@ -28,7 +36,7 @@
 
 use egui::{CornerRadius, Pos2, Rect, Sense, Vec2};
 
-use crate::app::actions::{Action, RunAction};
+use crate::app::actions::{Action, DebugAction, RunAction};
 use crate::components::controls;
 use crate::services::run_configurations::Origin;
 use crate::theme::{color, icon, size};
@@ -69,6 +77,10 @@ pub struct WidgetState {
     pub rows: Vec<Row>,
     /// True when the chosen configuration is running, which is what draws the stop square.
     pub running: bool,
+    /// True when something here could be debugged, which is what draws the bug button. Worked out by
+    /// the window from the configuration the play button would start, falling back to the open
+    /// file's language — see [`crate::app::QuillApp::adapter_for`].
+    pub debuggable: bool,
     /// The name `Run Current File` would give its temporary — the open file's name — when the
     /// file's language says how one file of it is run. `None` puts the entry away altogether.
     pub current_file: Option<String>,
@@ -109,6 +121,9 @@ pub fn width(state: &WidgetState) -> f32 {
     let mut width = BUTTON;
     if state.has_a_list() {
         width += name_width(&state.label()) + 4.0;
+    }
+    if state.debuggable {
+        width += 2.0 + BUTTON;
     }
     if state.running {
         width += 2.0 + BUTTON;
@@ -158,6 +173,25 @@ pub fn show(ui: &mut egui::Ui, area: Rect, state: &WidgetState) -> Option<Action
         });
     }
     pen = play.right() + 2.0;
+
+    // Debug, beside it, which is IntelliJ's pair and IntelliJ's order. Same configuration, same
+    // command, under a debugger — so with nothing chosen it opens the dialog, exactly as play does.
+    if state.debuggable {
+        let debug = Rect::from_min_size(Pos2::new(pen, middle - BUTTON / 2.0), Vec2::splat(BUTTON));
+        let name = match &state.selected {
+            Some(_) => "Debug the selected configuration",
+            None => "Add a run configuration to debug",
+        };
+        // Tinted on the same rule as the play triangle beside it — the colour means "this starts
+        // something", so the pair reads as a pair.
+        if square_button(ui, debug, name, icon::bug, state.selected.is_some()) {
+            chosen = Some(match state.selected {
+                Some(_) => Action::Debug(DebugAction::Start(None)),
+                None => Action::Run(RunAction::Edit),
+            });
+        }
+        pen = debug.right() + 2.0;
+    }
 
     // Stop, drawn only while it can apply — Quill's rule for a control that cannot.
     if state.running {
@@ -314,6 +348,22 @@ mod tests {
         // And a runnable file is enough on its own, because `Run Current File` is a row.
         let file = WidgetState { current_file: Some("server.js".to_owned()), ..WidgetState::default() };
         assert!(file.has_a_list());
+    }
+
+    /// The pair `task-1692` asks for: the bug button is one more button's worth of title bar, and it
+    /// is there exactly when there is something it could debug.
+    #[test]
+    fn the_widget_grows_by_one_button_when_there_is_something_to_debug() {
+        let plain = WidgetState {
+            selected: Some("Dev server".to_owned()),
+            rows: vec![row("Dev server", Origin::Permanent, false)],
+            ..WidgetState::default()
+        };
+        let with_debug = WidgetState { debuggable: true, ..plain.clone() };
+        assert_eq!(width(&with_debug) - width(&plain), 2.0 + BUTTON);
+        // And both at once is both, which is what a running debug session looks like.
+        let running = WidgetState { running: true, ..with_debug.clone() };
+        assert_eq!(width(&running) - width(&plain), 2.0 * (2.0 + BUTTON));
     }
 
     #[test]

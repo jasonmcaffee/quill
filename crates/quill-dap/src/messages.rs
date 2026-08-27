@@ -407,6 +407,9 @@ pub enum Message {
     /// The reverse request: run this command in the client's own terminal and say what its process
     /// id was. Quill answers it with the run tile.
     RunInTerminal { seq: i64, kind: String, title: String, cwd: String, args: Vec<String>, env: Vec<(String, String)> },
+    /// The adapter has started the program under a session of its own and is asking the client to
+    /// open it. js-debug's model, and the only way its breakpoints ever bind.
+    StartDebugging { seq: i64, request: String, configuration: Value },
     /// Anything else the adapter sent.
     Other { kind: String, name: String },
 }
@@ -477,9 +480,25 @@ fn read_event(value: &Value) -> Message {
     }
 }
 
-/// The one request an adapter makes of the client.
+/// The two requests an adapter makes of the client.
 fn read_reverse_request(value: &Value) -> Message {
     let name = text(value, "command").unwrap_or_default();
+    // js-debug launches the program under a **child session** and asks the client to open it, which
+    // is what `startDebugging` is. A client that does not answer gets a parent session with no
+    // threads, no stops and a provisional breakpoint that never binds — measured on `task-1692`,
+    // where that is exactly what a `node` configuration did.
+    if name == "startDebugging" {
+        let arguments = value.get("arguments").cloned().unwrap_or(Value::Null);
+        return Message::StartDebugging {
+            seq: value.get("seq").and_then(Value::as_i64).unwrap_or(0),
+            request: arguments
+                .get("request")
+                .and_then(Value::as_str)
+                .unwrap_or("launch")
+                .to_owned(),
+            configuration: arguments.get("configuration").cloned().unwrap_or(Value::Null),
+        };
+    }
     if name != "runInTerminal" {
         return Message::Other { kind: "request".to_owned(), name };
     }
@@ -530,6 +549,19 @@ fn read_reverse_request(value: &Value) -> Message {
 ///
 /// A command that could not be started is `success: false` with a sentence, and the adapter then
 /// falls back to running the program itself and sending its output as `output` events.
+/// `success` to the adapter's `startDebugging`, which is all it wants: the client says it has opened
+/// the child session, and the child's own connection is where everything happens after that.
+pub fn start_debugging_response(seq: i64, request_seq: i64, opened: bool) -> Value {
+    json!({
+        "seq": seq,
+        "type": "response",
+        "request_seq": request_seq,
+        "command": "startDebugging",
+        "success": opened,
+        "body": {},
+    })
+}
+
 pub fn run_in_terminal_response(
     seq: i64,
     request_seq: i64,
