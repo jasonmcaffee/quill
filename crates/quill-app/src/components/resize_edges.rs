@@ -18,6 +18,29 @@
 //!
 //! A corner is a square [`CORNER`] points on a side and an edge is [`EDGE`] points wide. The corner has
 //! to win where the two overlap, so the corners are added after the edges.
+//!
+//! ## A maximised window has no grips at all, and that is not a nicety
+//!
+//! `task-1693` reported a window that could not be resized. Driven with real mouse input, a freshly
+//! started Quill resizes from all four edges and all four corners, and in `egui_kittest` all eight
+//! report `drag_started`. What is broken is what happens when the window manager **refuses** the
+//! request.
+//!
+//! `ViewportCommand::BeginResize` becomes winit's `handle_os_dragging`, which latches a private
+//! `dragging` flag, posts `WM_NCLBUTTONDOWN`, and returns early from **every later call** until that
+//! flag is cleared. The only place in winit that clears it is `WM_EXITSIZEMOVE` — the end of a modal
+//! size or move loop. A posted `WM_NCLBUTTONDOWN` that never starts such a loop therefore latches
+//! the flag for the life of the process, and a **maximised** window is exactly that case: Windows
+//! turns the hit test into `SC_SIZE`, and `Size` is disabled on a maximised window. One refused edge
+//! drag and the window can no longer be resized **or moved** at all, because the title bar's own
+//! `StartDrag` goes through the same latch. Measured twice on this machine: after a single edge drag
+//! on a maximised window, every later drag did nothing, and a freshly started Quill worked at once.
+//!
+//! So **no grip is added while the window is maximised**. That is Quill's own rule for a control
+//! that can never apply — a maximised window has no size to change — and it is what makes it
+//! impossible to send a request the window manager will throw away. The title bar's `StartDrag` is
+//! left alone, because Windows *does* handle dragging a maximised window: it restores it and moves
+//! it, which is a real modal loop and therefore an honest `WM_EXITSIZEMOVE`.
 
 use egui::{Rect, Sense, Vec2};
 use egui::viewport::ResizeDirection;
@@ -36,7 +59,14 @@ pub const CORNER: f32 = 16.0;
 ///
 /// The caller sends the viewport command, so this component changes nothing itself, which is the rule
 /// every component in Quill follows.
-pub fn show(ui: &mut egui::Ui, window: Rect) -> Option<ResizeDirection> {
+///
+/// `maximized` says whether the window is maximised, and when it is **nothing is added at all** — no
+/// grip, no cursor, no request. See the note at the top of this file: a resize the window manager
+/// refuses does not merely fail, it wedges every later move and resize as well.
+pub fn show(ui: &mut egui::Ui, window: Rect, maximized: bool) -> Option<ResizeDirection> {
+    if maximized {
+        return None;
+    }
     let mut started = None;
     // The four edges first, then the four corners over them, so a grab in a corner resizes both ways.
     let edges: [(&str, ResizeDirection, Rect, egui::CursorIcon); 4] = [
@@ -137,5 +167,22 @@ mod tests {
     #[test]
     fn a_corner_reaches_further_than_an_edge_so_it_can_win_where_they_overlap() {
         assert!(CORNER > EDGE);
+    }
+
+    /// `task-1693`: a maximised window adds no grips, so no resize the window manager would refuse
+    /// is ever asked for. See the note at the top of this file for what one refused request costs.
+    /// That nothing is *drawn* either is checked in the screenshot tests, which can ask the window
+    /// for a control by name.
+    #[test]
+    fn a_maximised_window_asks_for_no_resize() {
+        let context = egui::Context::default();
+        let mut answer = Some(ResizeDirection::North);
+        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+            let window = Rect::from_min_size(egui::pos2(0.0, 0.0), Vec2::new(800.0, 600.0));
+            answer = show(ui, window, true);
+        });
+        // egui insists a pass's texture changes are taken or cleared before the output is dropped.
+        output.textures_delta.clear();
+        assert_eq!(answer, None, "a maximised window has no size to change");
     }
 }

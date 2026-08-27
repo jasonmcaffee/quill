@@ -26,6 +26,26 @@
 //! A **left click** in that column toggles one, which is new behaviour: until now the gutter took
 //! only `secondary_clicked` over the whole of itself, so nothing was taken away from anything. It is
 //! taken per row, the way the blame cell already takes one.
+//!
+//! ## A mark is centred on the letters, not on the line
+//!
+//! `task-1693` reported that zooming left the numbers and the dots out of line with the text, and
+//! the arithmetic says why. A `PlacedLine` is taller than the glyphs in it: the baseline sits
+//! `ascent` from the top and **all** the extra leading is added below, which is what makes single
+//! and double spaced paragraphs start at the same place. `text_renderer::READING_LEADING` alone is
+//! `0.45` of the point size, so the bottom of every line box is empty air that grows with the zoom.
+//! Centring a mark in that box put it low by about a fifth of the point size — three points at the
+//! default sixteen, thirty at the hundred and forty-four the settings allow.
+//!
+//! So every mark takes its centre from [`text_band`], which is the box the letters really occupy and
+//! is the same box `layout.rs` says the caret is drawn to. Two things deliberately keep the whole
+//! line: the change bar, which marks a line rather than its letters and has to meet the bar above it
+//! with no gap, and the blame cell's background, for the same reason.
+//!
+//! The numbers and the blame column are also **set at a size that follows the editor's**, because a
+//! number a third the height of the line it counts reads as a mistake however well it is aligned.
+//! Both are ratios of `settings::DEFAULT_FONT_SIZE`, so at the default they are exactly the 11.5 and
+//! 10.5 points the gutter has always used and only the alignment changes.
 
 use egui::{Color32, CornerRadius, Pos2, Rect, Sense, Vec2};
 use quill_core::Layout;
@@ -36,16 +56,29 @@ use crate::theme::{color, icon};
 pub const GAP: f32 = 12.0;
 /// Space either side of the number column.
 const NUMBER_MARGIN: f32 = 8.0;
-/// How wide the blame column is when it is showing. Enough for `12/31/2026  Firstname`, measured
-/// against the longest date and a nine letter name, and no wider: the column takes room the text
-/// would rather have.
+/// How wide the blame column is when it is showing, at the default font size. Enough for
+/// `12/31/2026  Firstname`, measured against the longest date and a nine letter name, and no wider:
+/// the column takes room the text would rather have.
+///
+/// It is a measurement of the type rather than of the column, so it follows [`BLAME_RATIO`] — see
+/// [`blame_width`].
 const BLAME_WIDTH: f32 = 118.0;
 /// The stripe marking a line that differs from the version in git.
 const CHANGE_BAR: f32 = 3.0;
-/// The size the numbers are set at.
-const NUMBER_SIZE: f32 = 11.5;
-/// The size the blame column is set at.
-const BLAME_SIZE: f32 = 10.5;
+/// The size the numbers are set at, as a fraction of the editor's own font size.
+///
+/// Written as a ratio of the default rather than as a new constant, so that a window at the default
+/// size sets its numbers at exactly the 11.5 points it always has and no accepted screenshot changes
+/// its type. See [`number_size`].
+const NUMBER_RATIO: f32 = 11.5 / crate::settings::DEFAULT_FONT_SIZE;
+/// The size the blame column is set at, on the same terms.
+const BLAME_RATIO: f32 = 10.5 / crate::settings::DEFAULT_FONT_SIZE;
+/// The smallest and largest the gutter's own type is allowed to get.
+///
+/// Six point text still needs a gutter somebody can read, and a hundred and forty-four point text
+/// must not have a gutter wider than the editing area beside it.
+const SMALLEST_TYPE: f32 = 9.0;
+const LARGEST_TYPE: f32 = 28.0;
 /// How wide the square a folding arrow is drawn and clicked in is. The whole of [`GAP`], so the
 /// target is as large as the space allows — a five point arrow with a five point target is a control
 /// nobody can hit.
@@ -128,6 +161,49 @@ pub struct Gutter<'a> {
     /// The paragraph the program is stopped on, when it is stopped in this file. Drawn as an arrow
     /// over the breakpoint column, which is IntelliJ's own mark.
     pub execution_point: Option<usize>,
+    /// The size the editor sets its text at, which is what the gutter's own type follows.
+    ///
+    /// Zero from `Default`, which reads as the default size — a `Gutter` built by a test that does
+    /// not care about type sizes gets the sizes the gutter has always used.
+    pub font_size: f32,
+}
+
+/// The size the numbers are set at for an editor set at `font_size`.
+fn number_size(font_size: f32) -> f32 {
+    type_size(font_size, NUMBER_RATIO)
+}
+
+/// The size the blame column is set at, on the same terms.
+fn blame_size(font_size: f32) -> f32 {
+    type_size(font_size, BLAME_RATIO)
+}
+
+/// How wide the blame column is, which follows its type.
+fn blame_width(font_size: f32) -> f32 {
+    BLAME_WIDTH * blame_size(font_size) / (crate::settings::DEFAULT_FONT_SIZE * BLAME_RATIO)
+}
+
+/// One of the gutter's two type sizes, clamped so that neither extreme of the zoom is unusable.
+///
+/// A `font_size` of zero — which is what `Gutter::default()` gives — means the default size, so a
+/// test that builds a gutter by hand gets the sizes the gutter has always used.
+fn type_size(font_size: f32, ratio: f32) -> f32 {
+    let size = match font_size > 0.0 {
+        true => font_size,
+        false => crate::settings::DEFAULT_FONT_SIZE,
+    };
+    (size * ratio).clamp(SMALLEST_TYPE, LARGEST_TYPE)
+}
+
+/// The box the letters of `line` actually occupy on screen, given the layout's `top`.
+///
+/// **Not the line box.** A line is taller than its glyphs — the baseline is `ascent` from the top
+/// and every scrap of extra leading is added below — so centring anything in the line box puts it
+/// low, by more the larger the type. This is the box the caret is already drawn to, and it is what
+/// every mark in the gutter is centred on. See the note at the top of this file.
+fn text_band(line: &quill_core::PlacedLine, top: f32) -> egui::Rangef {
+    let baseline = top + line.y + line.baseline;
+    egui::Rangef::new(baseline - line.ascent, baseline + line.descent)
 }
 
 /// How one breakpoint is drawn, which is the whole of what the gutter knows about it.
@@ -235,7 +311,7 @@ pub fn width(ui: &egui::Ui, gutter: &Gutter, lines: usize) -> f32 {
     }
     let mut width = CHANGE_BAR + 2.0 + GAP;
     if gutter.numbers {
-        let font = egui::FontId::monospace(NUMBER_SIZE);
+        let font = egui::FontId::monospace(number_size(gutter.font_size));
         let digit = ui.ctx().fonts_mut(|fonts| fonts.glyph_width(&font, '0'));
         width += digit * digits(lines) as f32 + NUMBER_MARGIN * 2.0;
     } else if gutter.needs_a_breakpoint_column() {
@@ -245,7 +321,7 @@ pub fn width(ui: &egui::Ui, gutter: &Gutter, lines: usize) -> f32 {
         width += BREAKPOINT_COLUMN;
     }
     if gutter.blame.is_some() {
-        width += BLAME_WIDTH;
+        width += blame_width(gutter.font_size);
     }
     width
 }
@@ -273,9 +349,10 @@ pub fn show(
     }
 
     let mut pen = area.left();
+    let blame = blame_width(gutter.font_size);
     let blame_rect = gutter.blame.map(|_| {
-        let rect = Rect::from_min_size(Pos2::new(pen, area.top()), Vec2::new(BLAME_WIDTH, area.height()));
-        pen += BLAME_WIDTH;
+        let rect = Rect::from_min_size(Pos2::new(pen, area.top()), Vec2::new(blame, area.height()));
+        pen += blame;
         rect
     });
     let numbers_rect = gutter.numbers.then(|| {
@@ -320,6 +397,10 @@ pub fn show(
             Pos2::new(area.left(), y),
             Vec2::new(area.width(), line.height),
         );
+        // Where the letters really are on this row, which is what every mark is centred on. See the
+        // note at the top of this file: the line box is taller than the glyphs and all of the extra
+        // is below them, so centring in `row` puts a mark low by more the larger the type.
+        let band = text_band(line, top);
         // The paragraph a right click was over, so the menu can be about the row under the pointer.
         // Taken from the row loop rather than worked out from the position afterwards, because only
         // the loop knows where each paragraph ended up on the screen.
@@ -329,7 +410,16 @@ pub fn show(
             }
         }
         if let (Some(rect), true) = (blame_rect, first_row) {
-            draw_blame(&mut inner, rect, row, gutter.blame, line.paragraph, &mut outcome);
+            draw_blame(
+                &mut inner,
+                rect,
+                row,
+                band,
+                gutter.blame,
+                line.paragraph,
+                blame_size(gutter.font_size),
+                &mut outcome,
+            );
         }
         let mark = gutter.breakpoint_at(line.paragraph);
         let stopped = gutter.execution_point == Some(line.paragraph);
@@ -339,13 +429,21 @@ pub fn show(
         // its dot and can be counted from the lines above.
         let covered = numbers_rect.is_some() && (mark.is_some() || stopped);
         if let (Some(rect), true, false) = (numbers_rect, first_row, covered) {
-            draw_number(&inner, rect, row, line.paragraph + 1, line.paragraph == caret_line);
+            draw_number(
+                &inner,
+                rect,
+                band,
+                line.paragraph + 1,
+                line.paragraph == caret_line,
+                number_size(gutter.font_size),
+            );
         }
         if let (Some(rect), true) = (breakpoint_rect, first_row) {
             if draw_breakpoint(
                 &mut inner,
                 rect,
                 row,
+                band,
                 line.paragraph,
                 mark,
                 stopped,
@@ -355,7 +453,7 @@ pub fn show(
             }
         }
         if let (Some(collapsed), true) = (gutter.fold_at(line.paragraph), first_row) {
-            let centre = Pos2::new(change_x - ARROW / 2.0, y + line.height / 2.0);
+            let centre = Pos2::new(change_x - ARROW / 2.0, band.center());
             if draw_arrow(&mut inner, centre, line.paragraph, collapsed) {
                 outcome.toggle_fold = Some(line.paragraph);
             }
@@ -408,16 +506,20 @@ fn draw_breakpoint(
     ui: &mut egui::Ui,
     column: Rect,
     row: Rect,
+    band: egui::Rangef,
     paragraph: usize,
     mark: Option<BreakpointMark>,
     stopped: bool,
     can_debug: bool,
 ) -> bool {
     // The dot sits at the left of the column with the numbers on — over the margin the number's
-    // right alignment leaves — and in the middle of its own column with them off.
+    // right alignment leaves — and in the middle of its own column with them off. Its height comes
+    // from the letters rather than from the line, so it stays beside the number it replaces at every
+    // size. The click target is still the whole row, because a person aiming at a line means the
+    // line.
     let centre = Pos2::new(
         column.left() + (column.width() / 2.0).min(NUMBER_MARGIN + icon::BREAKPOINT_RADIUS),
-        row.center().y,
+        band.center(),
     );
     if stopped {
         // The execution point's own mark, drawn behind the dot so a breakpoint that is also where
@@ -478,18 +580,25 @@ fn execution_arrow(painter: &egui::Painter, centre: Pos2, color: Color32) {
     ));
 }
 
-/// One line number, right aligned in its column.
-fn draw_number(ui: &egui::Ui, column: Rect, row: Rect, number: usize, current: bool) {
+/// One line number, right aligned in its column and centred on the letters of its line.
+///
+/// `band` rather than the row, which is the whole of `task-1693`'s first report: see the note at the
+/// top of this file.
+fn draw_number(
+    ui: &egui::Ui,
+    column: Rect,
+    band: egui::Rangef,
+    number: usize,
+    current: bool,
+    size: f32,
+) {
     let tint = if current { color::TEXT_CONTROL } else { color::TEXT_FAINT };
-    let galley = ui.painter().layout_no_wrap(
-        number.to_string(),
-        egui::FontId::monospace(NUMBER_SIZE),
-        tint,
-    );
+    let galley =
+        ui.painter().layout_no_wrap(number.to_string(), egui::FontId::monospace(size), tint);
     ui.painter().galley(
         Pos2::new(
             column.right() - NUMBER_MARGIN - galley.size().x,
-            row.top() + (row.height() - galley.size().y) / 2.0,
+            band.center() - galley.size().y / 2.0,
         ),
         galley,
         tint,
@@ -501,12 +610,15 @@ fn draw_number(ui: &egui::Ui, column: Rect, row: Rect, number: usize, current: b
 /// The tint runs from `BLAME_OLD` for the oldest commit in the file to `BLAME_NEW` for the newest,
 /// by rank rather than by date, so a file whose history is one recent burst and one ancient commit
 /// still reads as a gradient rather than as two colours.
+#[allow(clippy::too_many_arguments)]
 fn draw_blame(
     ui: &mut egui::Ui,
     column: Rect,
     row: Rect,
+    band: egui::Rangef,
     blame: Option<&[BlameRow]>,
     paragraph: usize,
+    size: f32,
     outcome: &mut GutterOutcome,
 ) {
     let Some(entry) = blame.and_then(|rows| rows.get(paragraph)) else {
@@ -528,9 +640,11 @@ fn draw_blame(
         outcome.show_commit = Some(entry.commit.clone());
     }
 
-    let font = egui::FontId::proportional(BLAME_SIZE);
+    // The cell is the whole row — it is a background and has to meet the cell above it — but its
+    // words are centred on the letters beside them, like every other mark in the gutter.
+    let font = egui::FontId::proportional(size);
     let date = ui.painter().layout_no_wrap(entry.date.clone(), font.clone(), color::TEXT_STRONG);
-    let y = row.top() + (row.height() - date.size().y) / 2.0;
+    let y = band.center() - date.size().y / 2.0;
     ui.painter().galley(Pos2::new(cell.left() + 6.0, y), date.clone(), color::TEXT_STRONG);
     let author = ui.painter().layout_no_wrap(entry.author.clone(), font, color::TEXT_STRONG);
     ui.painter().galley(
@@ -550,6 +664,71 @@ fn mix(from: Color32, to: Color32, amount: f32) -> Color32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One line as `quill_core::layout` really builds it: the baseline `ascent` from the top, and
+    /// every scrap of extra leading below the letters.
+    fn line(y: f32, ascent: f32, descent: f32, leading: f32) -> quill_core::PlacedLine {
+        quill_core::PlacedLine {
+            y,
+            height: ascent + descent + leading,
+            baseline: ascent,
+            ascent,
+            descent,
+            bytes: 0..0,
+            paragraph: 0,
+            last_in_paragraph: true,
+            runs: Vec::new(),
+            empty_style: quill_core::CharStyle::default(),
+        }
+    }
+
+    /// `task-1693`: a mark centred on the line box sits low, because the bottom of a line box is
+    /// empty air. The band is the letters, and its centre is where a mark goes.
+    #[test]
+    fn a_mark_is_centred_on_the_letters_rather_than_on_the_line() {
+        let line = line(0.0, 15.0, 4.0, 7.2);
+        let band = text_band(&line, 100.0);
+        assert_eq!(band.min, 100.0, "the letters start at the top of the line");
+        assert_eq!(band.max, 119.0, "and end at the descender");
+        assert_eq!(band.center(), 109.5);
+        let line_centre = 100.0 + line.height / 2.0;
+        assert!(
+            line_centre > band.center() + 3.0,
+            "the line box's centre is more than three points below the letters', which is the drift              that was reported: {line_centre} against {}",
+            band.center()
+        );
+    }
+
+    /// The drift the ticket reported grows with the zoom, which is why it was noticed while zooming
+    /// rather than at rest. Twice the type, twice the error.
+    #[test]
+    fn the_drift_grows_with_the_type_size() {
+        let small = line(0.0, 15.0, 4.0, 7.2);
+        let large = line(0.0, 30.0, 8.0, 14.4);
+        let error = |line: &quill_core::PlacedLine| {
+            line.height / 2.0 - text_band(line, 0.0).center()
+        };
+        assert!(error(&large) > error(&small) * 1.9, "the error roughly doubles with the size");
+    }
+
+    /// Expressed as a ratio of the default so that a window at the default size sets its numbers at
+    /// exactly the sizes the gutter has always used, and only the alignment changes.
+    #[test]
+    fn the_gutter_sets_its_type_at_the_old_sizes_at_the_default_font() {
+        assert_eq!(number_size(crate::settings::DEFAULT_FONT_SIZE), 11.5);
+        assert_eq!(blame_size(crate::settings::DEFAULT_FONT_SIZE), 10.5);
+        assert_eq!(blame_width(crate::settings::DEFAULT_FONT_SIZE), BLAME_WIDTH);
+        // A gutter that was never told a size — which is every one a unit test builds — reads as the
+        // default rather than as nothing.
+        assert_eq!(number_size(0.0), 11.5);
+    }
+
+    #[test]
+    fn the_gutters_type_follows_the_editors_and_stops_at_both_ends() {
+        assert!(number_size(32.0) > number_size(16.0), "it grows with the editor's font");
+        assert_eq!(number_size(6.0), SMALLEST_TYPE, "six point text still needs a legible gutter");
+        assert_eq!(number_size(144.0), LARGEST_TYPE, "and the gutter never takes the window");
+    }
 
     #[test]
     fn the_number_column_is_sized_for_the_largest_line_number() {

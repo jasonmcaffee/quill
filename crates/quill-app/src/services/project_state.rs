@@ -55,6 +55,7 @@ pub const FOLDER: &str = ".quill";
 const WORKSPACE_FILE: &str = "workspace.conf";
 const OPEN_FILES_FILE: &str = "open-files.txt";
 const EXPANDED_FILE: &str = "expanded-folders.txt";
+const TERMINAL_TABS_FILE: &str = "terminal-tabs.txt";
 
 /// How many files are remembered. A window with more tabs than this open has a problem the state file
 /// is not going to fix, and a list that grows without limit is a file that grows without limit.
@@ -70,6 +71,20 @@ pub struct ProjectState {
     /// Which pane each of them was in, in the same order. All zeros for a state file written before
     /// there were panes, which is one pane holding everything.
     pub file_panes: Vec<usize>,
+    /// How far each of them was scrolled, in points, in the same order.
+    ///
+    /// `task-1693` asks for "the same state, including open files, scroll position". It is one list
+    /// beside `file_panes` and is filtered in the same pass, which is the rule that keeps two
+    /// parallel lists from coming apart.
+    pub file_scrolls: Vec<f32>,
+    /// Where the caret was in each of them, as a byte offset, in the same order.
+    ///
+    /// Beside the scroll rather than instead of it, because the two answer different halves of the
+    /// same question: the scroll is where you were looking and the caret is where you would type.
+    /// Restoring one without the other puts the caret at the top of a file being read half way down,
+    /// and the next key press throws the view away. An offset past the end of a file that has
+    /// changed since is clamped rather than refused.
+    pub file_carets: Vec<usize>,
     /// Each pane's share of the editing area's width, left to right. Empty means share it equally.
     pub pane_widths: Vec<f32>,
     /// Which pane had the keyboard.
@@ -85,6 +100,12 @@ pub struct ProjectState {
     /// fresh shells in the project's own folder, which is what a person means by "my terminals were
     /// there".
     pub terminal_tabs: usize,
+    /// The names somebody gave those tabs, in order, empty for a tab that was never renamed.
+    ///
+    /// A name a person typed is the one thing about a terminal that survives its shell — `task-1682`
+    /// made it a value of its own for exactly that reason — so it is the one thing worth writing
+    /// down beside the count.
+    pub terminal_tab_names: Vec<String>,
     /// True when the run tile was the one showing at the bottom of the window.
     ///
     /// The runs themselves are deliberately not remembered, for the reason the terminals are not:
@@ -98,6 +119,40 @@ pub struct ProjectState {
     /// configurations you were last working with is a fact about you, and the file the project
     /// shares holds what somebody chose to keep. `task-1683` §4.2.
     pub run_selected: String,
+    /// Where the window was and how big it was, and whether it was maximised.
+    ///
+    /// The **project's** rather than the person's, because Quill's windows are one per project: a
+    /// geometry kept per person would open the second window exactly on top of the first. It is read
+    /// in `main.rs`, before the window is built, and applied through the `ViewportBuilder`.
+    pub window: Option<WindowPlace>,
+}
+
+/// Where a window was, in points, as egui reports and takes them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WindowPlace {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub maximised: bool,
+}
+
+impl WindowPlace {
+    /// The smallest a remembered window is allowed to be, which is the smallest `main.rs` asks the
+    /// platform for. A state file naming something tinier is a state file to ignore.
+    const SMALLEST: f32 = 400.0;
+
+    /// True when this is a size a window could sensibly be opened at again.
+    ///
+    /// The size is checked and the position is not, deliberately: a window that opens too large is a
+    /// window somebody can shrink, and there is no honest way to know from here which screens are
+    /// plugged in — the platform clamps a position that is off every one of them, which is the
+    /// behaviour a person expects anyway.
+    pub fn is_sensible(&self) -> bool {
+        [self.x, self.y, self.width, self.height].iter().all(|value| value.is_finite())
+            && self.width >= Self::SMALLEST
+            && self.height >= Self::SMALLEST
+    }
 }
 
 impl ProjectState {
@@ -135,22 +190,41 @@ pub fn load(root: &Path) -> ProjectState {
     if let Some(count) = values.number("terminal.tabs") {
         state.terminal_tabs = (count.max(0.0) as usize).min(16);
     }
+    state.terminal_tab_names =
+        read_names(&std::fs::read_to_string(folder.join(TERMINAL_TABS_FILE)).unwrap_or_default());
+    state.terminal_tab_names.resize(state.terminal_tabs, String::new());
+    state.window = read_window(&values);
     state.open_files = read_paths(root, &folder.join(OPEN_FILES_FILE));
     state.open_files.truncate(OPEN_LIMIT);
     let mut panes = read_numbers(values.text("files.panes"));
     panes.resize(state.open_files.len(), 0);
+    let mut scrolls = read_fractions_raw(values.text("files.scrolls"));
+    scrolls.resize(state.open_files.len(), 0.0);
+    let mut carets = read_numbers(values.text("files.carets"));
+    carets.resize(state.open_files.len(), 0);
     // A file that has since been removed or renamed is left out, so a project does not open with a
     // tab pointing at nothing — and the pane it was in goes with it, in the same pass. Filtering the
-    // two lists one after the other is what would slide every pane number along by one.
+    // lists one after the other is what would slide every pane number along by one, and there are
+    // four of them now.
     let (mut files, mut kept) = (Vec::new(), Vec::new());
-    for (path, pane) in std::mem::take(&mut state.open_files).into_iter().zip(panes) {
+    let (mut where_it_was, mut where_the_caret_was) = (Vec::new(), Vec::new());
+    let rows = std::mem::take(&mut state.open_files)
+        .into_iter()
+        .zip(panes)
+        .zip(scrolls)
+        .zip(carets);
+    for (((path, pane), scroll), caret) in rows {
         if path.is_file() {
             files.push(path);
             kept.push(pane);
+            where_it_was.push(scroll.max(0.0));
+            where_the_caret_was.push(caret);
         }
     }
     state.open_files = files;
     state.file_panes = kept;
+    state.file_scrolls = where_it_was;
+    state.file_carets = where_the_caret_was;
     state.pane_widths = read_fractions(values.text("files.pane-widths"));
     state.active_pane = values.number("files.pane").map(|pane| pane.max(0.0) as usize).unwrap_or(0);
     state.expanded_folders = read_paths(root, &folder.join(EXPANDED_FILE));
@@ -178,6 +252,14 @@ pub fn save(root: &Path, state: &ProjectState) {
     values.set("explorer.visible", flag(state.explorer_visible));
     values.set("terminal.visible", flag(state.terminal_visible));
     values.set("terminal.tabs", state.terminal_tabs.to_string());
+
+    if let Some(place) = state.window.filter(WindowPlace::is_sensible) {
+        values.set("window.x", format!("{:.0}", place.x));
+        values.set("window.y", format!("{:.0}", place.y));
+        values.set("window.width", format!("{:.0}", place.width));
+        values.set("window.height", format!("{:.0}", place.height));
+        values.set("window.maximised", flag(place.maximised));
+    }
     values.set("run.visible", flag(state.run_visible));
     // Written only once something has been chosen, so a project that has never run anything has no
     // line saying it chose nothing — the rule `terminal.shell` already keeps in the settings file.
@@ -186,6 +268,16 @@ pub fn save(root: &Path, state: &ProjectState) {
     }
     values.set("files.active", state.active_file.to_string());
     values.set("files.panes", numbers_text(&state.file_panes));
+    values.set(
+        "files.scrolls",
+        state
+            .file_scrolls
+            .iter()
+            .map(|at| format!("{at:.1}"))
+            .collect::<Vec<_>>()
+            .join(","),
+    );
+    values.set("files.carets", numbers_text(&state.file_carets));
     values.set("files.pane", state.active_pane.to_string());
     values.set(
         "files.pane-widths",
@@ -200,6 +292,12 @@ pub fn save(root: &Path, state: &ProjectState) {
     write(&folder.join(WORKSPACE_FILE), &values.to_text_headed(heading));
     write(&folder.join(OPEN_FILES_FILE), &paths_text(root, &state.open_files));
     write(&folder.join(EXPANDED_FILE), &paths_text(root, &state.expanded_folders));
+    // Only written once somebody has named a tab, so a project whose terminals are all called after
+    // their programs is left with no file at all — the rule `run.selected` already keeps about a
+    // value nobody has chosen.
+    if state.terminal_tab_names.iter().any(|name| !name.trim().is_empty()) {
+        write(&folder.join(TERMINAL_TABS_FILE), &names_text(&state.terminal_tab_names));
+    }
 }
 
 /// A comma separated list of whole numbers, for the pane a tab is in.
@@ -221,6 +319,53 @@ fn read_numbers(text: Option<&str>) -> Vec<usize> {
         .filter(|part| !part.is_empty())
         .map(|part| part.parse::<usize>().unwrap_or(0))
         .collect()
+}
+
+/// The names of the terminal tabs, one a line, blank for a tab that was never renamed.
+///
+/// A file of its own rather than a comma list in the conf, which is what this module already does
+/// with the two lists of paths and for the same reason: a person can call a tab anything at all, and
+/// a name is the one value here that cannot be relied on not to hold the separator. A line cannot
+/// hold a newline, so there is nothing to escape.
+fn names_text(names: &[String]) -> String {
+    names.iter().map(|name| format!("{name}\n")).collect()
+}
+
+/// Read that list back, keeping the blanks: a tab with no name of its own still counts.
+fn read_names(text: &str) -> Vec<String> {
+    text.lines().map(|line| line.trim().to_owned()).collect()
+}
+
+
+/// The same as [`read_fractions`], without the rule that throws away anything that is not positive.
+///
+/// A scroll position of zero is the top of a file, which is the commonest place to be, so the list of
+/// them has to keep its zeros and stay as long as the list of files beside it.
+fn read_fractions_raw(text: Option<&str>) -> Vec<f32> {
+    let Some(text) = text else {
+        return Vec::new();
+    };
+    text.split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(|part| part.parse::<f32>().unwrap_or(0.0))
+        .map(|at| if at.is_finite() { at } else { 0.0 })
+        .collect()
+}
+
+/// Where the window was, when the file says.
+///
+/// All five values or none: a half-written geometry is a geometry to ignore, because a window put at
+/// a remembered position with a default size is a window in a place nobody left it.
+fn read_window(values: &Values) -> Option<WindowPlace> {
+    let place = WindowPlace {
+        x: values.number("window.x")?,
+        y: values.number("window.y")?,
+        width: values.number("window.width")?,
+        height: values.number("window.height")?,
+        maximised: values.flag("window.maximised").unwrap_or(false),
+    };
+    place.is_sensible().then_some(place)
 }
 
 /// The same for the widths, which are fractions.
@@ -323,18 +468,119 @@ mod tests {
             open_files: vec![root.join("readme.md"), root.join("chapters/one.md")],
             active_file: 1,
             file_panes: vec![0, 0],
+            file_scrolls: vec![0.0, 412.5],
+            file_carets: vec![0, 1180],
             pane_widths: vec![1.0],
             active_pane: 0,
             expanded_folders: vec![root.join("chapters")],
             explorer_visible: false,
             terminal_visible: true,
             terminal_tabs: 2,
+            terminal_tab_names: vec!["build".to_owned(), String::new()],
             run_visible: false,
             run_selected: "Dev server".to_owned(),
+            window: Some(WindowPlace {
+                x: 260.0,
+                y: 260.0,
+                width: 1400.0,
+                height: 900.0,
+                maximised: false,
+            }),
         };
         save(&root, &state);
         assert_eq!(load(&root), state);
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// `task-1693`: "the same state, including open files, scroll position".
+    #[test]
+    fn where_each_file_was_being_read_comes_back_with_it() {
+        let root = project("quill-project-state-scroll");
+        let state = ProjectState {
+            open_files: vec![root.join("readme.md"), root.join("chapters/one.md")],
+            file_panes: vec![0, 0],
+            file_scrolls: vec![0.0, 412.5],
+            file_carets: vec![0, 1180],
+            ..ProjectState::new()
+        };
+        save(&root, &state);
+        let read = load(&root);
+        assert_eq!(read.file_scrolls, vec![0.0, 412.5], "the top of a file is a place too");
+        assert_eq!(read.file_carets, vec![0, 1180]);
+    }
+
+    /// The four lists are filtered in one pass, so a file that has gone takes its own scroll and
+    /// caret with it rather than sliding everything else along by one.
+    #[test]
+    fn a_scroll_goes_with_the_file_it_belongs_to_when_that_file_has_gone() {
+        let root = project("quill-project-state-scroll-gone");
+        let state = ProjectState {
+            open_files: vec![
+                root.join("gone.md"),
+                root.join("readme.md"),
+                root.join("chapters/one.md"),
+            ],
+            file_panes: vec![0, 1, 1],
+            file_scrolls: vec![99.0, 412.5, 7.5],
+            file_carets: vec![99, 1180, 7],
+            ..ProjectState::new()
+        };
+        save(&root, &state);
+        let read = load(&root);
+        assert_eq!(read.open_files.len(), 2, "the file that is not there is left out");
+        assert_eq!(read.file_panes, vec![1, 1]);
+        assert_eq!(read.file_scrolls, vec![412.5, 7.5]);
+        assert_eq!(read.file_carets, vec![1180, 7]);
+    }
+
+    /// A name somebody typed is the one thing about a terminal that survives its shell.
+    #[test]
+    fn the_names_a_person_gave_the_terminals_come_back() {
+        let root = project("quill-project-state-terminal-names");
+        let state = ProjectState {
+            terminal_visible: true,
+            terminal_tabs: 3,
+            terminal_tab_names: vec!["build".to_owned(), String::new(), "server".to_owned()],
+            ..ProjectState::new()
+        };
+        save(&root, &state);
+        let read = load(&root);
+        assert_eq!(
+            read.terminal_tab_names,
+            vec!["build".to_owned(), String::new(), "server".to_owned()],
+            "a tab nobody named stays blank rather than being given a neighbour's name"
+        );
+    }
+
+    /// A project whose terminals are all named after their programs writes no file at all, which is
+    /// the rule `run.selected` keeps about a value nobody has chosen.
+    #[test]
+    fn a_project_that_named_no_terminal_writes_no_names_file() {
+        let root = project("quill-project-state-no-names");
+        let state = ProjectState { terminal_tabs: 2, ..ProjectState::new() };
+        save(&root, &state);
+        assert!(!folder(&root).join(TERMINAL_TABS_FILE).exists());
+        assert_eq!(load(&root).terminal_tab_names, vec![String::new(), String::new()]);
+    }
+
+    /// `task-1693`: "in the same location", which is the window's own geometry.
+    #[test]
+    fn where_the_window_was_comes_back_and_nonsense_does_not() {
+        let root = project("quill-project-state-window");
+        let place =
+            WindowPlace { x: -20.0, y: 40.0, width: 1400.0, height: 900.0, maximised: true };
+        let state = ProjectState { window: Some(place), ..ProjectState::new() };
+        save(&root, &state);
+        assert_eq!(load(&root).window, Some(place), "a negative x is a second screen, not nonsense");
+
+        // A window smaller than the platform's own minimum is a state file to ignore rather than a
+        // window nobody can use.
+        let tiny = ProjectState {
+            window: Some(WindowPlace { width: 10.0, height: 10.0, ..place }),
+            ..ProjectState::new()
+        };
+        save(&root, &tiny);
+        assert_eq!(load(&root).window, None);
     }
 
     #[test]

@@ -72,6 +72,12 @@ pub struct FileTree {
     all_files: Vec<PathBuf>,
     /// The last error from reading a directory, so the window can say why a folder looks empty.
     pub last_error: Option<String>,
+    /// When each folder that is **showing** was last written to, as the disk said at the moment it
+    /// was read. The root and every folder that is opened out.
+    ///
+    /// This is what makes a file another program made appear without anybody asking. See
+    /// [`FileTree::changed_on_disk`].
+    folder_times: Vec<(PathBuf, Option<std::time::SystemTime>)>,
 }
 
 impl FileTree {
@@ -79,8 +85,13 @@ impl FileTree {
     /// startup looks broken.
     pub fn new(root: impl Into<PathBuf>) -> Self {
         let root = root.into();
-        let mut tree =
-            Self { root, entries: Vec::new(), all_files: Vec::new(), last_error: None };
+        let mut tree = Self {
+            root,
+            entries: Vec::new(),
+            all_files: Vec::new(),
+            last_error: None,
+            folder_times: Vec::new(),
+        };
         tree.reload();
         tree
     }
@@ -106,6 +117,40 @@ impl FileTree {
             self.expand(&path);
         }
         self.all_files = walk_files(&self.root, SEARCH_DEPTH);
+        self.folder_times = self.read_folder_times();
+    }
+
+    /// True when a folder that is showing has been written to since the tree was last read.
+    ///
+    /// `task-1693`: a file or a folder made by something other than Quill — an agent, a build, a
+    /// terminal in the tile below — never appeared, because the tree is only read when Quill is told
+    /// to read it. Creating, deleting or renaming an entry changes the modification time of the
+    /// folder it is in, on Windows and on macOS both, so the root plus each folder that is opened out
+    /// is the complete set of places a change anybody can *see* could happen.
+    ///
+    /// One `metadata` call per open folder, which for a tree with twenty folders open at the rate the
+    /// window asks is a few dozen calls a second and nothing measurable. Watching the tree properly
+    /// would be a dependency, a thread, a channel and a debounce — and a debounce is needed because
+    /// `ReadDirectoryChangesW` on a `target` folder during a build produces thousands of events a
+    /// second, each of which would cost a walk. Quill does not need to watch a tree; it needs to
+    /// notice that one of a few dozen visible folders has changed.
+    pub fn changed_on_disk(&self) -> bool {
+        self.read_folder_times() != self.folder_times
+    }
+
+    /// The root and every folder that is opened out, each with the time the disk says it was last
+    /// written to. A folder that cannot be read at all answers `None`, which is a change if it used
+    /// to answer with a time.
+    fn read_folder_times(&self) -> Vec<(PathBuf, Option<std::time::SystemTime>)> {
+        let mut folders = vec![self.root.clone()];
+        folders.extend(self.expanded_paths());
+        folders
+            .into_iter()
+            .map(|folder| {
+                let at = std::fs::metadata(&folder).and_then(|data| data.modified()).ok();
+                (folder, at)
+            })
+            .collect()
     }
 
     /// Every file under the root, in order.
@@ -185,6 +230,9 @@ impl FileTree {
         if error.is_some() {
             self.last_error = error;
         }
+        // The set of folders that are showing has just changed, so what is being watched has too.
+        // Without this, opening a folder would look like a change on disk on the very next tick.
+        self.folder_times = self.read_folder_times();
     }
 
     /// Open a directory, and every directory above it, so that a path can be revealed.
@@ -341,6 +389,54 @@ fn read_directory(path: &Path) -> std::io::Result<Vec<Entry>> {
     files.sort_by(by_name);
     directories.extend(files);
     Ok(directories)
+}
+
+#[cfg(test)]
+mod tests_task_1693 {
+    use super::*;
+
+    /// `task-1693`: a file another program makes appears in the explorer, because the folders that
+    /// are showing are asked whether they have changed.
+    #[test]
+    fn a_file_made_by_something_else_shows_as_a_change() {
+        let root = std::env::temp_dir().join("quill-tree-watch-new-file");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("make the folder");
+        std::fs::write(root.join("one.txt"), "one").expect("write one.txt");
+        let tree = FileTree::new(&root);
+        assert!(!tree.changed_on_disk(), "nothing has happened yet");
+
+        // A folder's modification time has whole-second resolution on some file systems, so the
+        // check is that the *set* of what is watched and its times differ — which writing a second
+        // file does whatever the clock says, because the time is read again from the same folder.
+        std::fs::write(root.join("two.txt"), "two").expect("write two.txt");
+        // Give the file system a moment to settle its timestamp, then ask.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(root.join("three.txt"), "three").expect("write three.txt");
+        assert!(tree.changed_on_disk(), "the root was written to, so the tree is out of date");
+    }
+
+    /// And a folder that is opened out is watched too, because a file made inside one is a file
+    /// somebody can see.
+    #[test]
+    fn a_folder_that_is_open_is_watched_and_one_that_is_shut_is_not() {
+        let root = std::env::temp_dir().join("quill-tree-watch-open-folder");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("open")).expect("make the open folder");
+        std::fs::create_dir_all(root.join("shut")).expect("make the shut folder");
+        let mut tree = FileTree::new(&root);
+        tree.expand(&root.join("open"));
+        assert!(!tree.changed_on_disk(), "opening a folder is not a change on disk");
+
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(root.join("shut/hidden.txt"), "x").expect("write into the shut folder");
+        assert!(
+            !tree.changed_on_disk(),
+            "nothing that is showing has changed, so nothing needs reading again"
+        );
+        std::fs::write(root.join("open/seen.txt"), "x").expect("write into the open folder");
+        assert!(tree.changed_on_disk(), "a folder that is showing gained a file");
+    }
 }
 
 #[cfg(test)]

@@ -187,19 +187,71 @@ fn main() -> eframe::Result {
     // show has to be decided before the window is built. It is still the released binary reading the
     // person's own files, which is the rule `Store` keeps.
     let current_directory = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let recent = quill_app::services::store::Store::open().recent_projects();
+    let program = std::env::current_exe().ok();
+    let store = quill_app::services::store::Store::open();
+    let recent = store.recent_projects();
+
+    // The windows that were open last time, which `task-1693` asks to have back. Only on a launch
+    // from the desktop: `quill .` typed in a folder has to open that folder and nothing else, which
+    // is the same rule `starting_folder` keeps about reopening the last project.
+    //
+    // The list is oldest first, so the **last** entry is the project this process opens itself and
+    // every other entry gets a process of its own — a Quill window is a process, which
+    // `services::launcher` records as a deliberate decision.
+    let restoring = arguments.path.is_none()
+        && quill_app::started_from_the_desktop(&current_directory, program.as_deref());
+    let mut session = match restoring {
+        true => store.open_windows(),
+        false => Vec::new(),
+    };
+    // A project that already has a window is left alone. Two Quills on one folder would be two
+    // processes writing one `.quill` folder, and whichever wrote last would win — which is the same
+    // reason `OpenFiles::open` shows a file that is already open rather than opening it twice. The
+    // instance files are how a running window says which project it is on; `quill-cli instances`
+    // reads the same list.
+    // `running` rather than `listed`, because a window that was killed rather than closed leaves its
+    // instance file behind — and a project skipped on the strength of a dead window is a project
+    // that never comes back.
+    let already_open: Vec<PathBuf> =
+        quill_cli::client::running().into_iter().map(|instance| instance.folder).collect();
+    session.retain(|folder| !already_open.iter().any(|open| open == folder));
+    let mine = session.pop();
+
     let fallback = quill_app::starting_folder(
         &current_directory,
-        std::env::current_exe().ok().as_deref(),
-        recent.first().map(PathBuf::as_path),
+        program.as_deref(),
+        mine.as_deref().or_else(|| recent.first().map(PathBuf::as_path)),
     );
     let (folder, file) = quill_app::resolve_target(arguments.path.as_deref(), &fallback);
 
+    // The other windows, each with its project named on the command line so that none of them tries
+    // to restore the session in its turn. Each reads its own project's geometry, so they come back
+    // where they were left.
+    for other in &session {
+        if *other != folder {
+            quill_app::services::launcher::open_window(other);
+        }
+    }
+
+    // Where this project's window was left, which `task-1693` asks for and which has to be known
+    // before the window is built. It is read from the project's own `.quill` folder rather than from
+    // the person's settings, because Quill's windows are one per project: a geometry kept per person
+    // would open the second window exactly on top of the first.
+    let place = quill_app::services::project_state::load(&folder).window;
+
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("Quill")
+        .with_inner_size([1100.0, 720.0])
+        .with_min_inner_size([640.0, 400.0]);
+    if let Some(place) = place.filter(|place| place.is_sensible()) {
+        viewport = viewport
+            .with_position([place.x, place.y])
+            .with_inner_size([place.width, place.height])
+            .with_maximized(place.maximised);
+    }
+
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("Quill")
-            .with_inner_size([1100.0, 720.0])
-            .with_min_inner_size([640.0, 400.0])
+        viewport: viewport
             .with_transparent(true)
             // Quill draws its own title bar, because rounded corners and a translucent background need the
             // operating system's own window frame turned off.

@@ -2511,11 +2511,176 @@ fn right_clicking_the_project_name_opens_the_same_menu_a_folder_does() {
     });
     harness.run();
     let opened = harness.state().explorer_menu.clone();
-    let (_, path, directory) = opened.expect("the project's name should open the explorer's menu");
+    let (_, path, directory, _) = opened.expect("the project's name should open the explorer's menu");
     assert_eq!(path, sample_folder(), "the menu is about the project folder");
     assert!(directory, "and it is a folder, so `New -> File` makes a file inside it");
     harness.run();
     harness.snapshot(shot("project_name_menu"));
+}
+
+
+// ------------------------------------------------------------------- task-1693
+
+/// The gutter's marks line up with the letters at any size, which is what `task-1693` reported was
+/// wrong: a mark centred in the line box sits low, by more the larger the type, because all of a
+/// line's extra leading is added below its glyphs.
+#[test]
+fn the_gutter_lines_up_with_the_text_at_a_large_font_size() {
+    let mut harness = harness("one\ntwo\nthree\nfour\nfive\n");
+    collapse(&mut harness);
+    did(&mut harness, "settings set appearance.font.size 34");
+    harness.run();
+    assert!(harness.state().settings.line_numbers);
+    // The letters of a line fill much less than the line, which is where the drift came from. Asked
+    // of the layout rather than of the picture, so it is a number a reader can check.
+    let layout = harness.state().layout().clone();
+    let line = &layout.lines[2];
+    let band = line.ascent + line.descent;
+    assert!(
+        band < line.height - 4.0,
+        "at 34 points a line is {} tall and its letters only {band}, which is the drift",
+        line.height
+    );
+    harness.snapshot(shot("gutter_large_font"));
+}
+
+/// A right click in the empty space below the rows opens the project folder's menu, with everything
+/// that is about a particular file dimmed rather than taken away — `task-1693`, in its own words.
+#[test]
+fn the_explorers_menu_opens_from_the_empty_space_below_the_rows() {
+    let mut harness = harness("");
+    // Well below the last row and well above the footer, which is where a person aims when they mean
+    // "somewhere in this panel".
+    let at = egui::pos2(150.0, 470.0);
+    right_click_at(&mut harness, at);
+    let opened = harness.state().explorer_menu.clone();
+    let (_, path, directory, aimed) =
+        opened.expect("the empty space should open the explorer's menu");
+    assert_eq!(path, sample_folder(), "it is the project folder");
+    assert!(directory);
+    assert_eq!(aimed, quill_app::app::actions::Aim::AtEmptySpace);
+    harness.run();
+    // The entry somebody who right clicked the empty space came for. `File` is asked for by the
+    // menu's own row rather than by name, because `File` is also a menu in the bar.
+    harness.get_by_label("Folder");
+    // And the ones that are about a particular file are dimmed rather than absent.
+    let entries = quill_app::app::actions::explorer_menu(
+        sample_folder().as_path(),
+        true,
+        false,
+        quill_app::app::actions::Aim::AtEmptySpace,
+    );
+    let live = |name: &str| {
+        entries.iter().any(|entry| {
+            matches!(
+                entry,
+                quill_app::app::actions::Entry::Item { name: found, enabled, .. }
+                    if found == name && *enabled
+            )
+        })
+    };
+    assert!(!live("Rename..."), "Rename is dimmed, because nothing was clicked");
+    assert!(!live("Delete"), "and so is Delete");
+    assert!(live("Reload from Disk"), "what is about the folder stays live");
+    harness.get_by_label("Rename...");
+    harness.snapshot(shot("explorer_empty_space_menu"));
+}
+
+/// The file that is showing and the row the explorer's cursor is on are two marks, not one. They
+/// were drawn identically until `task-1693`, so a right click on a second file left two rows looking
+/// equally open — and the second one stayed that way after the first tab was closed.
+#[test]
+fn the_open_file_and_the_explorers_cursor_are_drawn_differently() {
+    let folder = sample_folder();
+    let mut harness = harness_in(&folder);
+    did(&mut harness, "tab open readme.md");
+    did(&mut harness, "explorer select notes.txt");
+    harness.run();
+    assert_eq!(
+        harness.state().files.active().path(),
+        Some(folder.join("readme.md").as_path()),
+        "readme is the file that is showing"
+    );
+    assert_eq!(harness.state().selected, Some(folder.join("notes.txt")));
+    harness.snapshot(shot("explorer_open_and_cursor"));
+}
+
+/// A maximised window offers no resize grips. `components::resize_edges` records why that matters
+/// more than tidiness: a resize the window manager refuses latches a flag inside winit that no later
+/// move or resize can clear.
+#[test]
+fn a_maximised_window_offers_no_resize_grips() {
+    let mut harness = harness("");
+    for grip in ["top", "bottom", "left", "right"] {
+        harness.get_by_label(&format!("Resize window: {grip}"));
+    }
+    let ids: Vec<egui::ViewportId> =
+        harness.input().viewports.keys().copied().collect();
+    for id in ids {
+        if let Some(viewport) = harness.input_mut().viewports.get_mut(&id) {
+            viewport.maximized = Some(true);
+        }
+    }
+    harness.run();
+    for grip in ["top", "bottom", "left", "right", "top left", "bottom right"] {
+        assert!(
+            harness.query_by_label(&format!("Resize window: {grip}")).is_none(),
+            "a maximised window has no {grip} grip to offer"
+        );
+    }
+}
+
+/// `New -> Folder`, which the explorer had no way to do at all.
+#[test]
+fn the_explorer_can_make_a_folder() {
+    let folder = std::env::temp_dir().join("quill-new-folder-test");
+    std::fs::remove_dir_all(&folder).ok();
+    std::fs::create_dir_all(&folder).expect("make the project");
+    std::fs::write(folder.join("readme.md"), "# here\n").expect("write a file");
+    let mut harness = harness_in(&folder);
+    let ctx = harness.ctx.clone();
+    harness.state_mut().run_action(Action::NewFolder(folder.clone()), &ctx);
+    harness.run();
+    let title = harness.state().prompt.clone().expect("a prompt asking for the name").title;
+    assert_eq!(title, "New Folder");
+    let mut prompt = harness.state().prompt.clone().expect("the prompt");
+    prompt.value = "services".to_owned();
+    harness.state_mut().run_prompt_for_test(prompt);
+    harness.run();
+    assert!(folder.join("services").is_dir(), "the folder was made");
+    assert_eq!(harness.state().selected, Some(folder.join("services")));
+
+    // And from the command line, which is the other half of every feature in Quill.
+    did(&mut harness, "explorer new-folder deep/inside");
+    assert!(folder.join("deep/inside").is_dir(), "the folders above it are made too");
+    did(&mut harness, "explorer new-file deep/inside/note.md");
+    assert!(folder.join("deep/inside/note.md").is_file());
+}
+
+/// A file another program makes appears in the explorer without anybody asking, which is what
+/// `task-1693` reported was missing: an agent's new file was invisible until the tree was reloaded.
+#[test]
+fn a_file_made_by_another_program_appears_in_the_explorer() {
+    let folder = std::env::temp_dir().join("quill-watch-test");
+    std::fs::remove_dir_all(&folder).ok();
+    std::fs::create_dir_all(&folder).expect("make the project");
+    std::fs::write(folder.join("readme.md"), "# here\n").expect("write a file");
+    let mut harness = harness_in(&folder);
+    assert!(harness.query_by_label("made-by-an-agent.md").is_none());
+
+    // A second's wait, because a folder's modification time has whole-second resolution on some file
+    // systems and the tree has only just read it.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    std::fs::write(folder.join("made-by-an-agent.md"), "# new\n").expect("write the new file");
+    // The window asks on a timer, so it takes a few frames rather than one.
+    for _ in 0..8 {
+        harness.step();
+        if harness.query_by_label("made-by-an-agent.md").is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    harness.get_by_label("made-by-an-agent.md");
 }
 
 /// The plus beside the project's name is gone. It never made a file — it asked the window to save —
@@ -3479,7 +3644,12 @@ fn the_explorers_own_menu_holds_what_can_be_done_to_a_file() {
     let folder = sample_folder();
     let mut harness = harness_in(&folder);
     harness.state_mut().explorer_menu =
-        Some((egui::pos2(120.0, 260.0), folder.join("readme.md"), false));
+        Some((
+            egui::pos2(120.0, 260.0),
+            folder.join("readme.md"),
+            false,
+            quill_app::app::actions::Aim::AtARow,
+        ));
     harness.run();
     // Asked for by names this menu alone has: `File` is also a menu in the bar, and `New` is a
     // heading rather than a control, because a submenu inside the window is drawn as a heading with
@@ -3487,7 +3657,12 @@ fn the_explorers_own_menu_holds_what_can_be_done_to_a_file() {
     for entry in ["Copy Path", "Rename...", "Reload from Disk"] {
         harness.get_by_label(entry);
     }
-    let entries = quill_app::app::actions::explorer_menu(&folder.join("readme.md"), false, false);
+    let entries = quill_app::app::actions::explorer_menu(
+        &folder.join("readme.md"),
+        false,
+        false,
+        quill_app::app::actions::Aim::AtARow,
+    );
     assert!(
         format!("{entries:?}").contains("NewFile"),
         "New > File is in the menu, which is what task-1649 asks for"
@@ -7663,7 +7838,12 @@ fn a_modal_takes_the_keyboard_from_the_editing_area_and_the_explorer() {
 fn the_explorers_menu_holds_delete_and_it_asks_before_anything_goes() {
     let folder = scratch_folder("menu");
     let mut harness = harness_in(&folder);
-    let entries = quill_app::app::actions::explorer_menu(&folder.join("readme.md"), false, false);
+    let entries = quill_app::app::actions::explorer_menu(
+        &folder.join("readme.md"),
+        false,
+        false,
+        quill_app::app::actions::Aim::AtARow,
+    );
     let names: Vec<String> = entries
         .iter()
         .filter_map(|entry| match entry {

@@ -385,6 +385,18 @@ pub const HEARTBEAT: std::time::Duration = std::time::Duration::from_millis(500)
 /// it, and long enough that a few directory reads are not part of drawing a frame.
 pub const ADAPTER_SEARCH_TTL: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// How often the folders that are showing in the explorer are asked whether they have changed.
+///
+/// `task-1693` reported that a file an agent made never appeared. Three quarters of a second is
+/// quick enough that a file written by a program in the terminal tile below is in the tree before
+/// anybody has looked away, and slow enough that the handful of `metadata` calls it costs are a few
+/// dozen a second. See `FileTree::changed_on_disk`, which is where the argument for asking rather
+/// than watching is written down.
+///
+/// It is asked at the top of a frame like everything else, and `HEARTBEAT` is what guarantees there
+/// is a frame: an idle window still draws twice a second.
+pub const WATCH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(750);
+
 /// Keep egui's keyboard focus on a widget of Quill's own, so that pressing `Tab` or an arrow key
 /// cannot hand the keyboard to a button.
 ///
@@ -610,8 +622,11 @@ pub struct QuillApp {
     pub confirmation: Option<Confirmation>,
     /// What was cut or copied in the explorer, waiting to be pasted.
     pub clipboard: FileClipboard,
-    /// Where the explorer's own menu is open, and what it is about.
-    pub explorer_menu: Option<(Pos2, PathBuf, bool)>,
+    /// Where the explorer's own menu is open, what it is about, and whether it was aimed at a row.
+    ///
+    /// The last of the four is `actions::Aim`: a right click in the empty space below the rows opens
+    /// the project folder's menu with everything that is about a particular file dimmed.
+    pub explorer_menu: Option<(Pos2, PathBuf, bool, actions::Aim)>,
     /// The row the explorer's own cursor is on, which is what `Delete` is about.
     ///
     /// Separate from the file that is showing, because the two are different questions: a click
@@ -620,6 +635,18 @@ pub struct QuillApp {
     pub selected: Option<PathBuf>,
     /// How many more frames the explorer should scroll to its own selection.
     reveal_selection: u8,
+    /// When the folders that are showing were last asked whether they had changed on disk.
+    ///
+    /// See [`WATCH_INTERVAL`] and `QuillApp::notice_what_changed_on_disk`.
+    last_watched: std::time::Instant,
+    /// True while a row in the explorer is being carried, which is the one moment the tree must not
+    /// be read again underneath the drag.
+    dragging_a_row: bool,
+    /// Where the window is now, read from egui once a frame.
+    ///
+    /// `None` until a frame has been drawn, so a window that has not been on the screen yet never
+    /// writes a geometry over the one it was opened with. See `project_state`.
+    window_place: Option<project_state::WindowPlace>,
     /// The text prompt, when one is open.
     pub prompt: Option<Prompt>,
     /// The `Go to File` modal, when it is open.
@@ -776,6 +803,9 @@ impl QuillApp {
             revealed: None,
             selected: None,
             reveal_selection: 0,
+            last_watched: std::time::Instant::now(),
+            dragging_a_row: false,
+            window_place: None,
             reveal_in_explorer: 0,
             editor_area: Rect::ZERO,
             zoom_pending: 1.0,
@@ -904,6 +934,10 @@ impl QuillApp {
         }
         self.panes = panes;
         store.remember_project(self.tree.root());
+        // And that this project has a window open, which is what `task-1693` asks Quill to bring
+        // back next time. A window that is already in the list writes nothing — `Store::open_windows`
+        // records why.
+        store.remember_open_window(self.tree.root());
         self.recent = store.recent_projects();
         let (plugins, problems) = Plugins::load(Some(&store));
         self.plugins = plugins;
@@ -953,6 +987,24 @@ impl QuillApp {
         if !state.file_panes.is_empty() {
             self.files.restore_panes(&state.file_panes, &state.pane_widths, state.active_pane);
         }
+        // Where each tab was left. After the panes, because a tab has to be in its pane before the
+        // place it was being read at means anything, and before the tab that was showing is chosen,
+        // because showing one throws away what was laid out for it.
+        //
+        // A caret past the end of a file that has changed since is **clamped rather than refused**,
+        // which is the rule this whole feature keeps: a project that opens with part of its state is
+        // better than one that will not open.
+        for (index, path) in state.open_files.iter().enumerate() {
+            let Some(tab) = self.files.index_of(path) else {
+                continue;
+            };
+            let caret = state.file_carets.get(index).copied().unwrap_or(0);
+            let scroll = state.file_scrolls.get(index).copied().unwrap_or(0.0);
+            let file = self.files.at_mut(tab);
+            let end = file.document.text().len_bytes();
+            file.document.apply(Command::PlaceCaret { offset: caret.min(end), extend: false });
+            file.scroll = scroll.max(0.0);
+        }
         if let Some(path) = state.open_files.get(state.active_file) {
             if let Some(index) = self.files.index_of(path) {
                 self.show_tab(index);
@@ -983,28 +1035,70 @@ impl QuillApp {
             for _ in 0..state.terminal_tabs {
                 self.new_terminal_tab();
             }
+            // A name somebody typed is the one thing about a terminal that survives its shell, so
+            // it is put back. A blank leaves the tab named after whatever program it is running,
+            // which is what `Session::rename` already means by an empty name.
+            for (index, name) in state.terminal_tab_names.iter().enumerate() {
+                if !name.is_empty() {
+                    self.terminal.tabs.rename(index, name);
+                }
+            }
         }
         self.written_project = Some(self.project_state());
     }
 
     /// What is open in this project now.
     fn project_state(&self) -> ProjectState {
-        let open_files = self.files.paths();
+        // One pass over the tabs that have a path, so the four parallel lists are the same length
+        // by construction. They were built from two different walks before — `paths()`, which drops
+        // a tab that has never been saved, and `panes_of_tabs()`, which does not — so an untitled
+        // tab slid every pane number along by one.
+        let mut open_files = Vec::new();
+        let mut file_panes = Vec::new();
+        let mut file_scrolls = Vec::new();
+        let mut file_carets = Vec::new();
+        for file in self.files.iter() {
+            let Some(path) = file.path() else {
+                continue;
+            };
+            open_files.push(path.to_path_buf());
+            file_panes.push(file.pane);
+            // Where each tab was left, so a project opens at the line it was being read at rather
+            // than at the top of every file — `task-1693`.
+            file_scrolls.push(file.scroll);
+            file_carets.push(file.document.selection().head);
+        }
         let active = self.files.active().path().and_then(|path| {
             open_files.iter().position(|known| known == path)
         });
         ProjectState {
             open_files,
             active_file: active.unwrap_or(0),
-            file_panes: self.files.panes_of_tabs(),
+            file_panes,
+            file_scrolls,
+            file_carets,
             pane_widths: self.files.pane_widths().to_vec(),
             active_pane: self.files.focused_pane(),
             expanded_folders: self.tree.expanded_folders(),
             explorer_visible: self.explorer_visible,
             terminal_visible: self.terminal.visible,
             terminal_tabs: self.terminal.tabs.count(),
+            // The names a person typed, and nothing else: `Tabs::names` would give back
+            // `powershell.exe 2` for a tab nobody has named, which is a name the next run would
+            // restore as though somebody had chosen it.
+            terminal_tab_names: self
+                .terminal
+                .tabs
+                .sessions()
+                .iter()
+                .map(|session| session.given_name().unwrap_or_default().to_owned())
+                .collect(),
             run_visible: self.run.visible,
             run_selected: self.run_selected.clone().unwrap_or_default(),
+            // Where the window is, which is the other half of "in the same location and state". It
+            // is read from egui once a frame and is `None` until there has been one, so a window
+            // that has not drawn yet never writes a geometry over the one it was opened with.
+            window: self.window_place,
         }
     }
 
@@ -1552,6 +1646,15 @@ impl QuillApp {
                     "example.txt",
                     "Create",
                     Purpose::NewFile(folder),
+                ));
+            }
+            Action::NewFolder(folder) => {
+                self.prompt = Some(Prompt::new(
+                    "New Folder",
+                    &format!("A new folder inside {}.", folder.display()),
+                    "folder",
+                    "Create",
+                    Purpose::NewFolder(folder),
                 ));
             }
             Action::CutPath(path) => self.clipboard.cut(path),
@@ -4092,6 +4195,26 @@ impl QuillApp {
                     }
                 }
             }
+            Purpose::NewFolder(folder) => {
+                // The same shape `NewFile` has, with `create_dir_all` in place of writing an empty
+                // file. There is nothing to open in a tab, so what it does instead is open the new
+                // folder out in the tree and put the explorer's cursor on it — which is where
+                // somebody who has just made a folder is about to make a file.
+                let target = crate::services::file_clipboard::free_name(&folder, &name);
+                match std::fs::create_dir_all(&target) {
+                    Ok(()) => {
+                        self.tree.reload();
+                        self.tree.expand(&target);
+                        self.selected = Some(target.clone());
+                        self.reveal_selection = REVEAL_FRAMES;
+                        self.message = Some(format!("Made {}", target.display()));
+                    }
+                    Err(problem) => {
+                        self.message =
+                            Some(format!("Quill could not make {}: {problem}", target.display()))
+                    }
+                }
+            }
             Purpose::Rename(path) => {
                 let Some(folder) = path.parent() else {
                     return;
@@ -4673,6 +4796,11 @@ impl QuillApp {
         // kind of thing — what the files say, worked out from what they hold — and because both are
         // keyed on something cheap enough to ask about every frame.
         self.keep_the_symbol_index_fresh();
+        // Before the explorer is drawn, so a file another program has just made is in the tree on
+        // this frame rather than the next one.
+        self.notice_what_changed_on_disk();
+        // Where the window is, so the project can be opened here again next time — `task-1693`.
+        self.note_where_the_window_is(ui.ctx());
         // Before the explorer is drawn, so the folders it needs are already open on this frame.
         self.follow_the_open_file();
         // Before any button is drawn, so that on the very first frame the focus is here and not on the
@@ -4696,15 +4824,14 @@ impl QuillApp {
         // much clear — but the bar's own height never changes, so switching from a `.md` file to a
         // `.rs` one no longer moves the tabs and the editing area up and down by forty four points.
         let tools_width = text_tools::width(self.document().path());
-        let tools_rect = title_bar::tools_rect(title_rect, self.menu_placement, tools_width);
-        // The run widget, between the project's name and the text tools. How much room it wants
-        // depends on the name it is showing and on whether there is a stop square to draw, and the
-        // bar leaves exactly that much clear — without its own height changing by a point, which is
-        // the whole reason the tools were moved into it in the first place.
+        // The run widget takes the right hand end and the text tools sit in front of it, so the play
+        // and the bug are in the same place whatever file is open — `task-1693`. How much room each
+        // wants is worked out first, because the tools have to know where the run widget starts.
         let run_state = self.run_widget_state();
         let run_width = run_widget::width(&run_state);
-        let run_rect =
-            title_bar::run_rect(title_rect, self.menu_placement, tools_width, run_width);
+        let tools_rect =
+            title_bar::tools_rect(title_rect, self.menu_placement, tools_width, run_width);
+        let run_rect = title_bar::run_rect(title_rect, self.menu_placement, run_width);
         let status_rect = Rect::from_min_size(
             Pos2::new(full.left(), full.bottom() - size::STATUS_BAR),
             Vec2::new(full.width(), size::STATUS_BAR),
@@ -5006,8 +5133,13 @@ impl QuillApp {
             if explorer_outcome.hide {
                 self.explorer_visible = false;
             }
+            self.dragging_a_row = explorer_outcome.dragging;
             if let Some((at, path, directory)) = explorer_outcome.context_menu {
-                self.explorer_menu = Some((at, path, directory));
+                let aimed = match explorer_outcome.menu_over_empty_space {
+                    true => actions::Aim::AtEmptySpace,
+                    false => actions::Aim::AtARow,
+                };
+                self.explorer_menu = Some((at, path, directory, aimed));
             }
         }
 
@@ -5112,12 +5244,13 @@ impl QuillApp {
 
         // The explorer's own menu, drawn after the explorer and the editing area so it sits over
         // both rather than under either.
-        if let Some((at, path, directory)) = self.explorer_menu.clone() {
+        if let Some((at, path, directory, aimed)) = self.explorer_menu.clone() {
             let entries = actions::explorer_menu_with_git(
                 &self.menu_state(),
                 &path,
                 directory,
                 !self.clipboard.is_empty(),
+                aimed,
             );
             let outcome = context_menu::show(ui, "explorer", at, &entries);
             if let Some(chosen) = outcome.chosen {
@@ -5567,7 +5700,12 @@ impl QuillApp {
         // the editing area, the explorer and the status bar all take drags over the whole of their
         // rectangles, and a grip added earlier would never see a pointer. See `components::resize_edges`
         // for why they exist at all, which is that Quill's window has no operating system frame.
-        if let Some(direction) = resize_edges::show(ui, full) {
+        // Nothing is added at all while the window is maximised, which is Quill's rule for a
+        // control that cannot apply and — the part that matters — is what stops a request the window
+        // manager will refuse ever being sent. `components::resize_edges` records what one of those
+        // costs: it wedges every later move and resize as well.
+        let maximized = ui.ctx().input(|input| input.viewport().maximized.unwrap_or(false));
+        if let Some(direction) = resize_edges::show(ui, full, maximized) {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::BeginResize(direction));
         }
 
@@ -6489,6 +6627,70 @@ impl QuillApp {
             breakpoints,
             can_debug: self.debug_applies_to(file.path()),
             execution_point: self.execution_paragraph(file.path()),
+            // What the gutter's own type follows, so the numbers grow with the text rather than
+            // staying a fixed eleven and a half points beside forty point letters.
+            font_size: self.settings.font_size,
+        }
+    }
+
+    /// Remember where the window is, which is the other half of "in the same location and state".
+    ///
+    /// Read from egui once a frame rather than reported by whatever moved the window, which is
+    /// `follow_the_open_file`'s rule: a list of the places that have to say "I moved it" is a list
+    /// whose next entry will be the one that forgot, and there are four of them here — the title
+    /// bar's drag, the resize grips, the platform's own snap, and `quill-cli window position`.
+    ///
+    /// The **position** comes from the outer rectangle and the **size** from the inner one, because
+    /// those are the two the `ViewportBuilder` takes back. A maximised window records its geometry
+    /// as it is, so that a window restored from maximised is the size it was before — but it is the
+    /// `maximised` flag that decides how it opens.
+    fn note_where_the_window_is(&mut self, ctx: &egui::Context) {
+        let place = ctx.input(|input| {
+            let viewport = input.viewport();
+            let outer = viewport.outer_rect?;
+            let inner = viewport.inner_rect.unwrap_or(outer);
+            Some(project_state::WindowPlace {
+                x: outer.min.x,
+                y: outer.min.y,
+                width: inner.width(),
+                height: inner.height(),
+                maximised: viewport.maximized.unwrap_or(false),
+            })
+        });
+        // A maximised window's own geometry is the whole screen, and remembering that as the size to
+        // restore to would mean a window that could never be made small again. So the size is kept
+        // as it was before it was maximised, and only the flag moves.
+        match (place, self.window_place) {
+            (Some(now), Some(before)) if now.maximised && !before.maximised => {
+                self.window_place = Some(project_state::WindowPlace { maximised: true, ..before });
+            }
+            (Some(now), _) if now.is_sensible() => self.window_place = Some(now),
+            _ => {}
+        }
+    }
+
+    /// Read the tree again when a folder that is showing has been written to since it was last read.
+    ///
+    /// `task-1693`: a file or a folder made by anything other than Quill — an agent with its own
+    /// tools, a build, a command in the terminal tile — never appeared in the explorer, because the
+    /// tree is only read when Quill is told to read it. The folders that are **showing** are asked,
+    /// on a timer, which is a handful of `metadata` calls; `FileTree::changed_on_disk` records why
+    /// that is the right shape rather than a watcher.
+    ///
+    /// **Not while a row is being carried.** Reloading rebuilds the entries under the drag, and a
+    /// drop that landed on a folder which had just been replaced would be a move somebody did not
+    /// ask for.
+    fn notice_what_changed_on_disk(&mut self) {
+        let now = std::time::Instant::now();
+        if now.duration_since(self.last_watched) < WATCH_INTERVAL {
+            return;
+        }
+        self.last_watched = now;
+        if self.dragging_a_row {
+            return;
+        }
+        if self.tree.changed_on_disk() {
+            self.tree.reload();
         }
     }
 

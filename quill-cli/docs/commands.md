@@ -1923,6 +1923,46 @@ quill-cli explorer move src/app/layout.ts src/draw
 quill-cli explorer move src/app/layout.ts src/draw --dry-run --json
 ```
 
+### explorer new-file
+
+```
+quill-cli explorer new-file <path>
+```
+
+Make an empty file. The folders above it are made too, and it opens in a tab. The same thing New -> File on the explorer's right click menu does, without the dialog.
+
+- `path` — Where the file goes, relative to the project or absolute.
+
+```sh
+quill-cli explorer new-file notes/today.md
+```
+
+### explorer new-folder
+
+```
+quill-cli explorer new-folder <path>
+```
+
+Make a folder, and every folder above it. The same thing New -> Folder on the explorer's right click menu does, without the dialog.
+
+- `path` — Where the folder goes, relative to the project or absolute.
+
+```sh
+quill-cli explorer new-folder src/services
+```
+
+### explorer reload
+
+```
+quill-cli explorer reload
+```
+
+Read the project's folders again, so anything another program has just made appears. It happens on its own within a second; this asks for it now.
+
+```sh
+quill-cli explorer reload
+```
+
 ### explorer reveal
 
 ```

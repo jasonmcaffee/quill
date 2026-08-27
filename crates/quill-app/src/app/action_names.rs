@@ -76,6 +76,7 @@ impl Action {
             Action::CloseTerminalTab => "close-terminal-tab".to_owned(),
             Action::RenameTerminalTab => "rename-terminal-tab".to_owned(),
             Action::NewFile(_) => "new-file".to_owned(),
+            Action::NewFolder(_) => "new-folder".to_owned(),
             Action::CutPath(_) => "cut-path".to_owned(),
             Action::CopyPath(_) => "copy-path".to_owned(),
             Action::CopyPathReference(_) => "copy-path-reference".to_owned(),
@@ -181,6 +182,7 @@ impl Action {
             "close-terminal-tab" => Action::CloseTerminalTab,
             "rename-terminal-tab" => Action::RenameTerminalTab,
             "new-file" => Action::NewFile(with_path()),
+            "new-folder" => Action::NewFolder(with_path()),
             "cut-path" => Action::CutPath(with_path()),
             "copy-path" => Action::CopyPath(with_path()),
             "copy-path-reference" => Action::CopyPathReference(with_path()),
@@ -381,6 +383,7 @@ mod tests {
             let path = match &action {
                 Action::OpenRecent(path)
                 | Action::NewFile(path)
+                | Action::NewFolder(path)
                 | Action::CutPath(path)
                 | Action::CopyPath(path)
                 | Action::CopyPathReference(path)

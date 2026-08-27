@@ -20,9 +20,13 @@
 //! the dot is on the tab as well, and the folder was the project, which is what the bar now says once
 //! rather than repeating on every file.
 //!
-//! **The text tools sit at the right hand end**, in front of the window buttons, and the **run
-//! widget** sits in front of *them*, between the project's name and the tools — which is what
-//! `task-1683` asks for. The bar draws neither — `components::text_tools` and
+//! **The run widget sits at the right hand end**, in front of the window buttons, and the **text
+//! tools** sit in front of *it* — `task-1693`. That order is the other way round from the one
+//! `task-1683` shipped, and the reason is that only one of the two changes width: the tools are
+//! nothing at all for a `.rs` file and five buttons for a `.md` one, so measuring the run widget
+//! back from them slid the play button along the bar every time the tab changed. Whichever of the
+//! two moves has to be the one whose width moves. The bar draws neither — `components::text_tools`
+//! and
 //! `components::run_widget` do — but it decides where both go, through [`tools_rect`] and
 //! [`run_rect`], so that nothing it draws itself and nothing that is dragged to move the window
 //! ever runs underneath one. **Neither ever changes the bar's height**, which is the whole reason
@@ -82,14 +86,15 @@ fn first_button(area: Rect, placement: MenuPlacement) -> Pos2 {
 
 /// The rectangle the text tools are drawn into, `width` points wide.
 ///
-/// They finish in front of the window buttons where those are at the right, and against the right hand
-/// edge where they are not. A width of nothing gives an empty rectangle there, which is what a file with
-/// no tools gets.
-pub fn tools_rect(area: Rect, placement: MenuPlacement, width: f32) -> Rect {
-    let right = match placement {
-        MenuPlacement::InWindow => first_button(area, placement).x - BUTTON_MARGIN - 10.0,
-        MenuPlacement::Native => area.right() - BUTTON_MARGIN,
-    };
+/// They finish in front of the run widget, which is at the right hand end of the bar. A width of
+/// nothing gives an empty rectangle there, which is what a file with no tools gets.
+pub fn tools_rect(area: Rect, placement: MenuPlacement, width: f32, run_width: f32) -> Rect {
+    // In front of the run widget, which takes the right hand end. `task-1693`: the tools are as wide
+    // as the open file needs — nothing at all for a `.rs` file, five buttons for a `.md` one — so
+    // measuring the run widget back from *them* slid it along the bar every time the tab changed.
+    // Whichever of the two moves has to be the one whose width moves, and that is the tools.
+    let run = run_rect(area, placement, run_width);
+    let right = if run_width > 0.0 { run.left() - 12.0 } else { run.right() };
     Rect::from_min_max(
         Pos2::new(right - width, area.top()),
         Pos2::new(right, area.bottom()),
@@ -98,12 +103,15 @@ pub fn tools_rect(area: Rect, placement: MenuPlacement, width: f32) -> Rect {
 
 /// The rectangle the run widget is drawn into, `run_width` points wide.
 ///
-/// In front of the text tools, so the bar reads project, run, tools, window buttons — the run
-/// controls beside the file's, and both clear of the buttons. With no tools it takes the room they
-/// would have had, which is what a source file's title bar looks like.
-pub fn run_rect(area: Rect, placement: MenuPlacement, tools_width: f32, run_width: f32) -> Rect {
-    let tools = tools_rect(area, placement, tools_width);
-    let right = if tools_width > 0.0 { tools.left() - 12.0 } else { tools.right() };
+/// The right hand end of the bar, clear of the window buttons, so the bar reads project, tools, run,
+/// buttons. The play and the bug are then in the same place whatever file is open — `task-1693`,
+/// which is `task-1658`'s own reason for moving the tools into the title bar applied one control
+/// further along.
+pub fn run_rect(area: Rect, placement: MenuPlacement, run_width: f32) -> Rect {
+    let right = match placement {
+        MenuPlacement::InWindow => first_button(area, placement).x - BUTTON_MARGIN - 10.0,
+        MenuPlacement::Native => area.right() - BUTTON_MARGIN,
+    };
     Rect::from_min_max(
         Pos2::new(right - run_width, area.top()),
         Pos2::new(right, area.bottom()),
@@ -192,8 +200,8 @@ pub fn show(
 
     // The project's name, cut short with an ellipsis rather than run underneath the run widget or
     // the tools. Whichever of the two is furthest left is where it has to stop.
-    let tools = tools_rect(area, placement, tools_width);
-    let run = run_rect(area, placement, tools_width, run_width);
+    let tools = tools_rect(area, placement, tools_width, run_width);
+    let run = run_rect(area, placement, run_width);
     let claimed = if run_width > 0.0 {
         Some(run.left())
     } else if tools_width > 0.0 {
@@ -262,48 +270,53 @@ mod tests {
     }
 
     #[test]
-    fn the_tools_stop_before_the_window_buttons_when_the_buttons_are_at_the_right() {
+    fn the_tools_stop_before_the_run_widget_and_the_run_widget_before_the_buttons() {
         let area = bar();
-        let tools = tools_rect(area, MenuPlacement::InWindow, 124.0);
+        let tools = tools_rect(area, MenuPlacement::InWindow, 124.0, 120.0);
+        let run = run_rect(area, MenuPlacement::InWindow, 120.0);
         let nearest_button = first_button(area, MenuPlacement::InWindow).x - 8.0;
+        assert!(tools.right() < run.left(), "the tools finish before the run widget starts");
         assert!(
-            tools.right() < nearest_button,
-            "the tools finish at {} and the first button starts at {nearest_button}",
-            tools.right()
+            run.right() < nearest_button,
+            "the run widget finishes at {} and the first button starts at {nearest_button}",
+            run.right()
         );
         assert_eq!(tools.width(), 124.0);
-    }
-
-    #[test]
-    fn the_tools_go_against_the_right_edge_when_the_buttons_are_at_the_left() {
-        let area = bar();
-        let tools = tools_rect(area, MenuPlacement::Native, 124.0);
-        assert_eq!(tools.right(), area.right() - BUTTON_MARGIN);
-        assert!(tools.left() > first_button(area, MenuPlacement::Native).x, "clear of the buttons");
-    }
-
-    #[test]
-    fn a_file_with_no_tools_leaves_an_empty_rectangle_rather_than_a_gap() {
-        let tools = tools_rect(bar(), MenuPlacement::InWindow, 0.0);
-        assert_eq!(tools.width(), 0.0);
-    }
-
-    #[test]
-    fn the_run_widget_sits_in_front_of_the_text_tools() {
-        // The bar reads project, run, tools, window buttons.
-        let area = bar();
-        let tools = tools_rect(area, MenuPlacement::InWindow, 124.0);
-        let run = run_rect(area, MenuPlacement::InWindow, 124.0, 120.0);
-        assert!(run.right() < tools.left(), "run finishes at {} and tools start at {}", run.right(), tools.left());
         assert_eq!(run.width(), 120.0);
     }
 
     #[test]
-    fn with_no_text_tools_the_run_widget_takes_the_room_they_would_have_had() {
+    fn the_run_widget_goes_against_the_right_edge_when_the_buttons_are_at_the_left() {
         let area = bar();
-        let tools = tools_rect(area, MenuPlacement::InWindow, 0.0);
-        let run = run_rect(area, MenuPlacement::InWindow, 0.0, 120.0);
-        assert_eq!(run.right(), tools.right(), "a source file's title bar");
-        assert!(run.left() < first_button(area, MenuPlacement::InWindow).x);
+        let run = run_rect(area, MenuPlacement::Native, 120.0);
+        assert_eq!(run.right(), area.right() - BUTTON_MARGIN);
+        assert!(run.left() > first_button(area, MenuPlacement::Native).x, "clear of the buttons");
+    }
+
+    #[test]
+    fn a_file_with_no_tools_leaves_an_empty_rectangle_rather_than_a_gap() {
+        let tools = tools_rect(bar(), MenuPlacement::InWindow, 0.0, 120.0);
+        assert_eq!(tools.width(), 0.0);
+    }
+
+    /// `task-1693`: the run widget is where it is whatever the open file is, which is the whole of
+    /// what was asked for. The tools are the half that changes width, so they are the half that
+    /// moves.
+    #[test]
+    fn the_run_widget_does_not_move_when_the_open_file_changes() {
+        let area = bar();
+        let with_tools = run_rect(area, MenuPlacement::InWindow, 120.0);
+        let source_file = run_rect(area, MenuPlacement::InWindow, 120.0);
+        assert_eq!(with_tools, source_file);
+        // And a wider name still finishes in the same place.
+        let longer = run_rect(area, MenuPlacement::InWindow, 200.0);
+        assert_eq!(longer.right(), with_tools.right());
+    }
+
+    #[test]
+    fn with_no_run_widget_the_tools_take_the_room_it_would_have_had() {
+        let area = bar();
+        let tools = tools_rect(area, MenuPlacement::InWindow, 124.0, 0.0);
+        assert_eq!(tools.right(), run_rect(area, MenuPlacement::InWindow, 0.0).right());
     }
 }

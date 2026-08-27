@@ -26,6 +26,8 @@ const FOOTER: f32 = 52.0;
 pub enum Purpose {
     /// Make an empty file in this folder, with the name that is typed.
     NewFile(PathBuf),
+    /// Make a folder inside this one, with the name that is typed.
+    NewFolder(PathBuf),
     /// Rename this file or folder to the name that is typed.
     Rename(PathBuf),
     /// Start a branch with the name that is typed, from the current one.

@@ -32,6 +32,14 @@
 //! while the explorer has the keyboard, so there is never a doubt about where a key press is going.
 //! A row that is both is a pill with a ring, which is what clicking a file looks like.
 //!
+//! That is what the paragraph above has always said, and until `task-1693` it was not what the code
+//! did: both marks filled the same `SELECTED_ROW` pill, so a right click on a second file left two
+//! rows looking equally open — and the cursor's pill stayed after its tab was closed, because a
+//! cursor is a different thing from an open file and is not supposed to move when a tab goes. **The
+//! pill means the file that is showing and nothing else.** The cursor gets the quiet `CONTROL` fill
+//! the hover already uses, plus the ring while the explorer has the keyboard, so the two marks are
+//! two appearances rather than one.
+//!
 //! ## Dragging
 //!
 //! A row can be carried onto a folder, which is IntelliJ's Move refactoring under the gesture a
@@ -43,6 +51,15 @@
 //! Three drops are refused by simply not offering a target — a folder into itself or into anything
 //! under it, a path into the folder it is already in, and anything outside the panel, the last so a
 //! drag can be thought better of.
+//!
+//! ## The empty space below the rows
+//!
+//! It is the project folder, which is the answer the heading already gives: a right click there
+//! opens the same menu a folder row opens, so a file or a folder can be made from anywhere in the
+//! panel rather than only from a row that happens to be in the right place. `task-1693` asks for it,
+//! and asks that the entries which are about a particular file be **greyed out** rather than taken
+//! away — which the window does, through `actions::Aim`. The interaction is added after the rows, so
+//! a row that is there always wins the point.
 
 use std::path::{Path, PathBuf};
 
@@ -97,6 +114,12 @@ pub struct ExplorerOutcome {
     pub open_permanently: Option<PathBuf>,
     /// A row was right clicked: where the pointer was, and what it was over.
     pub context_menu: Option<(Pos2, PathBuf, bool)>,
+    /// True when that right click was in the **empty space below the rows** rather than on a row.
+    ///
+    /// The path in `context_menu` is then the project folder, because that is what the empty space
+    /// under a project's files is. The window uses this to dim the entries that are about a
+    /// particular file — `task-1693`, and see `actions::Aim`.
+    pub menu_over_empty_space: bool,
     /// A row was clicked, so it becomes the explorer's selection.
     pub select: Option<PathBuf>,
     /// Something was clicked in the panel, so the explorer should take the keyboard.
@@ -105,6 +128,9 @@ pub struct ExplorerOutcome {
     pub moved: Option<(PathBuf, PathBuf)>,
     /// The button that hides the panel was pressed.
     pub hide: bool,
+    /// True while a row is in the air, which is the one moment the window must not read the tree
+    /// again — the entries under the drag would be rebuilt out from under it.
+    pub dragging: bool,
 }
 
 /// One row as it was drawn, which is what the drop target is worked out from.
@@ -301,8 +327,35 @@ pub fn show(
         }
     });
 
+    // The empty space below the last row. `task-1693` asks that a right click there open the same
+    // menu, so that a file or a folder can be made from anywhere in the panel rather than only from
+    // a row that happens to be in the right place. It is the project folder's menu, which is the
+    // answer the heading already gives — with everything that is about a particular file dimmed,
+    // because nothing was clicked.
+    //
+    // Added **after** the rows, so a row that is there wins the point, and only over what is left of
+    // the list once they have been drawn.
+    let used = drawn.iter().map(|row| row.rect.bottom()).fold(list_rect.top(), f32::max);
+    let empty = Rect::from_min_max(Pos2::new(list_rect.left(), used), list_rect.max);
+    if empty.height() > 1.0 {
+        let response = ui.interact(empty, ui.id().with("explorer-empty"), Sense::click());
+        if response.secondary_clicked() {
+            if let Some(at) =
+                response.interact_pointer_pos().or_else(|| response.hover_pos())
+            {
+                outcome.context_menu = Some((at, tree.root().to_path_buf(), true));
+                outcome.menu_over_empty_space = true;
+                outcome.focus = true;
+            }
+        }
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Other, ui.is_enabled(), "Explorer background")
+        });
+    }
+
     // Where a row being carried would land. After the loop, for the reason `settle_the_tab_drag`
     // runs after the pane loop: this is the earliest moment anything knows where every row is.
+    outcome.dragging = carried.is_some();
     if let Some(source) = &carried {
         let pointer = ui.input(|input| input.pointer.interact_pos());
         let target = pointer.and_then(|at| drop_target(&drawn, tree.root(), &heading_hit, at, source));
@@ -507,9 +560,9 @@ fn folder_row(
     if selected && view.reveal_selected {
         ui.scroll_to_rect(row, None);
     }
-    if selected {
-        ui.painter().rect_filled(pill, CornerRadius::same(5), color::SELECTED_ROW);
-    } else if response.hovered() {
+    // A folder is never the file that is showing, so it has only the cursor's quiet mark. See the
+    // note at the top of this file.
+    if selected || response.hovered() {
         ui.painter().rect_filled(pill, CornerRadius::same(5), color::CONTROL);
     }
     if selected && view.keyboard {
@@ -569,9 +622,12 @@ fn file_row(
         ui.scroll_to_rect(row, None);
     }
     let pill = row.shrink2(Vec2::new(8.0, 1.0));
-    if open || selected {
+    // The pill is the file that is **showing**. The explorer's own cursor gets the quieter fill the
+    // hover already uses, so two rows are never drawn as though both were open — `task-1693`, and
+    // the note at the top of this file.
+    if open {
         ui.painter().rect_filled(pill, CornerRadius::same(5), color::SELECTED_ROW);
-    } else if response.hovered() && openable {
+    } else if selected || (response.hovered() && openable) {
         ui.painter().rect_filled(pill, CornerRadius::same(5), color::CONTROL);
     }
     // The ring says where the keyboard is, which is the whole reason the explorer has a selection of
@@ -604,7 +660,7 @@ fn file_row(
     }
     // A file git has something to say about is drawn in git's colour for it, which is what IntelliJ
     // does and is the cheapest way to see at a glance what a commit would hold.
-    let tint = if open || selected {
+    let tint = if open {
         color::TEXT_STRONG
     } else if let Some(mark) = decoration.tint {
         mark

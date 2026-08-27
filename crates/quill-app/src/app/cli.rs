@@ -4109,6 +4109,16 @@ impl QuillApp {
                     ),
                 }
             }
+            "new-file" => self.cli_explorer_new(request, false),
+            "new-folder" => self.cli_explorer_new(request, true),
+            "reload" => {
+                self.tree.reload();
+                ok(
+                    request,
+                    format!("Read {} again", self.tree.root().display()),
+                    json!({ "files": self.tree.file_count() }),
+                )
+            }
             "select" => self.cli_explorer_select(request),
             "delete" => self.cli_explorer_delete(request),
             "move" => self.cli_explorer_move(request),
@@ -4157,6 +4167,61 @@ impl QuillApp {
                 json!({ "selected": null, "focused": self.focus == crate::app::Focus::Explorer }),
             ),
         }
+    }
+
+    /// `explorer new-file` and `explorer new-folder` — make one, with no dialog in front of it.
+    ///
+    /// The menu asks for a name in a prompt because a menu entry has nowhere else to get one; the
+    /// command line has already been told. `task-1693` asks for the folder half, and the file half
+    /// is here beside it because there was no way to make either from a script.
+    ///
+    /// The folders above are made too, which is what anybody typing a path with a slash in it means.
+    /// A path that is already there is refused rather than emptied.
+    fn cli_explorer_new(&mut self, request: &Request, directory: bool) -> Outcome {
+        let what = if directory { "folder" } else { "file" };
+        let Some(path) = self.cli_path_argument(request, "path") else {
+            return no(request, code::USAGE, format!("Say where the {what} goes."));
+        };
+        if path.exists() {
+            return no(
+                request,
+                code::NOT_APPLICABLE,
+                format!("There is already something at {}", path.display()),
+            );
+        }
+        let above = match directory {
+            true => Some(path.as_path()),
+            false => path.parent(),
+        };
+        if let Some(above) = above {
+            if let Err(problem) = std::fs::create_dir_all(above) {
+                return no(
+                    request,
+                    code::REFUSED,
+                    format!("Quill could not make {}: {problem}", above.display()),
+                );
+            }
+        }
+        if !directory {
+            if let Err(problem) = std::fs::write(&path, "") {
+                return no(
+                    request,
+                    code::REFUSED,
+                    format!("Quill could not make {}: {problem}", path.display()),
+                );
+            }
+        }
+        self.tree.reload();
+        self.tree.expand(&path);
+        if !directory {
+            self.open_path_permanently(&path);
+        }
+        self.selected = Some(path.clone());
+        ok(
+            request,
+            format!("Made {}", path.display()),
+            json!({ "path": path.to_string_lossy(), "directory": directory }),
+        )
     }
 
     /// `explorer delete` — throw a file away, with no question in front of it.

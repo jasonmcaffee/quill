@@ -1,11 +1,15 @@
 //! The run widget at the right of the title bar: the chosen configuration's name, a play button, a
 //! bug button, and a stop square while it runs.
 //!
-//! `tasks/task-1683-run-configurations-tdd.md` §6.2. It sits between the project's name and the
-//! text tools, **inside the height the title bar already has** — the bar's height never changes, so
-//! a widget that appeared and disappeared with the project would not move the tabs or the editing
-//! area by a pixel. `components::title_bar` decides where it goes, through
+//! `tasks/task-1683-run-configurations-tdd.md` §6.2. It sits at the **right hand end of the bar**,
+//! in front of the window buttons and behind the text tools, **inside the height the title bar
+//! already has** — the bar's height never changes, so a widget that appeared and disappeared with
+//! the project would not move the tabs or the editing area by a pixel.
+//! `components::title_bar` decides where it goes, through
 //! [`crate::components::title_bar::run_rect`], exactly as it decides where the text tools go.
+//!
+//! It was in front of the tools until `task-1693`, and moved because the tools are as wide as the
+//! open file needs them to be — so the play button slid along the bar every time the tab changed.
 //!
 //! Three parts, and each is absent when it cannot apply, which is Quill's rule:
 //!

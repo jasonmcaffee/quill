@@ -143,6 +143,8 @@ pub enum Action {
     RenameTerminalTab,
     /// Make an empty file in this folder. The name is asked for first.
     NewFile(PathBuf),
+    /// Make a folder inside this one. The name is asked for first.
+    NewFolder(PathBuf),
     /// Hold this path to be moved when something is pasted.
     CutPath(PathBuf),
     /// Hold this path to be copied when something is pasted.
@@ -1507,6 +1509,19 @@ pub fn terminal_tab_menu() -> Vec<Entry> {
     ]
 }
 
+/// Whether the explorer's menu was opened over a row or over the empty space below the rows.
+///
+/// `task-1693` asks that a right click anywhere in the panel open the same menu, "but options that
+/// don't apply, like rename, etc should be greyed out". So there is one menu and one function, and
+/// this is the one thing that changes between them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Aim {
+    /// The pointer was over a file or a folder, or over the project's own name.
+    AtARow,
+    /// The pointer was over the empty space below the rows, which is the project folder.
+    AtEmptySpace,
+}
+
 /// What the explorer's right click menu holds, for the row that was clicked.
 ///
 /// `directory` says whether the row is a folder, because a new file goes *in* a folder and *beside*
@@ -1516,33 +1531,50 @@ pub fn terminal_tab_menu() -> Vec<Entry> {
 /// beside it. It is marked as not coming from the keyboard: the watcher behind the menu bar must
 /// never fire it, because `Delete` in the editing area means "take away the letter in front of the
 /// caret". The explorer reads the key itself, and only while it has the keyboard.
-pub fn explorer_menu(path: &std::path::Path, directory: bool, can_paste: bool) -> Vec<Entry> {
+pub fn explorer_menu(
+    path: &std::path::Path,
+    directory: bool,
+    can_paste: bool,
+    aimed: Aim,
+) -> Vec<Entry> {
     let folder = if directory {
         path.to_path_buf()
     } else {
         path.parent().map(std::path::Path::to_path_buf).unwrap_or_else(|| path.to_path_buf())
     };
+    // A right click in the empty space below the rows is about the project folder, so everything
+    // that is about the *folder* is live and everything that is about a particular file is dimmed —
+    // which is what `task-1693` asks for in as many words. Dimmed rather than absent, deliberately:
+    // absent is Quill's rule for a control that can never apply, and every one of these is live the
+    // instant the pointer is over a row.
+    let on_a_row = aimed == Aim::AtARow;
     vec![
         Entry::Submenu {
             name: "New".to_owned(),
-            entries: vec![Entry::item("File", Action::NewFile(folder.clone()))],
+            entries: vec![
+                Entry::item("File", Action::NewFile(folder.clone())),
+                Entry::item("Folder", Action::NewFolder(folder.clone())),
+            ],
         },
         Entry::Separator,
         Entry::with_shortcut("Cut", Action::CutPath(path.to_path_buf()), Shortcut::command(egui::Key::X))
+            .enabled(on_a_row)
             .not_from_the_keyboard(),
         Entry::with_shortcut("Copy", Action::CopyPath(path.to_path_buf()), Shortcut::command(egui::Key::C))
+            .enabled(on_a_row)
             .not_from_the_keyboard(),
-        Entry::item("Copy Path", Action::CopyPathReference(path.to_path_buf())),
+        Entry::item("Copy Path", Action::CopyPathReference(path.to_path_buf())).enabled(on_a_row),
         Entry::with_shortcut("Paste", Action::PasteInto(folder), Shortcut::command(egui::Key::V))
             .enabled(can_paste)
             .not_from_the_keyboard(),
         Entry::Separator,
-        Entry::item("Rename...", Action::RenamePath(path.to_path_buf())),
+        Entry::item("Rename...", Action::RenamePath(path.to_path_buf())).enabled(on_a_row),
         Entry::with_shortcut(
             "Delete",
             Action::DeletePath(path.to_path_buf()),
             Shortcut::plain(egui::Key::Delete),
         )
+        .enabled(on_a_row)
         .not_from_the_keyboard(),
         Entry::Separator,
         Entry::item(crate::services::launcher::file_manager_name(), Action::RevealPath(path.to_path_buf())),
@@ -1559,10 +1591,16 @@ pub fn explorer_menu_with_git(
     path: &std::path::Path,
     directory: bool,
     can_paste: bool,
+    aimed: Aim,
 ) -> Vec<Entry> {
-    let mut entries = explorer_menu(path, directory, can_paste);
+    let mut entries = explorer_menu(path, directory, can_paste, aimed);
     entries.push(Entry::Separator);
-    entries.push(Entry::Submenu { name: "Git".to_owned(), entries: git_submenu(state, path) });
+    let mut git = git_submenu(state, path);
+    if aimed == Aim::AtEmptySpace {
+        // Every entry in it is about the file that was clicked, and nothing was.
+        git = git.into_iter().map(|entry| entry.enabled(false)).collect();
+    }
+    entries.push(Entry::Submenu { name: "Git".to_owned(), entries: git });
     entries
 }
 
@@ -1831,7 +1869,7 @@ mod tests {
     fn the_git_entries_on_a_row_in_the_explorer_are_aimed_at_that_row() {
         let state = MenuState { in_repository: true, ..MenuState::default() };
         let path = PathBuf::from("/project/notes.md");
-        let entries = explorer_menu_with_git(&state, &path, false, false);
+        let entries = explorer_menu_with_git(&state, &path, false, false, Aim::AtARow);
         let git = entries
             .iter()
             .find_map(|entry| match entry {
@@ -1843,6 +1881,60 @@ mod tests {
             matches!(entry, Entry::Item { action: Action::Git(GitAction::ShowDiff(Some(at))), .. } if *at == path)
         });
         assert!(aimed, "Show Diff on a row is about that row's file");
+    }
+
+    /// `task-1693`: one menu, opened from a row or from the empty space below the rows, with the
+    /// entries that are about a particular file dimmed in the second case rather than taken away.
+    #[test]
+    fn the_menu_from_the_empty_space_dims_what_is_about_a_file() {
+        let root = std::path::PathBuf::from("/project");
+        let live = |entries: &[Entry], name: &str| {
+            entries.iter().any(|entry| {
+                matches!(entry, Entry::Item { name: found, enabled, .. } if found == name && *enabled)
+            })
+        };
+        let on_a_row = explorer_menu(&root.join("readme.md"), false, true, Aim::AtARow);
+        let empty = explorer_menu(&root, true, true, Aim::AtEmptySpace);
+        assert_eq!(
+            on_a_row.len(),
+            empty.len(),
+            "it is the same menu, so a person finds the same rows in the same places"
+        );
+        for entry in ["Cut", "Copy", "Copy Path", "Rename...", "Delete"] {
+            assert!(live(&on_a_row, entry), "{entry} is live over a row");
+            assert!(!live(&empty, entry), "{entry} is dimmed over the empty space");
+        }
+        for entry in ["Paste", "Reload from Disk"] {
+            assert!(live(&empty, entry), "{entry} is about the folder, so it stays live");
+        }
+        // And the one thing somebody who right clicked the empty space came for.
+        let new = empty.iter().find_map(|entry| match entry {
+            Entry::Submenu { name, entries } if name == "New" => Some(entries.clone()),
+            _ => None,
+        });
+        let new = new.expect("a New submenu");
+        assert!(live(&new, "File"));
+        assert!(live(&new, "Folder"));
+    }
+
+    /// The `New` submenu makes both kinds of thing, which `task-1693` asked for: there was no way to
+    /// make a folder from the explorer at all.
+    #[test]
+    fn the_new_submenu_makes_a_folder_as_well_as_a_file() {
+        let folder = std::path::PathBuf::from("/project/chapters");
+        let entries = explorer_menu(&folder, true, false, Aim::AtARow);
+        let new = entries
+            .iter()
+            .find_map(|entry| match entry {
+                Entry::Submenu { name, entries } if name == "New" => Some(entries.clone()),
+                _ => None,
+            })
+            .expect("a New submenu");
+        let makes = |action: &Action| matches!(action, Action::NewFolder(at) if *at == folder);
+        assert!(
+            new.iter().any(|entry| matches!(entry, Entry::Item { action, .. } if makes(action))),
+            "Folder makes one inside the folder that was clicked"
+        );
     }
 
     #[test]

@@ -650,6 +650,92 @@ a GitHub release asset, so there is nothing on `PATH` to look for and nothing a 
 installs, and a person told to set `debug.node` had no way at all to get the thing it names. The
 refusal names the script.
 
+## A mark in the gutter is measured against the letters, and a window comes back where it was left
+
+`task-1693` reported nine things at once and `tasks/task-1693-gutter-and-window-state-tdd.md` is the
+design. Four of them changed a rule rather than a line.
+
+**A gutter mark is centred on the glyph band, never on the line box.** A `PlacedLine` is taller than
+the letters in it: the baseline sits `ascent` from the top and *all* of the extra leading is added
+below, which is what makes single and double spaced paragraphs start in the same place, and
+`text_renderer::READING_LEADING` alone is 0.45 of the point size. So centring a number, a breakpoint
+dot or a fold arrow in the line put it low by about a fifth of the point size — three points at the
+default sixteen and thirty at the hundred and forty-four the settings allow, which is why it was
+noticed while zooming. `gutter::text_band` is the box the letters really occupy, and it is the same
+box `layout.rs` says the caret is drawn to. Two things deliberately keep the whole line: the change
+bar, which marks a line rather than its letters and has to meet the bar above it with no gap, and the
+blame cell's background, for the same reason. **The gutter's own type follows the editor's** as a
+ratio of `settings::DEFAULT_FONT_SIZE`, clamped at both ends, so at the default it is exactly the
+11.5 and 10.5 points it always was and only the alignment moved.
+
+**No resize grip is added while the window is maximised**, and that is not tidiness. `BeginResize`
+becomes a posted `WM_NCLBUTTONDOWN`, and winit latches a private `dragging` flag that only
+`WM_EXITSIZEMOVE` clears — a message a **maximised** window never sends, because Windows disables
+Size on one. One refused edge drag therefore wedges moving *and* resizing for the life of the
+process; measured twice on a real window. So the grips are absent when they cannot apply, which is
+Quill's own rule, and is what makes it impossible to send a request the window manager will throw
+away. The title bar's `StartDrag` is left alone: Windows really does handle dragging a maximised
+window, restoring it and moving it, which is an honest modal loop.
+
+**The explorer's pill means the file that is showing and nothing else.** Both marks filled the same
+`SELECTED_ROW` pill until now, so a right click on a second file left two rows looking equally open
+and the cursor's pill stayed after its tab was closed. The cursor gets the quiet `CONTROL` fill the
+hover already uses, plus the accent ring while the explorer has the keyboard — which is what the ring
+was always for, and what the top of `components/explorer.rs` already claimed.
+
+**The folders that are showing are asked whether they have changed, on a timer.** A file an agent
+makes with its own tools is not something Quill was told about, so it never appeared. Creating,
+deleting or renaming an entry moves the modification time of the folder it is in, so the root plus
+every folder that is opened out is the complete set of places a *visible* change can happen:
+`FileTree::changed_on_disk` compares a few dozen numbers every `WATCH_INTERVAL`, off the heartbeat
+that already wakes the window twice a second. `notify` is the right answer to watching a *tree* and
+would be a dependency, a thread, a channel and a debounce — and the debounce is needed because
+`ReadDirectoryChangesW` on a `target` folder during a build produces thousands of events a second,
+each costing a walk. Quill does not need to watch a tree.
+
+**What a project remembers now includes where you were in it.** `files.scrolls` and `files.carets`
+are one number per line of `open-files.txt`, filtered in the same pass a missing file is filtered in —
+the rule `files.panes` already states, and the reason `project_state` builds all four lists in one
+walk over the tabs rather than from `paths()` and `panes_of_tabs()`, which disagreed about a tab that
+had never been saved. The scroll and the caret are both kept because they answer different halves of
+"the same state": one is where you were looking and the other is where you would type. A terminal
+tab's **given** name is remembered in `terminal-tabs.txt`, a file of its own for the reason the two
+lists of paths are files of their own — a person can call a tab anything, and a name is the one value
+here that cannot be relied on not to hold a separator.
+
+**The window's geometry belongs to the project**, in `window.x/y/width/height/maximised`, because
+Quill's windows are one per project and a geometry kept per person would open the second window on
+top of the first. `main.rs` reads it before the window is built. `QuillApp::note_where_the_window_is`
+reads it back from egui once a frame rather than having the title bar's drag, the resize grips, the
+platform's snap and `quill-cli window position` each remember to report — `follow_the_open_file`'s
+rule about a list whose next entry is the one that forgets.
+
+**And `session.txt`, beside `recent.txt`, is the windows Quill had open.** A Quill window is a
+process, so the only place two of them can both see is the person's own settings folder. A window
+adds its project when it opens and **leaves its line behind when it closes**; starting Quill with no
+folder named — the shortcut launch, which is the same condition `starting_folder` already tests —
+opens the last line itself, starts a process for each of the others, and rewrites the file to exactly
+what was restored. The trade-off is stated rather than hidden: closing one window while another is
+open still brings both back, which is what the ticket asked for and is the only rule available, since
+Quill has no application-wide quit and by the time the last window closes the earlier ones are gone
+from any live registry. `SESSION_LIMIT` bounds the cost, and `remember_open_window` writes nothing
+when the project is already listed — which is what keeps three windows starting at once from losing
+each other's lines.
+
+**The run widget takes the right hand end of the title bar and the text tools sit in front of it.**
+That is the other way round from `task-1683`, and the reason is that only one of the two changes
+width: the tools are nothing at all for a `.rs` file and five buttons for a `.md` one, so measuring
+the run widget back from them slid the play button along the bar every time the tab changed — which
+is the fault `task-1658` moved the tools into the title bar to stop, one control further along.
+
+**The empty space below the rows is the project folder's row**, which is the answer the heading
+already gives, and `actions::Aim` is the one thing that changes between the two menus: the entries
+about a particular file — `Cut`, `Copy`, `Copy Path`, `Rename...`, `Delete` and the `Git` submenu —
+are **dimmed**, which is deliberately the other half of Quill's rule. Absent is for a control that can
+never apply; dimmed is for one that could be used in a moment, and every one of these is live the
+instant the pointer is over a row. `New -> Folder` is new beside it, with
+`quill-cli explorer new-file`, `new-folder` and `reload` for the agent the ticket is about.
+
 ## A block is collapsed by hiding its lines, and the line numbers do not move
 
 `task-1686` asks for IntelliJ's fold arrows: a chevron beside the line number against a function, an
@@ -2060,6 +2146,12 @@ trade that away to be a shade nearer a screenshot.
   references and rename modals, and the fifty-scenario battery the implementation is held to.
   `task-1676` is the implementation of it; `cargo run --release -p quill-app --example symbol_cost`
   is how its budgets are measured again.
+- `tasks/task-1693-gutter-and-window-state-tdd.md` — the gutter that drifted as the text was
+  zoomed, the window that could not be resized and the flag inside winit that one refused resize
+  latches, what a project has to remember for "the same location and state", the file beside
+  `recent.txt` that holds the windows to bring back and the trade-off in keeping a line when one
+  closes, why the folders that are showing are asked rather than watched, and the two explorer marks
+  that had been drawn as one.
 - `tasks/task-1686-folding-tdd.md` — collapsing and expanding blocks: what IntelliJ, VS Code,
   CodeMirror and the Language Server Protocol each do about folding, the three tiers for deciding
   what is foldable and why the syntactic one is chosen again, why a hidden paragraph produces no

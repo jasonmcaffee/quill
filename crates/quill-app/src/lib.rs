@@ -113,14 +113,26 @@ fn tidy(path: PathBuf) -> PathBuf {
 /// `most_recent` is the head of the recent projects list, and `program` is `std::env::current_exe`. Both
 /// are passed in rather than read here, so this is a rule that can be tested rather than a rule that
 /// depends on where the test binary happens to live.
+/// True when Quill was started from the desktop rather than from a terminal.
+///
+/// The same question [`starting_folder`] asks, given a name of its own because `task-1693` asks it
+/// too: the windows that were open last time are brought back **only** on this launch, because
+/// `quill .` typed in a folder has to open that folder and nothing else.
+///
+/// The test is that the current directory is the folder the program itself lives in, which is what a
+/// shortcut to Quill's own installer leaves it as.
+pub fn started_from_the_desktop(current_directory: &Path, program: Option<&Path>) -> bool {
+    program
+        .and_then(|program| program.parent())
+        .is_some_and(|folder| same_folder(folder, current_directory))
+}
+
 pub fn starting_folder(
     current_directory: &Path,
     program: Option<&Path>,
     most_recent: Option<&Path>,
 ) -> PathBuf {
-    let installed_here = program
-        .and_then(|program| program.parent())
-        .is_some_and(|folder| same_folder(folder, current_directory));
+    let installed_here = started_from_the_desktop(current_directory, program);
     match most_recent {
         Some(project) if installed_here && project.is_dir() => project.to_path_buf(),
         _ => current_directory.to_path_buf(),

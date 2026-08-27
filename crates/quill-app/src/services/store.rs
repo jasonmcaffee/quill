@@ -16,6 +16,13 @@ pub const RECENT_LIMIT: usize = 15;
 
 const SETTINGS_FILE: &str = "settings.conf";
 const RECENT_FILE: &str = "recent.txt";
+const SESSION_FILE: &str = "session.txt";
+
+/// How many windows the session list holds.
+///
+/// Eight is more windows than anybody has open at once and few enough that a folder opened once by
+/// hand falls off the list after a week of ordinary work. See [`Store::open_windows`].
+pub const SESSION_LIMIT: usize = 8;
 
 /// Named values read from or written to the settings file.
 ///
@@ -129,6 +136,79 @@ impl Store {
         self.folder.join(SETTINGS_FILE)
     }
 
+    pub fn session_path(&self) -> PathBuf {
+        self.folder.join(SESSION_FILE)
+    }
+
+    /// The projects Quill had a window open on, oldest first.
+    ///
+    /// `task-1693` asks that quitting and starting again bring back "the windows/projects I had
+    /// open". A Quill window is a **process** — `services::launcher` records why — so the only place
+    /// both of them can see is a file here, beside `recent.txt`.
+    ///
+    /// **A line is kept when a window closes.** That is the trade-off, and it is stated rather than
+    /// hidden: closing one window while another is open still brings both back next time, which is
+    /// what the ticket asks for in as many words and is the only rule available. Quill has no
+    /// application-wide quit to hang the question on, and by the time the last window closes the
+    /// ones that closed before it are long gone from any live registry. The cost is that a folder
+    /// opened once stays in the list until [`SESSION_LIMIT`] others push it out.
+    ///
+    /// A folder that is no longer there is left out, for the reason [`Self::recent_projects`] leaves
+    /// one out of the menu.
+    pub fn open_windows(&self) -> Vec<PathBuf> {
+        let Ok(text) = std::fs::read_to_string(self.session_path()) else {
+            return Vec::new();
+        };
+        let mut out: Vec<PathBuf> = Vec::new();
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let path = quill_terminal::paths::plain(Path::new(line));
+            if out.contains(&path) || !path.is_dir() {
+                continue;
+            }
+            out.push(path);
+        }
+        out.truncate(SESSION_LIMIT);
+        out
+    }
+
+    /// Add `folder` to the session list if it is not in it already.
+    ///
+    /// Newest **last**, which is the other way round from `recent.txt`: the list is restored in
+    /// order and the last entry is the one the restoring process opens itself, so oldest-first is
+    /// also what makes truncating the front of the list drop the oldest.
+    pub fn remember_open_window(&self, folder: &Path) {
+        let folder = plain_absolute(folder);
+        let mut windows = self.open_windows();
+        // Appended only when it is not there already, which is what keeps three windows starting at
+        // once from fighting over the file: restoring a session opens two or three processes within
+        // a few hundred milliseconds and every one of them reads this list and writes it back. A
+        // window that is already in it writes nothing at all, so the only moment two processes can
+        // both write is when two brand new projects are opened in the same instant.
+        if windows.contains(&folder) {
+            return;
+        }
+        windows.push(folder);
+        while windows.len() > SESSION_LIMIT {
+            windows.remove(0);
+        }
+        self.write_session(&windows);
+    }
+
+    /// Write the session list out as exactly `windows`.
+    ///
+    /// What restoring does once it has started them all, so the list is what was really restored
+    /// rather than growing for ever.
+    pub fn write_session(&self, windows: &[PathBuf]) {
+        let text: String = windows.iter().map(|path| format!("{}\n", path.display())).collect();
+        if let Err(problem) = self.write(&self.session_path(), &text) {
+            eprintln!("Quill could not write its open windows: {problem}");
+        }
+    }
+
     pub fn recent_path(&self) -> PathBuf {
         self.folder.join(RECENT_FILE)
     }
@@ -187,8 +267,7 @@ impl Store {
     /// the outside: a terminal that opened in `C:\Windows` and said why in a message about network
     /// shares. `quill_terminal::paths` says what the prefix is and why the terminal strips it again.
     pub fn remember_project(&self, folder: &Path) {
-        let folder = std::fs::canonicalize(folder).unwrap_or_else(|_| folder.to_path_buf());
-        let folder = quill_terminal::paths::plain(&folder);
+        let folder = plain_absolute(folder);
         let mut projects = self.recent_projects();
         projects.retain(|existing| existing != &folder);
         projects.insert(0, folder);
@@ -210,6 +289,17 @@ impl Default for Store {
     fn default() -> Self {
         Self::open()
     }
+}
+
+/// A folder as it should be written down: absolute, and plain rather than verbatim.
+///
+/// Both lists Quill keeps of folders go through this. Absolute, so that opening `.` and opening the
+/// folder it stands for are one entry rather than two; and plain because on Windows `canonicalize`
+/// gives back a **verbatim** path — `\\?\C:\jason\dev\quill` — which `cmd.exe` will not start in.
+/// `task-1670` is what that looked like from the outside.
+fn plain_absolute(folder: &Path) -> PathBuf {
+    let folder = std::fs::canonicalize(folder).unwrap_or_else(|_| folder.to_path_buf());
+    quill_terminal::paths::plain(&folder)
 }
 
 /// Where the operating system expects an application to keep its settings.
@@ -254,6 +344,63 @@ mod tests {
         let folder = std::env::temp_dir().join(name);
         std::fs::remove_dir_all(&folder).ok();
         folder
+    }
+
+    /// `task-1693`: the windows Quill had open, so that starting it again brings them all back.
+    #[test]
+    fn every_window_that_was_open_is_remembered_and_a_line_is_kept_when_one_closes() {
+        let folder = temporary("quill-store-session");
+        let store = Store::at(&folder);
+        let first = folder.join("first");
+        let second = folder.join("second");
+        std::fs::create_dir_all(&first).expect("make the first project");
+        std::fs::create_dir_all(&second).expect("make the second project");
+
+        store.remember_open_window(&first);
+        store.remember_open_window(&second);
+        let windows = store.open_windows();
+        assert_eq!(windows.len(), 2, "both windows are in the list");
+        assert!(windows.last().is_some_and(|last| last.ends_with("second")), "newest last");
+
+        // Opening the first again writes nothing, which is what keeps three windows starting at
+        // once from losing each other's lines.
+        store.remember_open_window(&first);
+        let windows = store.open_windows();
+        assert_eq!(windows.len(), 2, "it is already there, so nothing is written");
+        assert!(windows.last().is_some_and(|last| last.ends_with("second")));
+    }
+
+    /// The cap is what bounds the cost of keeping a line behind when a window closes.
+    #[test]
+    fn the_session_list_stops_at_its_limit_and_drops_the_oldest() {
+        let folder = temporary("quill-store-session-limit");
+        let store = Store::at(&folder);
+        let mut made = Vec::new();
+        for index in 0..SESSION_LIMIT + 3 {
+            let project = folder.join(format!("project-{index}"));
+            std::fs::create_dir_all(&project).expect("make a project");
+            store.remember_open_window(&project);
+            made.push(project);
+        }
+        let windows = store.open_windows();
+        assert_eq!(windows.len(), SESSION_LIMIT);
+        assert!(
+            windows.first().is_some_and(|first| first.ends_with("project-3")),
+            "the three oldest fell off the front, and the list is {windows:?}"
+        );
+    }
+
+    /// A project that is no longer on disk is left out, for the reason one is left out of the recent
+    /// menu: a window that opens on nothing is worse than one window fewer.
+    #[test]
+    fn a_project_that_has_gone_is_not_a_window_to_open() {
+        let folder = temporary("quill-store-session-gone");
+        let store = Store::at(&folder);
+        let here = folder.join("here");
+        std::fs::create_dir_all(&here).expect("make the project");
+        store.remember_open_window(&here);
+        store.write_session(&[here.clone(), folder.join("never-existed")]);
+        assert_eq!(store.open_windows(), vec![here]);
     }
 
     #[test]
