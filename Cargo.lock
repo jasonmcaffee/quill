@@ -2919,7 +2919,7 @@ dependencies = [
 
 [[package]]
 name = "quill-app"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "ab_glyph",
  "arboard",
@@ -2944,32 +2944,32 @@ dependencies = [
 
 [[package]]
 name = "quill-cli"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "quill-core"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "unicode-segmentation",
 ]
 
 [[package]]
 name = "quill-dap"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "quill-git"
-version = "0.14.2"
+version = "0.15.0"
 
 [[package]]
 name = "quill-terminal"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "alacritty_terminal",
  "unicode-width",
