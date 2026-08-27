@@ -68,7 +68,7 @@ The surveyed clients make the same separation:
 | Frames | visible frames, hidden subtle count, printable rows | frames |
 | Watches | watch expressions and their last answers | watch |
 
-The pause snapshot's `message` names where execution stopped. Its `lines` start with `Locals` and the top-level local rows, so MCP's spoken content puts the observed values before structured metadata. When there are no locals it says `Locals: none read`, which distinguishes a real empty scope from an unfinished stop.
+The pause snapshot's `message` names where execution stopped. Its `lines` contain the top-level local rows, so MCP's spoken content puts the observed values before structured metadata. An empty list means no locals have been read for the selected frame.
 
 `debug frames` gains a boolean `--include-subtle` catalogue flag. Without it, the command filters `frame.subtle`, keeps original order among visible frames, and returns `hiddenFrames`. With it, the complete list is returned and each frame keeps its `subtle` field. The full stack remains in `DebugState` in both cases.
 
