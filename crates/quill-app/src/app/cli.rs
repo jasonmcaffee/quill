@@ -510,7 +510,7 @@ impl QuillApp {
                     ok: false,
                     command: command.clone(),
                     message: "The program did not stop in time.".to_owned(),
-                    result: self.debug_value(),
+                    result: self.debug_state_value(),
                     error: Some(quill_cli::protocol::Failure {
                         code: code::TIMED_OUT.to_owned(),
                         message: "The program did not stop in time.".to_owned(),
@@ -3670,7 +3670,7 @@ impl QuillApp {
         // A session that could not be started said why, and `debug` holds nothing — which is a
         // refusal rather than something to wait for.
         let Some(said) = self.message.clone() else {
-            return ok(request, "Debugging", self.debug_value());
+            return ok(request, "Debugging", self.debug_state_value());
         };
         // Unless a locator is building the program first, which is neither: `cargo run` has no
         // session yet and has not failed. `task-1692`.
@@ -3685,7 +3685,7 @@ impl QuillApp {
             return no(request, code::NOT_APPLICABLE, "Nothing is being debugged.");
         }
         self.debug_a_configuration(DebugAction::Stop);
-        ok(request, "Stopping the debugger", self.debug_value())
+        ok(request, "Stopping the debugger", self.debug_state_value())
     }
 
     /// The four that ask the program to go on. One arm rather than four, because all four go through
@@ -3733,10 +3733,10 @@ impl QuillApp {
     /// and what makes the whole feature scriptable.
     fn wait_for_a_pause(&mut self, request: &Request, said: String) -> Outcome {
         if !request.switch("wait-for-pause") {
-            return ok(request, said, self.debug_value());
+            return ok(request, said, self.debug_state_value());
         }
         if self.debug.as_ref().is_some_and(DebugState::is_ready) {
-            return ok(request, said, self.debug_value());
+            return ok(request, said, self.debug_pause_value());
         }
         // A locator's build comes first, and a cold `cargo build` of a real project is minutes
         // rather than seconds — so the wait is the build's, not a step's. A caller that says
@@ -3909,7 +3909,7 @@ impl QuillApp {
             })
             .collect();
         let count = rows.len();
-        lines(request, format!("{count} rows"), rows, self.debug_value())
+        lines(request, format!("{count} rows"), rows, self.debug_variables_value())
     }
 
     fn cli_debug_set_value(&mut self, request: &Request) -> Outcome {
@@ -3923,7 +3923,7 @@ impl QuillApp {
             return no(request, code::NOT_APPLICABLE, "Nothing is being debugged.");
         };
         match debug.set_value(&key, &value) {
-            Ok(()) => ok(request, format!("Setting {key} to {value}"), self.debug_value()),
+            Ok(()) => ok(request, format!("Setting {key} to {value}"), self.debug_variables_value()),
             Err(problem) => no(request, code::NOT_APPLICABLE, problem),
         }
     }
@@ -4063,7 +4063,7 @@ impl QuillApp {
             return no(request, code::NOT_APPLICABLE, "Nothing is being debugged.");
         };
         match debug.set_expression(&expression, &value) {
-            Ok(()) => ok(request, format!("Setting {expression} to {value}"), self.debug_value()),
+            Ok(()) => ok(request, format!("Setting {expression} to {value}"), self.debug_variables_value()),
             Err(problem) => no(request, code::NOT_APPLICABLE, problem),
         }
     }
@@ -4109,7 +4109,7 @@ impl QuillApp {
                     })
                     .collect();
                 let count = rows.len();
-                lines(request, format!("{count} watches"), rows, self.debug_value())
+                lines(request, format!("{count} watches"), rows, self.debug_watches_value())
             }
             "add" | "remove" => {
                 let Some(expression) = request.text("expression") else {
@@ -4118,13 +4118,13 @@ impl QuillApp {
                 match action.as_str() {
                     "add" => {
                         debug.add_watch(&expression);
-                        ok(request, format!("Watching {expression}"), self.debug_value())
+                        ok(request, format!("Watching {expression}"), self.debug_watches_value())
                     }
                     _ => match debug.remove_watch(&expression) {
                         true => ok(
                             request,
                             format!("{expression} is no longer watched"),
-                            self.debug_value(),
+                            self.debug_watches_value(),
                         ),
                         false => no(
                             request,
@@ -4310,12 +4310,19 @@ impl QuillApp {
             Some(debug) => format!("{} is {}", debug.configuration.name, debug.where_it_is()),
             None => "Nothing is being debugged.".to_owned(),
         };
-        Reply::done(&request.command, said, self.debug_value())
+        Reply::done(&request.command, said, self.debug_status_value())
     }
 
-    /// The stopped location and selected frame's fetched locals, which are the runtime facts a
-    /// person or agent needs before choosing whether to inspect more of the call stack.
-    fn debug_value(&self) -> Value {
+    /// Chooses the compact debugger state or the paused location and locals for a status reply.
+    fn debug_status_value(&self) -> Value {
+        match self.debug.as_ref().is_some_and(DebugState::is_paused) {
+            true => self.debug_pause_value(),
+            false => self.debug_state_value(),
+        }
+    }
+
+    /// Serializes only the session facts shared by debugger commands of every kind.
+    fn debug_state_value(&self) -> Value {
         let Some(debug) = self.debug.as_ref() else {
             return json!({ "running": false, "state": "none", "visible": self.debug_panel.visible });
         };
@@ -4331,43 +4338,68 @@ impl QuillApp {
             "visible": self.debug_panel.visible,
             "path": location.as_ref().map(|(path, _)| path.to_string_lossy()),
             "line": location.as_ref().map(|(_, line)| *line),
-            "pausedFrame": debug
-                .frame
-                .and_then(|id| debug.frames.iter().find(|frame| frame.id == id))
-                .or_else(|| debug.frames.first())
-                .map(Self::debug_frame_value),
-            "locals": debug
-                .rows
-                .iter()
-                .filter(|row| !row.is_scope)
-                .map(|row| json!({
-                    "path": row.key,
-                    "name": row.name,
-                    "value": row.value,
-                    "type": row.kind,
-                    "expandable": row.has_children(),
-                    "expanded": row.expanded,
-                    "changed": row.changed,
-                }))
-                .collect::<Vec<Value>>(),
-            "watches": debug
-                .watches
-                .iter()
-                .map(|watch| json!({
-                    "expression": watch.expression,
-                    "value": watch.result.as_ref().and_then(|result| result.as_ref().ok()).map(|value| value.value.clone()),
-                    "error": watch.result.as_ref().and_then(|result| result.as_ref().err()).cloned(),
-                }))
-                .collect::<Vec<Value>>(),
         })
+    }
+
+    /// Leads a stopped reply with the selected frame and the runtime locals already fetched for it.
+    fn debug_pause_value(&self) -> Value {
+        let Some(debug) = self.debug.as_ref() else {
+            return self.debug_state_value();
+        };
+        let mut value = self.debug_state_value();
+        let frame = debug
+            .frame
+            .and_then(|id| debug.frames.iter().find(|frame| frame.id == id))
+            .or_else(|| debug.frames.first())
+            .map(Self::debug_frame_value);
+        let locals = debug.rows.iter().filter(|row| !row.is_scope).map(Self::debug_variable_value).collect::<Vec<Value>>();
+        let lines = debug
+            .rows
+            .iter()
+            .filter(|row| !row.is_scope)
+            .map(|row| match &row.kind {
+                Some(kind) => format!("{}: {kind} = {}", row.name, row.value),
+                None => format!("{} = {}", row.name, row.value),
+            })
+            .collect::<Vec<String>>();
+        if let Value::Object(object) = &mut value {
+            object.insert("pausedFrame".to_owned(), json!(frame));
+            object.insert("locals".to_owned(), Value::Array(locals));
+            object.insert("lines".to_owned(), json!(lines));
+        }
+        value
+    }
+
+    /// Adds only the variable tree to the shared debugger state for variable-oriented commands.
+    fn debug_variables_value(&self) -> Value {
+        let mut value = self.debug_state_value();
+        let variables = self.debug.as_ref().map(|debug| debug.rows.iter().map(Self::debug_variable_value).collect::<Vec<Value>>()).unwrap_or_default();
+        if let Value::Object(object) = &mut value {
+            object.insert("variables".to_owned(), Value::Array(variables));
+        }
+        value
+    }
+
+    /// Adds only watched expressions to the shared debugger state for watch commands.
+    fn debug_watches_value(&self) -> Value {
+        let mut value = self.debug_state_value();
+        let watches = self.debug.as_ref().map(|debug| debug.watches.iter().map(|watch| json!({
+            "expression": watch.expression,
+            "value": watch.result.as_ref().and_then(|result| result.as_ref().ok()).map(|value| value.value.clone()),
+            "error": watch.result.as_ref().and_then(|result| result.as_ref().err()).cloned(),
+        })).collect::<Vec<Value>>()).unwrap_or_default();
+        if let Value::Object(object) = &mut value {
+            object.insert("watches".to_owned(), Value::Array(watches));
+        }
+        value
     }
 
     /// Adds the requested call stack to an otherwise compact debugger reply.
     fn debug_frames_value(&self, include_subtle: bool) -> Value {
         let Some(debug) = self.debug.as_ref() else {
-            return self.debug_value();
+            return self.debug_state_value();
         };
-        let mut value = self.debug_value();
+        let mut value = self.debug_state_value();
         let frames = debug
             .frames
             .iter()
@@ -4375,9 +4407,23 @@ impl QuillApp {
             .map(Self::debug_frame_value)
             .collect::<Vec<Value>>();
         if let Value::Object(object) = &mut value {
+            object.insert("hiddenFrames".to_owned(), json!(debug.frames.len().saturating_sub(frames.len())));
             object.insert("frames".to_owned(), Value::Array(frames));
         }
         value
+    }
+
+    /// Serializes one fetched variable row for either a locals snapshot or the variables command.
+    fn debug_variable_value(row: &crate::app::debug::Row) -> Value {
+        json!({
+            "path": row.key,
+            "name": row.name,
+            "value": row.value,
+            "type": row.kind,
+            "expandable": row.has_children(),
+            "expanded": row.expanded,
+            "changed": row.changed,
+        })
     }
 
     /// Serializes one stored DAP frame without changing which frames Quill retains for the UI.
