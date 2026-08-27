@@ -9209,7 +9209,7 @@ fn the_command_line_can_set_a_breakpoint_read_the_stack_and_read_a_variable() {
     assert_eq!(status["line"], 4);
     assert_eq!(status["adapter"], "lldb");
 
-    let frames = did(&mut harness, "debug frames");
+    let frames = did(&mut harness, "debug frames --include-subtle");
     let listed = frames["lines"].as_array().expect("the frames");
     assert_eq!(listed.len(), 2);
     assert!(listed[0].as_str().expect("a line").contains("app::main"));
@@ -9253,14 +9253,39 @@ fn concise_debug_replies_lead_with_the_paused_frame_and_locals() {
         "the runtime value is an immediate debugger answer: {status:#?}"
     );
     assert!(status.get("frames").is_none(), "ordinary replies do not carry a stack: {status:#?}");
+    assert!(status.get("variables").is_none());
+    assert!(status.get("watches").is_none());
+    assert!(
+        status["lines"]
+            .as_array()
+            .expect("spoken locals")
+            .iter()
+            .any(|line| line.as_str().is_some_and(|line| line.contains("total: usize = 6")))
+    );
 
     let ordinary = did(&mut harness, "debug frames");
     assert_eq!(ordinary["lines"].as_array().map(Vec::len), Some(1));
     assert_eq!(ordinary["frames"].as_array().map(Vec::len), Some(1));
+    assert_eq!(ordinary["hiddenFrames"], 1);
+    assert!(ordinary.get("locals").is_none());
+    assert!(ordinary.get("watches").is_none());
 
     let complete = did(&mut harness, "debug frames --include-subtle");
     assert_eq!(complete["lines"].as_array().map(Vec::len), Some(2));
     assert_eq!(complete["frames"].as_array().map(Vec::len), Some(2));
+    assert_eq!(complete["hiddenFrames"], 0);
+
+    let variables = did(&mut harness, "debug variables");
+    assert!(variables["variables"].as_array().is_some_and(|rows| !rows.is_empty()));
+    assert!(variables.get("frames").is_none());
+    assert!(variables.get("locals").is_none());
+    assert!(variables.get("watches").is_none());
+
+    let watches = did(&mut harness, "debug watch list");
+    assert_eq!(watches["watches"].as_array().map(Vec::len), Some(0));
+    assert!(watches.get("frames").is_none());
+    assert!(watches.get("locals").is_none());
+    assert!(watches.get("variables").is_none());
 }
 
 /// The one debug test that starts a **real** adapter, and it earns it.

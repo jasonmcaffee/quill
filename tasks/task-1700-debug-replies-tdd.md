@@ -7,7 +7,7 @@ flowchart LR
     C -->|status or waited step| D[Pause snapshot]
     C -->|variables| E[Selected frame variables]
     C -->|frames| F[User frames]
-    C -->|frames --all| G[Full stack]
+    C -->|frames --include-subtle| G[Full stack]
     D --> H[Location then locals]
     E --> I[Variable rows only]
     F --> J[Visible frames plus hidden count]
@@ -18,14 +18,14 @@ flowchart LR
 
 Quill currently serialises one complete debug envelope for nearly every debug command. In the task-1695 s08 run, `debug start`, `debug step-over`, `debug status`, and `debug variables` each carried nineteen stack frames, fourteen marked `subtle`, plus the selected frame's variables and watches. The 3,214 byte reply held `total = 35.5`, but the agent derived the value from the source instead of reading the debugger's answer.
 
-We don't need to change what the debugger reads. This change keeps the full debugger state in `DebugState` for the window, then shapes each CLI and MCP reply around the command that was asked, with a paused reply starting at the stop location and the selected frame's locals. `debug frames` hides subtle frames by default, and `debug frames --all` returns the complete stack.
+We don't need to change what the debugger reads. This change keeps the full debugger state in `DebugState` for the window, then shapes each CLI and MCP reply around the command that was asked, with a paused reply starting at the stop location and the selected frame's locals. `debug frames` hides subtle frames by default, and `debug frames --include-subtle` returns the complete stack.
 
 ## Goals and Non-Goals
 
 ### Goals
 
 - A waited `start`, `continue`, `step-over`, `step-into`, `step-out`, `run-to`, and `status` reply names the stop location and prints the paused frame's locals before secondary metadata.
-- `debug frames` omits every frame whose DAP `presentationHint` is `subtle`, reports how many were hidden, and `--all` restores the full list.
+- `debug frames` omits every frame whose DAP `presentationHint` is `subtle`, reports how many were hidden, and `--include-subtle` restores the full list.
 - `debug variables` returns its variable rows without duplicating the stack or watches.
 - Every debug verb returns only its own result plus the minimum state needed to interpret it.
 - The s08 agent run reports `total = 35.5` from Quill's debugger output.
@@ -33,7 +33,7 @@ We don't need to change what the debugger reads. This change keeps the full debu
 ### Non-Goals
 
 - We won't change DAP request flow, adapter discovery, stepping behaviour, the debugger panel, stored debug state, etc.
-- No adapter-side stack filtering. Quill already receives the full stack and needs it for the UI and `--all`.
+- No adapter-side stack filtering. Quill already receives the full stack and needs it for the UI and `--include-subtle`.
 - No change to how scopes or children are fetched. Expensive scopes and nested variables stay lazy.
 - No change to runtime-frame rendering in the human debug panel.
 
@@ -70,7 +70,7 @@ The surveyed clients make the same separation:
 
 The pause snapshot's `message` names where execution stopped. Its `lines` start with `Locals` and the top-level local rows, so MCP's spoken content puts the observed values before structured metadata. When there are no locals it says `Locals: none read`, which distinguishes a real empty scope from an unfinished stop.
 
-`debug frames` gains a boolean `--all` catalogue flag. Without it, the command filters `frame.subtle`, keeps original order among visible frames, and returns `hiddenFrames`. With it, the complete list is returned and each frame keeps its `subtle` field. The full stack remains in `DebugState` in both cases.
+`debug frames` gains a boolean `--include-subtle` catalogue flag. Without it, the command filters `frame.subtle`, keeps original order among visible frames, and returns `hiddenFrames`. With it, the complete list is returned and each frame keeps its `subtle` field. The full stack remains in `DebugState` in both cases.
 
 `quill-cli/docs/commands.md` is regenerated from the catalogue, so the command reference and both MCP tool shapes receive the flag and its description from the same source.
 
@@ -90,7 +90,7 @@ sequenceDiagram
     CLI-->>Agent: pause message, locals, minimal metadata
     Agent->>CLI: debug frames
     CLI-->>Agent: non-subtle frames and hidden count
-    Agent->>CLI: debug frames with all
+    Agent->>CLI: debug frames with include-subtle
     CLI-->>Agent: complete stack
 ```
 
@@ -119,7 +119,7 @@ The existing waited stepping and status commands already know when the paused st
 - Extend the scripted debug command acceptance test with user and subtle frames. Assert that paused status includes location and locals but no `frames` or `watches` fields.
 - Assert `debug variables` includes variable rows and no stack.
 - Assert `debug frames` returns only non-subtle frames and reports the hidden count.
-- Assert `debug frames --all` returns every frame and preserves each `subtle` marker.
+- Assert `debug frames --include-subtle` returns every frame and preserves each `subtle` marker.
 - Assert a waited step uses the same pause snapshot as status, so the command that lands on the value exposes it directly.
 - Regenerate the command reference and run the catalogue documentation checks for the new flag.
 - Build the release binaries and drive the real s08 scenario through `tools/agent-study/run-scenario.mjs`, using a task-specific output directory. Record the model's tool calls, Quill replies, payload size, and final answer, and verify the answer cites the debugger value rather than source arithmetic.
