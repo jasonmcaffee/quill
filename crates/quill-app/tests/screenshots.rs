@@ -9238,6 +9238,31 @@ fn the_command_line_can_set_a_breakpoint_read_the_stack_and_read_a_variable() {
     assert!(!harness.state().debug_panel.visible);
 }
 
+#[test]
+fn concise_debug_replies_lead_with_the_paused_frame_and_locals() {
+    let mut harness = paused_harness("concise-debug-reply");
+
+    let status = did(&mut harness, "debug status");
+    assert_eq!(status["pausedFrame"]["name"], "app::main");
+    assert!(
+        status["locals"]
+            .as_array()
+            .expect("the fetched locals")
+            .iter()
+            .any(|row| row["name"] == "total" && row["value"] == "6"),
+        "the runtime value is an immediate debugger answer: {status:#?}"
+    );
+    assert!(status.get("frames").is_none(), "ordinary replies do not carry a stack: {status:#?}");
+
+    let ordinary = did(&mut harness, "debug frames");
+    assert_eq!(ordinary["lines"].as_array().map(Vec::len), Some(1));
+    assert_eq!(ordinary["frames"].as_array().map(Vec::len), Some(1));
+
+    let complete = did(&mut harness, "debug frames --include-subtle");
+    assert_eq!(complete["lines"].as_array().map(Vec::len), Some(2));
+    assert_eq!(complete["frames"].as_array().map(Vec::len), Some(2));
+}
+
 /// The one debug test that starts a **real** adapter, and it earns it.
 ///
 /// Everything above is a scripted session: the pictures have to be the same on every run, so they are

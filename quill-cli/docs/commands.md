@@ -1675,13 +1675,16 @@ quill-cli debug breakpoint remove src/main.rs 42
 ### debug frames
 
 ```
-quill-cli debug frames
+quill-cli debug frames [--include-subtle]
 ```
 
-The call stack of the stopped thread, one frame a line: the function, the file and the line. Answered from what the debugger has already been asked, so it costs nothing.
+The call stack of the stopped thread, one frame a line: the function, the file and the line. Adapter-marked runtime frames are hidden unless --include-subtle asks for the complete stack. Answered from what the debugger has already been asked, so it costs nothing.
+
+- `--include-subtle` — Include adapter-marked runtime frames, which are normally hidden so the stack leads with application code.
 
 ```sh
 quill-cli debug frames --json
+quill-cli debug frames --include-subtle
 ```
 
 ### debug variables

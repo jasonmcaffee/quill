@@ -3860,13 +3860,14 @@ impl QuillApp {
         let rows: Vec<String> = debug
             .frames
             .iter()
+            .filter(|frame| request.switch("include-subtle") || !frame.subtle)
             .map(|frame| match &frame.path {
                 Some(path) => format!("{:<28} {path}:{}", frame.name, frame.line),
                 None => frame.name.clone(),
             })
             .collect();
         let count = rows.len();
-        lines(request, format!("{count} frames"), rows, self.debug_value())
+        lines(request, format!("{count} frames"), rows, self.debug_frames_value(request.switch("include-subtle")))
     }
 
     fn cli_debug_variables(&mut self, request: &Request) -> Outcome {
@@ -4312,7 +4313,8 @@ impl QuillApp {
         Reply::done(&request.command, said, self.debug_value())
     }
 
-    /// Everything a debug command answers with, so a script never has to ask twice.
+    /// The stopped location and selected frame's fetched locals, which are the runtime facts a
+    /// person or agent needs before choosing whether to inspect more of the call stack.
     fn debug_value(&self) -> Value {
         let Some(debug) = self.debug.as_ref() else {
             return json!({ "running": false, "state": "none", "visible": self.debug_panel.visible });
@@ -4329,19 +4331,15 @@ impl QuillApp {
             "visible": self.debug_panel.visible,
             "path": location.as_ref().map(|(path, _)| path.to_string_lossy()),
             "line": location.as_ref().map(|(_, line)| *line),
-            "frames": debug
-                .frames
-                .iter()
-                .map(|frame| json!({
-                    "name": frame.name,
-                    "path": frame.path,
-                    "line": frame.line,
-                    "subtle": frame.subtle,
-                }))
-                .collect::<Vec<Value>>(),
-            "variables": debug
+            "pausedFrame": debug
+                .frame
+                .and_then(|id| debug.frames.iter().find(|frame| frame.id == id))
+                .or_else(|| debug.frames.first())
+                .map(Self::debug_frame_value),
+            "locals": debug
                 .rows
                 .iter()
+                .filter(|row| !row.is_scope)
                 .map(|row| json!({
                     "path": row.key,
                     "name": row.name,
@@ -4361,6 +4359,34 @@ impl QuillApp {
                     "error": watch.result.as_ref().and_then(|result| result.as_ref().err()).cloned(),
                 }))
                 .collect::<Vec<Value>>(),
+        })
+    }
+
+    /// Adds the requested call stack to an otherwise compact debugger reply.
+    fn debug_frames_value(&self, include_subtle: bool) -> Value {
+        let Some(debug) = self.debug.as_ref() else {
+            return self.debug_value();
+        };
+        let mut value = self.debug_value();
+        let frames = debug
+            .frames
+            .iter()
+            .filter(|frame| include_subtle || !frame.subtle)
+            .map(Self::debug_frame_value)
+            .collect::<Vec<Value>>();
+        if let Value::Object(object) = &mut value {
+            object.insert("frames".to_owned(), Value::Array(frames));
+        }
+        value
+    }
+
+    /// Serializes one stored DAP frame without changing which frames Quill retains for the UI.
+    fn debug_frame_value(frame: &quill_dap::Frame) -> Value {
+        json!({
+            "name": frame.name,
+            "path": frame.path,
+            "line": frame.line,
+            "subtle": frame.subtle,
         })
     }
 
