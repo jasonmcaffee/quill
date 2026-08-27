@@ -8,6 +8,14 @@ It is also, now, an editor you can write code in: line numbers down the left, a 
 file, a right click menu on the explorer, git in full, and plugins that colour CSS, JavaScript,
 TypeScript, Rust and Mermaid.
 
+And it is an **AI-first IDE**, which is a claim with a definition rather than a slogan: *everything a
+person can do in this window, an agent can do too, through the Model Context Protocol, and both are
+held to the same automated tests.* Not a plugin bolted on, not a subset of the interesting parts — the
+same commands, reaching the same code, in the same window a person is looking at. `Ctrl/Cmd+Shift+O`
+and `quill_modal open go-to-file` are one feature. A breakpoint set by clicking the gutter and one set
+by `quill_debug breakpoint add` are the same breakpoint. [What that costs and how it is
+enforced](#every-feature-is-reachable-by-an-agent-and-that-is-a-test) is a section of its own.
+
 The first half of this file is what Quill is and how to use it. The second half is how it is built:
 [Architecture](#architecture) for the crates, the seams and what one frame does,
 [How plugins work](#how-plugins-work) for what is in a manifest and what the tokeniser does with it,
@@ -55,6 +63,54 @@ is a tool the day it is added and there is no second list to fall behind. By def
 given one tool an area rather than one a command, which names everything Quill does for about a
 third of the context. `quill-cli/docs/mcp.md` is the whole of it, including what a fixed open port
 does and does not defend against — which is why it is off until you turn it on.
+
+## Every feature is reachable by an agent, and that is a test
+
+Quill is built to be driven by a person and by an AI agent equally, and the rule is one sentence:
+
+> **Every piece of functionality a person can reach, an agent can reach, through the same command,
+> and both are covered by automated tests.**
+
+That is a contract about *new work* as much as about what is here. A feature that ships with a menu
+entry and no way for an agent to ask for it is an unfinished feature, in the same way a feature with
+no test is an unfinished feature. There is no lane where one of the two is optional.
+
+Three mechanisms make it true rather than aspirational, and none of them is a promise anybody has to
+remember to keep:
+
+- **A menu entry needs nothing at all.** `quill-cli action list` is built by walking the real menus, so
+  an entry added tomorrow can be run from the command line and by an agent tomorrow. A test in
+  `app/action_names.rs` fails the day a menu entry has no name.
+- **Anything with no menu entry is a row in `quill-cli/src/catalogue.rs`** — the one list the CLI parses
+  against and the window dispatches on. `QuillApp::run_cli` is to that list what `run_action` is to the
+  menus: the single place a command turns into a change, using the same path a person's click takes.
+- **The MCP tools are generated from that catalogue.** A command added to Quill is a tool the day it is
+  added, and `every_command_is_offered_as_a_tool_in_both_shapes` fails if one ever is not. Nothing is
+  written out by hand, so there is no second list to fall behind.
+
+And the documentation is a test too: `quill-cli/src/documentation.rs` fails while a command has no
+section in `quill-cli/docs/commands.md`, while a usage line is out of date, or while a section
+describes a command that no longer exists.
+
+### Reachable is not the same as reached
+
+That machinery guarantees an agent *can* do everything. It does not guarantee an agent *will*, and
+`task-1695` measured the difference by watching a local Qwen 3.8 27B drive a real window across 23
+scenarios phrased the way a person speaks. It made 126 tool calls, and 30 of them — 24%, in 13 of the
+23 scenarios — went to its own `grep`, `bash`, `read` and `edit` for jobs Quill has a first-class
+command for: git status, find-references, go-to-definition, making a folder, and renaming a symbol
+across the project.
+
+The rename is the one that shows why it matters. Quill's `editor rename` is one undo step per file, it
+leaves comments and strings alone unless asked, and it knows which files are open. The agent's
+replace-all was none of those things, and it silently rewrote a Mermaid diagram that Quill's rename
+would have left alone.
+
+So the contract has a second half, and it is the harder one: **a feature is not finished when an agent
+*can* use it, but when an agent *does* — because the command exists, is named the way an agent guesses,
+answers in a payload proportionate to the question, and says what it knows that a generic file tool
+does not.** The findings, with the transcripts behind them, are in
+`_agent_output/task-1695-quill-agent-testing/FINDINGS.md`, and the gaps are open tickets.
 
 ## Running it
 
@@ -796,6 +852,13 @@ cargo test
 
 Four layers, 1,199 tests, and a change should leave all four green.
 
+There is a fifth thing, which is not a layer because nothing fails it: **`tools/agent-study/` watches
+an agent drive a real window** through instructions phrased the way a person speaks, and grades what
+happened by reading Quill's own state back rather than by believing what the agent said. The four
+layers prove an agent *can* reach a feature. The study is how you find out whether it *does* — and the
+first run found an agent doing 24% of its work with `grep` and `bash` in a window that had a command
+for every job. Add a scenario when you add a feature.
+
 **1. The crates with no window.** `quill-core` has 481 unit tests, including the Markdown parser, the
 syntax tokeniser, every Mermaid diagram type, and a randomised comparison of the rope against a plain
 `String` over 1,500 edits with the tree invariants checked after every one. Layout tests measure
@@ -908,6 +971,8 @@ Each stands on its own, and states any fact it needs rather than pointing at ano
 | `quill-cli/docs/protocol.md` | The socket underneath it, for a client in another language. |
 | `quill-cli/docs/mcp.md` | The MCP server: installing it into an agent, the two tool shapes and what each costs, and what a local port does and does not defend against. |
 | `quill-cli/agent-assessment/qwen-38-27B-assessment.md` | How well a local model does with that reference, measured against a live window. |
+| `tools/agent-study/README.md` | Watching an agent actually drive the window: how to run the study, what a scenario is, and the one number it reports. |
+| `tasks/task-1695-agent-study.md` | The first run of it: 23 scenarios, what an agent did instead of asking Quill, and the nine tickets it produced. |
 | `installer/README.md` | How to build an installer, on either platform. |
 | `tasks/quill-technical-design-document.md` | The editor: what was chosen, what was rejected, and what is deliberately not included. |
 | `tasks/quill-ide-tdd.md` | The line numbers, the tabs, the explorer's menu, git, and the plugins. |

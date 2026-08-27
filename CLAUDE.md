@@ -3,6 +3,75 @@
 Read this before changing anything. It records the conventions the code already follows, so that a later
 change looks like the rest of the code rather than like a second style laid over it.
 
+## Quill is an AI-first IDE, and that is a rule about every change you make
+
+**Everything a person can do in this window, an agent can do too, through the same command, and both
+are covered by automated tests.** That is the product, not a feature of it. A change that gives a
+person a new control and gives an agent nothing has not been finished, in exactly the way a change
+with no test has not been finished.
+
+So a feature is three things, and the second and third are not optional extras:
+
+1. The control a person uses — the menu entry, the key chord, the button.
+2. The way an agent asks for the same thing, reaching the **same code** by the same path.
+3. Tests over both.
+
+There is machinery that makes most of this automatic, and the point of the machinery is that nobody
+has to remember:
+
+- **A menu entry needs nothing.** `actions::menus` is walked to build `quill-cli action list`, so a new
+  entry is agent-reachable the day it is added. `app/action_names.rs` fails when an entry has no name.
+- **Anything with no menu entry is a row in `quill-cli/src/catalogue.rs`** and an arm in `app/cli.rs`.
+  `QuillApp::run_cli` is the one place a command turns into a change, the way `run_action` is for the
+  menus — and wherever there is already a way in, it uses it, so a thing done by an agent and the same
+  thing done by hand are the same thing.
+- **The MCP tools are generated from that catalogue.** Never write a tool out by hand.
+  `every_command_is_offered_as_a_tool_in_both_shapes` fails if a command is ever not offered, and
+  `exactly_one_command_is_held_back` fails if the exclusion list grows.
+- **The documentation is a test.** `quill-cli/src/documentation.rs` fails while a command has no
+  section in `quill-cli/docs/commands.md`, while a usage line is stale, or while a section describes a
+  command that has gone.
+
+If a tool needs to say something the catalogue does not, **the catalogue is what should say it**. The
+summary you are writing has a third reader now, and it is the one least able to ask what was meant.
+
+### Reachable is not the same as reached, and the second one is the bar
+
+`task-1695` watched a local Qwen 3.8 27B drive a real window across 23 scenarios phrased the way a
+person speaks. Every area answered. And **24% of its 126 tool calls went to its own `grep`, `bash`,
+`read` and `edit`** — in 13 of the 23 scenarios — for jobs Quill has a first-class command for: git
+status, find-references, go-to-definition, making a folder, renaming a symbol across the project.
+
+It bypassed `editor rename`, which is one undo step per file and leaves comments and strings alone,
+in favour of three replace-alls that rewrote a Mermaid diagram and wrote three files behind a window
+that had two of them open. And in the debug scenario it drove the debugger correctly and then
+answered the value of a variable **by doing arithmetic on the source**, because the value it had
+already been handed was buried behind nineteen stack frames.
+
+So when you add a command, four things decide whether it is actually used, and each of them has a
+ticket behind it now:
+
+- **Name it the way an agent guesses.** `editor open` was tried three times; it is `tab open`.
+  Argument names are kebab-case and a model writes camelCase.
+- **Answer in a payload proportionate to the question.** `fold collapse --all` returns every region;
+  `status` cannot be asked for one section; `action list` cannot be asked for one menu. An agent that
+  is handed 3,000 tokens to learn one number stops asking.
+- **Say what Quill knows that a file tool does not** — that `editor references` classifies a hit as
+  code, comment or string; that `git` runs the machine's real git with its credential helper. If the
+  description does not say it, `grep` wins.
+- **Never make a read-only question mutate the document.** `editor complete` can only answer about the
+  caret, so asking what would be offered means typing into the person's file.
+
+`_agent_output/task-1695-quill-agent-testing/FINDINGS.md` has the transcripts and the measurements.
+
+### How to check it, rather than assume it
+
+The harness that produced those numbers is worth re-running whenever the agent-facing surface
+changes: it drives a real window through a local model and grades what happened against Quill's own
+state read back through `quill-cli`, rather than against what the agent said it did. Add a scenario
+when you add a feature. A feature nobody has watched an agent use is a feature nobody knows is
+reachable in practice.
+
 ## Finishing a task means releasing it
 
 **When the work is done and verified, run `pwsh tools/release.ps1`.** Patch by default, `-Part minor`
@@ -2192,6 +2261,10 @@ trade that away to be a shade nearer a screenshot.
 - `quill-cli/docs/protocol.md` — the socket underneath, for a client in another language.
 - `quill-cli/agent-assessment/qwen-38-27B-assessment.md` — how well a local model does with it,
   measured against a live window.
+- `tools/agent-study/README.md` — the harness that watches an agent drive a real window, and
+  `tasks/task-1695-agent-study.md`, the first run of it: what an agent reached for instead of
+  Quill's own commands, the debugger answer it derived rather than read, and the nine tickets
+  that came out. Add a scenario when you add a feature.
 - `tasks/quill-installer-tdd.md` — how Quill is delivered: the icon, the Windows installer and the
   macOS bundle, and the options that were weighed for each.
 - `tasks/task-1667-version-and-release-tdd.md` — the About box, the build date stamped at compile

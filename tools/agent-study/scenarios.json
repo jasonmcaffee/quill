@@ -1,0 +1,105 @@
+[
+{"id":"s00-discover","area":"discovery","name":"Cold open: what can you do with the editor?",
+ "expect":"Names Quill by its areas without being told the command names; does not guess or invent verbs.",
+ "prompts":["I have the Quill editor open on this project. What can you actually do with it? Give me a short list of the kinds of things, not every command."]},
+
+{"id":"s01-tabs","area":"tab","name":"Open files and list tabs",
+ "before":{"tabs":["tab","list"]},"after":{"tabs":["tab","list"]},
+ "expect":"Opens both files as real tabs and reports them.",
+ "prompts":["Open src/main.rs in the editor for me, and open web/app.js too. Then tell me which files I have open and which one I'm looking at."]},
+
+{"id":"s02-create","area":"tab/editor","name":"Create a new file with content and save it",
+ "after":{"tabs":["tab","list"]},
+ "expect":"Creates src/util.rs through Quill, types the function, saves it. File exists on disk.",
+ "prompts":["Make me a new file at src/util.rs with a small Rust function called double that takes an i64 and returns it doubled. Write it in the editor and save it."]},
+
+{"id":"s03-edit","area":"editor","name":"Edit text in an open file",
+ "after":{"editor":["editor","status"]},
+ "expect":"Adds the comment via editor commands, not by writing the file behind Quill's back.",
+ "prompts":["Open src/shapes.rs and put a doc comment above the same_size function saying what it does. Leave it unsaved so I can look at it first."]},
+
+{"id":"s04-fold","area":"fold","name":"Fold the file down to its shape",
+ "after":{"folds":["fold","list"]},
+ "expect":"Collapses every block then expands just total_area.",
+ "prompts":["Open src/main.rs and fold up all the functions so I can just see the shape of the file. Then open total_area back up so I can read it."]},
+
+{"id":"s05-split","area":"pane","name":"Split view side by side",
+ "after":{"panes":["pane","list"],"tabs":["tab","list"]},
+ "expect":"Two panes, main.rs in one and shapes.rs in the other.",
+ "prompts":["I want src/main.rs on the left and src/shapes.rs on the right, side by side, so I can compare them."]},
+
+{"id":"s06-terminal","area":"terminal","name":"New terminal tab, named, running something",
+ "after":{"terminals":["terminal","list"]},
+ "expect":"Opens a terminal tab, renames it, runs a command, reads the output back.",
+ "prompts":["Open a new terminal tab in Quill, call it 'checks', and run `cargo check` in it. Tell me whether it passed."]},
+
+{"id":"s07-run","area":"run","name":"Add and start a run configuration",
+ "after":{"runs":["run","list"]},
+ "expect":"Adds a cargo run configuration, starts it, reads its output.",
+ "prompts":["Set up a way to run this project from the editor's play button — it's a cargo project. Then run it and tell me what it printed."]},
+
+{"id":"s08-debug","area":"debug","name":"Breakpoint, debug, inspect a variable",
+ "after":{"breakpoints":["debug","breakpoint","list"],"debug":["debug","status"]},
+ "expect":"Adds a breakpoint on the println line, starts the debugger, waits for the pause, reads `total`.",
+ "prompts":["Put a breakpoint in src/main.rs on the line that prints the total area, start the debugger, and when it stops there tell me what the value of total is."]},
+
+{"id":"s09-git","area":"git","name":"Git status and a diff",
+ "expect":"Reads git status through Quill, names the modified and untracked file.",
+ "prompts":["What's the git status of this project? Anything uncommitted? Show me what changed."]},
+
+{"id":"s10-search","area":"editor/search","name":"Find every use of a function",
+ "expect":"Uses find-in-files or find-references rather than grepping with bash.",
+ "prompts":["Find me every place area_of is used in this project, and tell me which files and lines."]},
+
+{"id":"s11-definition","area":"editor/symbols","name":"Go to a definition",
+ "after":{"editor":["editor","status"]},
+ "expect":"Jumps the caret to the Rect definition in shapes.rs.",
+ "prompts":["Where is the Rect type defined? Take me there in the editor."]},
+
+{"id":"s12-rename","area":"editor/refactor","name":"Rename a symbol project-wide",
+ "expect":"Uses Quill's rename rather than editing files by hand.",
+ "prompts":["Rename the function area_of to just area, everywhere it's used in the project."]},
+
+{"id":"s13-highlight","area":"highlight","name":"Mark a passage",
+ "after":{"highlights":["highlight","list"]},
+ "expect":"Highlights the right passage in main.rs.",
+ "prompts":["In src/main.rs, highlight the line that works out the total so I can find it again later."]},
+
+{"id":"s14-explorer","area":"explorer","name":"Make a folder and a file, then read the tree",
+ "expect":"Uses explorer new-folder / new-file and reloads the tree.",
+ "prompts":["Make a folder called tests in this project, put an empty file called smoke.rs in it, and then show me the file tree so I can see it landed."]},
+
+{"id":"s15-preview","area":"editor/view","name":"Markdown preview and a diagram",
+ "after":{"editor":["editor","status"]},
+ "expect":"Switches the view mode to preview and reads the diagram back.",
+ "prompts":["Show me README.md the way it looks rendered, not the raw markdown. What does the diagram in it say?"]},
+
+{"id":"s16-settings","area":"settings","name":"Change a setting",
+ "after":{"settings":["settings","get","appearance.font.size"]},
+ "expect":"Sets the editor font size to 20 through settings.",
+ "prompts":["The text is too small. Make the editor font 20 points."]},
+
+{"id":"s17-screenshot","area":"window","name":"Look at the window",
+ "expect":"Takes a screenshot and describes what is actually on screen.",
+ "prompts":["Take a screenshot of the Quill window and tell me what you can see in it."]},
+
+{"id":"s18-modal","area":"modal","name":"Drive a dialog",
+ "expect":"Opens Go to File, types, chooses the css file.",
+ "prompts":["Use the editor's 'go to file' dialog to find and open the stylesheet in this project."]},
+
+{"id":"s19-actions","area":"action","name":"Menus and toggling a pane",
+ "expect":"Lists View actions and toggles the explorer.",
+ "prompts":["What's on Quill's View menu? Then hide the file explorer for me, and put it back."]},
+
+{"id":"s20-project","area":"project/plugins","name":"What project and what languages",
+ "expect":"Answers from project info and the plugin list.",
+ "prompts":["What folder is this Quill window showing, and which languages does it know how to colour?"]},
+
+{"id":"s21-complete","area":"editor/completion","name":"Ask for a completion",
+ "expect":"Uses editor complete to see what names are on offer.",
+ "prompts":["Open src/main.rs, put the caret at the end of the file inside main, and tell me what names the editor would offer me if I typed 'ar'."]},
+
+{"id":"s22-multifile","area":"mixed","name":"A realistic multi-step job",
+ "expect":"Chains several areas together without falling back to bash for the editor parts.",
+ "prompts":["I want to add a perimeter function to src/shapes.rs, next to area_of, with a doc comment. Put the file in a split beside main.rs while you do it, save it, and then run cargo check in a terminal tab to prove it compiles."]}
+]
