@@ -469,9 +469,11 @@ fn prepare_node(
     // js-debug names the script and its arguments separately, and it takes the program as
     // `runtimeExecutable` plus `program` — so a configuration of `node server.js --port 3000` is
     // the runtime, the script and the rest.
-    let (script, rest) = match program.eq_ignore_ascii_case("node")
-        || program.to_lowercase().ends_with("node.exe")
-    {
+    // Asked of the program's **name**, not of the whole word. `run add` writes the runtime as the
+    // path it found, which under nvm is `~/.nvm/versions/node/v22.14.0/bin/node` — that is neither
+    // `node` nor something ending in `node.exe`, so the split never happened and js-debug was handed
+    // the node binary as the JavaScript file to debug.
+    let (script, rest) = match program_name(&program) == "node" {
         true => (args.first().cloned().unwrap_or_default(), args[1.min(args.len())..].to_vec()),
         // `npx tsx server.ts` and anything else: the whole command line is the program, and
         // js-debug runs it through its own runtime.
@@ -756,10 +758,7 @@ pub fn on_path(program: &str) -> Option<PathBuf> {
 /// than being it. `cargo run` under lldb debugs cargo, which is a session that starts, works, and is
 /// about the wrong process — the exact shape of wrongness that a refusal is better than.
 fn build_tool(program: &str) -> Option<&'static str> {
-    let name = Path::new(program)
-        .file_stem()
-        .map(|stem| stem.to_string_lossy().to_lowercase())
-        .unwrap_or_default();
+    let name = program_name(program);
     ["cargo", "npm", "npx", "yarn", "pnpm", "make", "dotnet", "go"]
         .into_iter()
         .find(|tool| *tool == name)
@@ -804,8 +803,8 @@ pub fn command_for_file(template: &str, path: &Path) -> String {
 ///
 /// `None` is not a failure; it means "nothing here says", and the caller asks the plugins next.
 pub fn adapter_for(program: &str) -> Option<&'static str> {
-    let path = Path::new(program);
-    let stem = path.file_stem().map(|stem| stem.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let path = Path::new(last_part(program));
+    let stem = program_name(program);
     // A build tool names its debugger even though it is not the program: cargo builds native code,
     // and everything in the npm family is run by js-debug's own runtime.
     match stem.as_str() {
@@ -823,9 +822,35 @@ pub fn adapter_for(program: &str) -> Option<&'static str> {
         // A path with no extension is a built program on every operating system that has no
         // extensions; a bare *word* with no extension is a program on `PATH` whose language nothing
         // here knows, so it is left for the plugins to answer.
-        "" if path.components().count() > 1 => Some("lldb"),
+        "" if names_a_folder(program) => Some("lldb"),
         _ => None,
     }
+}
+
+/// The last part of a program, whichever separator it was written with.
+///
+/// `Path` splits on the separator of the machine it is running on, so a command line naming
+/// `C:\Program Files\nodejs\node.exe` is one long file name on macOS and its stem is
+/// `C:\Program Files\nodejs\node`, which matches nothing — `adapter_for` answered `lldb` for Node on
+/// every machine but Windows, and `the_command_line_says_which_debugger_it_wants` failed there.
+/// A configuration is text a person typed or a path `run add` wrote, and either machine can read
+/// either spelling, so both separators are split here and the answer is the same everywhere.
+fn last_part(program: &str) -> &str {
+    program.rsplit(['/', '\\']).next().unwrap_or(program)
+}
+
+/// The name of the program a command line runs: its last part, without the extension, folded to
+/// lower case so a comparison against a word is one comparison.
+fn program_name(program: &str) -> String {
+    Path::new(last_part(program))
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().to_lowercase())
+        .unwrap_or_default()
+}
+
+/// True when the program is a path rather than a bare word on `PATH`.
+fn names_a_folder(program: &str) -> bool {
+    program.contains('/') || program.contains('\\')
 }
 
 /// True when a command line could be debugged at all, which is what dims `Debug` rather than
@@ -997,6 +1022,12 @@ mod tests {
         assert_eq!(adapter_for("npm"), Some("node"));
         assert_eq!(adapter_for("npx"), Some("node"));
         assert_eq!(adapter_for("C:\\Program Files\\nodejs\\node.exe"), Some("node"));
+        // The runtime as `run add` really writes it on a machine using nvm, which is a path several
+        // folders deep and neither the word `node` nor anything ending in `node.exe`.
+        assert_eq!(
+            adapter_for("/Users/someone/.nvm/versions/node/v22.14.0/bin/node"),
+            Some("node")
+        );
         assert_eq!(adapter_for("server.js"), Some("node"));
         assert_eq!(adapter_for("src/server.ts"), Some("node"));
         assert_eq!(adapter_for("target\\debug\\quill.exe"), Some("lldb"));

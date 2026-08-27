@@ -152,7 +152,12 @@ mod tests {
         let written = std::fs::read_to_string(folder.join(FILE)).expect("still there");
         assert!(written.contains("the fault this exists for"));
         assert!(written.contains("the second one"));
-        assert_eq!(written.matches("---\n").count(), 2, "one block a panic");
+        // Counted by message rather than by how many blocks the file holds. The hook is process
+        // wide, so a *different* test failing writes a block here too, and counting blocks made this
+        // test fail whenever anything else in the crate did — which is a test that reports somebody
+        // else's fault as its own.
+        assert_eq!(written.matches("said the fault this exists for\n").count(), 1);
+        assert_eq!(written.matches("said the second one\n").count(), 1);
 
         // A panic on another thread is caught too, which is where the indexer, the git worker and the
         // terminal's reader all live.
