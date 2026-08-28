@@ -378,11 +378,20 @@ mod tests {
         let server = a_server();
         let listed = ask(&server, "tools/list", Value::Null);
         let tools = listed["result"]["tools"].as_array().expect("tools");
-        assert_eq!(
-            tools.len(),
-            crate::catalogue::areas().len() + 1,
-            "one tool an area, plus one for the commands that have no area"
-        );
+        // One tool an area, and one for the commands that have no area. Asserted as the names that
+        // must be there rather than as how many there are: `task-1699` added tools of its own for
+        // going to a definition and finding references, so a count would have had to be edited by
+        // whoever added them, and a count is not what this test is about — that no area is missing is.
+        let names: Vec<&str> = tools.iter().filter_map(|tool| tool["name"].as_str()).collect();
+        for area in crate::catalogue::areas() {
+            let expected = crate::mcp::tools::tool_name(area, "");
+            assert!(names.contains(&expected.as_str()), "no tool for {area}: {names:?}");
+        }
+        assert!(names.contains(&"quill"), "no tool for the commands with no area: {names:?}");
+        let mut unique = names.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), names.len(), "two tools cannot share a name: {names:?}");
         let called = ask(
             &server,
             "tools/call",
