@@ -5673,6 +5673,13 @@ fn the_command_line_types_into_the_document_and_undoes_it() {
         before,
         "one undo should put the whole insertion back"
     );
+    assert!(!harness.state().document().is_modified(), "the restored disk state is clean");
+    did(&mut harness, "tab reload");
+    assert_eq!(
+        harness.state().document().text().to_string(),
+        before,
+        "a clean tab reloads without --discard"
+    );
 }
 
 #[test]
@@ -7587,6 +7594,35 @@ fn completions(harness: &Harness<'static, QuillApp>) -> Vec<String> {
         .completion()
         .map(|state| state.rows.iter().map(|row| row.name.clone()).collect())
         .unwrap_or_default()
+}
+
+/// A supplied stem is a read-only query over the same completion sources the popup uses.
+#[test]
+fn a_hypothetical_completion_stem_changes_nothing_in_the_document() {
+    let mut harness = completion_harness("layout.rs");
+    let before_text = harness.state().document().text().to_string();
+    let before_selection = harness.state().document().selection();
+    let before_revision = harness.state().document().revision();
+    let before_undo = harness.state().document().can_undo();
+    let before_redo = harness.state().document().can_redo();
+
+    let result = did(&mut harness, "editor complete --stem ar --limit 20");
+    let names: Vec<&str> = result["rows"]
+        .as_array()
+        .expect("completion rows")
+        .iter()
+        .filter_map(|row| row["name"].as_str())
+        .collect();
+    assert_eq!(result["stem"], "ar");
+    assert!(names.contains(&"Caret"), "the project index was ranked for the supplied stem: {names:?}");
+    assert_eq!(harness.state().document().text().to_string(), before_text);
+    assert_eq!(harness.state().document().selection(), before_selection);
+    assert_eq!(harness.state().document().revision(), before_revision);
+    assert_eq!(harness.state().document().can_undo(), before_undo);
+    assert_eq!(harness.state().document().can_redo(), before_redo);
+    assert!(!harness.state().document().is_modified());
+    assert!(harness.state().completion().is_none(), "listing does not open the visible popup");
+    assert_eq!(refused(&mut harness, "editor complete --stem ar --choose Caret"), "usage");
 }
 
 #[test]

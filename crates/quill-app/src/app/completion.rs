@@ -487,6 +487,32 @@ impl QuillApp {
         Offer { range, typed, rows, import: None }
     }
 
+    /// What a hypothetical stem would offer at a point, without putting that stem in the document.
+    ///
+    /// The position still matters inside imports: it decides whether the candidates are project
+    /// files or one module's exports. Outside an import the ordinary four candidate sources are
+    /// ranked directly. The empty replacement range states that no real bytes are involved.
+    pub fn hypothetical_completion_offer(&mut self, offset: usize, stem: &str) -> Offer {
+        let text = self.document().text().to_string();
+        let grammar = self.completion_grammar();
+        if let Some(context) = core_imports::context_at(&text, offset, &grammar) {
+            let pool = self.import_candidates(&context, stem);
+            let rows = completion::rank_all(stem, pool);
+            return Offer {
+                range: offset..offset,
+                typed: stem.to_owned(),
+                rows,
+                import: Some(context),
+            };
+        }
+        Offer {
+            range: offset..offset,
+            typed: stem.to_owned(),
+            rows: self.completion_rows(stem),
+            import: None,
+        }
+    }
+
     /// The rows a stem offers here, best first. What the popup shows and what the command line
     /// prints, so the two can never disagree.
     pub fn completion_rows(&mut self, stem: &str) -> Vec<Row> {

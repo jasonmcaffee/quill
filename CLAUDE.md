@@ -59,8 +59,9 @@ ticket behind it now:
 - **Say what Quill knows that a file tool does not** — that `editor references` classifies a hit as
   code, comment or string; that `git` runs the machine's real git with its credential helper. If the
   description does not say it, `grep` wins.
-- **Never make a read-only question mutate the document.** `editor complete` can only answer about the
-  caret, so asking what would be offered means typing into the person's file.
+- **Never make a read-only question mutate the document.** `editor complete --stem ar` answers what a
+  hypothetical word would offer at the caret or another position without typing into the person's
+  file; `--choose` remains the explicit mutating path.
 
 `_agent_output/task-1695-quill-agent-testing/FINDINGS.md` has the transcripts and the measurements.
 
@@ -379,7 +380,17 @@ than assumed.
 `editor.suggestions` is `automatic` or `manual`, with a tick box in `Settings -> Editor`. `manual` is
 already the off switch — `Ctrl+Space` and the menu entry work either way — which is why there is no
 third value. `quill-cli editor complete` prints the rows and `--choose` applies one, both through the
-same functions the popup uses.
+same functions the popup uses. `--stem <text>` ranks a hypothetical word through those same sources
+without inserting it, moving the caret, opening the popup or adding an undo step. The position still
+matters inside an import because it decides whether the candidates are files or a module's exports;
+`--stem` and `--choose` are deliberately mutually exclusive.
+
+**The saved point is a history revision, not a one-way dirty bit.** Every persisted-content state has
+a monotonic identity which rides its undo `Snapshot`; a successful save records the current identity,
+and `modified` is whether the two identities differ. Undoing or redoing back to the saved identity
+therefore clears the dirty marker in O(1), while a new branch can never reuse the identity of a saved
+state stranded in discarded redo history. Saving also closes a run of typing, or the next letter
+would merge across the saved point and leave no exact snapshot to return to. `task-1702` is the design.
 
 ## Inside an import, the list is the files, and what they export
 
@@ -2412,6 +2423,9 @@ trade that away to be a shade nearer a screenshot.
   drop-target mechanics and why the edge band wins, why the highlight is the layout rather than a
   picture of it, the two measurements a panel has to carry once it can be a column or a strip, and
   the five things left out with the reason for each.
+- `tasks/task-1702-saved-state-and-hypothetical-completion-tdd.md` — the saved point as an undo-history
+  identity rather than a boolean, why saving closes a typing group, and how `editor complete --stem`
+  asks the real completion engine a hypothetical question without changing text, history or UI state.
 - `tasks/task-1686-folding-tdd.md` — collapsing and expanding blocks: what IntelliJ, VS Code,
   CodeMirror and the Language Server Protocol each do about folding, the three tiers for deciding
   what is foldable and why the syntactic one is chosen again, why a hidden paragraph produces no

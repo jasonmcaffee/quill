@@ -96,7 +96,7 @@
  "prompts":["What folder is this Quill window showing, and which languages does it know how to colour?"]},
 
 {"id":"s21-complete","area":"editor/completion","name":"Ask for a completion",
- "expect":"Uses editor complete to see what names are on offer.",
+ "expect":"Uses editor complete --stem ar to see what names are on offer without editing the document.",
  "prompts":["Open src/main.rs, put the caret at the end of the file inside main, and tell me what names the editor would offer me if I typed 'ar'."]},
 
 {"id":"s22-multifile","area":"mixed","name":"A realistic multi-step job",

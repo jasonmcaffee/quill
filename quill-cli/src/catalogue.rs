@@ -754,17 +754,19 @@ pub const COMMANDS: &[Command] = &[
     Command {
         area: "editor",
         verb: "complete",
-        summary: "The names the word being typed at the caret could become, best first: the same list the popup shows, with what each row is and where it came from. Inside an import it is what can be imported instead — the project's files in a module specifier, and what a module exports between the braces — and there it answers with nothing typed. --choose applies one of them exactly as Enter would.",
+        summary: "The names a word could become, best first, with what each row is and where it came from. By default the word is read from the document at the caret; --stem asks hypothetically without editing the document. Inside an import the rows are what can be imported instead. --choose applies a real document row exactly as Enter would.",
         arguments: NO_ARGUMENTS,
         flags: &[
             option("offset", "bytes", "Ask about this position in the file rather than about the caret."),
             option("line", "number", "Ask about this line, counting from 1."),
             option("column", "number", "The column on that line. 1 when it is left out."),
+            option("stem", "text", "Ask what this hypothetical word would offer at the position, without inserting it or changing the document."),
             option("limit", "number", "Print at most this many rows. All of them when it is left out."),
             option("choose", "name", "Apply this row to the word being typed, as Enter would. It has to be one of the names offered."),
         ],
         examples: &[
             "quill-cli editor complete --json",
+            "quill-cli editor complete --stem ar --limit 5 --json",
             "quill-cli editor complete --limit 5 --json",
             "quill-cli editor complete --choose draw_frame",
             "quill-cli editor complete --choose ./layout",

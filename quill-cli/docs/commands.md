@@ -955,19 +955,21 @@ quill-cli editor rename total --scope project --include comments --apply
 ### editor complete
 
 ```
-quill-cli editor complete [--offset <bytes>] [--line <number>] [--column <number>] [--limit <number>] [--choose <name>]
+quill-cli editor complete [--offset <bytes>] [--line <number>] [--column <number>] [--stem <text>] [--limit <number>] [--choose <name>]
 ```
 
-The names the word being typed at the caret could become, best first: the same list the popup shows, with what each row is and where it came from. Inside an import it is what can be imported instead — the project's files in a module specifier, and what a module exports between the braces — and there it answers with nothing typed. --choose applies one of them exactly as Enter would.
+The names a word could become, best first, with what each row is and where it came from. By default the word is read from the document at the caret; --stem asks hypothetically without editing the document. Inside an import the rows are what can be imported instead. --choose applies a real document row exactly as Enter would.
 
 - `--offset <bytes>` — Ask about this position in the file rather than about the caret.
 - `--line <number>` — Ask about this line, counting from 1.
 - `--column <number>` — The column on that line. 1 when it is left out.
+- `--stem <text>` — Ask what this hypothetical word would offer at the position, without inserting it or changing the document.
 - `--limit <number>` — Print at most this many rows. All of them when it is left out.
 - `--choose <name>` — Apply this row to the word being typed, as Enter would. It has to be one of the names offered.
 
 ```sh
 quill-cli editor complete --json
+quill-cli editor complete --stem ar --limit 5 --json
 quill-cli editor complete --limit 5 --json
 quill-cli editor complete --choose draw_frame
 quill-cli editor complete --choose ./layout

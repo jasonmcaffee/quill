@@ -2538,6 +2538,17 @@ impl QuillApp {
                 "No plugin claims this file, so Quill has no words to offer.",
             );
         }
+        let hypothetical = request.text("stem").map(|stem| stem.trim().to_owned());
+        if request.has("stem") && hypothetical.as_deref().is_none_or(str::is_empty) {
+            return no(request, code::USAGE, "A hypothetical stem cannot be empty.");
+        }
+        if hypothetical.is_some() && request.has("choose") {
+            return no(
+                request,
+                code::USAGE,
+                "--stem is a read-only question and cannot be combined with --choose.",
+            );
+        }
         let offset = match self.cli_offset(request) {
             Ok(offset) => offset,
             Err(problem) => return no(request, code::USAGE, problem),
@@ -2545,7 +2556,10 @@ impl QuillApp {
         if let Some(name) = request.text("choose") {
             return self.cli_editor_complete_choose(request, offset, name.trim());
         }
-        let offer = self.completion_offer(offset);
+        let offer = match hypothetical.as_deref() {
+            Some(stem) => self.hypothetical_completion_offer(offset, stem),
+            None => self.completion_offer(offset),
+        };
         let (stem, word, rows) = (offer.range, offer.typed, offer.rows);
         // An empty stem with rows behind it is `task-1680`'s one new shape: inside a module
         // specifier there is a real answer to a question with nothing typed in it.

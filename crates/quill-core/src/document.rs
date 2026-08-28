@@ -81,6 +81,9 @@ struct Snapshot {
     chars: StyleSpans,
     paragraphs: ParagraphStyles,
     selection: Selection,
+    /// The identity of the persisted-content state this snapshot restores. Comparing it with the
+    /// saved revision is what makes undoing back to the saved point clear the dirty marker.
+    history_revision: u64,
     /// The marked passages, which ride the snapshot for the same reason everything else here does:
     /// undo restores a state, and the marks are part of the state the text was in. Undoing back past
     /// the moment a passage was marked therefore unmarks it, and redoing marks it again.
@@ -120,8 +123,14 @@ pub struct Document {
     redo: Vec<Snapshot>,
     last_edit: EditKind,
     path: Option<PathBuf>,
-    /// True when there are changes that have not been written to disk.
-    modified: bool,
+    /// Identity of the current persisted-content state. Unlike `text_revision`, this value is
+    /// restored by undo rather than advanced, so returning to a saved state can be recognised.
+    history_revision: u64,
+    /// The history revision last opened from or successfully written to disk.
+    saved_history_revision: u64,
+    /// A fresh identity for the next edit. Revisions are never reused after a redo branch is
+    /// discarded, so an unreachable saved point cannot be mistaken for a later state.
+    next_history_revision: u64,
     /// Bumped on every change of any kind, including one that only moved the caret. Anything asking
     /// "did anything at all happen" reads this: whether the window needs painting again, whether the
     /// marked passages need writing out.
@@ -166,7 +175,9 @@ impl Document {
             redo: Vec::new(),
             last_edit: EditKind::None,
             path: None,
-            modified: false,
+            history_revision: 1,
+            saved_history_revision: 1,
+            next_history_revision: 2,
             revision: 1,
             text_revision: 1,
             fold_revision: 1,
@@ -212,10 +223,14 @@ impl Document {
         self.save_as(&path)
     }
 
+    /// Write the current text to `path` and make this history revision the saved point.
     pub fn save_as(&mut self, path: &Path) -> std::io::Result<()> {
         std::fs::write(path, self.text.to_string())?;
         self.path = Some(path.to_owned());
-        self.modified = false;
+        self.saved_history_revision = self.history_revision;
+        // Typing after a save must begin a new undo group. Otherwise it merges with the typing that
+        // preceded the save and there is no snapshot at the exact state that was written to disk.
+        self.last_edit = EditKind::Other;
         Ok(())
     }
 
@@ -248,8 +263,9 @@ impl Document {
         self.path = Some(path);
     }
 
+    /// True when the current history state is not the one last opened or successfully saved.
     pub fn is_modified(&self) -> bool {
-        self.modified
+        self.history_revision != self.saved_history_revision
     }
 
     pub fn revision(&self) -> u64 {
@@ -703,8 +719,10 @@ impl Document {
         }
     }
 
+    /// Give a real edit a fresh history identity, invalidate redo, and move the view revisions.
     fn mark_changed(&mut self) {
-        self.modified = true;
+        self.history_revision = self.next_history_revision;
+        self.next_history_revision += 1;
         self.text_changed();
         self.redo.clear();
     }
@@ -718,6 +736,7 @@ impl Document {
         self.text_revision += 1;
     }
 
+    /// Save the current state unless this edit belongs to the current run of typing.
     fn push_undo(&mut self, kind: EditKind) {
         // A run of single character typing is one undo step, so that undo removes a word rather than a
         // letter. A caret move, a delete or a formatting change breaks the run.
@@ -729,6 +748,7 @@ impl Document {
             chars: self.chars.clone(),
             paragraphs: self.paragraphs.clone(),
             selection: self.selection,
+            history_revision: self.history_revision,
             highlights: self.highlights.clone(),
             folds: self.folds.clone(),
             breakpoints: self.breakpoints.clone(),
@@ -739,23 +759,27 @@ impl Document {
         self.last_edit = kind;
     }
 
+    /// Capture everything undo restores, including the identity used for saved-point tracking.
     fn snapshot(&self) -> Snapshot {
         Snapshot {
             text: self.text.clone(),
             chars: self.chars.clone(),
             paragraphs: self.paragraphs.clone(),
             selection: self.selection,
+            history_revision: self.history_revision,
             highlights: self.highlights.clone(),
             folds: self.folds.clone(),
             breakpoints: self.breakpoints.clone(),
         }
     }
 
+    /// Replace the document state with a snapshot while leaving monotonic counters monotonic.
     fn restore(&mut self, snapshot: Snapshot) {
         self.text = snapshot.text;
         self.chars = snapshot.chars;
         self.paragraphs = snapshot.paragraphs;
         self.selection = snapshot.selection;
+        self.history_revision = snapshot.history_revision;
         self.highlights = snapshot.highlights;
         // Restoring a state restores which blocks were collapsed, exactly as it restores which
         // passages were marked. `fold_revision` moves because the layout has to be worked out
@@ -766,6 +790,7 @@ impl Document {
         self.breakpoints = snapshot.breakpoints;
     }
 
+    /// Move to the preceding snapshot and preserve the current state for redo.
     fn undo(&mut self) {
         let Some(previous) = self.undo.pop() else {
             return;
@@ -774,10 +799,10 @@ impl Document {
         self.restore(previous);
         self.redo.push(current);
         self.last_edit = EditKind::Other;
-        self.modified = true;
         self.text_changed();
     }
 
+    /// Move to the next snapshot and preserve the current state for undo.
     fn redo(&mut self) {
         let Some(next) = self.redo.pop() else {
             return;
@@ -786,7 +811,6 @@ impl Document {
         self.restore(next);
         self.undo.push(current);
         self.last_edit = EditKind::Other;
-        self.modified = true;
         self.text_changed();
     }
 
@@ -1887,6 +1911,20 @@ the fourth line");
         assert_eq!(document.text().to_string(), "hello");
     }
 
+    /// Returning to the state loaded from disk must also return to its clean history identity.
+    #[test]
+    fn undoing_back_to_the_loaded_state_clears_the_modified_mark() {
+        let mut document = Document::from_text("on disk");
+        document.apply(Command::MoveDocumentEnd { extend: false });
+        document.apply(Command::Insert(" changed".to_owned()));
+        assert!(document.is_modified());
+
+        document.apply(Command::Undo);
+
+        assert_eq!(document.text().to_string(), "on disk");
+        assert!(!document.is_modified(), "the current history revision is the loaded revision");
+    }
+
     #[test]
     fn a_new_edit_clears_the_redo_history() {
         let mut document = typed("hello");
@@ -1948,6 +1986,17 @@ the fourth line");
         document.save_as(&path).expect("save it");
         assert!(!document.is_modified());
         assert_eq!(std::fs::read_to_string(&path).expect("read it back"), "# heading\n\nbody");
+
+        document.apply(Command::Insert(" after save".to_owned()));
+        document.apply(Command::Undo);
+        assert!(!document.is_modified(), "saving closes the typing group at an exact undo point");
+        document.apply(Command::Redo);
+        assert!(document.is_modified(), "redo leaves the saved point");
+        document.apply(Command::Undo);
+        document.apply(Command::Undo);
+        assert!(document.is_modified(), "a state before the save is not clean");
+        document.apply(Command::Insert("a new branch".to_owned()));
+        assert!(document.is_modified(), "a branch cannot reuse the discarded clean identity");
         std::fs::remove_file(&path).ok();
     }
 
