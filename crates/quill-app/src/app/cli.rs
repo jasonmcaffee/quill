@@ -20,10 +20,11 @@
 //!
 //! ## Answers that cannot be given at once
 //!
-//! Four commands are asked on one frame and answered on a later one: a screenshot, because the
+//! Five commands are asked on one frame and answered on a later one: a screenshot, because the
 //! picture of a frame arrives after that frame has been painted; `terminal read --wait-for`,
 //! because it is waiting for a shell; `modal results --wait`, because `Find in Files` reads the
-//! project on a thread; and `git action --wait`, because git runs on a thread too. Each one keeps
+//! project on a thread; `git status` after repository identity changes; and `git action --wait`,
+//! because git runs on a thread too. Each one keeps
 //! its request in [`Waiting`] and answers it when it is ready or when its time runs out. That is
 //! also why every one of them takes a timeout: a command that could wait for ever is a script that
 //! hangs.
@@ -85,6 +86,12 @@ pub enum Outcome {
     Hold(Waiting),
 }
 
+/// Which reply a held git refresh owes its caller once the worker has answered.
+pub enum GitAnswer {
+    GitStatus,
+    WindowStatus,
+}
+
 /// A request that has been accepted and is waiting for something.
 pub enum Waiting {
     /// A picture of the window, once it has stopped moving and one has been painted.
@@ -111,7 +118,7 @@ pub enum Waiting {
     /// would be a second place to get the cancellation right.
     References { until: Instant, code_only: bool, rename: Option<CliRename> },
     /// Git, which is on a thread of its own.
-    Git { until: Instant },
+    Git { until: Instant, answer: GitAnswer },
     /// A debug session stopping somewhere, which is what makes `debug start --wait-for-pause` and
     /// the four stepping verbs answerable from a script.
     ///
@@ -154,7 +161,7 @@ impl Waiting {
             | Waiting::RunOutput { until, .. }
             | Waiting::ModalResults { until, .. }
             | Waiting::References { until, .. }
-            | Waiting::Git { until }
+            | Waiting::Git { until, .. }
             | Waiting::DebugPause { until, .. }
             | Waiting::DebugEvaluate { until, .. }
             | Waiting::DebugHover { until, .. } => *until,
@@ -351,9 +358,12 @@ impl QuillApp {
                 let modal = self.references.as_ref()?;
                 (!modal.is_searching()).then(|| self.references_reply(request, waiting))
             }
-            Waiting::Git { .. } => {
+            Waiting::Git { answer, .. } => {
                 let git = self.git.as_ref()?;
-                (git.running().is_none()).then(|| self.git_status_reply(request))
+                (!git.is_busy()).then(|| match answer {
+                    GitAnswer::GitStatus => self.git_status_reply(request),
+                    GitAnswer::WindowStatus => self.window_status_reply(request, ctx),
+                })
             }
             Waiting::DebugEvaluate { expression, id, .. } => {
                 let debug = self.debug.as_ref()?;
@@ -484,8 +494,12 @@ impl QuillApp {
                 "The search was still running when the time ran out, so nothing was changed."
                     .to_owned(),
             ),
-            Waiting::Git { .. } => {
-                ("git.action", "Git was still running when the time ran out.".to_owned())
+            Waiting::Git { answer, .. } => {
+                let command = match answer {
+                    GitAnswer::GitStatus => "git.status",
+                    GitAnswer::WindowStatus => "status",
+                };
+                (command, "Git was still running when the time ran out.".to_owned())
             }
             Waiting::DebugEvaluate { expression, .. } => {
                 let expression = expression.clone();
@@ -999,7 +1013,17 @@ impl QuillApp {
 
     fn cli_top(&mut self, request: &Request, verb: &str, ctx: &egui::Context) -> Outcome {
         match verb {
-            "status" => ok(request, self.status_sentence(), self.status_value(ctx)),
+            "status" => {
+                let changed = self.refresh_repository();
+                if changed && self.git.as_ref().is_some_and(|git| git.is_busy()) {
+                    Outcome::Hold(Waiting::Git {
+                        until: waits_for(request, "wait", DEFAULT_WAIT),
+                        answer: GitAnswer::WindowStatus,
+                    })
+                } else {
+                    Outcome::Reply(self.window_status_reply(request, ctx))
+                }
+            }
             "quit" => {
                 self.run_action(Action::Quit, ctx);
                 done(request, "Quill is closing.")
@@ -1023,6 +1047,11 @@ impl QuillApp {
             if self.explorer_visible { "shown" } else { "hidden" },
             if self.terminal.visible { "shown" } else { "hidden" },
         )
+    }
+
+    /// The complete top-level status reply, also used after repository discovery settles.
+    fn window_status_reply(&self, request: &Request, ctx: &egui::Context) -> Reply {
+        Reply::done(&request.command, self.status_sentence(), self.status_value(ctx))
     }
 
     /// Everything about the window, in one value.
@@ -5815,7 +5844,17 @@ impl QuillApp {
 
     fn cli_git(&mut self, request: &Request, verb: &str) -> Outcome {
         match verb {
-            "status" => Outcome::Reply(self.git_status_reply(request)),
+            "status" => {
+                let changed = self.refresh_repository();
+                if changed && self.git.as_ref().is_some_and(|git| git.is_busy()) {
+                    Outcome::Hold(Waiting::Git {
+                        until: waits_for(request, "wait", DEFAULT_WAIT),
+                        answer: GitAnswer::GitStatus,
+                    })
+                } else {
+                    Outcome::Reply(self.git_status_reply(request))
+                }
+            }
             "actions" => {
                 let rows: Vec<String> =
                     GitAction::ALL.iter().map(|what| what.name().to_owned()).collect();
@@ -5843,6 +5882,7 @@ impl QuillApp {
                 format!("There is no Git entry called {name}. `git actions` lists them."),
             );
         };
+        self.refresh_repository();
         if self.git.is_none() && what != GitAction::Clone {
             return no(
                 request,
@@ -5852,7 +5892,10 @@ impl QuillApp {
         }
         self.run_git(what);
         if request.has("wait") {
-            return Outcome::Hold(Waiting::Git { until: waits_for(request, "wait", DEFAULT_WAIT) });
+            return Outcome::Hold(Waiting::Git {
+                until: waits_for(request, "wait", DEFAULT_WAIT),
+                answer: GitAnswer::GitStatus,
+            });
         }
         ok(
             request,
@@ -5871,6 +5914,8 @@ impl QuillApp {
             );
         };
         let status = &git.snapshot.status;
+        let project_root = self.tree.root();
+        let relation = crate::app::git::root_relation(git.repository.root(), project_root);
         let changed: Vec<Value> = status
             .entries
             .iter()
@@ -5891,6 +5936,8 @@ impl QuillApp {
             .collect();
         let mut result = json!({
             "root": git.repository.root().to_string_lossy(),
+            "projectRoot": project_root.to_string_lossy(),
+            "rootRelation": relation.name(),
             "branch": status.branch,
             "upstream": status.upstream,
             "ahead": status.ahead,
@@ -5908,9 +5955,20 @@ impl QuillApp {
         Reply::done(
             &request.command,
             format!(
-                "{} \u{00B7} {} changed{}",
+                "{} \u{00B7} {} changed \u{00B7} repository {}{}{}{}",
                 status.branch.clone().unwrap_or_else(|| "detached".to_owned()),
                 status.entries.len(),
+                git.repository.root().display(),
+                if relation == crate::app::git::RootRelation::Project {
+                    " (project root)"
+                } else {
+                    " (ancestor of project "
+                },
+                if relation == crate::app::git::RootRelation::Project {
+                    String::new()
+                } else {
+                    format!("{})", project_root.display())
+                },
                 git.message.as_ref().map(|text| format!(" \u{00B7} {text}")).unwrap_or_default()
             ),
             result,
@@ -5919,15 +5977,21 @@ impl QuillApp {
 
     fn git_value(&self) -> Value {
         match &self.git {
-            Some(git) => json!({
-                "repository": true,
-                "root": git.repository.root().to_string_lossy(),
-                "branch": git.snapshot.status.branch,
-                "changed": git.snapshot.status.entries.len(),
-                "unfinished": git.snapshot.in_progress,
-                "running": git.running(),
-                "message": git.message,
-            }),
+            Some(git) => {
+                let project_root = self.tree.root();
+                let relation = crate::app::git::root_relation(git.repository.root(), project_root);
+                json!({
+                    "repository": true,
+                    "root": git.repository.root().to_string_lossy(),
+                    "projectRoot": project_root.to_string_lossy(),
+                    "rootRelation": relation.name(),
+                    "branch": git.snapshot.status.branch,
+                    "changed": git.snapshot.status.entries.len(),
+                    "unfinished": git.snapshot.in_progress,
+                    "running": git.running(),
+                    "message": git.message,
+                })
+            }
             None => json!({ "repository": false }),
         }
     }

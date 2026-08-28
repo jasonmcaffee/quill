@@ -5428,6 +5428,65 @@ fn refused(harness: &mut Harness<'static, QuillApp>, line: &str) -> String {
     reply.error.expect("a refusal carries an error").code
 }
 
+/// Build a project that initially belongs to an ancestor repository.
+fn late_repository_project() -> (std::path::PathBuf, std::path::PathBuf) {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("the clock is after the epoch")
+        .as_nanos();
+    let ancestor = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("_agent_output/task-1701-git-root-refresh/tests")
+        .join(format!("{}-{unique}", std::process::id()));
+    let project = ancestor.join("project");
+    std::fs::create_dir_all(&project).expect("make the late repository project");
+    let initialized = quill_git::command::run(&ancestor, &["init", "--initial-branch=main"]);
+    assert!(initialized.ok, "initialize the ancestor: {}", initialized.message());
+    std::fs::write(project.join("before.txt"), "before repository creation\n").expect("write before.txt");
+    (ancestor, project)
+}
+
+/// A project that becomes a repository while its window is open switches away from its ancestor.
+#[test]
+fn git_status_rediscovers_a_repository_created_after_the_window_opened() {
+    let (ancestor, project) = late_repository_project();
+    let mut harness = harness_in(&project);
+    settle(&mut harness, "the ancestor repository", |app| {
+        app.git.as_ref().is_some_and(|git| !git.is_busy())
+    });
+    let before = did(&mut harness, "git status --json");
+    assert_eq!(before["rootRelation"], "ancestor");
+    assert_eq!(std::path::PathBuf::from(before["root"].as_str().unwrap()).canonicalize().unwrap(), ancestor.canonicalize().unwrap());
+
+    let initialized = quill_git::command::run(&project, &["init", "--initial-branch=master"]);
+    assert!(initialized.ok, "initialize the project: {}", initialized.message());
+    std::fs::write(project.join("after.txt"), "after repository creation\n").expect("write after.txt");
+    let ctx = harness.ctx.clone();
+    assert!(harness.state_mut().run_command_line("git status --json", &ctx).is_none());
+    settle(&mut harness, "the project repository", |app| {
+        app.git.as_ref().is_some_and(|git| {
+            !git.is_busy()
+                && quill_app::app::git::root_relation(git.repository.root(), &project)
+                    == quill_app::app::git::RootRelation::Project
+        })
+    });
+
+    let after = did(&mut harness, "git status --json");
+    assert_eq!(after["rootRelation"], "project");
+    assert_eq!(after["branch"], "master");
+    assert_eq!(after["changed"].as_array().map(Vec::len), Some(2));
+    assert_eq!(std::path::PathBuf::from(after["root"].as_str().unwrap()).canonicalize().unwrap(), project.canonicalize().unwrap());
+
+    let window = did(&mut harness, "status --json");
+    assert_eq!(window["git"]["rootRelation"], "project");
+    assert_eq!(window["git"]["root"], after["root"]);
+    did_while_waiting(&mut harness, "git action add --path after.txt");
+    settle(&mut harness, "the project file to be staged", |app| {
+        app.git.as_ref().is_some_and(|git| !git.is_busy())
+    });
+    assert_eq!(ask_git(&project, &["diff", "--cached", "--name-only"]), "after.txt");
+}
+
 /// Press at `from` and move through each of `path` before letting go.
 ///
 /// [`drag`] moves once, which is enough for a divider: it starts the drag and ends it in the same

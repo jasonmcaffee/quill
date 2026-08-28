@@ -1383,7 +1383,7 @@ impl QuillApp {
             panes: self.files.pane_count(),
             pane: self.files.focused_pane(),
             tabs_in_pane: self.files.tabs_in(self.files.focused_pane()).len(),
-            in_repository: self.git.is_some(),
+            in_repository: self.repository_controls_apply(),
             has_file: self.document().path().is_some(),
             annotated: self.files.active().blame.is_some(),
             unfinished: self.git.as_ref().and_then(|git| git.snapshot.in_progress),
@@ -3401,6 +3401,32 @@ impl QuillApp {
         self.files.forget_git();
     }
 
+    /// Re-discover the repository from the open project and replace stale repository state.
+    ///
+    /// The project can become its own repository while this window stays open. Discovery at the
+    /// moment of use prevents a status read or mutation from continuing to target an ancestor.
+    pub fn refresh_repository(&mut self) -> bool {
+        let discovered = quill_git::Repository::discover(self.tree.root());
+        let unchanged = match (&self.git, &discovered) {
+            (Some(current), Some(next)) => current.repository == *next,
+            (None, None) => true,
+            _ => false,
+        };
+        if unchanged {
+            return false;
+        }
+        let waker = self.thread_waker();
+        self.git = discovered.map(|repository| GitState::from_repository(repository, waker));
+        self.git_looked = true;
+        self.files.forget_git();
+        true
+    }
+
+    /// Whether repository controls should be available before the next authoritative discovery.
+    fn repository_controls_apply(&self) -> bool {
+        self.git.is_some() || git::has_direct_marker(self.tree.root())
+    }
+
     /// The largest file that is coloured.
     ///
     /// Colouring is one linear pass over the text and it runs whenever the text changes, so on a
@@ -3578,6 +3604,7 @@ impl QuillApp {
             ));
             return;
         }
+        self.refresh_repository();
         let Some(git) = self.git.as_mut() else {
             self.message = Some("This folder is not in a git repository.".to_owned());
             return;
@@ -4431,6 +4458,7 @@ impl QuillApp {
 
     /// Send a request to the git thread, saying so when there is no repository to send it to.
     fn send_git(&mut self, request: quill_git::worker::Request) {
+        self.refresh_repository();
         match self.git.as_mut() {
             Some(git) => git.send(request),
             None => self.message = Some("This folder is not in a git repository.".to_owned()),
@@ -5120,7 +5148,7 @@ impl QuillApp {
             let state = activity_bar::RailState {
                 explorer_visible: self.explorer_visible,
                 git_open: self.git.as_ref().is_some_and(|git| git.panel.open),
-                in_repository: self.git.is_some(),
+                in_repository: self.repository_controls_apply(),
                 terminal_visible: self.terminal.visible,
                 run_visible: self.run.visible,
                 debug_visible: self.debug_panel.visible,

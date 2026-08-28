@@ -41,9 +41,14 @@ impl GitState {
     /// Start working on the repository `folder` is in, if it is in one.
     pub fn open(folder: &Path, waker: Arc<dyn Fn() + Send + Sync>) -> Option<Self> {
         let repository = Repository::discover(folder)?;
+        Some(Self::from_repository(repository, waker))
+    }
+
+    /// Start working on an already discovered repository.
+    pub fn from_repository(repository: Repository, waker: Arc<dyn Fn() + Send + Sync>) -> Self {
         let mut worker = Worker::start(repository.clone(), waker);
         worker.send(Request::Refresh);
-        Some(Self {
+        Self {
             repository,
             worker,
             snapshot: Snapshot::default(),
@@ -53,7 +58,7 @@ impl GitState {
             recent_messages: Vec::new(),
             message: None,
             read: false,
-        })
+        }
     }
 
     /// Ask the thread for something.
@@ -65,6 +70,11 @@ impl GitState {
     /// What is running, for the status bar.
     pub fn running(&self) -> Option<&str> {
         self.worker.running()
+    }
+
+    /// Whether the worker still owes the window its first or latest answer.
+    pub fn is_busy(&self) -> bool {
+        !self.read || self.worker.running().is_some()
     }
 
     /// A path as git spells it, relative to the root.
@@ -226,6 +236,39 @@ impl GitState {
     }
 }
 
+/// How the discovered repository root relates to the project Quill opened.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RootRelation {
+    Project,
+    Ancestor,
+}
+
+impl RootRelation {
+    /// The stable spelling used by command-line JSON.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Project => "project",
+            Self::Ancestor => "ancestor",
+        }
+    }
+}
+
+/// Compare two folders after resolving aliases where the file system permits it.
+fn same_folder(left: &Path, right: &Path) -> bool {
+    left.canonicalize().unwrap_or_else(|_| left.to_path_buf())
+        == right.canonicalize().unwrap_or_else(|_| right.to_path_buf())
+}
+
+/// Say whether a repository is the project itself or one of its ancestors.
+pub fn root_relation(repository: &Path, project: &Path) -> RootRelation {
+    if same_folder(repository, project) { RootRelation::Project } else { RootRelation::Ancestor }
+}
+
+/// Whether the project itself has acquired a normal or worktree git marker.
+pub fn has_direct_marker(project: &Path) -> bool {
+    project.join(".git").exists()
+}
+
 /// An author's first name, which is what fits in a blame column.
 ///
 /// `Jason McAffee` becomes `Jason`, and an address becomes the part in front of the at sign, because
@@ -246,6 +289,14 @@ pub fn repository_for(folder: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The relation distinguishes the project root from a repository above it.
+    #[test]
+    fn a_repository_root_says_whether_it_is_the_project_or_an_ancestor() {
+        let project = Path::new("project");
+        assert_eq!(root_relation(project, project), RootRelation::Project);
+        assert_eq!(root_relation(Path::new("."), project), RootRelation::Ancestor);
+    }
 
     #[test]
     fn a_blame_column_shows_a_first_name() {
