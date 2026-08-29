@@ -207,6 +207,22 @@ pub fn unknown_arguments(command: &Command, arguments: &Map<String, Value>) -> V
         .collect()
 }
 
+/// The command an agent most likely meant when it puts a neighbouring command's value on this one.
+///
+/// These are intentionally explicit: a generic search would offer several equally plausible
+/// commands for names such as `tab`, while the refusal should give one useful next step.
+pub fn argument_hint(command: &Command, name: &str) -> Option<&'static str> {
+    match (command.area, command.verb, name) {
+        ("editor", "caret", "to-column") => Some("editor select"),
+        ("editor", "caret", "tab") => Some("tab select"),
+        ("editor", "select", "top") | ("editor", "complete", "top") => Some("editor scroll"),
+        ("editor", "complete", "to-column") => Some("editor caret"),
+        ("run", "add", "wait-for") => Some("run output"),
+        ("terminal", "send", "wait-for") => Some("terminal read"),
+        _ => None,
+    }
+}
+
 /// Find a command by what a person typed or by what goes over the wire.
 ///
 /// Both spellings are accepted from both sides, so `quill-cli tab.open` works and a program that
@@ -2055,6 +2071,15 @@ mod tests {
         })));
         assert_eq!(normalised.get("wait-for"), Some(&json!("canonical")));
         assert_eq!(normalised.len(), 1);
+    }
+
+    #[test]
+    fn a_neighbouring_command_hint_names_the_right_area_for_common_guesses() {
+        let caret = find("editor caret").expect("editor caret");
+        let run_add = find("run add").expect("run add");
+        assert_eq!(argument_hint(caret, "to-column"), Some("editor select"));
+        assert_eq!(argument_hint(caret, "tab"), Some("tab select"));
+        assert_eq!(argument_hint(run_add, "wait-for"), Some("run output"));
     }
 
     /// The fault this closes: a value the command has no name for used to be dropped, and the

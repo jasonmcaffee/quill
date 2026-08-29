@@ -207,10 +207,16 @@ fn unknown_argument_refusal(request: &Request) -> Option<Outcome> {
         true => format!("{} takes no values.", command.typed()),
         false => format!("{} takes {}.", command.typed(), takes.join(", ")),
     };
+    let hints = unknown
+        .iter()
+        .filter_map(|name| quill_cli::catalogue::argument_hint(command, name))
+        .map(|hint| format!("Try {hint} for {}.", either(&unknown)))
+        .collect::<Vec<_>>();
+    let hint = if hints.is_empty() { String::new() } else { format!(" {}", hints.join(" ")) };
     Some(no(
         request,
         code::USAGE,
-        format!("{} has no {}. {says}", command.typed(), either(&unknown)),
+        format!("{} has no {}.{hint} {says}", command.typed(), either(&unknown)),
     ))
 }
 
