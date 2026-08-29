@@ -291,13 +291,16 @@ Six commands are typed on their own, because they are about the CLI or about a w
 ### status
 
 ```
-quill-cli status
+quill-cli status [--section <name>]
 ```
 
-Everything about the window in one answer: its version and build date, the project, the tabs, the panes, the terminal, the modal that is open, the settings and git.
+Everything about the window in one answer: its version and build date, the project, the tabs, the panes, the terminal, the modal that is open, the settings and git. Ask for one part with --section and the answer is only that part.
+
+- `--section <name>` — One part of the answer: editor, tabs, panes, panels, explorer, terminal, modal, settings, git, window, project or message. Several, comma-separated, for more than one. The whole answer when it is left out.
 
 ```sh
 quill-cli status --json
+quill-cli status --section panes --json
 ```
 
 ### instances
@@ -1114,63 +1117,71 @@ quill-cli fold list --json
 ### fold toggle
 
 ```
-quill-cli fold toggle [--line <number>]
+quill-cli fold toggle [--line <number>] [--regions]
 ```
 
-Collapse a block that is showing, or expand one that is collapsed. The block at the caret when no line is given.
+Collapse a block that is showing, or expand one that is collapsed. The block at the caret when no line is given. The answer is how many blocks are collapsed; --regions adds the list.
 
 - `--line <number>` — The line the block starts on, counting from 1. `fold list` says which lines those are.
+- `--regions` — Also answer with the list of every block and whether it is collapsed.
 
 ```sh
 quill-cli fold toggle
 quill-cli fold toggle --line 42
+quill-cli fold toggle --regions --json
 ```
 
 ### fold collapse
 
 ```
-quill-cli fold collapse [--line <number>] [--all]
+quill-cli fold collapse [--line <number>] [--all] [--regions]
 ```
 
-Collapse one block, or every block in the file.
+Collapse one block, or every block in the file. The answer is how many blocks are collapsed; --regions adds the list.
 
 - `--line <number>` — The line the block starts on, counting from 1.
 - `--all` — Collapse every block in the file.
+- `--regions` — Also answer with the list of every block and whether it is collapsed.
 
 ```sh
 quill-cli fold collapse --all
 quill-cli fold collapse --line 42
+quill-cli fold collapse --all --regions --json
 ```
 
 ### fold expand
 
 ```
-quill-cli fold expand [--line <number>] [--all]
+quill-cli fold expand [--line <number>] [--all] [--regions]
 ```
 
-Expand one block, or show all again.
+Expand one block, or show all again. The answer is how many blocks are collapsed; --regions adds the list.
 
 - `--line <number>` — The line the block starts on, counting from 1.
 - `--all` — Expand every block in the file.
+- `--regions` — Also answer with the list of every block and whether it is collapsed.
 
 ```sh
 quill-cli fold expand --all
 quill-cli fold expand --line 42
+quill-cli fold expand --all --regions --json
 ```
 
 ### fold others
 
 ```
-quill-cli fold others [--selection]
+quill-cli fold others [--selection] [--regions]
 ```
 
-Collapse everything that does not hold a marked passage, so only the marked parts of the file are left showing. Falls back to the selection when nothing is marked.
+Collapse everything that does not hold a marked passage, so only the marked parts of the file are left showing. Falls back to the selection when nothing is marked. The answer is how many blocks are collapsed; --regions adds the list.
 
 - `--selection` — Keep what is selected rather than what is marked, even when there are marks.
+- `--regions` — Also answer with the list of every block and whether it is collapsed.
 
 ```sh
 quill-cli fold others
 quill-cli fold others --selection
+quill-cli fold others --regions --json
 ```
 
 ## panel — which edge of the window each panel is docked to
@@ -2455,13 +2466,16 @@ The escape hatch, and the guarantee: every entry on every menu has a name here, 
 ### action list
 
 ```
-quill-cli action list
+quill-cli action list [--menu <name>]
 ```
 
-Every entry on every menu, with the name `action run` takes, the menu it is on, its keyboard shortcut and whether it can be used just now. A new menu entry appears here without anybody adding it.
+Every entry on every menu, with the name `action run` takes, the menu it is on, its keyboard shortcut and whether it can be used just now. A new menu entry appears here without anybody adding it. Ask for one menu with --menu and the answer is only that menu.
+
+- `--menu <name>` — Only the entries on this menu, by the name it is shown under; submenus name their own rows. Several, comma-separated, for more than one. Every menu when it is left out.
 
 ```sh
 quill-cli action list --json
+quill-cli action list --menu view --json
 ```
 
 ### action run

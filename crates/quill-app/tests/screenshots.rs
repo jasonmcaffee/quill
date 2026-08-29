@@ -6056,6 +6056,168 @@ fn status_answers_for_every_part_of_the_window_at_once() {
     assert!(status["project"].as_str().unwrap().contains("quill-screenshot-folder"));
 }
 
+// ---------------------------------------------------------------------------------------------
+// task-1704: a reply proportionate to what was asked.
+
+/// `status --section` answers with the part that was asked for and nothing else, and the whole
+/// window is still the answer when no section is named.
+#[test]
+fn status_answers_for_the_section_that_was_asked_for() {
+    let mut harness = harness_in(&sample_folder());
+    did(&mut harness, "tab open readme.md --permanent");
+
+    let panes = did(&mut harness, "status --section panes");
+    assert!(panes.get("panes").is_some(), "the section that was asked for");
+    for absent in ["editor", "settings", "git", "explorer", "terminal", "tabs"] {
+        assert!(panes.get(absent).is_none(), "nothing that was not asked for: {absent}");
+    }
+
+    // Several at once, in either case, because an agent writes `view` where the menu is `View`.
+    let asked = did(&mut harness, "status --section Editor,GIT");
+    assert!(asked.get("editor").is_some());
+    assert!(asked.get("git").is_some());
+    assert!(asked.get("settings").is_none());
+    assert!(asked.get("panes").is_none());
+
+    // The sentence is one line about the whole window and does not change with the section.
+    let whole = did(&mut harness, "status");
+    for part in ["project", "tabs", "editor", "explorer", "terminal", "modal", "settings", "git", "panes"] {
+        assert!(whole.get(part).is_some(), "no section is still the whole window: {part}");
+    }
+    assert_eq!(
+        whole["panes"]["count"],
+        panes["panes"]["count"],
+        "the section and the whole agree about the window"
+    );
+
+    // A section that is not a section is a question that was not asked.
+    assert_eq!(refused(&mut harness, "status --section purple"), "usage");
+}
+
+/// A fold command that changed something answers with the summary, and the region list comes
+/// along only when it is asked for.
+#[test]
+fn a_fold_change_answers_with_a_summary_and_the_list_is_opt_in() {
+    let mut harness = folding_harness("proportionate");
+
+    // `fold list` is the command whose job is the list, so it is what says how many blocks there
+    // are, and it keeps returning the list whatever else changes.
+    let listed = did(&mut harness, "fold list");
+    let total = listed["regions"].as_array().expect("the list").len();
+    assert!(total >= 4, "the file has several blocks: {total}");
+
+    let collapsed = did(&mut harness, "fold collapse --all");
+    assert_eq!(collapsed["total"], total);
+    assert_eq!(collapsed["collapsed"], total);
+    assert!(collapsed.get("regions").is_none(), "the list is not the answer to a change");
+
+    let expanded = did(&mut harness, "fold expand --all --regions");
+    assert_eq!(expanded["collapsed"], 0);
+    let regions = expanded["regions"].as_array().expect("the list was asked for");
+    assert_eq!(regions.len(), total);
+    assert!(regions.iter().all(|region| region["collapsed"] == serde_json::json!(false)));
+
+    // One block at a time, the way the study's agent asked for it, with no list either way.
+    let one = did(&mut harness, "fold collapse --line 3");
+    assert_eq!(one["collapsed"], 1);
+    assert!(one.get("regions").is_none());
+    let toggled = did(&mut harness, "fold toggle --line 3");
+    assert_eq!(toggled["collapsed"], 0);
+}
+
+/// `action list --menu` answers with the menu that was asked for and nothing else, and every
+/// menu is still the answer when none is named.
+#[test]
+fn action_list_answers_for_the_menu_that_was_asked_for() {
+    let mut harness = harness_in(&sample_folder());
+
+    let view = did(&mut harness, "action list --menu view");
+    let actions = view["actions"].as_array().expect("the entries");
+    assert!(!actions.is_empty(), "the View menu is not empty");
+    assert!(
+        actions.iter().all(|entry| entry["menu"] == serde_json::json!("View")),
+        "only the menu that was asked for: {:?}",
+        actions.iter().map(|entry| entry["menu"].as_str().unwrap_or_default()).collect::<Vec<_>>().join(", ")
+    );
+
+    // Several at once, and a submenu names its own rows.
+    let asked = did(&mut harness, "action list --menu view,edit");
+    let menus: Vec<&str> = asked["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["menu"].as_str().unwrap_or_default())
+        .collect();
+    assert!(menus.iter().any(|menu| *menu == "View"));
+    assert!(menus.iter().any(|menu| *menu == "Edit"));
+    assert!(menus.iter().all(|menu| *menu == "View" || *menu == "Edit"));
+
+    // No menu named is still every menu.
+    let all = did(&mut harness, "action list");
+    assert!(all["actions"].as_array().unwrap().len() > actions.len());
+
+    // A menu that is not a menu is a question that was not asked.
+    assert_eq!(refused(&mut harness, "action list --menu purple"), "usage");
+}
+
+/// `settings list` keeps the value and the help apart whatever the value's length, so a path in
+/// `debug.lldb` does not run into the sentence beside it.
+#[test]
+fn settings_list_keeps_a_long_value_and_its_help_apart() {
+    let mut harness = harness_in(&sample_folder());
+    let long = "C:\\jason\\AppData\\Local\\Quill\\adapters\\codelldb\\extension\\adapter\\codelldb.exe";
+    did(&mut harness, &format!("settings set debug.lldb \"{long}\""));
+
+    let result = did(&mut harness, "settings list");
+    let rows: Vec<String> = result["lines"]
+        .as_array()
+        .expect("the rows")
+        .iter()
+        .map(|row| row.as_str().expect("a row").to_owned())
+        .collect();
+    let row = rows
+        .iter()
+        .find(|row| row.starts_with("debug.lldb"))
+        .expect("the row for debug.lldb");
+    assert!(
+        row.contains(&format!("{long}  Where")),
+        "the value and the help are two columns apart: {row}"
+    );
+    // Every row has the same seam: the help starts two spaces after the value, never on top of it.
+    for row in &rows {
+        let help = SETTINGS_HELP
+            .iter()
+            .find(|help| row.ends_with(*help))
+            .expect("every row ends with its help");
+        assert!(
+            row.contains(&format!("  {help}")),
+            "the help is set off from the value by two spaces: {row}"
+        );
+    }
+}
+
+/// The help of every setting, so the test can find the seam in a row without a second copy of the
+/// settings list.
+const SETTINGS_HELP: &[&str] = &[
+    "The family the editor sets text in.",
+    "The point size the editor sets text in, in every tab.",
+    "How opaque the window is. Below 1 the desktop shows through.",
+    "The point size the terminal sets its grid in.",
+    "What each terminal tab runs. Empty means PowerShell on Windows and $SHELL elsewhere.",
+    "Whether the editing area has a column of line numbers.",
+    "Whether the completion popup arrives as you type. Ctrl+Space works either way.",
+    "Whether resting the pointer on a name while the program is stopped shows its value. Show Value on the Debug menu works either way.",
+    "Whether this Quill serves MCP over HTTP. An agent that launches the server itself needs neither this nor a port.",
+    "The port it serves on when it does.",
+    "One tool an area, or one tool a command. `mcp tools --count` says what each costs.",
+    "Where the LLDB adapter lives, for Rust and native code. Empty means Quill looks for codelldb then lldb-dap on PATH. `tools/get-debug-adapter.ps1` fetches one and prints the line.",
+    "Where js-debug lives, for JavaScript and TypeScript. There is no default: js-debug is a script rather than a program, so Quill has nothing to look for until it is told.",
+    "How wide the file explorer is.",
+    "How tall the terminal tile is.",
+    "How much of the side by side view the source takes.",
+    "How much of Find in Files the results take.",
+];
+
 #[test]
 fn a_relative_path_is_relative_to_the_project_and_the_reply_says_which_path_it_used() {
     // The one rule about paths, and the reason it is safe: every reply reports the absolute path, so

@@ -895,14 +895,24 @@ impl QuillApp {
     }
 
     /// What every fold command that changed something answers with: how many blocks there are and
-    /// how many are now collapsed, and the list itself for a caller reading JSON.
+    /// how many are now collapsed.
+    ///
+    /// The sentence is the answer and the two numbers are the data a caller asked for by changing
+    /// something. The region list is what `fold list` is for, and it comes along only when the
+    /// caller asks for it with `--regions` — `task-1704` measured the study's agent paying for
+    /// nine regions, four calls in a row, to read one sentence.
     fn fold_answer(&mut self, request: &Request) -> Outcome {
         let regions = self.fold_report();
         let collapsed = regions.iter().filter(|it| it["collapsed"] == json!(true)).count();
+        let result = if request.switch("regions") {
+            json!({ "collapsed": collapsed, "total": regions.len(), "regions": regions })
+        } else {
+            json!({ "collapsed": collapsed, "total": regions.len() })
+        };
         ok(
             request,
             format!("{collapsed} of {} blocks collapsed", regions.len()),
-            json!({ "regions": regions }),
+            result,
         )
     }
 
@@ -1014,6 +1024,11 @@ impl QuillApp {
     fn cli_top(&mut self, request: &Request, verb: &str, ctx: &egui::Context) -> Outcome {
         match verb {
             "status" => {
+                // A section that is not a section is a question that was not asked, so it is
+                // refused before anything is waited for.
+                if let Err(message) = status_sections(request) {
+                    return no(request, code::USAGE, message);
+                }
                 let changed = self.refresh_repository();
                 if changed && self.git.as_ref().is_some_and(|git| git.is_busy()) {
                     Outcome::Hold(Waiting::Git {
@@ -1050,8 +1065,34 @@ impl QuillApp {
     }
 
     /// The complete top-level status reply, also used after repository discovery settles.
+    ///
+    /// The sentence is the whole window in one line and is the same whatever was asked for; the
+    /// value is narrowed to the sections the caller named, so "how many panes are open" does not
+    /// carry every setting and its help text with it. `task-1704` measured 4,900 bytes for the
+    /// question that wants one of them.
     fn window_status_reply(&self, request: &Request, ctx: &egui::Context) -> Reply {
-        Reply::done(&request.command, self.status_sentence(), self.status_value(ctx))
+        Reply::done(&request.command, self.status_sentence(), self.status_value_for(request, ctx))
+    }
+
+    /// The status value, narrowed to the sections the caller asked for when it asked for any.
+    fn status_value_for(&self, request: &Request, ctx: &egui::Context) -> Value {
+        let full = self.status_value(ctx);
+        let Ok(sections) = status_sections(request) else {
+            return full;
+        };
+        let Some(keys) = status_keys_for(&sections) else {
+            return full;
+        };
+        let Value::Object(map) = full else {
+            return full;
+        };
+        let mut kept = Map::new();
+        for (key, value) in map {
+            if keys.contains(&key.as_str()) {
+                kept.insert(key, value);
+            }
+        }
+        Value::Object(kept)
     }
 
     /// Everything about the window, in one value.
@@ -1097,6 +1138,81 @@ impl QuillApp {
             "message": self.message,
         })
     }
+}
+
+/// The sections `status --section` knows about, and the top-level keys each one carries.
+///
+/// A section is a filter over the keys the value already has, so there is no second answer to keep
+/// in step with the first: the whole value is built and the sections are the names of its parts.
+const STATUS_SECTIONS: &[(&str, &[&str])] = &[
+    ("editor", &["editor"]),
+    ("tabs", &["tabs", "activeTab"]),
+    ("panes", &["panes"]),
+    ("panels", &["panels"]),
+    ("explorer", &["explorer"]),
+    ("terminal", &["terminal"]),
+    ("modal", &["modal"]),
+    ("settings", &["settings"]),
+    ("git", &["git"]),
+    ("window", &["window", "version", "buildDate", "pid", "port"]),
+    ("project", &["project"]),
+    ("message", &["message"]),
+];
+
+/// Read `--section` and check it against the sections there are.
+///
+/// Comma-separated, the way `editor references --include` takes its list, and case-insensitive,
+/// because an agent writes `view` where the menu is `View`. Nothing given is the whole window,
+/// which is what `status` has always been.
+fn status_sections(request: &Request) -> Result<Vec<String>, String> {
+    let Some(text) = request.text("section") else {
+        return Ok(Vec::new());
+    };
+    let mut names: Vec<String> = Vec::new();
+    for part in text.split(',') {
+        let name = part.trim().to_lowercase();
+        if name.is_empty() {
+            continue;
+        }
+        if !STATUS_SECTIONS.iter().any(|(known, _)| *known == name) {
+            let all = STATUS_SECTIONS
+                .iter()
+                .map(|(known, _)| *known)
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!(
+                "`{name}` is not a section of `status`. It is one of: {all}."
+            ));
+        }
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    Ok(names)
+}
+
+/// The top-level keys the sections carry, in the order the value has them, or nothing when the
+/// caller asked for the whole window.
+fn status_keys_for(sections: &[String]) -> Option<Vec<&'static str>> {
+    if sections.is_empty() {
+        return None;
+    }
+    let mut keys: Vec<&'static str> = Vec::new();
+    for section in sections {
+        for (name, section_keys) in STATUS_SECTIONS {
+            if *name == *section {
+                for key in *section_keys {
+                    if !keys.contains(key) {
+                        keys.push(key);
+                    }
+                }
+            }
+        }
+    }
+    Some(keys)
+}
+
+impl QuillApp {
 
     // --------------------------------------------------------------------------------- the window
 
@@ -5547,9 +5663,18 @@ impl QuillApp {
     fn cli_settings(&mut self, request: &Request, verb: &str) -> Outcome {
         match verb {
             "list" => {
+                // The value column is as wide as the widest value there is, so a path in
+                // `debug.lldb` does not run into the help beside it: `task-1704` measured a reply
+                // where the two columns had no seam at all.
+                let values: Vec<String> = SETTINGS.iter().map(|key| self.setting_text(key.name)).collect();
+                let widest = values.iter().map(|value| value.len()).max().unwrap_or(0).max(16);
                 let rows: Vec<String> = SETTINGS
                     .iter()
-                    .map(|key| format!("{:<34}{:<16}{}", key.name, self.setting_text(key.name), key.help))
+                    .zip(values)
+                    .map(|(key, value)| {
+                        let padded = format!("{value:<width$}  ", width = widest);
+                        format!("{:<34}{}{}", key.name, padded, key.help)
+                    })
                     .collect();
                 lines(request, format!("{} settings", SETTINGS.len()), rows, self.settings_value())
             }
@@ -6052,7 +6177,15 @@ impl QuillApp {
     fn cli_action(&mut self, request: &Request, verb: &str, ctx: &egui::Context) -> Outcome {
         match verb {
             "list" => {
-                let listed = self.every_menu_entry();
+                let all = self.every_menu_entry();
+                let menus = match action_menus(request, &all) {
+                    Ok(menus) => menus,
+                    Err(message) => return no(request, code::USAGE, message),
+                };
+                let listed: Vec<&MenuEntry> = match &menus {
+                    Some(menus) => all.iter().filter(|entry| menus.contains(&entry.menu)).collect(),
+                    None => all.iter().collect(),
+                };
                 let rows: Vec<String> = listed
                     .iter()
                     .map(|entry| {
@@ -6078,9 +6211,18 @@ impl QuillApp {
                         })
                     })
                     .collect();
+                let sentence = match &menus {
+                    Some(menus) => format!(
+                        "{} entr{} on {}",
+                        listed.len(),
+                        if listed.len() == 1 { "y" } else { "ies" },
+                        menus.join(", ")
+                    ),
+                    None => format!("{} menu entries", listed.len()),
+                };
                 lines(
                     request,
-                    format!("{} menu entries", listed.len()),
+                    sentence,
                     rows,
                     json!({ "actions": value }),
                 )
@@ -6199,6 +6341,55 @@ struct MenuEntry {
     shortcut: String,
     enabled: bool,
     checked: bool,
+}
+
+/// Read `--menu` and check it against the menus the list actually has.
+///
+/// Comma-separated and case-insensitive, the way `status --section` takes its list, because an
+/// agent writes `view` where the menu is `View`. A submenu name names its own rows, because the
+/// walk records the submenu's name rather than the menu it sits under. Nothing given is every
+/// menu, which is what `action list` has always been.
+fn action_menus(request: &Request, all: &[MenuEntry]) -> Result<Option<Vec<String>>, String> {
+    let Some(text) = request.text("menu") else {
+        return Ok(None);
+    };
+    let mut wanted: Vec<String> = Vec::new();
+    for part in text.split(',') {
+        let name = part.trim().to_lowercase();
+        if name.is_empty() {
+            continue;
+        }
+        if !wanted.contains(&name) {
+            wanted.push(name);
+        }
+    }
+    if wanted.is_empty() {
+        return Ok(None);
+    }
+    let mut have: Vec<String> = Vec::new();
+    for entry in all {
+        if !have.iter().any(|known| known.to_lowercase() == entry.menu.to_lowercase()) {
+            have.push(entry.menu.clone());
+        }
+    }
+    let mut found: Vec<String> = Vec::new();
+    for name in wanted {
+        match have.iter().find(|menu| menu.to_lowercase() == name) {
+            Some(menu) => {
+                if !found.iter().any(|known| known.to_lowercase() == menu.to_lowercase()) {
+                    found.push(menu.clone());
+                }
+            }
+            None => {
+                return Err(format!(
+                    "There is no menu called `{}`. The menus are: {}.",
+                    name,
+                    have.join(", ")
+                ));
+            }
+        }
+    }
+    Ok(Some(found))
 }
 
 /// The modals `modal open` knows, and what each one is.
