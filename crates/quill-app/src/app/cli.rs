@@ -2124,7 +2124,7 @@ impl QuillApp {
             return Ok(out);
         }
         let Some(from_line) = request.whole("from-line") else {
-            return Err("Say --from-line and --to-line, or --text.".to_owned());
+            return Err(Self::missing_highlight_start(request));
         };
         let from = offset_at(text, from_line, request.whole("from-column").unwrap_or(1));
         let to_line = request.whole("to-line").unwrap_or(from_line);
@@ -2135,6 +2135,20 @@ impl QuillApp {
         // Collected from one item rather than written as `vec![from..to]`, which clippy reads as
         // somebody who meant a list of every number between the two and warns about every build.
         Ok(std::iter::once(from..to).collect())
+    }
+
+    /// Explains the missing range start in terms of the range value the caller already supplied.
+    ///
+    /// Naming the absent field matters when `to-line` was supplied: repeating both valid options
+    /// leaves an agent no reason to change its next request and can produce an identical-call loop.
+    ///
+    /// @param request - highlight request whose supplied range arguments should be described
+    fn missing_highlight_start(request: &Request) -> String {
+        if request.has("to-line") {
+            "highlight add got --to-line but not --from-line; add --from-line N.".to_owned()
+        } else {
+            "highlight add needs --from-line and --to-line, or --text.".to_owned()
+        }
     }
 
     /// A path as it is worth showing: relative to the project when it is inside it.
