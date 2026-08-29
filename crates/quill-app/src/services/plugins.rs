@@ -540,6 +540,11 @@ pub fn parse(values: &Values, bundled: bool) -> Result<Plugin, String> {
         path_separator: word(values, "language.path_separator"),
         source_roots: list(values, "language.source_roots"),
         path_roots: path_roots(values)?,
+        // The two `task-1694` added, and the same rule a sixth time: a language that names neither
+        // is read by exactly the code that read it before, which
+        // `the_older_plugins_ask_for_none_of_what_the_markup_added` keeps.
+        markup: values.flag("language.markup").unwrap_or(false),
+        raw_text: raw_text(values)?,
     };
     let colours: Vec<(Token, Color)> = Token::ALL
         .into_iter()

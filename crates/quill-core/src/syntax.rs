@@ -52,6 +52,16 @@
 //! segments are reserved. They follow the same rule — a plugin that names none of them has exactly
 //! the behaviour it had before, and nothing in Quill holds a list of which languages have imports.
 //!
+//! [`Grammar::markup`] and [`Grammar::raw_text`] are `task-1694`'s, and they are the first two that
+//! change the rules rather than adding to them. With `markup` on, [`scan`] runs a five-state machine
+//! instead of the seven rules above, because HTML is **prose with code in the tags** where every
+//! other language Quill reads is code with prose in the comments. Seventy-six HTML element names are
+//! also ordinary English words — `body`, `table`, `form`, `main`, `code`, `time`, `small` — so a
+//! pass that coloured them wherever it found them would colour a paragraph of English like a
+//! stylesheet, and an apostrophe read as a quote would make every contraction yellow to the end of
+//! its line. The same rule holds: a language that names neither key is read by exactly the code that
+//! read it before.
+//!
 //! Deliberately not handled, so nobody has to discover it: nested block comments in Rust — the first
 //! terminator ends the comment; interpolation inside a template literal, which is coloured as part
 //! of the string; JSX, which is text; and regular expression literals, which cannot be told from
@@ -196,6 +206,36 @@ pub struct Grammar {
     /// A language's own words rather than Quill's, for the reason `language.definers` exists: a
     /// list of languages inside Quill is a list a plugin written later can never join.
     pub path_roots: Vec<(String, PathRoot)>,
+    /// True when this language is markup: text with tags in it, rather than tags with text in them.
+    ///
+    /// `language.markup`, and `task-1694`'s one key. It changes the rules rather than adding to a
+    /// list, which is why it is a flag and not a word: with it on, [`scan`] runs the five states of
+    /// [`markup`] instead of the seven rules at the top of this file, and **a word means nothing
+    /// unless it is inside a tag**. Every other language Quill reads is code with prose in the
+    /// comments; HTML is prose with code in the tags, and seventy-six of its element names are also
+    /// ordinary English words, so a pass that coloured `body`, `table` and `form` wherever it found
+    /// them would colour a paragraph of English like a stylesheet.
+    ///
+    /// Off unless a manifest asks for it, so a language that says nothing about it is read by
+    /// exactly the code that read it before.
+    pub markup: bool,
+    /// The elements whose contents are not markup, and which language each one holds.
+    ///
+    /// `language.raw_text = script=javascript, style=css, textarea, title`. Only read when
+    /// [`Self::markup`] is on, and it is what makes `if (a < b)` inside a `<script>` survive: after
+    /// such an element's start tag, nothing opens a tag until its own end tag.
+    ///
+    /// The two halves of the HTML Standard's own distinction are **derived** from it rather than
+    /// declared twice: an entry that names a language is a *raw text* element and an entry that
+    /// names none is an *escapable raw text* element, so a character reference is read inside
+    /// `<title>` and is not read inside `<script>`, which is exactly how a browser reads them.
+    ///
+    /// The language is not checked when the manifest is read. It is a name for
+    /// `Plugins::for_language` to resolve at the moment of use — the same function a ```` ```rust ````
+    /// fence in a Markdown document is resolved by, which already answers with nothing for a
+    /// language nothing claims. Checking it would mean one plugin refusing to load because another
+    /// was switched off.
+    pub raw_text: Vec<(String, Option<String>)>,
 }
 
 /// How a language writes the module an import names.
@@ -311,6 +351,17 @@ impl Grammar {
         self.imports.is_some() && !self.import_keywords.is_empty()
     }
 
+    /// The entry [`Self::raw_text`] holds for this element name, if it holds one.
+    ///
+    /// Compared **without regard to case**, unlike the word lists, and the asymmetry is deliberate:
+    /// `<SCRIPT>` read as an ordinary element loses the reading of the rest of the file, where a
+    /// keyword matched case-sensitively loses the colour of one word. One is worth a second
+    /// comparison on the handful of names in this list and the other is not, on a lookup that runs
+    /// over every word of every file in Quill.
+    fn raw_text_entry(&self, name: &str) -> Option<&(String, Option<String>)> {
+        self.raw_text.iter().find(|(element, _)| element.eq_ignore_ascii_case(name))
+    }
+
     /// What this word means as the first segment of a module path, if the language reserved it.
     ///
     /// A list rather than a map, for the reason [`Self::definer`] is one: a language names two or
@@ -364,7 +415,33 @@ pub fn highlight(text: &str, grammar: &Grammar) -> Vec<(Range<usize>, Token)> {
 /// and `task-1666` says that nothing which runs that often may allocate more than it already does:
 /// collecting every plain word into a list only to throw most of it away would have made a
 /// coloured file cost more than it did before this module grew a second caller.
-pub fn scan(text: &str, grammar: &Grammar, mut report: impl FnMut(Range<usize>, Token)) {
+pub fn scan(text: &str, grammar: &Grammar, report: impl FnMut(Range<usize>, Token)) {
+    scan_with_embedded(text, grammar, &mut Vec::new(), report);
+}
+
+/// The same reading, also saying which stretches of the text are written in another language.
+///
+/// The mirror of [`crate::CodeHighlighter`], and it exists for the same reason: a `<style>` block is
+/// CSS, this crate holds no plugin registry and must not learn about one, so it **says where the
+/// block is and what language it names** and colours nothing. The window, which has the plugins
+/// already, runs the ordinary scan over that stretch with that language's grammar and offsets the
+/// ranges — so a `<style>` block in an HTML file is coloured exactly as a `.css` file is, and
+/// switching the CSS plugin off withdraws it in the same frame.
+///
+/// [`scan`] is this with the list thrown away, which is what every caller but the window wants. The
+/// list never allocates for a language that names no raw text, which is every language but one.
+pub fn scan_with_embedded(
+    text: &str,
+    grammar: &Grammar,
+    embedded: &mut Vec<Embedded>,
+    mut report: impl FnMut(Range<usize>, Token),
+) {
+    // Markup is a different reading rather than an extra rule, so it is a different function. The
+    // path below is byte for byte the one every other language has always taken.
+    if grammar.markup {
+        markup::walk(text, grammar, &mut report, Some(embedded), None);
+        return;
+    }
     let bytes = text.as_bytes();
     let mut at = 0;
     while at < bytes.len() {
@@ -553,6 +630,453 @@ fn hex_colour(rest: &str) -> Option<usize> {
         return None;
     }
     Some('#'.len_utf8() + digits)
+}
+
+/// A stretch of a markup document written in another language, and which one.
+///
+/// What [`scan_with_embedded`] reports and what the window turns into colours. The language is the
+/// word the manifest wrote on the right of a `language.raw_text` entry — `javascript`, `css` — and
+/// it is resolved by whoever is drawing, not here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Embedded {
+    /// The body of the element, without its start and end tags.
+    pub range: Range<usize>,
+    /// The language the manifest said that body is written in.
+    pub language: String,
+}
+
+/// One tag in a markup document.
+///
+/// [`tags`] is what reports them, and folding is what reads them: a start tag opens a region and the
+/// matching end tag closes it. Everything here is a byte offset into the text it was read from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tag {
+    /// Where the `<` is.
+    pub open: usize,
+    /// One past the `>`, or the end of the text for a tag that was never closed.
+    pub end: usize,
+    /// The element's name, so a caller can compare two tags without re-reading them.
+    pub name: Range<usize>,
+    /// True for `</div>`.
+    pub closing: bool,
+    /// True for `<br />`.
+    pub self_closing: bool,
+}
+
+/// Where in a markup document a point is.
+///
+/// [`markup_position`] is what answers it, and what reads the answer is completion: the language's
+/// own words are the right offer inside a tag and the wrong one in prose. A declaration and a
+/// processing instruction count as a tag, because what is being asked is "does the language apply
+/// here", and inside `<!DOCTYPE …>` it does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkupPosition {
+    /// Prose, a comment, or the body of an element whose contents are not markup.
+    Text,
+    /// The first word of a tag: `<ta│`.
+    TagName,
+    /// A word inside a tag that is not the first: `<div cl│`.
+    Attribute,
+    /// After an `=` inside a tag, quoted or not.
+    Value,
+}
+
+/// Every tag in `text`, in the order they are written.
+///
+/// A second pass over the file rather than a by-product of the one that colours it, and only for a
+/// markup language. What it buys is that a `<` inside a comment, inside an attribute value or
+/// inside a `<script>` body is not a tag and cannot open a region — which is the whole reason
+/// folding asks this instead of walking the bytes for angle brackets itself.
+pub fn tags(text: &str, grammar: &Grammar) -> Vec<Tag> {
+    if !grammar.markup {
+        return Vec::new();
+    }
+    let mut found = Vec::new();
+    markup::walk(text, grammar, &mut |_, _| {}, None, Some(&mut found));
+    found
+}
+
+/// Where `offset` is in a markup document, or nothing when the language is not markup.
+///
+/// Read **backwards from the point**, bounded, which is what [`crate::imports::context_at`] and
+/// [`crate::symbols::identifier_at`] already do and for the same reason: this runs while somebody is
+/// typing, and a few hundred bytes of scanning a keystroke is a cost nobody can measure where a
+/// reading of the file is one they can see.
+///
+/// The bound is what makes it approximate, and the one place it is wrong is a `<` written inside the
+/// body of a `<script>` before the caret — where it answers as though a tag were open. It decides
+/// which word list is offered, so being wrong there offers the element names inside a script and
+/// costs nothing else.
+pub fn markup_position(text: &str, offset: usize, grammar: &Grammar) -> Option<MarkupPosition> {
+    if !grammar.markup || offset > text.len() || !text.is_char_boundary(offset) {
+        return None;
+    }
+    let from = markup::lookback_start(text, offset);
+    let window = &text[from..offset];
+    // The last thing that could have changed the state. A `>` closed a tag, so what follows it is
+    // text; a `<` opened one, so what follows it is inside a tag.
+    let opened = window.rfind('<');
+    let closed = window.rfind('>');
+    let Some(open) = opened.filter(|open| closed.is_none_or(|closed| closed < *open)) else {
+        return Some(MarkupPosition::Text);
+    };
+    let inside = &window[open + '<'.len_utf8()..];
+    // `<!-- … ` with no `-->` before the point is a comment, and a comment is not a tag.
+    if inside.starts_with("!--") {
+        return Some(MarkupPosition::Text);
+    }
+    let inside = inside.trim_start_matches(['/', '!', '?']);
+    Some(markup::position_in_tag(inside, grammar))
+}
+
+/// The five states a markup document is read in.
+///
+/// `task-1694` §3 draws them. The order the rules are tried in is the whole design, exactly as it is
+/// for the seven at the top of this file:
+///
+/// 1. A comment wins over everything, so `<!-- <div> -->` holds no tag.
+/// 2. A `<` opens a tag **only** when a letter, `/`, `!` or `?` follows it, which is the HTML
+///    Standard's own tag-open state. So `5 < 3` in prose is arithmetic.
+/// 3. A start tag whose element the language calls raw text swallows its own body, so nothing inside
+///    a `<script>` opens a tag.
+/// 4. In text, a character reference is a number and a word is plain text.
+/// 5. Everything else in text is one character of prose: no strings, no numbers, no operators.
+///
+/// Rule 5 is the one that matters most and is the easiest to leave out. An apostrophe in prose is an
+/// apostrophe, not the start of a string, and every contraction in every English document depends on
+/// it.
+mod markup {
+    use super::{
+        classify_attribute, classify_tag_name, string, word_length, Embedded, Grammar,
+        MarkupPosition, Range, Tag, Token,
+    };
+
+    /// How far back [`super::markup_position`] reads. Two lines of a long tag and a good deal more
+    /// of an ordinary one, and a bound is what keeps a keystroke's cost the same on a large file as
+    /// on a small one.
+    const LOOKBACK: usize = 4096;
+
+    /// The most characters a character reference can be, past the `&`.
+    ///
+    /// `&CounterClockwiseContourIntegral;` is the longest one in the HTML Standard's own table at 31
+    /// characters and a semicolon, so this is that with room to spare. Without a bound, a stray `&`
+    /// in prose would be scanned to the end of the file on the chance that a `;` was coming.
+    const ENTITY_LIMIT: usize = 34;
+
+    /// Read `text` as markup, reporting every token, and optionally collecting what was found.
+    ///
+    /// One walker for the three questions — colour it, find its embedded languages, find its tags —
+    /// so none of the three can come to a different conclusion about where a tag is. The reporter is
+    /// a `dyn` reference rather than a generic so that three callers do not become three copies of
+    /// the machine; it costs one indirect call a token and allocates nothing.
+    pub(super) fn walk(
+        text: &str,
+        grammar: &Grammar,
+        report: &mut dyn FnMut(Range<usize>, Token),
+        mut embedded: Option<&mut Vec<Embedded>>,
+        mut tags: Option<&mut Vec<Tag>>,
+    ) {
+        let mut at = 0usize;
+        while at < text.len() {
+            let rest = &text[at..];
+            // 1. A comment, which in markup is the only thing that wins over a tag.
+            if let Some(length) = super::comment(rest, grammar) {
+                report(at..at + length, Token::Comment);
+                at += length;
+                continue;
+            }
+            // 2. A tag, or one character of prose.
+            if !opens_a_tag(rest) {
+                at += in_text(text, at, report, true);
+                continue;
+            }
+            let tag = read_tag(text, at, grammar, report);
+            let name = text[tag.name.clone()].to_owned();
+            let end = tag.end;
+            let raw = match tag.closing || tag.self_closing {
+                true => None,
+                false => grammar.raw_text_entry(&name).cloned(),
+            };
+            if let Some(list) = tags.as_deref_mut() {
+                list.push(tag);
+            }
+            at = end;
+            // 3. An element whose body is not markup. The body ends where its own end tag begins,
+            //    which is then read as an ordinary tag on the next turn of this loop.
+            let Some((_, language)) = raw else { continue };
+            let body = at..close_tag_at(text, at, &name).unwrap_or(text.len());
+            if let (Some(language), Some(found)) = (&language, embedded.as_deref_mut()) {
+                if !body.is_empty() {
+                    found.push(Embedded { range: body.clone(), language: language.clone() });
+                }
+            }
+            // Its words are still reported, so a name used in an inline script is found by
+            // `Find References` and is offered by completion. Its character references are read
+            // only when the element named no language, which is the HTML Standard's own difference
+            // between a raw text element and an escapable raw text one.
+            let entities = language.is_none();
+            while at < body.end {
+                at += in_text(text, at, report, entities);
+            }
+            at = body.end;
+        }
+    }
+
+    /// One step through text: a character reference, a word, or one character of prose.
+    ///
+    /// Returns how far to move. A word is reported as [`Token::Text`] rather than skipped, because
+    /// [`crate::symbols`] reads the same pass for the words a file holds and prose is where a
+    /// markup document keeps most of them.
+    fn in_text(
+        text: &str,
+        at: usize,
+        report: &mut dyn FnMut(Range<usize>, Token),
+        entities: bool,
+    ) -> usize {
+        let rest = &text[at..];
+        if entities {
+            if let Some(length) = entity(rest) {
+                report(at..at + length, Token::Number);
+                return length;
+            }
+        }
+        if let Some(length) = word_length(rest, &Grammar::default()) {
+            report(at..at + length, Token::Text);
+            return length;
+        }
+        rest.chars().next().map_or(1, char::len_utf8)
+    }
+
+    /// Whether a `<` here opens a tag.
+    ///
+    /// The HTML Standard's tag-open state: a letter begins a start tag, a solidus an end tag, an
+    /// exclamation mark a comment or a doctype, and a question mark a processing instruction.
+    /// Anything else and the browser draws a less-than sign, so Quill does too.
+    fn opens_a_tag(rest: &str) -> bool {
+        let mut characters = rest.chars();
+        if characters.next() != Some('<') {
+            return false;
+        }
+        matches!(characters.next(), Some(next) if next.is_ascii_alphabetic() || matches!(next, '/' | '!' | '?'))
+    }
+
+    /// Read one whole tag, reporting its parts, and say what it was.
+    ///
+    /// `at` is the `<`. The tag ends at its `>`, at a `<` that opens another tag — which is what
+    /// makes half-typed markup recover on the next line rather than swallowing the rest of the file
+    /// — or at the end of the text.
+    fn read_tag(
+        text: &str,
+        at: usize,
+        grammar: &Grammar,
+        report: &mut dyn FnMut(Range<usize>, Token),
+    ) -> Tag {
+        let mut cursor = at;
+        operator(text, &mut cursor, grammar, report);
+        let mut closing = false;
+        for opener in ['/', '!', '?'] {
+            if text[cursor..].starts_with(opener) {
+                closing |= opener == '/';
+                operator(text, &mut cursor, grammar, report);
+                break;
+            }
+        }
+        let name = match word_length(&text[cursor..], grammar) {
+            Some(length) => {
+                let range = cursor..cursor + length;
+                report(range.clone(), classify_tag_name(&text[range.clone()], grammar));
+                cursor = range.end;
+                range
+            }
+            None => cursor..cursor,
+        };
+        let mut value_next = false;
+        let mut slash = false;
+        while cursor < text.len() {
+            let rest = &text[cursor..];
+            let character = rest.chars().next().expect("inside the text");
+            if character == '>' {
+                operator(text, &mut cursor, grammar, report);
+                break;
+            }
+            if opens_a_tag(rest) {
+                break;
+            }
+            if character.is_whitespace() {
+                cursor += character.len_utf8();
+                continue;
+            }
+            slash = character == '/';
+            if matches!(character, '=' | '/') {
+                value_next = character == '=';
+                operator(text, &mut cursor, grammar, report);
+                continue;
+            }
+            if grammar.strings.contains(&character) {
+                let length = string(rest, grammar).unwrap_or(character.len_utf8());
+                report(cursor..cursor + length, Token::String);
+                cursor += length;
+                value_next = false;
+                continue;
+            }
+            if value_next {
+                let length = unquoted_value(rest);
+                report(cursor..cursor + length, Token::String);
+                cursor += length;
+                value_next = false;
+                continue;
+            }
+            if let Some(length) = word_length(rest, grammar) {
+                let range = cursor..cursor + length;
+                report(range.clone(), classify_attribute(&text[range.clone()], grammar));
+                cursor = range.end;
+                continue;
+            }
+            operator(text, &mut cursor, grammar, report);
+        }
+        Tag { open: at, end: cursor, name, closing, self_closing: slash && !closing }
+    }
+
+    /// Draw one character as an operator if the language names it, and step over it either way.
+    fn operator(
+        text: &str,
+        cursor: &mut usize,
+        grammar: &Grammar,
+        report: &mut dyn FnMut(Range<usize>, Token),
+    ) {
+        let Some(character) = text[*cursor..].chars().next() else { return };
+        let length = character.len_utf8();
+        if grammar.operators.contains(&character) {
+            report(*cursor..*cursor + length, Token::Operator);
+        }
+        *cursor += length;
+    }
+
+    /// How long the unquoted attribute value at the start of `rest` is.
+    ///
+    /// To the first whitespace, quote, `=`, `<`, `>` or backtick, which is the HTML Standard's own
+    /// rule for one. At least one character, so a value of nothing at all cannot leave the caller
+    /// standing still.
+    fn unquoted_value(rest: &str) -> usize {
+        let mut length = 0;
+        for character in rest.chars() {
+            if character.is_whitespace() || matches!(character, '"' | '\'' | '=' | '<' | '>' | '`') {
+                break;
+            }
+            length += character.len_utf8();
+        }
+        length.max(rest.chars().next().map_or(0, char::len_utf8))
+    }
+
+    /// How long the character reference at the start of `rest` is, if it starts with one.
+    ///
+    /// The three forms the HTML Standard has: `&amp;`, `&#8212;` and `&#x1F600;`, each ending at a
+    /// semicolon. An `&` with no semicolon after it is an ampersand, which is what a browser draws.
+    fn entity(rest: &str) -> Option<usize> {
+        let after = rest.strip_prefix('&')?;
+        let (digits, radix) = match after.strip_prefix('#') {
+            Some(number) => match number.strip_prefix(['x', 'X']) {
+                Some(hexadecimal) => (hexadecimal, 16),
+                None => (number, 10),
+            },
+            None => (after, 0),
+        };
+        let body = digits
+            .chars()
+            .take(ENTITY_LIMIT)
+            .take_while(|character| match radix {
+                16 => character.is_ascii_hexdigit(),
+                10 => character.is_ascii_digit(),
+                _ => character.is_ascii_alphanumeric(),
+            })
+            .count();
+        if body == 0 || !digits[body..].starts_with(';') {
+            return None;
+        }
+        // Everything counted is ASCII, so the count and the byte length are the same number.
+        Some(rest.len() - digits.len() + body + ';'.len_utf8())
+    }
+
+    /// Where this element's own end tag begins, if it has one.
+    ///
+    /// `</` then the name, ignoring case, then one of the characters that may follow a tag name —
+    /// which is the HTML Standard's own rule and is why `</scriptural` does not end a `<script>`.
+    fn close_tag_at(text: &str, from: usize, name: &str) -> Option<usize> {
+        let mut at = from;
+        while let Some(found) = text[at..].find("</") {
+            let start = at + found;
+            let after = start + "</".len();
+            let rest = text.get(after..)?;
+            if rest.len() >= name.len() && rest[..name.len()].eq_ignore_ascii_case(name) {
+                let next = rest[name.len()..].chars().next();
+                if next.is_none_or(|next| next.is_whitespace() || matches!(next, '>' | '/')) {
+                    return Some(start);
+                }
+            }
+            at = after;
+        }
+        None
+    }
+
+    /// Where a bounded backwards read starts, on a character boundary.
+    pub(super) fn lookback_start(text: &str, offset: usize) -> usize {
+        let mut from = offset.saturating_sub(LOOKBACK);
+        while from < offset && !text.is_char_boundary(from) {
+            from += 1;
+        }
+        from
+    }
+
+    /// Which part of a tag a point inside one is in, given everything written since its `<`.
+    pub(super) fn position_in_tag(inside: &str, grammar: &Grammar) -> MarkupPosition {
+        // The name runs to the first character that cannot be part of it, so with nothing between
+        // the `<` and the point but name characters, the point is still in the name.
+        if !inside.chars().any(|character| !grammar.is_word_character(character, false)) {
+            return MarkupPosition::TagName;
+        }
+        // An odd number of quotes means the point is inside the last one.
+        for quote in &grammar.strings {
+            if inside.matches(*quote).count() % 2 == 1 {
+                return MarkupPosition::Value;
+            }
+        }
+        match inside.trim_end_matches(|character| grammar.is_word_character(character, false)) {
+            trimmed if trimmed.trim_end().ends_with('=') => MarkupPosition::Value,
+            _ => MarkupPosition::Attribute,
+        }
+    }
+}
+
+/// What the first word of a tag is: `<div>`, `<my-widget>`, `<MyPanel>`.
+///
+/// Its position is certain — there is one tag name in a tag and it is the first word — so this is
+/// the one place in a markup document where Quill knows what a word is without being told. A name
+/// the language names is a keyword; **a name it does not name is a type**, because it is *known* to
+/// be a tag name and only unknown whether the language defines it, and custom elements and
+/// framework components are a large part of the markup anybody writes now. Drawing them as prose
+/// would throw away something the reader is certain of.
+fn classify_tag_name(word: &str, grammar: &Grammar) -> Token {
+    match grammar.is_keyword(word) {
+        true => Token::Keyword,
+        false => Token::Type,
+    }
+}
+
+/// What a word inside a tag that is not its name is: `class`, `aria-label`, `data-track-id`.
+///
+/// Here the CSS rule does apply and an unknown name is plain text, which is the opposite of
+/// [`classify_tag_name`] and deliberately so. There is one tag name in a tag and there may be a
+/// dozen attributes, and the ones outside the list — `data-*`, `hx-get`, `v-if`, `@submit` — are
+/// names their author chose, exactly as a class selector is. Colouring every one of them would make
+/// a tag a wall of colour and would say something untrue about names Quill has never heard of.
+fn classify_attribute(word: &str, grammar: &Grammar) -> Token {
+    if grammar.is_builtin(word) {
+        return Token::Builtin;
+    }
+    match grammar.is_type(word) {
+        true => Token::Type,
+        false => Token::Text,
+    }
 }
 
 #[cfg(test)]

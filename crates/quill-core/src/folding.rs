@@ -120,6 +120,16 @@ impl Tokens {
         self.quiet.is_empty()
     }
 
+    /// Put the spans back into position order, for a caller that noted them out of order.
+    ///
+    /// The one caller is the window colouring a markup file: a `<style>` block's own comments and
+    /// strings are read after the whole of the outer file has been, so they arrive last and belong
+    /// in the middle. [`Tokens::covers`] is a binary search, so a list out of order is not a slower
+    /// answer, it is a wrong one.
+    pub fn put_in_order(&mut self) {
+        self.quiet.sort_by_key(|(range, _)| range.start);
+    }
+
     /// True when `offset` is inside a comment or a string.
     fn covers(&self, offset: usize) -> bool {
         let index = self.quiet.partition_point(|(range, _)| range.end <= offset);
@@ -159,6 +169,12 @@ pub fn regions_from(text: &str, reading: Reading<'_>, read: &Tokens) -> Vec<Regi
         Reading::Code(grammar) => {
             found.extend(block_regions(text, &lines, read));
             found.extend(comment_regions(text, &lines, read, grammar));
+            // A markup document has almost no brackets outside its `<script>` and `<style>` blocks,
+            // so what folds in it is a tag. The brackets are still read, because those two blocks
+            // are worth folding, and `tidy` already keeps one arrow a head line.
+            if grammar.markup {
+                found.extend(tag_regions(text, &lines, grammar));
+            }
         }
         Reading::Markdown => found.extend(heading_regions(text, &lines)),
         Reading::Plain => {}
@@ -309,6 +325,64 @@ fn block_region(text: &str, lines: &LineIndex, from: usize, to: usize) -> Option
     // {` and `} catch (error) {` stay, because hiding the `else` of an `if` somebody folded is
     // hiding the half of the statement they were trying to see the shape of.
     let after = &text[to + 1..lines.starts[close + 1].min(text.len() + 1) - 1];
+    let trailing_word = after.chars().any(|c| c.is_alphanumeric() || c == '_');
+    let end = if trailing_word { close } else { close + 1 };
+    Some(Region { head, body: head + 1..end, kind: Kind::Block })
+}
+
+/// Every element that opened on one line and closed on a later one.
+///
+/// `crate::syntax::tags` is where the tags come from rather than a walk over the angle brackets
+/// here, and that is the whole reason this is short: a `<` inside a comment, inside an attribute
+/// value or inside a `<script>` body has already been ruled out by the reader that knows about all
+/// three.
+///
+/// **There is no list of void elements**, and not needing one is worth stating, because it is the
+/// first thing anybody writing this reaches for. `<br>` and `<img>` never close, so a stack would be
+/// left holding them for ever. The rule that removes the need is the one [`block_regions`] already
+/// uses for a stray closing brace: an end tag pops back to the nearest matching name on the stack
+/// and throws away whatever was above it, so a `<br>` is discarded the moment its parent closes.
+fn tag_regions(text: &str, lines: &LineIndex, grammar: &Grammar) -> Vec<Region> {
+    let mut open: Vec<(&str, usize)> = Vec::new();
+    let mut found = Vec::new();
+    for tag in crate::syntax::tags(text, grammar) {
+        let name = &text[tag.name.clone()];
+        if name.is_empty() {
+            continue;
+        }
+        if !tag.closing {
+            if !tag.self_closing {
+                open.push((name, tag.open));
+            }
+            continue;
+        }
+        let Some(index) = open.iter().rposition(|(known, _)| known.eq_ignore_ascii_case(name))
+        else {
+            continue;
+        };
+        let (_, from) = open.remove(index);
+        // Anything still open inside this pair never closed, so it goes with it — which is what
+        // makes `<br>` and `<img>` cost nothing.
+        open.truncate(index);
+        if let Some(region) = tag_region(text, lines, from, tag.end) {
+            found.push(region);
+        }
+    }
+    found
+}
+
+/// One matched pair of tags as a region, if it spans lines at all.
+///
+/// The closing line goes with the body — folding a `<div>` leaves one line on the screen rather than
+/// two — unless there is a word after the end tag, which is [`block_region`]'s rule and is here for
+/// the same reason: `</span> and the rest of the sentence` must not disappear.
+fn tag_region(text: &str, lines: &LineIndex, from: usize, to: usize) -> Option<Region> {
+    let head = lines.line_of(from);
+    let close = lines.line_of(to.saturating_sub(1).max(from));
+    if close <= head {
+        return None;
+    }
+    let after = &text[to.min(text.len())..lines.starts[close + 1].min(text.len() + 1) - 1];
     let trailing_word = after.chars().any(|c| c.is_alphanumeric() || c == '_');
     let end = if trailing_word { close } else { close + 1 };
     Some(Region { head, body: head + 1..end, kind: Kind::Block })
