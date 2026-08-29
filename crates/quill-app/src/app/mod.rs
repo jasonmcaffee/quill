@@ -1774,6 +1774,8 @@ impl QuillApp {
                     FoldAction::All => self.collapse_all_folds(),
                     FoldAction::None_ => self.expand_all_folds(),
                     FoldAction::Others => self.collapse_all_but_marked(),
+                    FoldAction::CollapseRecursively => self.collapse_recursively_at_caret(),
+                    FoldAction::ExpandRecursively => self.expand_recursively_at_caret(),
                 };
             }
             Action::ClearHighlights => {

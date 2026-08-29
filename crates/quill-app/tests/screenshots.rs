@@ -5152,7 +5152,18 @@ fn the_widgets_debug_button_starts_the_chosen_configuration_under_a_debugger() {
     pressed.state_mut().run_selected = Some("Dev server".to_owned());
     pressed.run();
     pressed.get_by_label("Debug the selected configuration").click();
-    pressed.run();
+    // The press starts a real adapter and, behind it, a real program, and their output keeps the
+    // window redrawing, so the settle is a pump rather than a run — the shape `git_harness` uses for
+    // a test whose answer arrives on another thread.
+    for _ in 0..600 {
+        pump(&mut pressed);
+        if pressed.state().debug.is_some()
+            || pressed.state().message.as_deref().is_some_and(|said| said.contains("node"))
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
     // What happens next depends on what this machine has installed, and the test may not: what is
     // being proved is that the press reached the debugger at all, which either a session or a
     // sentence about the adapter shows.
@@ -9077,6 +9088,37 @@ fn collapsing_the_block_the_caret_is_in_moves_the_caret_to_its_head() {
     let line = harness.state().document().text().byte_to_line(caret);
     assert_eq!(line, 2, "the caret came out onto the line the function starts on");
     assert!(!laid_out_paragraphs(&harness).contains(&5), "and the block stayed collapsed");
+}
+
+#[test]
+fn collapsing_recursively_hides_the_block_and_everything_inside_it() {
+    // The study's ask: close a function as a whole, not one level at a time. The caret is on the
+    // head of `add`, and collapsing it recursively takes the `if` inside it with it.
+    let mut harness = folding_harness("recursive");
+    let before = laid_out_paragraphs(&harness);
+    assert!(before.contains(&5), "the body of the `if` inside `add` is on the page to start with");
+
+    let offset = harness.state().document().text().line_to_byte(2);
+    harness
+        .state_mut()
+        .document_mut()
+        .apply(quill_core::Command::PlaceCaret { offset, extend: false });
+    let ctx = harness.ctx.clone();
+    harness.state_mut().run_action(Action::Fold(FoldAction::CollapseRecursively), &ctx);
+    harness.run();
+    harness.run();
+
+    let after = laid_out_paragraphs(&harness);
+    assert!(after.contains(&2), "the line `add` starts on is still there");
+    assert!(!after.contains(&5), "the body of the `if` inside `add` is not");
+    assert!(after.contains(&10), "and `fn subtract` still is");
+    // The line numbers of what is below the fold are unchanged, which is the ticket's sixth point.
+    assert_eq!(
+        after.iter().filter(|paragraph| **paragraph >= 9).copied().collect::<Vec<_>>(),
+        before.iter().filter(|paragraph| **paragraph >= 9).copied().collect::<Vec<_>>(),
+        "every line below the fold keeps the number it had"
+    );
+    harness.snapshot(shot("folding_recursive_collapsed"));
 }
 
 #[test]

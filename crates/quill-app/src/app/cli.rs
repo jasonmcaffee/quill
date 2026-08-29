@@ -843,7 +843,15 @@ impl QuillApp {
             }
             "collapse" | "expand" => {
                 let collapse = verb == "collapse";
+                let recursive = request.switch("recursive");
                 if request.switch("all") {
+                    if recursive {
+                        return no(
+                            request,
+                            code::USAGE,
+                            "--recursive needs --line; --all already covers the whole file.",
+                        );
+                    }
                     let changed =
                         if collapse { self.collapse_all_folds() } else { self.expand_all_folds() };
                     if !changed {
@@ -865,6 +873,26 @@ impl QuillApp {
                         format!("Say which block with --line, or --all to {verb} every one."),
                     );
                 };
+                if recursive {
+                    // The line must head a block, which is what --line means for every fold command.
+                    // Checked here rather than in the function so that "no block at this line" is a
+                    // refusal and "the subtree is already in that state" is a no-op, as it is for
+                    // the plain command: `fold collapse --line 7 --recursive` twice does not expand.
+                    let index = self.files.active_index();
+                    if !self.fold_marks(index).iter().any(|(head, _)| *head == line) {
+                        return no(
+                            request,
+                            code::NOT_APPLICABLE,
+                            format!("Nothing at line {} heads a block. Run `fold list`.", line + 1),
+                        );
+                    }
+                    if collapse {
+                        self.collapse_recursively_at_line(line);
+                    } else {
+                        self.expand_recursively_at_line(line);
+                    }
+                    return self.fold_answer(request);
+                }
                 // Asked for what it already is, this is a no-op rather than the opposite of what was
                 // wanted: `fold collapse --line 40` twice must not expand line 40.
                 let index = self.files.active_index();

@@ -1134,36 +1134,40 @@ quill-cli fold toggle --regions --json
 ### fold collapse
 
 ```
-quill-cli fold collapse [--line <number>] [--all] [--regions]
+quill-cli fold collapse [--line <number>] [--all] [--recursive] [--regions]
 ```
 
-Collapse one block, or every block in the file. The answer is how many blocks are collapsed; --regions adds the list.
+Collapse one block, every block in the file, or one block and every block inside it. The answer is how many blocks are collapsed; --regions adds the list.
 
 - `--line <number>` — The line the block starts on, counting from 1.
 - `--all` — Collapse every block in the file.
+- `--recursive` — With --line, collapse that block and every block inside it rather than just that block.
 - `--regions` — Also answer with the list of every block and whether it is collapsed.
 
 ```sh
 quill-cli fold collapse --all
 quill-cli fold collapse --line 42
+quill-cli fold collapse --line 42 --recursive
 quill-cli fold collapse --all --regions --json
 ```
 
 ### fold expand
 
 ```
-quill-cli fold expand [--line <number>] [--all] [--regions]
+quill-cli fold expand [--line <number>] [--all] [--recursive] [--regions]
 ```
 
-Expand one block, or show all again. The answer is how many blocks are collapsed; --regions adds the list.
+Expand one block, show all again, or expand one block and every block inside it. The answer is how many blocks are collapsed; --regions adds the list.
 
 - `--line <number>` — The line the block starts on, counting from 1.
 - `--all` — Expand every block in the file.
+- `--recursive` — With --line, expand that block and every block inside it, opening the whole of it rather than one level.
 - `--regions` — Also answer with the list of every block and whether it is collapsed.
 
 ```sh
 quill-cli fold expand --all
 quill-cli fold expand --line 42
+quill-cli fold expand --line 42 --recursive
 quill-cli fold expand --all --regions --json
 ```
 
@@ -1250,7 +1254,7 @@ quill-cli panel reset
 
 ## terminal — the shells along the bottom
 
-`terminal send` types into the shell and presses Enter; `terminal read --wait-for` is how to wait for what it did.
+`terminal send` types into the shell and presses Enter; `terminal read --wait-for` is how to wait for what it did. Both take `--tab` to name a tab other than the one showing, and naming a tab does not show it, so a build in one tab and a dev server in another can each be spoken to without the other being disturbed.
 
 ### terminal show
 
@@ -1320,7 +1324,8 @@ quill-cli terminal select [index] [--tab <index>]
 
 Show one of the terminal tabs. The only verb that changes which tab is showing.
 
-- `index` (optional) — Its number, counting from 0. The `--tab` flag when it is given.
+- `index` (optional) — Its number, counting from 0. The --tab flag when it is given.
+
 - `--tab <index>` — Which tab to show, counting from 0.
 
 ```sh
@@ -1336,7 +1341,8 @@ quill-cli terminal close [index] [--tab <index>]
 
 Close a terminal tab. Closing the last one puts the terminal away.
 
-- `index` (optional) — Its number. The `--tab` flag when it is given, the tab that is showing when both are left out.
+- `index` (optional) — Its number. The --tab flag when it is given, the tab that is showing when both are left out.
+
 - `--tab <index>` — Which tab to close, counting from 0. The one that is showing when it is left out.
 
 ```sh
@@ -1384,7 +1390,7 @@ quill-cli terminal move --tab 2 0
 quill-cli terminal send [text] [--tab <index>] [--no-enter] [--key <name>]
 ```
 
-Send a command to the shell in a terminal tab, the one that is showing when `--tab` is left out. Naming a tab does not show it. Enter is pressed for you unless you say not to.
+Send a command to the shell in a terminal tab, the one that is showing when --tab is left out. Naming a tab does not show it. Enter is pressed for you unless you say not to.
 
 - `text` (optional) — The command. Everything after the verb is taken as the command, so it needs no quotes. Everything after it on the line belongs to it.
 
@@ -1405,7 +1411,7 @@ quill-cli terminal send --no-enter cd ..
 quill-cli terminal read [--tab <index>] [--lines <number>] [--wait-for <text>] [--timeout <milliseconds>]
 ```
 
-Read what a terminal tab has on its screen, the one that is showing when `--tab` is left out. Reading a tab does not show it.
+Read what a terminal tab has on its screen, the one that is showing when --tab is left out. Reading a tab does not show it.
 
 - `--tab <index>` — Which tab to read, counting from 0. The one that is showing when it is left out.
 - `--lines <number>` — Only the last so many lines.

@@ -922,27 +922,29 @@ pub const COMMANDS: &[Command] = &[
     Command {
         area: "fold",
         verb: "collapse",
-        summary: "Collapse one block, or every block in the file. The answer is how many blocks are collapsed; --regions adds the list.",
+        summary: "Collapse one block, every block in the file, or one block and every block inside it. The answer is how many blocks are collapsed; --regions adds the list.",
         arguments: NO_ARGUMENTS,
         flags: &[
             option("line", "number", "The line the block starts on, counting from 1."),
             switch("all", "Collapse every block in the file."),
+            switch("recursive", "With --line, collapse that block and every block inside it rather than just that block."),
             switch("regions", "Also answer with the list of every block and whether it is collapsed."),
         ],
-        examples: &["quill-cli fold collapse --all", "quill-cli fold collapse --line 42", "quill-cli fold collapse --all --regions --json"],
+        examples: &["quill-cli fold collapse --all", "quill-cli fold collapse --line 42", "quill-cli fold collapse --line 42 --recursive", "quill-cli fold collapse --all --regions --json"],
         local: false,
     },
     Command {
         area: "fold",
         verb: "expand",
-        summary: "Expand one block, or show all again. The answer is how many blocks are collapsed; --regions adds the list.",
+        summary: "Expand one block, show all again, or expand one block and every block inside it. The answer is how many blocks are collapsed; --regions adds the list.",
         arguments: NO_ARGUMENTS,
         flags: &[
             option("line", "number", "The line the block starts on, counting from 1."),
             switch("all", "Expand every block in the file."),
+            switch("recursive", "With --line, expand that block and every block inside it, opening the whole of it rather than one level."),
             switch("regions", "Also answer with the list of every block and whether it is collapsed."),
         ],
-        examples: &["quill-cli fold expand --all", "quill-cli fold expand --line 42", "quill-cli fold expand --all --regions --json"],
+        examples: &["quill-cli fold expand --all", "quill-cli fold expand --line 42", "quill-cli fold expand --line 42 --recursive", "quill-cli fold expand --all --regions --json"],
         local: false,
     },
     Command {

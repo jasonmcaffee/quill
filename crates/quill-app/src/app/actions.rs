@@ -191,11 +191,12 @@ pub enum Action {
     Quit,
 }
 
-/// The four things that can be done to the blocks of the file that is showing.
+/// The six things that can be done to the blocks of the file that is showing.
 ///
-/// All four are about **the file that is showing** and take nothing, which is what makes them
+/// All six are about **the file that is showing** and take nothing, which is what makes them
 /// ordinary parameterless actions the View menu, the right click menus, the keyboard and
-/// `quill-cli action run` can all ask for. `tasks/task-1686-folding-tdd.md` section 8.
+/// `quill-cli action run` can all ask for. `tasks/task-1686-folding-tdd.md` section 8, and
+/// `tasks/task-1707-recursive-folding-tdd.md` for the two recursive ones.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FoldAction {
     /// Collapse or expand the innermost block the caret is in.
@@ -207,11 +208,21 @@ pub enum FoldAction {
     /// Collapse every block that does not hold a marked passage — the ticket's `Collapse All But
     /// Highlighted`. With nothing marked it falls back to the selection.
     Others,
+    /// Collapse the innermost block the caret is in, and every block inside it.
+    CollapseRecursively,
+    /// Expand the innermost block the caret is in, and every block inside it.
+    ExpandRecursively,
 }
 
 impl FoldAction {
-    pub const ALL: [FoldAction; 4] =
-        [FoldAction::Toggle, FoldAction::All, FoldAction::None_, FoldAction::Others];
+    pub const ALL: [FoldAction; 6] = [
+        FoldAction::Toggle,
+        FoldAction::All,
+        FoldAction::None_,
+        FoldAction::Others,
+        FoldAction::CollapseRecursively,
+        FoldAction::ExpandRecursively,
+    ];
 
     /// What the command line calls it, after the `fold-` prefix.
     pub fn name(self) -> &'static str {
@@ -220,6 +231,8 @@ impl FoldAction {
             FoldAction::All => "all",
             FoldAction::None_ => "none",
             FoldAction::Others => "others",
+            FoldAction::CollapseRecursively => "collapse-recursive",
+            FoldAction::ExpandRecursively => "expand-recursive",
         }
     }
 
@@ -234,6 +247,8 @@ impl FoldAction {
             FoldAction::All => "Collapse All",
             FoldAction::None_ => "Expand All",
             FoldAction::Others => "Collapse All But Highlighted",
+            FoldAction::CollapseRecursively => "Collapse Recursively",
+            FoldAction::ExpandRecursively => "Expand Recursively",
         }
     }
 
@@ -241,14 +256,21 @@ impl FoldAction {
     ///
     /// IntelliJ puts folding on the numeric keypad, which half the keyboards in this house have not
     /// got, so its `Ctrl+.` — the key it folds a selection with — is the one taken here and the
-    /// other three are built round it. The full stop is next to the comma that already opens
-    /// Settings, which is what makes a set of four worth remembering.
+    /// rest are built round it. The full stop is next to the comma that already opens Settings,
+    /// which is what makes a set of six worth remembering: the more modifiers, the wider the reach,
+    /// so the two recursive ones are the same two keys with the one remaining modifier added.
     pub fn shortcut(self) -> Shortcut {
         match self {
             FoldAction::Toggle => Shortcut::command(egui::Key::Period),
             FoldAction::All => Shortcut::command_shift(egui::Key::Period),
             FoldAction::None_ => Shortcut::command_shift(egui::Key::Comma),
             FoldAction::Others => Shortcut { alt: true, ..Shortcut::command(egui::Key::Period) },
+            FoldAction::CollapseRecursively => {
+                Shortcut { alt: true, shift: true, ..Shortcut::command(egui::Key::Period) }
+            }
+            FoldAction::ExpandRecursively => {
+                Shortcut { alt: true, shift: true, ..Shortcut::command(egui::Key::Comma) }
+            }
         }
     }
 }
@@ -1680,7 +1702,7 @@ pub fn highlight_menu(state: &MenuState) -> Vec<Entry> {
     entries
 }
 
-/// The `Folding` submenu of `View`, and the four entries every other menu takes from it.
+/// The `Folding` submenu of `View`, and the entries the gutter's menu takes from it.
 ///
 /// Absent altogether for a file that cannot fold, which is Quill's rule for a control that can never
 /// apply — the `F` button is not drawn for a `.rs` file either. Dimmed rather than absent when there
@@ -1693,8 +1715,11 @@ pub fn folding_menu(state: &MenuState) -> Vec<Entry> {
         .iter()
         .map(|what| {
             let enabled = match what {
-                FoldAction::Toggle | FoldAction::All | FoldAction::Others => state.foldable > 0,
-                FoldAction::None_ => state.folded > 0,
+                FoldAction::Toggle
+                | FoldAction::All
+                | FoldAction::Others
+                | FoldAction::CollapseRecursively => state.foldable > 0,
+                FoldAction::None_ | FoldAction::ExpandRecursively => state.folded > 0,
             };
             Entry::with_shortcut(what.label(), Action::Fold(*what), what.shortcut()).enabled(enabled)
         })
@@ -2538,6 +2563,23 @@ mod tests {
             action_for_key(&state, egui::Key::Period, &egui::Modifiers { alt: true, ..pressing_command() }),
             Some(Action::Fold(FoldAction::Others))
         );
+        assert_eq!(
+            action_for_key(
+                &state,
+                egui::Key::Period,
+                &egui::Modifiers { alt: true, shift: true, ..pressing_command() }
+            ),
+            Some(Action::Fold(FoldAction::CollapseRecursively)),
+            "the recursive pair is the same two keys with the one remaining modifier added"
+        );
+        assert_eq!(
+            action_for_key(
+                &state,
+                egui::Key::Comma,
+                &egui::Modifiers { alt: true, shift: true, ..pressing_command() }
+            ),
+            Some(Action::Fold(FoldAction::ExpandRecursively))
+        );
     }
 
     #[test]
@@ -2555,12 +2597,12 @@ mod tests {
         // The other half of the rule: a control that could be used in a moment is dimmed.
         let state = MenuState { folding_applies: true, foldable: 0, folded: 0, ..MenuState::default() };
         let entries = folding_menu(&state);
-        assert_eq!(entries.len(), 4);
+        assert_eq!(entries.len(), 6);
         assert!(entries.iter().all(|entry| matches!(entry, Entry::Item { enabled: false, .. })));
     }
 
     #[test]
-    fn expand_all_is_the_only_folding_entry_that_needs_something_collapsed() {
+    fn the_two_expand_entries_are_the_only_ones_that_need_something_collapsed() {
         let state = MenuState { folding_applies: true, foldable: 3, folded: 0, ..MenuState::default() };
         let usable: Vec<String> = folding_menu(&state)
             .iter()
@@ -2571,7 +2613,12 @@ mod tests {
             .collect();
         assert_eq!(
             usable,
-            vec!["Collapse or Expand Block", "Collapse All", "Collapse All But Highlighted"]
+            vec![
+                "Collapse or Expand Block",
+                "Collapse All",
+                "Collapse All But Highlighted",
+                "Collapse Recursively",
+            ]
         );
     }
 

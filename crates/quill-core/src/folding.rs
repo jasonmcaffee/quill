@@ -80,6 +80,16 @@ impl Region {
     pub fn hidden_lines(&self) -> usize {
         self.body.end - self.body.start
     }
+
+    /// True when `other` is a region nested inside this one.
+    ///
+    /// The regions are sorted by head and nest properly — a bracket, a tag, an indent and a heading
+    /// each close before their parent does — so a region is inside another exactly when its head is
+    /// below the parent's and its last line is at or above the parent's last. The region itself does
+    /// not contain itself, and a sibling does not contain its neighbour.
+    pub fn contains_region(&self, other: &Region) -> bool {
+        self.head < other.head && other.last() <= self.last()
+    }
 }
 
 /// How a file is read for the things in it that could be folded.
@@ -675,6 +685,20 @@ pub fn region_headed_by(regions: &[Region], line: usize) -> Option<&Region> {
     regions.iter().find(|region| region.head == line)
 }
 
+/// The region headed by `line`, and every region nested inside it, in the order the regions are.
+///
+/// `None` when nothing is headed by `line`, which is what "there is no block that starts on this
+/// line" means. The root plus every region that [`Region::contains_region`] answers yes for: a
+/// grandchild passes the test too, because the test is against the root rather than against the
+/// parent, so the whole subtree comes back in one pass. `tasks/task-1707-recursive-folding-tdd.md`
+/// section 3.
+pub fn region_tree(regions: &[Region], line: usize) -> Option<Vec<&Region>> {
+    let root = regions.iter().find(|region| region.head == line)?;
+    let mut tree = vec![root];
+    tree.extend(regions.iter().filter(|region| root.contains_region(region)));
+    Some(tree)
+}
+
 /// Every region that has to stay open for `line` to be visible: the ones whose body holds it.
 pub fn regions_holding(regions: &[Region], line: usize) -> Vec<&Region> {
     regions.iter().filter(|region| region.body.contains(&line)).collect()
@@ -749,6 +773,51 @@ mod tests {
         assert_eq!(heads(&found), vec![(0, 4, "block"), (1, 3, "block")]);
         assert_eq!(region_at(&found, 2).map(|r| r.head), Some(1), "the innermost region wins");
         assert_eq!(region_at(&found, 4).map(|r| r.head), Some(0));
+    }
+
+    /// The study's own shape: a function holding a `for` holding an `if`, so three regions deep.
+    fn nested() -> (&'static str, Grammar) {
+        (
+            "fn total_area() {\n    let s = 0;\n    for side in sides {\n        if side > 0 {\n            s += side;\n        }\n    }\n    s\n}\nfn other() {\n    x();\n}\n",
+            rust(),
+        )
+    }
+
+    #[test]
+    fn a_region_tree_at_the_outer_head_is_the_whole_subtree() {
+        let (source, grammar) = nested();
+        let found = regions(source, Reading::Code(&grammar));
+        // Heads: the function at 0, the for at 2, the if at 3, the other function at 9.
+        let tree = region_tree(&found, 0).expect("the function heads line 0");
+        assert_eq!(tree.iter().map(|region| region.head).collect::<Vec<_>>(), vec![0, 2, 3]);
+    }
+
+    #[test]
+    fn a_region_tree_at_a_nested_head_is_that_region_and_its_children() {
+        let (source, grammar) = nested();
+        let found = regions(source, Reading::Code(&grammar));
+        let tree = region_tree(&found, 2).expect("the for heads line 2");
+        assert_eq!(tree.iter().map(|region| region.head).collect::<Vec<_>>(), vec![2, 3]);
+    }
+
+    #[test]
+    fn a_region_tree_at_a_line_that_heads_nothing_is_none() {
+        let (source, grammar) = nested();
+        let found = regions(source, Reading::Code(&grammar));
+        assert!(region_tree(&found, 1).is_none(), "line 1 is inside the function, not a head");
+        assert!(region_tree(&found, 10).is_none(), "line 10 is inside the other function, not a head");
+    }
+
+    #[test]
+    fn contains_region_is_true_for_a_grandchild_and_false_for_a_sibling_and_itself() {
+        let (source, grammar) = nested();
+        let found = regions(source, Reading::Code(&grammar));
+        let function = &found[0];
+        let other = found.iter().find(|region| region.head == 9).expect("the other function");
+        assert!(function.contains_region(&found[1]), "the for is inside the function");
+        assert!(function.contains_region(&found[2]), "the if is a grandchild, still inside");
+        assert!(!function.contains_region(other), "a sibling is not inside");
+        assert!(!function.contains_region(function), "a region does not contain itself");
     }
 
     #[test]

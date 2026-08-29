@@ -225,6 +225,84 @@ impl QuillApp {
         self.toggle_fold_at_line(head)
     }
 
+    /// Collapse the region headed by `line` and every region inside it.
+    ///
+    /// `task-1707`: "open that function" is the ask, and a function's children are the `for` and the
+    /// `if` inside it. The block outside is left as it was — only the subtree the caller named moves.
+    /// Collapsing twice is a no-op the second time, because the set is already what it asks for.
+    pub(crate) fn collapse_recursively_at_line(&mut self, line: usize) -> bool {
+        let index = self.files.active_index();
+        let regions: Vec<Region> = self.fold_regions(index).to_vec();
+        let Some(tree) = folding::region_tree(&regions, line) else {
+            self.message =
+                Some(format!("Nothing at line {} heads a block. Run `fold list`.", line + 1));
+            return false;
+        };
+        let heads = self.collapse_or_expand_recursively(index, tree, true);
+        self.keep_the_caret_visible(index);
+        heads
+    }
+
+    /// Expand the region headed by `line` and every region inside it.
+    ///
+    /// The children's own collapsed state is destroyed — a child that was folded on its own opens
+    /// too — which is what IntelliJ's and VS Code's recursive expand both do, and what "open that
+    /// function so I can read it" wants. `tasks/task-1707-recursive-folding-tdd.md` section 3.
+    pub(crate) fn expand_recursively_at_line(&mut self, line: usize) -> bool {
+        let index = self.files.active_index();
+        let regions: Vec<Region> = self.fold_regions(index).to_vec();
+        let Some(tree) = folding::region_tree(&regions, line) else {
+            self.message =
+                Some(format!("Nothing at line {} heads a block. Run `fold list`.", line + 1));
+            return false;
+        };
+        self.collapse_or_expand_recursively(index, tree, false)
+    }
+
+    /// The shared half of the two recursive commands: work out the new collapsed set from the
+    /// subtree and write it back.
+    ///
+    /// Everything outside the subtree keeps whatever state it had. Inside it, every head is
+    /// collapsed when `collapse` is set and every head is left open when it is not, which is what
+    /// makes a recursive expand a hard open of the whole subtree rather than the set's natural
+    /// "remove the parent and keep the children".
+    fn collapse_or_expand_recursively(&mut self, index: usize, tree: Vec<&Region>, collapse: bool) -> bool {
+        let tree_heads: Vec<usize> = tree.iter().map(|region| region.head).collect();
+        let mut heads = self.collapsed_heads(index);
+        heads.retain(|head| !tree_heads.contains(head));
+        if collapse {
+            heads.extend(tree_heads);
+        }
+        let changed = self.set_collapsed(index, &heads);
+        changed
+    }
+
+    /// Collapse the innermost region the caret is in, and every region inside it.
+    pub(crate) fn collapse_recursively_at_caret(&mut self) -> bool {
+        let index = self.files.active_index();
+        let document = &self.files.at(index).document;
+        let caret = document.text().byte_to_line(document.selection().head);
+        let regions: Vec<Region> = self.fold_regions(index).to_vec();
+        let Some(region) = folding::region_at(&regions, caret) else {
+            self.message = Some("There is nothing to fold here.".to_owned());
+            return false;
+        };
+        self.collapse_recursively_at_line(region.head)
+    }
+
+    /// Expand the innermost region the caret is in, and every region inside it.
+    pub(crate) fn expand_recursively_at_caret(&mut self) -> bool {
+        let index = self.files.active_index();
+        let document = &self.files.at(index).document;
+        let caret = document.text().byte_to_line(document.selection().head);
+        let regions: Vec<Region> = self.fold_regions(index).to_vec();
+        let Some(region) = folding::region_at(&regions, caret) else {
+            self.message = Some("There is nothing to fold here.".to_owned());
+            return false;
+        };
+        self.expand_recursively_at_line(region.head)
+    }
+
     /// Collapse every region in the file that is showing.
     pub(crate) fn collapse_all_folds(&mut self) -> bool {
         let index = self.files.active_index();
@@ -356,5 +434,89 @@ impl QuillApp {
                 })
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::QuillApp;
+
+    /// The study's own shape: a function holding a `for` holding an `if`, and a second function
+    /// that is not inside the first. The heads are 0, 2, 3 and 9.
+    fn a_nested_project(name: &str) -> std::path::PathBuf {
+        let folder = std::env::temp_dir().join(name);
+        std::fs::remove_dir_all(&folder).ok();
+        std::fs::create_dir_all(&folder).expect("make the folder");
+        std::fs::write(
+            folder.join("area.rs"),
+            "fn total_area() {\n    let s = 0;\n    for side in sides {\n        if side > 0 {\n            s += side;\n        }\n    }\n    s\n}\nfn other() {\n    x();\n}\n",
+        )
+        .expect("write area.rs");
+        folder
+    }
+
+    fn a_window(name: &str) -> (std::path::PathBuf, QuillApp) {
+        let folder = a_nested_project(name);
+        let mut app = QuillApp::new(&folder);
+        app.open_path_permanently(&folder.join("area.rs"));
+        (folder, app)
+    }
+
+    /// Which heads are collapsed, in the order the regions are.
+    fn collapsed(app: &mut QuillApp) -> Vec<usize> {
+        app.collapsed_heads(app.files.active_index())
+    }
+
+    #[test]
+    fn collapsing_recursively_closes_the_whole_subtree_and_only_it() {
+        let (folder, mut app) = a_window("quill-fold-recursive-collapse");
+        let index = app.files.active_index();
+        assert!(app.collapse_recursively_at_line(0), "the function heads line 0");
+        // The function, the for and the if are all collapsed; the second function is not.
+        assert_eq!(collapsed(&mut app), vec![0, 2, 3]);
+        // The hidden set is the body of the function, which swallows the for and the if with it.
+        assert_eq!(app.hidden_paragraphs(index).ranges(), &[1..9]);
+        std::fs::remove_dir_all(&folder).ok();
+    }
+
+    #[test]
+    fn expanding_recursively_opens_the_children_that_were_folded_on_their_own() {
+        let (folder, mut app) = a_window("quill-fold-recursive-expand");
+        let index = app.files.active_index();
+        // Collapse the function and its children, then open the function recursively: the children
+        // open too, which is the decision of the TDD — a recursive expand is a hard open of the
+        // whole subtree, not the set's natural "remove the parent and keep the children".
+        app.collapse_recursively_at_line(0);
+        assert!(app.expand_recursively_at_line(0));
+        assert!(collapsed(&mut app).is_empty(), "the whole subtree is open");
+        assert!(app.hidden_paragraphs(index).is_empty());
+        std::fs::remove_dir_all(&folder).ok();
+    }
+
+    #[test]
+    fn collapsing_recursively_twice_is_a_no_op_the_second_time() {
+        let (folder, mut app) = a_window("quill-fold-recursive-noop");
+        assert!(app.collapse_recursively_at_line(0), "the first time it changes");
+        assert!(!app.collapse_recursively_at_line(0), "the second time it does not");
+        assert_eq!(collapsed(&mut app), vec![0, 2, 3]);
+        std::fs::remove_dir_all(&folder).ok();
+    }
+
+    #[test]
+    fn a_caret_inside_a_recursively_collapsed_block_is_brought_onto_its_head() {
+        let (folder, mut app) = a_window("quill-fold-recursive-caret");
+        let index = app.files.active_index();
+        // Put the caret on a line inside the function that is about to be hidden.
+        let offset = app.files.at(index).document.text().line_to_byte(4);
+        app.files.at_mut(index).document.apply(quill_core::Command::PlaceCaret {
+            offset,
+            extend: false,
+        });
+        assert!(app.collapse_recursively_at_line(0));
+        let document = &app.files.at(index).document;
+        let caret = document.text().byte_to_line(document.selection().head);
+        assert_eq!(caret, 0, "the caret is on the head line, not inside the fold");
+        std::fs::remove_dir_all(&folder).ok();
     }
 }
