@@ -46,6 +46,13 @@ pub enum Command {
     /// order and drops the overlapping ones, and this trusts nothing it is given: a range outside
     /// the text or across a character is left alone rather than panicking.
     ReplaceMany(Vec<(Range<usize>, String)>),
+    /// Indent each line the selection touches, by one tab or one space.
+    ///
+    /// This is what `Tab` and `Space` do over a selection: the selection is what makes the key an
+    /// indent rather than a type. With no selection it indents the line the caret is on, so the
+    /// command line can ask it about a document that has neither. The selection follows the text it
+    /// covered, so pressing the key again indents the same lines again. `task-1747`.
+    Indent { unit: IndentUnit },
     /// Apply character formatting to the selection, or to the next text typed if nothing is selected.
     ApplyStyle(StyleChange),
     /// Turn bold on for the selection, or off if all of it is already bold.
@@ -57,6 +64,29 @@ pub enum Command {
     SetLineSpacing(f32),
     Undo,
     Redo,
+}
+
+/// The character an indent is made of: the one the key that asked for it names.
+///
+/// A tab from `Tab`, a space from `Space`. Quill has no tab width and no "insert spaces for tabs"
+/// preference, and the character the key says is the one answer that needs no setting — see
+/// `tasks/task-1747-selection-indent-tdd.md` section 4.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndentUnit {
+    /// A tab, from the `Tab` key.
+    Tab,
+    /// A space, from the `Space` key.
+    Space,
+}
+
+impl IndentUnit {
+    /// The character it stands for.
+    pub fn text(&self) -> &'static str {
+        match self {
+            IndentUnit::Tab => "\t",
+            IndentUnit::Space => " ",
+        }
+    }
 }
 
 /// What kind of change the last command made, so that a run of typing collapses into one undo step.
@@ -638,6 +668,7 @@ impl Document {
                 self.caret_moved(selection_before);
             }
             Command::ReplaceMany(edits) => self.replace_many(edits),
+            Command::Indent { unit } => self.indent(unit),
             Command::ApplyStyle(change) => self.apply_style(change),
             Command::ToggleBold => {
                 let on = !self.active_style().bold;
@@ -911,6 +942,55 @@ impl Document {
             self.paragraphs.split(paragraph, line_breaks);
             self.selection.set_caret(at + replacement.len());
         }
+        self.desired_x = None;
+        self.mark_changed();
+        self.last_edit = EditKind::Other;
+    }
+
+    /// Indent each line the selection touches, by one tab or one space.
+    ///
+    /// The lines are indented back to front, so an earlier line's start is not moved by a later
+    /// line's edit, and each end of the selection moves past the indents put at or before it: the
+    /// same shift the marks and the folds get, applied to the two numbers a selection is. That is
+    /// what keeps the highlight over the words it covered, and what makes pressing the key again
+    /// indent the same lines again.
+    ///
+    /// The edit is one `push_undo` and one `mark_changed`, whatever the selection spans: one key
+    /// press is one snapshot and one undo step, for the reason `replace_many` states. No line break
+    /// is inserted or removed, so the paragraph list is left exactly as it was.
+    fn indent(&mut self, unit: IndentUnit) {
+        let range = self.selection.range();
+        let (first, last) = if range.is_empty() {
+            let line = self.text.byte_to_line(range.start);
+            (line, line)
+        } else {
+            // The line holding the byte before the end: a selection that ends on a line break
+            // touches the line above it, because it holds no byte of the line below.
+            (
+                self.text.byte_to_line(range.start),
+                self.text.byte_to_line(range.end - 1),
+            )
+        };
+        let starts: Vec<usize> = (first..=last).map(|line| self.text.line_to_byte(line)).collect();
+        let unit = unit.text();
+        self.push_undo(EditKind::Other);
+        for at in starts.iter().rev() {
+            let at = *at;
+            // Read before the earlier lines are edited, the way `insert` reads its style, though an
+            // indent never deletes the span it reads. The pending formatting is not applied, because
+            // an indent is not typing.
+            let style = self.chars.style_for_insertion(at);
+            self.text.insert(at, unit);
+            self.chars.insert(at, unit.len());
+            self.highlights.insert(at, unit.len());
+            self.folds.insert(at, unit.len());
+            self.breakpoints.insert(at, unit.len());
+            self.chars.set(at..at + unit.len(), &style_as_change(&style));
+        }
+        let shift = |offset: usize| starts.iter().filter(|start| **start <= offset).count() * unit.len();
+        let selection = self.selection;
+        self.selection.anchor += shift(selection.anchor);
+        self.selection.head += shift(selection.head);
         self.desired_x = None;
         self.mark_changed();
         self.last_edit = EditKind::Other;
@@ -1475,6 +1555,8 @@ the fourth line");
             Command::ReplaceMany(vec![(3..5, "XY".to_owned())]),
             Command::ReplaceMany(vec![(6..8, "a much longer replacement".to_owned())]),
             Command::ReplaceMany(Vec::new()),
+            Command::Indent { unit: IndentUnit::Tab },
+            Command::Indent { unit: IndentUnit::Space },
             Command::SelectAll,
             Command::ApplyStyle(StyleChange::size(28.0)),
             Command::ToggleBold,
@@ -2196,9 +2278,133 @@ the fourth line");
         document.set_folds(folds);
         document.apply(Command::PlaceCaret { offset: 0, extend: false });
         document.apply(Command::Insert("zero\n".to_owned()));
-        assert_eq!(document.folds().offsets(), &[9]);
+        assert_eq!(document.folds().offsets(), &[9], "the head line moved down the file");
         document.apply(Command::Undo);
         assert_eq!(document.folds().offsets(), &[4], "back where it was before the edit");
     }
 
+}
+
+#[cfg(test)]
+mod indent_tests {
+    use super::*;
+
+    /// Select `from` to `to` in the document, the way the keys would leave it.
+    fn selected(document: &mut Document, from: usize, to: usize) {
+        document.apply(Command::PlaceCaret { offset: from, extend: false });
+        document.apply(Command::PlaceCaret { offset: to, extend: true });
+    }
+
+    /// The whole of the ask: a block of lines, `Tab`, and the block is indented rather than gone.
+    #[test]
+    fn tab_over_a_selection_indents_each_line_it_touches() {
+        let mut document = Document::from_text("one\ntwo\nthree\nfour");
+        selected(&mut document, 0, 18);
+        assert!(document.apply(Command::Indent { unit: IndentUnit::Tab }));
+        assert_eq!(
+            document.text().to_string(),
+            "\tone\n\ttwo\n\tthree\n\tfour",
+            "a tab at the start of each of the four lines, and nothing else"
+        );
+    }
+
+    /// A selection that ends exactly on a line break holds no byte of the line below it, so the
+    /// line below is not indented.
+    #[test]
+    fn a_selection_ending_on_a_line_break_indents_the_line_above_not_the_one_below() {
+        let mut document = Document::from_text("one\ntwo\nthree");
+        selected(&mut document, 0, 4); // "one\n"
+        assert!(document.apply(Command::Indent { unit: IndentUnit::Tab }));
+        assert_eq!(
+            document.text().to_string(),
+            "\tone\ntwo\nthree",
+            "only the first line moved"
+        );
+    }
+
+    /// The command answers for a bare caret too, because the command line asks it about a document
+    /// that may have no selection: the caret's line is indented and the caret moves past the
+    /// character put in front of it.
+    #[test]
+    fn a_bare_caret_indents_its_own_line_and_moves_past_the_character() {
+        let mut document = Document::from_text("one\ntwo\nthree");
+        document.apply(Command::PlaceCaret { offset: 5, extend: false }); // in "two"
+        assert!(document.apply(Command::Indent { unit: IndentUnit::Tab }));
+        assert_eq!(document.text().to_string(), "one\n\ttwo\nthree");
+        let caret = document.selection().head;
+        assert_eq!(&document.text().to_string()[caret - 1..caret + 2], "two", "still between the same letters");
+    }
+
+    /// Each end of the selection moves past the indents put at or before it, no further: the
+    /// highlight stays over the words it covered, and a second press indents the same lines again.
+    #[test]
+    fn the_selection_follows_the_text_it_covered() {
+        let mut document = Document::from_text("one\ntwo\nthree\nfour");
+        selected(&mut document, 0, 18);
+        document.apply(Command::Indent { unit: IndentUnit::Tab });
+        assert_eq!(
+            document.selection().range(),
+            1..22,
+            "the original bytes, shifted by the four indents"
+        );
+        document.apply(Command::Indent { unit: IndentUnit::Tab });
+        assert_eq!(document.text().to_string(), "\t\tone\n\t\ttwo\n\t\tthree\n\t\tfour");
+        assert_eq!(document.selection().range(), 2..26, "the same lines, indented again");
+    }
+
+    /// A single line selected in the middle of the file indents that line alone.
+    #[test]
+    fn a_single_line_selection_indents_that_line_alone() {
+        let mut document = Document::from_text("one\ntwo\nthree");
+        selected(&mut document, 5, 6); // the "w" of "two"
+        assert!(document.apply(Command::Indent { unit: IndentUnit::Space }));
+        assert_eq!(
+            document.text().to_string(),
+            "one\n two\nthree",
+            "one space in front of the selected line and nowhere else"
+        );
+    }
+
+    /// One key press is one snapshot, whatever the selection spans: one undo puts every line back,
+    /// and the selection comes back with it.
+    #[test]
+    fn one_press_is_one_undo_step() {
+        let mut document = Document::from_text("one\ntwo\nthree\nfour");
+        selected(&mut document, 0, 18);
+        document.apply(Command::Indent { unit: IndentUnit::Tab });
+        document.apply(Command::Undo);
+        assert_eq!(
+            document.text().to_string(),
+            "one\ntwo\nthree\nfour",
+            "one step put all four lines back"
+        );
+        assert_eq!(document.selection().range(), 0..18, "the selection comes back with it");
+    }
+
+    /// The two units differ only in the character they put in front of the lines.
+    #[test]
+    fn the_units_differ_only_in_the_character() {
+        let mut tabbed = Document::from_text("one\ntwo");
+        selected(&mut tabbed, 0, 8);
+        tabbed.apply(Command::Indent { unit: IndentUnit::Tab });
+        let mut spaced = Document::from_text("one\ntwo");
+        selected(&mut spaced, 0, 8);
+        spaced.apply(Command::Indent { unit: IndentUnit::Space });
+        assert_eq!(tabbed.text().to_string(), "\tone\n\ttwo");
+        assert_eq!(spaced.text().to_string(), " one\n two");
+    }
+
+    /// The marked passages move with the text, in the same place the bytes move: a mark over a
+    /// whole line lands over the line's new letters, and a mark that ends on a line break does not
+    /// grow into the indent put in front of the next line.
+    #[test]
+    fn the_marks_move_with_the_indent() {
+        let mut document = Document::from_text("one\ntwo\nthree");
+        document.highlight(4..7, Rgba::new(0xFF, 0xC0, 0x40, 0x60)); // "two"
+        selected(&mut document, 0, 13);
+        document.apply(Command::Indent { unit: IndentUnit::Tab });
+        let text = document.text().to_string();
+        let mark = document.highlights().iter().next().expect("the mark").range.clone();
+        assert_eq!(&text[mark.clone()], "two", "the mark is over the line's new letters");
+    }
 }

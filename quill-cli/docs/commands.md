@@ -800,6 +800,21 @@ quill-cli editor select --all
 quill-cli editor select --from-line 3 --to-line 6
 ```
 
+### editor indent
+
+```
+quill-cli editor indent [--space]
+```
+
+Indent each line the selection touches, or the line the caret is on when nothing is selected, by one tab at the start of the line — or one space with --space. This is what Tab and Space do over a selection in the editing area, and the selection stays over the text it covered.
+
+- `--space` — Indent with a space rather than a tab, which is what the Space key does.
+
+```sh
+quill-cli editor indent
+quill-cli editor indent --space
+```
+
 ### editor undo
 
 ```

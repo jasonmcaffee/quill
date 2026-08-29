@@ -61,9 +61,10 @@ pub fn handle(ui: &mut egui::Ui, header: Rect, panel: Panel) -> Grab {
             grab.carrying = Some(pointer);
             grab.dropped = response.drag_stopped();
         }
-        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-    } else if response.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+        // No cursor change while the panel is carried: the four bands and the strong rectangle the
+        // panel would land in are on screen for the whole of the drag, and a grabbing hand under the
+        // pointer is a second channel saying the same thing — which is the one `task-1747` does not
+        // want. The header is the normal arrow from hover through the drop.
     }
     if response.secondary_clicked() {
         grab.menu = response.interact_pointer_pos().or_else(|| response.hover_pos());

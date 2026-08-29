@@ -2080,6 +2080,7 @@ impl QuillApp {
             "insert" => self.cli_editor_insert(request),
             "caret" => self.cli_editor_caret(request),
             "select" => self.cli_editor_select(request),
+            "indent" => self.cli_editor_indent(request),
             "undo" => self.cli_editor_history(request, true),
             "redo" => self.cli_editor_history(request, false),
             "view" => self.cli_editor_view(request, ctx),
@@ -2356,6 +2357,42 @@ impl QuillApp {
                 "end": selection.end(),
                 "characters": chosen.chars().count(),
                 "text": chosen,
+            }),
+        )
+    }
+
+    /// `quill-cli editor indent` — the agent's half of what `Tab` and `Space` do over a selection,
+    /// through the same command the keys do, so an indent done by an agent and the same thing done
+    /// by hand are the same thing.
+    fn cli_editor_indent(&mut self, request: &Request) -> Outcome {
+        if self.files.active().is_picture() {
+            return no(request, code::NOT_APPLICABLE, "This tab holds a picture rather than text.");
+        }
+        let unit = if request.switch("space") {
+            quill_core::IndentUnit::Space
+        } else {
+            quill_core::IndentUnit::Tab
+        };
+        let selection = self.document().selection();
+        let text = self.document().text();
+        let lines = if selection.is_empty() {
+            1
+        } else {
+            text.byte_to_line(selection.end() - 1) - text.byte_to_line(selection.start()) + 1
+        };
+        self.document_mut().apply(quill_core::Command::Indent { unit });
+        self.forget_layout();
+        self.reveal_caret = true;
+        let selection = self.document().selection();
+        let what = if unit == quill_core::IndentUnit::Space { "a space" } else { "a tab" };
+        ok(
+            request,
+            format!("Indented {lines} line{} with {what}", if lines == 1 { "" } else { "s" }),
+            json!({
+                "lines": lines,
+                "unit": if unit == quill_core::IndentUnit::Space { "space" } else { "tab" },
+                "start": selection.start(),
+                "end": selection.end(),
             }),
         )
     }

@@ -661,6 +661,15 @@ pub const COMMANDS: &[Command] = &[
     },
     Command {
         area: "editor",
+        verb: "indent",
+        summary: "Indent each line the selection touches, or the line the caret is on when nothing is selected, by one tab at the start of the line — or one space with --space. This is what Tab and Space do over a selection in the editing area, and the selection stays over the text it covered.",
+        arguments: NO_ARGUMENTS,
+        flags: &[switch("space", "Indent with a space rather than a tab, which is what the Space key does.")],
+        examples: &["quill-cli editor indent", "quill-cli editor indent --space"],
+        local: false,
+    },
+    Command {
+        area: "editor",
         verb: "undo",
         summary: "Undo the last edit in the tab that is showing.",
         arguments: NO_ARGUMENTS,

@@ -29,7 +29,7 @@ pub mod syntax;
 pub use breakpoints::{Breakpoint, Breakpoints};
 pub use completion::{Candidate, Row as CompletionRow, Source as CompletionSource};
 pub use cursor::Selection;
-pub use document::{Command, Document};
+pub use document::{Command, Document, IndentUnit};
 pub use folding::{Kind as FoldKind, Folds, Hidden, Reading as FoldReading, Region as FoldRegion};
 pub use highlights::{Highlight, Highlights, Rgba};
 pub use imports::Context as ImportContext;

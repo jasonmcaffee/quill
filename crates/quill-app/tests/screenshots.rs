@@ -461,6 +461,63 @@ fn backspace_removes_what_was_typed() {
     assert_eq!(harness.state().document().text().to_string(), "abc");
 }
 
+// `task-1747`: a key over a selection is an indent rather than a type.
+
+#[test]
+fn tab_over_a_selection_indents_the_lines_rather_than_replacing_them() {
+    // The whole of the ask, through the real window: a block of lines, a real `Tab` press, and the
+    // block indented rather than gone.
+    let mut harness = harness("one\ntwo\nthree\nfour");
+    select_and(&mut harness, 0..18, &[]);
+    harness.key_press(egui::Key::Tab);
+    harness.run();
+    assert_eq!(
+        harness.state().document().text().to_string(),
+        "\tone\n\ttwo\n\tthree\n\tfour",
+        "a tab at the start of each of the four lines, and nothing else"
+    );
+    assert_eq!(
+        harness.state().document().selection().range(),
+        1..22,
+        "the selection stays over the text it covered"
+    );
+    harness.snapshot(shot("tab_indents_the_selection"));
+}
+
+#[test]
+fn space_over_a_selection_indents_the_lines_with_a_space() {
+    // A space arrives as a text event, which is the same the released binary receives, and over a
+    // selection it indents by one space per line rather than replacing the block.
+    let mut harness = harness("one\ntwo\nthree");
+    select_and(&mut harness, 0..13, &[]);
+    harness.input_mut().events.push(egui::Event::Text(" ".to_owned()));
+    harness.run();
+    assert_eq!(
+        harness.state().document().text().to_string(),
+        " one\n two\n three",
+        "a space at the start of each line, which is what the Space key says"
+    );
+    harness.snapshot(shot("space_indents_the_selection"));
+}
+
+#[test]
+fn tab_and_space_with_no_selection_still_type_at_the_caret() {
+    // The other half of the rule: with no selection the keys do exactly what they always did, so a
+    // person who means to type a tab or a space is not interrupted.
+    let mut harness = harness("one\ntwo");
+    harness.state_mut().command(Command::PlaceCaret { offset: 4, extend: false });
+    harness.run();
+    harness.key_press(egui::Key::Tab);
+    harness.run();
+    harness.input_mut().events.push(egui::Event::Text(" ".to_owned()));
+    harness.run();
+    assert_eq!(
+        harness.state().document().text().to_string(),
+        "one\n\t two",
+        "a tab and a space typed where the caret is, as before"
+    );
+}
+
 #[test]
 fn a_selection_is_highlighted_behind_part_of_a_line_only() {
     let mut harness = harness("Select only the middle words of this line, not the rest of it.");
@@ -5782,6 +5839,39 @@ fn the_command_line_replaces_the_whole_document_in_one_undo_step() {
 }
 
 #[test]
+fn the_command_line_indents_the_selection_the_way_the_keys_do() {
+    // The agent's half of `task-1747`, through the window's own dispatcher: the same command the
+    // keys apply, so an indent done by an agent and the same thing done by hand are the same thing.
+    let mut harness = harness_in(&sample_folder());
+    did(&mut harness, "tab open notes.txt --permanent");
+    did(&mut harness, "editor set-text one\\ntwo\\nthree");
+    did(&mut harness, "editor select --all");
+    let result = did(&mut harness, "editor indent");
+    assert_eq!(result["lines"], serde_json::json!(3), "all three lines, one step");
+    assert_eq!(result["unit"], serde_json::json!("tab"));
+    assert_eq!(
+        harness.state().document().text().to_string(),
+        "\tone\n\ttwo\n\tthree",
+        "a tab at the start of each line"
+    );
+    did(&mut harness, "editor undo");
+    assert_eq!(
+        harness.state().document().text().to_string(),
+        "one\ntwo\nthree",
+        "one undo put every line back"
+    );
+    // The space half, which is what the Space key does.
+    did(&mut harness, "editor select --all");
+    did(&mut harness, "editor indent --space");
+    assert_eq!(harness.state().document().text().to_string(), " one\n two\n three");
+    // With nothing selected, the line the caret is on: the tab lands in front of the space that
+    // line already carries.
+    did(&mut harness, "editor caret --line 2 --column 1");
+    did(&mut harness, "editor indent");
+    assert_eq!(harness.state().document().text().to_string(), " one\n\t two\n three");
+}
+
+#[test]
 fn a_view_mode_that_cannot_apply_to_this_file_is_refused_rather_than_silently_ignored() {
     let mut harness = harness_in(&sample_folder());
     did(&mut harness, "tab open readme.md --permanent");
@@ -10322,6 +10412,29 @@ fn the_four_places_a_panel_can_be_dropped_are_drawn_while_it_is_in_the_air() {
     // "there should be blue highlighted regions to indicate where I can drag to".
     carry(&mut harness, from, egui::pos2(1160.0, 400.0));
     harness.snapshot(shot("panel_drop_zones"));
+}
+
+#[test]
+fn the_panel_header_keeps_the_normal_cursor() {
+    // `task-1747`: the grabbing hand that used to appear over a panel's header is gone, on hover
+    // and while the panel is in the air. The blue zones are the feedback a drag needs, and a cursor
+    // is not in a picture, so the test reads it off the frame the way the heartbeat test reads the
+    // repaint delay.
+    let mut harness = with_terminal("The terminal, and the pointer over its header.", 12, 80);
+    let over = panel_handle(&harness, "Move Terminal tile");
+    harness.input_mut().events.push(egui::Event::PointerMoved(over));
+    harness.run();
+    assert_eq!(
+        harness.ctx.output(|o| o.cursor_icon),
+        egui::CursorIcon::Default,
+        "hovering the header is the normal arrow"
+    );
+    carry(&mut harness, over, egui::pos2(1160.0, 400.0));
+    assert_eq!(
+        harness.ctx.output(|o| o.cursor_icon),
+        egui::CursorIcon::Default,
+        "and the carried panel is the normal arrow too"
+    );
 }
 
 #[test]

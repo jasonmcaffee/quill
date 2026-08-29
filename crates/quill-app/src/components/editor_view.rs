@@ -5,7 +5,7 @@
 //! glyph out of the atlas, so the whole visible document is a single mesh.
 
 use egui::{Color32, Mesh, Pos2, Rect, Sense, Shape, Stroke, Vec2};
-use quill_core::{Align, Command, Document, Layout, Rope, Selection, StyleChange};
+use quill_core::{Align, Command, Document, IndentUnit, Layout, Rope, Selection, StyleChange};
 
 use crate::services::text_renderer::TextRenderer;
 
@@ -115,7 +115,20 @@ pub fn handle_input(
         match event {
             egui::Event::Text(text) => {
                 if !text.chars().any(|c| c.is_control()) {
-                    outcome.changed |= document.apply(Command::Insert(text));
+                    // A single space over a selection is an indent of one space per line, the same
+                    // rule the `Tab` key follows: the selection is what makes the key an indent
+                    // rather than a type. The modifiers are read off the frame's input state, because
+                    // a `Text` event carries none of its own, and the check is what keeps
+                    // `Ctrl+Space` — the completion's key — from indenting.
+                    let indent = text == " "
+                        && !document.selection().is_empty()
+                        && !ui.input(|input| input.modifiers.command)
+                        && !ui.input(|input| input.modifiers.ctrl);
+                    if indent {
+                        outcome.changed |= document.apply(Command::Indent { unit: IndentUnit::Space });
+                    } else {
+                        outcome.changed |= document.apply(Command::Insert(text));
+                    }
                     outcome.scroll_to_caret = true;
                 }
             }
@@ -189,7 +202,17 @@ pub fn handle_input(
                     // documentation came out with two files marked as having unsaved changes that
                     // nobody had touched.
                     egui::Key::Tab if !shortcut && !modifiers.ctrl => {
-                        document.apply(Command::Insert("\t".to_owned()))
+                        // A selection makes the key an indent rather than a type: every line the
+                        // selection touches gets one tab at its start, and the selection stays over
+                        // the text it covered. With no selection the tab is typed where the caret
+                        // is, inside the run of typing. `Shift+Tab` takes this same arm — outdent is
+                        // not here, see `tasks/task-1747-selection-indent-tdd.md` section 2 — and
+                        // indents rather than throwing the selection away.
+                        if document.selection().is_empty() {
+                            document.apply(Command::Insert("\t".to_owned()))
+                        } else {
+                            document.apply(Command::Indent { unit: IndentUnit::Tab })
+                        }
                     }
                     // Undo, redo, select all, save and the clipboard are menu entries, and the menu owns
                     // their shortcuts. On macOS the menu bar takes those key presses before the window sees
