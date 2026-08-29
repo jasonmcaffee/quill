@@ -127,25 +127,52 @@ pub fn argument_name(key: &str) -> &str {
     key.trim_start_matches('-')
 }
 
+/// Convert a caller's spelling of an argument to the kebab-case name in the catalogue.
+///
+/// Leading dashes, underscores, and word-boundary capitals are presentation differences, not
+/// different values. Keeping this conversion here gives the control channel and MCP resolver one
+/// rule to share.
+pub fn canonical_argument_name(key: &str) -> String {
+    let trimmed = argument_name(key);
+    let mut canonical = String::with_capacity(trimmed.len());
+    let mut previous_is_word = false;
+    for character in trimmed.chars() {
+        if character == '_' {
+            canonical.push('-');
+            previous_is_word = false;
+        } else if character.is_ascii_uppercase() {
+            if previous_is_word && !canonical.ends_with('-') {
+                canonical.push('-');
+            }
+            canonical.push(character.to_ascii_lowercase());
+            previous_is_word = true;
+        } else {
+            canonical.push(character);
+            previous_is_word = character.is_ascii_lowercase() || character.is_ascii_digit();
+        }
+    }
+    canonical
+}
+
 /// Every key with its leading dashes taken off.
 ///
 /// A key already spelled without them wins, so a request carrying both `permanent` and
 /// `--permanent` keeps the one the window would have read and does not depend on which order a JSON
 /// object happened to be in.
 pub fn normalise_arguments(arguments: Map<String, Value>) -> Map<String, Value> {
-    if arguments.keys().all(|key| !key.starts_with('-')) {
+    if arguments.keys().all(|key| canonical_argument_name(key) == *key) {
         return arguments;
     }
     let mut out = Map::new();
     for (key, value) in &arguments {
-        if !key.starts_with('-') {
+        if canonical_argument_name(key) == *key {
             out.insert(key.clone(), value.clone());
         }
     }
     for (key, value) in arguments {
-        let name = argument_name(&key);
-        if !out.contains_key(name) {
-            out.insert(name.to_owned(), value);
+        let name = canonical_argument_name(&key);
+        if !out.contains_key(&name) {
+            out.insert(name, value);
         }
     }
     out
@@ -174,9 +201,9 @@ pub fn unknown_arguments(command: &Command, arguments: &Map<String, Value>) -> V
     let known = value_names(command);
     arguments
         .keys()
-        .map(|key| argument_name(key))
-        .filter(|name| !known.contains(name))
-        .map(str::to_owned)
+        .map(|key| canonical_argument_name(key))
+        .filter(|name| !known.contains(&name.as_str()))
+        .map(|name| name)
         .collect()
 }
 
@@ -188,6 +215,13 @@ pub fn unknown_arguments(command: &Command, arguments: &Map<String, Value>) -> V
 /// unique when a command is added and somebody's script quietly starts doing something else.
 pub fn find(name: &str) -> Option<&'static Command> {
     let wanted = name.trim().replace(' ', ".");
+    let wanted = match wanted.as_str() {
+        "editor.open" => "tab.open",
+        "editor.reload" => "tab.reload",
+        "editor.save" => "tab.save",
+        "editor.close" => "tab.close",
+        _ => wanted.as_str(),
+    };
     COMMANDS.iter().find(|command| command.wire() == wanted)
 }
 
@@ -1951,6 +1985,14 @@ mod tests {
     }
 
     #[test]
+    fn equivalent_argument_styles_share_the_catalogue_name() {
+        assert_eq!(canonical_argument_name("wait-for"), "wait-for");
+        assert_eq!(canonical_argument_name("waitFor"), "wait-for");
+        assert_eq!(canonical_argument_name("wait_for"), "wait-for");
+        assert_eq!(canonical_argument_name("--fromLine"), "from-line");
+    }
+
+    #[test]
     fn the_dashes_come_off_every_key_and_the_values_are_kept() {
         let normalised = normalise_arguments(given(json!({
             "--permanent": true,
@@ -1979,6 +2021,17 @@ mod tests {
     fn a_map_with_no_dashes_in_it_is_left_exactly_as_it_was() {
         let plain = given(json!({ "path": "a.rs", "permanent": true }));
         assert_eq!(normalise_arguments(plain.clone()), plain);
+    }
+
+    #[test]
+    fn an_alias_argument_is_normalised_and_the_canonical_key_wins() {
+        let normalised = normalise_arguments(given(json!({
+            "waitFor": "ready",
+            "wait_for": "wrong",
+            "wait-for": "canonical",
+        })));
+        assert_eq!(normalised.get("wait-for"), Some(&json!("canonical")));
+        assert_eq!(normalised.len(), 1);
     }
 
     /// The fault this closes: a value the command has no name for used to be dropped, and the
@@ -2131,6 +2184,13 @@ mod tests {
         assert_eq!(find("status").map(|c| c.wire()), Some("status".to_owned()));
         assert!(find("tab").is_none(), "an area on its own is not a command");
         assert!(find("tab op").is_none(), "an abbreviation is not accepted");
+    }
+
+    #[test]
+    fn file_verbs_guessed_under_editor_resolve_to_the_tab_commands() {
+        for verb in ["open", "reload", "save", "close"] {
+            assert_eq!(find(&format!("editor {verb}")).map(|command| command.wire()), Some(format!("tab.{verb}")));
+        }
     }
 
     #[test]

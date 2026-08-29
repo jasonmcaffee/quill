@@ -86,9 +86,12 @@ impl Request {
     }
 
     pub fn from_json(value: &Value) -> Option<Self> {
+        let raw_command = value.get("command")?.as_str()?;
         Some(Self {
             token: value.get("token")?.as_str()?.to_owned(),
-            command: value.get("command")?.as_str()?.to_owned(),
+            command: crate::catalogue::find(raw_command)
+                .map(|command| command.wire())
+                .unwrap_or_else(|| raw_command.to_owned()),
             arguments: match value.get("arguments") {
                 // The leading dashes come off here, at the window's front door, because this is
                 // where a request that somebody else wrote arrives. The usage lines say
@@ -319,6 +322,19 @@ mod tests {
         let request = Request::from_json(&value).expect("a request");
         assert!(request.arguments.is_empty());
         assert_eq!(request.deadline_ms, None, "a client that says nothing asks for nothing");
+    }
+
+    #[test]
+    fn a_wire_request_canonicalises_command_and_argument_aliases() {
+        let request = Request::from_json(&json!({
+            "token": "abc",
+            "command": "editor.open",
+            "arguments": { "waitFor": "ready", "from_line": 4 },
+        }))
+        .expect("a request");
+        assert_eq!(request.command, "tab.open");
+        assert_eq!(request.arguments["wait-for"], json!("ready"));
+        assert_eq!(request.arguments["from-line"], json!(4));
     }
 
     #[test]

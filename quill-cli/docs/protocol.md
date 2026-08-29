@@ -58,7 +58,7 @@ A refusal is the same shape with `ok` false:
 |---|---|
 | `token` | Required. The token from the instance file. A request without the right one is refused with `refused`. |
 | `command` | Required. The command's **wire name**, with a dot: `tab.open`, `terminal.send`, `status`. |
-| `arguments` | Optional. An object holding every value the command takes, positional or flag, under the name the catalogue gives it. An absent `arguments` is an empty one. |
+| `arguments` | Optional. An object holding every value the command takes, positional or flag, under the name the catalogue gives it. Kebab-case names also accept camelCase and snake_case spellings. An absent `arguments` is an empty one. |
 | `deadline_ms` | Optional. How long you will wait for an answer, in milliseconds. Say it and a request still on the queue when it passes is **thrown away** rather than applied to a caller that has gone; leave it out and the window's own backstop of two minutes applies. |
 
 Values may be sent as strings or as their natural type: `{"line": 42}` and `{"line": "42"}` mean the

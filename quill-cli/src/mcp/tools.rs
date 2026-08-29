@@ -133,34 +133,71 @@ fn grouped() -> Vec<Tool> {
         if commands.is_empty() {
             continue;
         }
-        let verbs: Vec<Value> = commands.iter().map(|command| json!(command.verb)).collect();
+        let mut schema_commands = commands.clone();
+        let mut verbs: Vec<Value> = commands.iter().map(|command| json!(command.verb)).collect();
+        if area == "editor" {
+            for verb in ["open", "reload", "save", "close"] {
+                if let Some(command) = catalogue::find(&format!("tab {verb}")) {
+                    schema_commands.push(command);
+                    verbs.push(json!(verb));
+                }
+            }
+        }
+        let mut description = area_description(area, &commands);
+        if area == "editor" {
+            description.push_str("\nFile verbs open, reload, save and close are aliases for the corresponding tab commands.\n");
+        }
         out.push(Tool {
             name: tool_name(area, ""),
             title: format!("Quill: {}", catalogue::area_title(area)),
-            description: area_description(area, &commands),
-            schema: json!({
-                "type": "object",
-                "properties": {
-                    "command": {
-                        "type": "string",
-                        "enum": verbs,
-                        "description": "Which command to run. The usage lines in the description say what each one takes.",
-                    },
-                    "arguments": {
-                        "type": "object",
-                        "description": "The values the command takes, by the name in its usage line. A switch is true. Positional and flag values go in the same object, so nothing has to be counted.",
-                        "additionalProperties": true,
-                    },
-                    "instance": instance_property(),
-                    "timeout": timeout_property(),
-                },
-                "required": ["command"],
-                "additionalProperties": false,
-            }),
+            description,
+            schema: grouped_schema(&schema_commands, verbs),
             target: Target::Area(area),
         });
     }
     out
+}
+
+/// Generate the compact schema shared by one grouped area tool.
+///
+/// The nested object is a union because the selected verb is already an enum. It exposes every
+/// catalogue name once, which gives clients completion without repeating a full schema for every
+/// verb and keeps the default grouped shape within its context budget.
+fn grouped_schema(commands: &[&'static Command], verbs: Vec<Value>) -> Value {
+    let mut arguments = Map::new();
+    for command in commands {
+        for argument in command.arguments {
+            arguments.entry(argument.name.to_owned()).or_insert_with(|| {
+                json!({ "type": "string" })
+            });
+        }
+        for flag in command.flags {
+            arguments.entry(flag.name.to_owned()).or_insert_with(|| {
+                let kind = if flag.value.is_some() { "string" } else { "boolean" };
+                json!({ "type": kind })
+            });
+        }
+    }
+    json!({
+        "type": "object",
+        "properties": {
+            "command": {
+                "type": "string",
+                "enum": verbs,
+                "description": "Which command to run. The usage lines in the description say what each one takes.",
+            },
+            "arguments": {
+                "type": "object",
+                "description": "Named values from the selected command's usage line. A switch is true.",
+                "properties": arguments,
+                "additionalProperties": false,
+            },
+            "instance": instance_property(),
+            "timeout": timeout_property(),
+        },
+        "required": ["command"],
+        "additionalProperties": false,
+    })
 }
 
 /// The semantic commands generic agent tools otherwise compete with directly.
@@ -339,7 +376,7 @@ pub fn resolve(shape: Shape, name: &str, given: &Map<String, Value>) -> Result<C
     let instance = given.get("instance").and_then(Value::as_str).map(str::to_owned);
     match tool.target {
         Target::One(command) => {
-            let mut arguments = given.clone();
+            let mut arguments = catalogue::normalise_arguments(given.clone());
             arguments.remove("instance");
             Ok(Call { command, arguments, instance })
         }
@@ -522,6 +559,36 @@ mod tests {
         }
     }
 
+    #[test]
+    fn grouped_tools_expose_each_area_argument_and_close_the_nested_object() {
+        for tool in tools(Shape::Grouped) {
+            let Target::Area(area) = tool.target else { continue };
+            let properties = tool.schema["properties"]["arguments"]["properties"]
+                .as_object()
+                .expect("grouped argument properties");
+            assert_eq!(tool.schema["properties"]["arguments"]["additionalProperties"], json!(false));
+            for command in catalogue::in_area(area) {
+                if !offered(command) { continue }
+                for name in catalogue::value_names(command) {
+                    assert!(properties.contains_key(name), "{name} is missing from {area}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_editor_group_advertises_file_verb_aliases() {
+        let editor = tools(Shape::Grouped)
+            .into_iter()
+            .find(|tool| tool.name == "quill_editor")
+            .expect("editor group");
+        let verbs = editor.schema["properties"]["command"]["enum"].as_array().expect("verbs");
+        for verb in ["open", "reload", "save", "close"] {
+            assert!(verbs.iter().any(|value| value == verb), "missing editor alias {verb}");
+        }
+        assert!(editor.description.contains("aliases for the corresponding tab commands"));
+    }
+
     /// Pin the optional name and the short reasons to choose Quill over generic file tools.
     #[test]
     fn the_changed_tools_advertise_the_native_answers_an_agent_cannot_get_from_files() {
@@ -621,6 +688,30 @@ mod tests {
     }
 
     #[test]
+    fn an_editor_file_verb_alias_resolves_to_the_same_tab_command() {
+        let call = resolve(
+            Shape::Grouped,
+            "quill_editor",
+            json!({ "command": "open", "arguments": { "path": "README.md" } })
+                .as_object()
+                .expect("an object"),
+        )
+        .expect("editor open alias");
+        assert_eq!(call.command.wire(), "tab.open");
+    }
+
+    #[test]
+    fn a_narrow_tool_normalises_camel_case_arguments_before_dispatch() {
+        let call = resolve(
+            Shape::Every,
+            "quill_terminal_read",
+            json!({ "waitFor": "ready" }).as_object().expect("an object"),
+        )
+        .expect("terminal read");
+        assert_eq!(call.arguments.get("wait-for"), Some(&json!("ready")));
+    }
+
+    #[test]
     fn an_area_tools_timeout_reaches_the_command_it_names() {
         // It is a property of the call, where the schema puts it, and it used to be dropped on the
         // floor — so a tool call asking to fail fast waited the whole default fifteen seconds.
@@ -705,6 +796,7 @@ mod tests {
             every.len(),
             grouped.len()
         );
+        assert!(grouped.len() / 4 < 16_000, "grouped MCP schema exceeded budget: {} bytes", grouped.len());
         for command in commands() {
             assert!(
                 grouped.contains(command.verb),

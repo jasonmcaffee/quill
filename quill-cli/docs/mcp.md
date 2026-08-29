@@ -56,9 +56,15 @@ that permits tools by name — Claude Code does — can only say "may open tabs,
 
 ```sh
 $ quill-cli mcp tools --count
-grouped     22 tools    58454 bytes   14613 tokens (roughly)
+grouped     22 tools    60936 bytes   15234 tokens (roughly)
 every      147 tools   144153 bytes   36038 tokens (roughly)
 ```
+
+Argument names are generated from the catalogue. Kebab-case is canonical, but the MCP resolver
+also accepts equivalent camelCase and snake_case spellings, such as `wait-for`, `waitFor`, and
+`wait_for`. The control channel applies the same normalization. The common file guesses
+`editor open`, `editor reload`, `editor save`, and `editor close` resolve to the corresponding
+`tab` commands.
 
 Two properties are on **every** tool in both shapes, because both are about the call rather than
 about the command:
