@@ -711,6 +711,25 @@ mod tests {
         }
     }
 
+    /// A markup grammar for the tag-region tests: the one thing that matters is `markup` and the
+    /// raw text pair, because a `<script>` body is where a naive bracket or bracket-less `<` walk
+    /// would go wrong.
+    fn html() -> Grammar {
+        Grammar {
+            language: "HTML".to_owned(),
+            keywords: vec![
+                "div".to_owned(),
+                "p".to_owned(),
+                "br".to_owned(),
+                "img".to_owned(),
+                "script".to_owned(),
+            ],
+            markup: true,
+            raw_text: vec![("script".to_owned(), Some("javascript".to_owned()))],
+            ..Grammar::default()
+        }
+    }
+
     fn heads(regions: &[Region]) -> Vec<(usize, usize, &'static str)> {
         regions.iter().map(|r| (r.head, r.last(), r.kind.name())).collect()
     }
@@ -881,6 +900,54 @@ mod tests {
         let source = "fn one() {\n    a();\n}\nfn two() {\n    b();\n}\n";
         let found = regions(source, Reading::Code(&rust()));
         assert_eq!(collapse_all_but(&found, &[]), vec![0, 3]);
+    }
+
+    #[test]
+    fn a_tag_pair_folds_even_when_the_file_is_not_indented() {
+        // The point of reading tags rather than indentation: the badly-indented file is the one
+        // somebody needs to fold, and it has no indentation to fold by.
+        let source = "<div>\n<p>one</p>\n<p>two</p>\n</div>\n";
+        let found = regions(source, Reading::Code(&html()));
+        assert_eq!(heads(&found), vec![(0, 3, "block")]);
+    }
+
+    #[test]
+    fn a_nested_tag_is_a_region_of_its_own() {
+        let source = "<div>\n<p>\ntext\n</p>\n</div>\n";
+        let found = regions(source, Reading::Code(&html()));
+        assert_eq!(heads(&found), vec![(0, 4, "block"), (1, 3, "block")]);
+    }
+
+    #[test]
+    fn an_unclosed_tag_is_not_a_region() {
+        let source = "<div>\n<p>one</p>\n";
+        let found = regions(source, Reading::Code(&html()));
+        assert!(found.is_empty(), "a half-typed element has nothing to fold: {found:?}");
+    }
+
+    #[test]
+    fn a_br_and_an_img_inside_a_tag_do_not_hold_the_stack() {
+        // Neither ever closes, and there is no list of void elements: the parent's end tag pops
+        // back to itself and throws both away.
+        let source = "<div>\n<br>\n<img src=\"a.png\">\n</div>\n";
+        let found = regions(source, Reading::Code(&html()));
+        assert_eq!(heads(&found), vec![(0, 3, "block")]);
+    }
+
+    #[test]
+    fn a_less_than_inside_a_script_body_opens_no_tag() {
+        // `tag_regions` runs the state machine rather than a walk over the angle brackets, so the
+        // comparison in the body is not a tag and cannot open a region.
+        let source = "<script>\na < b\nb > a\n</script>\n";
+        let found = regions(source, Reading::Code(&html()));
+        assert_eq!(heads(&found), vec![(0, 3, "block")]);
+    }
+
+    #[test]
+    fn a_closing_line_with_a_word_after_the_tag_stays_visible() {
+        let source = "<div>\ntext\n</div> and more\n";
+        let found = regions(source, Reading::Code(&html()));
+        assert_eq!(heads(&found), vec![(0, 1, "block")]);
     }
 }
 

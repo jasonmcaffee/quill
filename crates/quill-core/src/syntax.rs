@@ -1387,4 +1387,150 @@ mod tests {
         names.dedup();
         assert_eq!(names.len(), count);
     }
+
+    /// The HTML grammar for the markup tests: the five states and the two raw text pairs.
+    fn html() -> Grammar {
+        let words = |list: &str| list.split(' ').map(str::to_owned).collect::<Vec<String>>();
+        Grammar {
+            language: "HTML".to_owned(),
+            keywords: words("html head title style body p div span a br img input link script"),
+            builtins: words("class id src href alt value type title"),
+            block_comment: Some(("<!--".to_owned(), "-->".to_owned())),
+            strings: vec!['"', '\''],
+            escapes: true,
+            operators: "<>=/!".chars().collect(),
+            numbers: false,
+            word_characters: vec!['-'],
+            markup: true,
+            raw_text: vec![
+                ("script".to_owned(), Some("javascript".to_owned())),
+                ("style".to_owned(), Some("css".to_owned())),
+                ("textarea".to_owned(), None),
+                ("title".to_owned(), None),
+            ],
+            ..Grammar::default()
+        }
+    }
+
+    /// The tokens a piece of markup produces, as text, so a test reads like the thing it is about.
+    fn html_tokens(text: &str) -> Vec<(String, Token)> {
+        highlight(text, &html())
+            .into_iter()
+            .map(|(range, token)| (text[range].to_owned(), token))
+            .collect()
+    }
+
+    #[test]
+    fn a_less_than_in_prose_is_prose_and_not_a_tag() {
+        // The HTML Standard's tag-open state: a letter, `/`, `!` or `?` after the `<`, and a
+        // digit is none of those, so `5 < 3` is drawn the way a browser draws it.
+        let found = html_tokens("if 5 < 3 then 5 > 3");
+        assert!(found.is_empty(), "prose is not coloured: {found:?}");
+    }
+
+    #[test]
+    fn an_apostrophe_in_prose_is_not_a_string() {
+        let found = html_tokens("it's a test of the <b>bold</b> word");
+        assert!(!found.iter().any(|(_, token)| *token == Token::String), "{found:?}");
+        assert_eq!(
+            found.iter().filter(|(text, _)| text == "b").count(),
+            2,
+            "the tag is read on either side of the apostrophe: {found:?}"
+        );
+    }
+
+    #[test]
+    fn a_tag_is_a_tag_and_a_less_than_with_a_space_is_not() {
+        let found = html_tokens("<p>one</p> and < p>two");
+        assert_eq!(
+            found.iter().filter(|(text, _)| text == "p").count(),
+            2,
+            "the real tag and its end, and nothing from `< p>`: {found:?}"
+        );
+    }
+
+    #[test]
+    fn a_less_than_inside_a_script_body_opens_no_tag() {
+        // The body of a raw text element is not markup, which is what makes the comparison survive.
+        let text = "<script>\nif (a < b) {\n  do();\n}\n</script>";
+        let found = html_tokens(text);
+        assert!(!found.iter().any(|(text, _)| text == "if"), "a word of the script: {found:?}");
+        assert!(!found.iter().any(|(text, _)| text == "b"), "{found:?}");
+        assert_eq!(
+            found.iter().filter(|(text, _)| text == "script").count(),
+            2,
+            "only the two tags name it: {found:?}"
+        );
+    }
+
+    #[test]
+    fn a_character_reference_is_a_number_in_text_and_in_a_title_and_not_in_a_script() {
+        // The HTML Standard's own difference: an escapable raw text element still decodes its
+        // references, and a raw text element does not.
+        let found = html_tokens("<p>Tom &amp; Jerry</p>");
+        assert!(found.contains(&("&amp;".to_owned(), Token::Number)), "{found:?}");
+        let found = html_tokens("<title>Tom &amp; Jerry</title>");
+        assert!(found.contains(&("&amp;".to_owned(), Token::Number)), "{found:?}");
+        let found = html_tokens("<script>x = &amp;</script>");
+        assert!(!found.iter().any(|(_, token)| *token == Token::Number), "{found:?}");
+    }
+
+    #[test]
+    fn a_tag_name_the_language_names_is_a_keyword_and_one_it_does_not_is_a_type() {
+        let found = html_tokens("<div>and a <my-widget>here</my-widget></div>");
+        assert!(found.contains(&("div".to_owned(), Token::Keyword)), "{found:?}");
+        assert!(found.contains(&("my-widget".to_owned(), Token::Type)), "{found:?}");
+    }
+
+    #[test]
+    fn the_same_word_is_a_tag_name_in_one_place_and_an_attribute_in_another() {
+        // `title` is an element and an attribute, and the two are drawn two ways in one file.
+        let found = html_tokens("<title>page</title>\n<link title=\"x\">");
+        assert!(found.contains(&("title".to_owned(), Token::Keyword)), "{found:?}");
+        assert!(found.contains(&("title".to_owned(), Token::Builtin)), "{found:?}");
+        assert!(found.contains(&("\"x\"".to_owned(), Token::String)), "{found:?}");
+    }
+
+    #[test]
+    fn an_unquoted_attribute_value_is_a_string_to_its_first_space() {
+        let found = html_tokens("<input value=abc type=text>");
+        assert!(found.contains(&("abc".to_owned(), Token::String)), "{found:?}");
+        assert!(found.contains(&("text".to_owned(), Token::String)), "{found:?}");
+    }
+
+    #[test]
+    fn the_body_of_a_style_block_is_reported_as_embedded_css() {
+        let text = "<style>\n.color { color: red; }\n</style>";
+        let mut embedded = Vec::new();
+        scan_with_embedded(text, &html(), &mut embedded, |_, _| {});
+        assert_eq!(embedded.len(), 1, "{embedded:?}");
+        assert_eq!(embedded[0].language, "css");
+        assert_eq!(&text[embedded[0].range.clone()], "\n.color { color: red; }\n");
+    }
+
+    #[test]
+    fn the_body_of_a_script_block_is_reported_as_embedded_javascript() {
+        let text = "<script>var x = 1;</script>";
+        let mut embedded = Vec::new();
+        scan_with_embedded(text, &html(), &mut embedded, |_, _| {});
+        assert_eq!(embedded.len(), 1, "{embedded:?}");
+        assert_eq!(embedded[0].language, "javascript");
+        assert_eq!(&text[embedded[0].range.clone()], "var x = 1;");
+    }
+
+    #[test]
+    fn a_point_is_answered_by_the_state_it_is_in() {
+        let grammar = html();
+        assert_eq!(markup_position("hello <div", 10, &grammar), Some(MarkupPosition::TagName));
+        assert_eq!(markup_position("<div class", 10, &grammar), Some(MarkupPosition::Attribute));
+        assert_eq!(markup_position("<div class=\"x", 13, &grammar), Some(MarkupPosition::Value));
+        assert_eq!(markup_position("<div class=x", 12, &grammar), Some(MarkupPosition::Value));
+        assert_eq!(markup_position("hello world", 5, &grammar), Some(MarkupPosition::Text));
+        assert_eq!(markup_position("<!-- a note", 5, &grammar), Some(MarkupPosition::Text));
+        assert_eq!(
+            markup_position("const x = 1;", 5, &javascript()),
+            None,
+            "a language that is not markup has no position"
+        );
+    }
 }

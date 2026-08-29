@@ -224,7 +224,7 @@ impl QuillApp {
     /// `completion::could_match` before a candidate is built for it, because turning four thousand
     /// index names into owned strings to throw nearly all of them away again is the difference
     /// between a keystroke that allocates and one that does not.
-    pub fn completion_candidates(&mut self, stem: &str) -> Vec<Candidate> {
+    pub fn completion_candidates(&mut self, stem: &str, offset: usize) -> Vec<Candidate> {
         let mut pool: Vec<Candidate> = Vec::new();
         if stem.is_empty() {
             return pool;
@@ -284,13 +284,43 @@ impl QuillApp {
         }
 
         // The language's own words. The manifest already holds them; completion is the second
-        // reader of the same data.
+        // reader of the same data. In a markup file the position decides which of the lists is
+        // offered at all — `task-1694` §6.4: a tag name offers the element names, an attribute
+        // offers the attribute names, and prose, a value and raw text offer none of them. Without
+        // the filter, typing an ordinary sentence in an HTML file pops a list of element names. A
+        // grammar that is not markup offers all three lists, as it always did, and the position is
+        // never asked, so the document is never read for it — the question is what costs a read,
+        // and it is asked only where it can change the answer.
         if let Some(grammar) = self.grammar_for(self.files.active().path()) {
-            let lists: [(&Vec<String>, &str); 3] = [
-                (&grammar.keywords, "keyword"),
-                (&grammar.builtins, "builtin"),
-                (&grammar.types, "type"),
-            ];
+            let lists: Vec<(&Vec<String>, &str)> = if grammar.markup {
+                // `None` here is an offset the document cannot answer for; all three lists is the
+                // safe offer when the position is unknown.
+                let position = quill_core::syntax::markup_position(
+                    &self.document().text().to_string(),
+                    offset,
+                    &grammar,
+                );
+                match position {
+                    Some(quill_core::syntax::MarkupPosition::TagName) => {
+                        vec![(&grammar.keywords, "keyword")]
+                    }
+                    Some(quill_core::syntax::MarkupPosition::Attribute) => {
+                        vec![(&grammar.builtins, "builtin")]
+                    }
+                    Some(_) => Vec::new(),
+                    None => vec![
+                        (&grammar.keywords, "keyword"),
+                        (&grammar.builtins, "builtin"),
+                        (&grammar.types, "type"),
+                    ],
+                }
+            } else {
+                vec![
+                    (&grammar.keywords, "keyword"),
+                    (&grammar.builtins, "builtin"),
+                    (&grammar.types, "type"),
+                ]
+            };
             for (list, detail) in lists {
                 for word in list {
                     if completion::could_match(stem, word) {
@@ -483,7 +513,7 @@ impl QuillApp {
             return Offer { range, typed: String::new(), rows: Vec::new(), import: None };
         }
         let typed = text[range.clone()].to_owned();
-        let rows = self.completion_rows(&typed);
+        let rows = self.completion_rows(&typed, offset);
         Offer { range, typed, rows, import: None }
     }
 
@@ -508,15 +538,15 @@ impl QuillApp {
         Offer {
             range: offset..offset,
             typed: stem.to_owned(),
-            rows: self.completion_rows(stem),
+            rows: self.completion_rows(stem, offset),
             import: None,
         }
     }
 
     /// The rows a stem offers here, best first. What the popup shows and what the command line
     /// prints, so the two can never disagree.
-    pub fn completion_rows(&mut self, stem: &str) -> Vec<Row> {
-        let pool = self.completion_candidates(stem);
+    pub fn completion_rows(&mut self, stem: &str, offset: usize) -> Vec<Row> {
+        let pool = self.completion_candidates(stem, offset);
         completion::rank(stem, pool)
     }
 
@@ -1047,8 +1077,8 @@ mod tests {
         typing(&mut app, "d");
         assert!(app.completion().is_none());
         // And an empty stem answers nothing however it is asked.
-        assert!(app.completion_candidates("").is_empty());
-        assert!(app.completion_rows("").is_empty());
+        assert!(app.completion_candidates("", 0).is_empty());
+        assert!(app.completion_rows("", 0).is_empty());
         std::fs::remove_dir_all(&folder).ok();
     }
 
@@ -1450,7 +1480,7 @@ mod tests {
         // The ownership rule of `task-1675` §3.3, at the completion end: a name being edited in a
         // tab must never be offered twice, once live and once as the disk last saw it.
         let (folder, mut app) = a_window("quill-completion-ownership");
-        let rows = app.completion_rows("dra");
+        let rows = app.completion_rows("dra", 0);
         let everything: Vec<&Row> =
             rows.iter().filter(|row| row.name == "draw_everything").collect();
         assert_eq!(everything.len(), 1, "one row for it: {rows:?}");
@@ -1465,7 +1495,7 @@ mod tests {
         let index = app.files.active_index();
         let _ = index;
         app.open_path_permanently(&folder.join("layout.rs"));
-        let rows = app.completion_rows("dra");
+        let rows = app.completion_rows("dra", 0);
         let everything: Vec<&Row> =
             rows.iter().filter(|row| row.name == "draw_everything").collect();
         assert_eq!(everything.len(), 1, "still one row: {rows:?}");
@@ -1477,10 +1507,53 @@ mod tests {
     fn the_language_s_own_words_are_offered_and_labelled_as_such() {
         // Source 3: the manifest already holds them, and completion is the second reader of it.
         let (folder, mut app) = a_window("quill-completion-keywords");
-        let rows = app.completion_rows("str");
+        let rows = app.completion_rows("str", 0);
         let keyword = rows.iter().find(|row| row.name == "struct").expect("`struct`: {rows:?}");
         assert_eq!(keyword.source, Source::Language);
         assert_eq!(keyword.detail, "keyword");
+        std::fs::remove_dir_all(&folder).ok();
+    }
+
+    #[test]
+    fn the_position_in_a_tag_decides_which_language_words_are_offered() {
+        // `task-1694` §6.4: a tag name offers the element names, an attribute offers the attribute
+        // names, and prose offers none of them. The same stem, asked at three positions of one file,
+        // answers three different ways, which is what the filter is for. Each name is one the file
+        // does not contain, so if it is offered it came from the language's list and not the file's
+        // own words.
+        let folder = std::env::temp_dir().join("quill-completion-markup");
+        std::fs::remove_dir_all(&folder).ok();
+        std::fs::create_dir_all(&folder).expect("make the folder");
+        std::fs::write(
+            folder.join("page.html"),
+            "<div class=\"card\">Hello world</div>\n",
+        )
+        .expect("write page.html");
+        let mut app = QuillApp::new(&folder);
+        app.open_path_permanently(&folder.join("page.html"));
+
+        // Inside the first word of a tag, so the element names are on offer.
+        let tag_name = app.completion_rows("ta", 3);
+        assert!(
+            tag_name.iter().any(|row| row.name == "table" && row.source == Source::Language),
+            "an element name at a tag name: {tag_name:?}"
+        );
+
+        // Inside an attribute name, so the attribute names are on offer.
+        let attribute = app.completion_rows("pl", 7);
+        assert!(
+            attribute.iter().any(|row| row.name == "placeholder" && row.source == Source::Language),
+            "an attribute name at an attribute: {attribute:?}"
+        );
+
+        // In the body, where no language word is on offer, so the element name the tag-name position
+        // offered is not here.
+        let prose = app.completion_rows("ta", 20);
+        assert!(
+            !prose.iter().any(|row| row.name == "table"),
+            "no element name in prose: {prose:?}"
+        );
+
         std::fs::remove_dir_all(&folder).ok();
     }
 

@@ -118,17 +118,19 @@ fn main() {
         "stem", "gathered", "offered", "gather ms", "score ms", "total ms"
     );
 
+    // The stem is typed at the caret, which is the point the position is asked about.
+    let caret = app.document().selection().end();
     let mut worst: f64 = 0.0;
     for stem in &stems {
         // Exactly what a keystroke does: gather the pool from the four sources, then rank it.
         let gather = timed(20, || {
-            std::hint::black_box(app.completion_candidates(stem));
+            std::hint::black_box(app.completion_candidates(stem, caret));
         });
         let whole = timed(20, || {
-            std::hint::black_box(app.completion_rows(stem));
+            std::hint::black_box(app.completion_rows(stem, caret));
         });
-        let gathered = app.completion_candidates(stem).len();
-        let offered = app.completion_rows(stem).len();
+        let gathered = app.completion_candidates(stem, caret).len();
+        let offered = app.completion_rows(stem, caret).len();
         let score = (whole - gather).max(0.0);
         worst = worst.max(whole);
         println!(

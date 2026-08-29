@@ -711,6 +711,36 @@ fn path_roots(values: &Values) -> Result<Vec<(String, PathRoot)>, String> {
     Ok(found)
 }
 
+/// `language.raw_text`: a comma list of `element` or `element=language`, the elements of a markup
+/// language whose contents are not markup — `script=javascript, style=css, textarea, title`.
+///
+/// The right hand side is a language name and it is **not** checked here, which is the one
+/// registry-shaped key in Quill that is not validated against a list: the name is resolved by
+/// `Plugins::for_language` at the moment of use, the same function a fence in a Markdown document
+/// is resolved by, which already answers with nothing for a language nothing claims. Checking it
+/// would mean a plugin refusing to load because another plugin was switched off. An entry that
+/// names a language is a raw text element and one that names none is an escapable raw text one,
+/// which is the HTML Standard's own distinction and is derived rather than written down twice.
+fn raw_text(values: &Values) -> Result<Vec<(String, Option<String>)>, String> {
+    let mut found = Vec::new();
+    for entry in list(values, "language.raw_text") {
+        let (element, language) = match entry.split_once('=') {
+            Some((element, language)) => (element, Some(language)),
+            None => (entry.as_str(), None),
+        };
+        let element = element.trim();
+        if element.is_empty() {
+            return Err(format!("language.raw_text holds `{entry}`, which names no element"));
+        }
+        let language = language.map(str::trim).filter(|language| !language.is_empty());
+        if entry.contains('=') && language.is_none() {
+            return Err(format!("language.raw_text holds `{entry}`, which names an element and no language"));
+        }
+        found.push((element.to_owned(), language.map(str::to_owned)));
+    }
+    Ok(found)
+}
+
 /// One trimmed word, or nothing when the manifest left the key out or left it empty.
 fn word(values: &Values, name: &str) -> Option<String> {
     values.text(name).map(str::trim).filter(|value| !value.is_empty()).map(str::to_owned)
@@ -778,6 +808,11 @@ pub mod bundled {
             "mermaid",
             include_str!("../../plugins/mermaid/plugin.conf"),
             Some(include_bytes!("../../plugins/mermaid/icon.png")),
+        ),
+        (
+            "html",
+            include_str!("../../plugins/html/plugin.conf"),
+            Some(include_bytes!("../../plugins/html/icon.png")),
         ),
     ];
 }
@@ -865,10 +900,12 @@ mod tests {
         assert!(problems.is_empty(), "a bundled plugin should always parse: {problems:?}");
         let ids: Vec<&str> = plugins.all().iter().map(|plugin| plugin.id.as_str()).collect();
         assert!(ids.contains(&"javascript") && ids.contains(&"typescript") && ids.contains(&"rust"));
-        assert!(ids.contains(&"mermaid") && ids.contains(&"css"));
+        assert!(ids.contains(&"mermaid") && ids.contains(&"css") && ids.contains(&"html"));
         assert_eq!(plugins.for_path(Path::new("a.rs")).map(|p| p.id.as_str()), Some("rust"));
         assert_eq!(plugins.for_path(Path::new("a.ts")).map(|p| p.id.as_str()), Some("typescript"));
         assert_eq!(plugins.for_path(Path::new("a.js")).map(|p| p.id.as_str()), Some("javascript"));
+        assert_eq!(plugins.for_path(Path::new("a.html")).map(|p| p.id.as_str()), Some("html"));
+        assert_eq!(plugins.for_path(Path::new("a.htm")).map(|p| p.id.as_str()), Some("html"));
         assert_eq!(plugins.for_path(Path::new("a.md")), None, "Markdown is not a plugin's business");
         // Every one of them ships an icon and a colour scheme, which is what the ticket asks for.
         for plugin in plugins.all() {
@@ -912,8 +949,10 @@ mod tests {
     #[test]
     fn the_older_plugins_ask_for_none_of_what_css_added() {
         // The three keys are opt-in, which is what keeps a `.ts` file coloured exactly as it was.
+        // HTML is the one plugin besides CSS to read a hyphen as a letter, so it is the one the
+        // loop lets through; `the_html_plugin_reads_the_two_things_markup_needs` checks what it asks for.
         let (plugins, _) = Plugins::load(None);
-        for plugin in plugins.all().iter().filter(|plugin| plugin.id != "css") {
+        for plugin in plugins.all().iter().filter(|plugin| plugin.id != "css" && plugin.id != "html") {
             assert!(plugin.grammar.word_characters.is_empty(), "{}", plugin.id);
             assert!(!plugin.grammar.hex_colors, "{}", plugin.id);
             assert!(plugin.grammar.types.is_empty(), "{}", plugin.id);
@@ -981,6 +1020,84 @@ mod tests {
         assert_eq!(mermaid.path_separator, None);
         assert!(mermaid.path_roots.is_empty());
         assert!(!mermaid.completes_imports(), "so no import is ever read out of a diagram");
+    }
+
+    /// The same rule a fifth time, for the two keys `task-1694` added. Every plugin that shipped
+    /// before HTML names neither, so it is read by exactly the code that read it before — which is
+    /// what keeps a `.ts` file, a stylesheet and a diagram all unchanged by a key they never asked
+    /// for.
+    #[test]
+    fn the_older_plugins_ask_for_none_of_what_the_markup_added() {
+        let (plugins, problems) = Plugins::load(None);
+        assert!(problems.is_empty(), "{problems:?}");
+        for plugin in plugins.all().iter().filter(|plugin| plugin.id != "html") {
+            assert!(!plugin.grammar.markup, "{} is not markup", plugin.id);
+            assert!(plugin.grammar.raw_text.is_empty(), "{} names no raw text elements", plugin.id);
+        }
+    }
+
+    /// `task-1694`. The two keys are opt-in, and this is what proves they reach the grammar at all
+    /// rather than being read and dropped, the way the CSS test does for its three.
+    #[test]
+    fn the_html_plugin_reads_the_two_things_markup_needs() {
+        let (plugins, problems) = Plugins::load(None);
+        assert!(problems.is_empty(), "{problems:?}");
+        let html = plugins.get("html").expect("the html plugin");
+        assert!(html.claims(Path::new("page.html")));
+        assert!(html.claims(Path::new("page.HTM")));
+        assert!(!html.claims(Path::new("page.xml")), "XML is a different language, deliberately");
+        assert!(html.grammar.markup, "the flag is read");
+        assert!(
+            html.grammar.raw_text.iter().any(|(el, lang)| el == "script" && lang.as_deref() == Some("javascript")),
+            "a script block holds javascript"
+        );
+        assert!(
+            html.grammar.raw_text.iter().any(|(el, lang)| el == "style" && lang.as_deref() == Some("css")),
+            "a style block holds css"
+        );
+        assert!(
+            html.grammar.raw_text.iter().any(|(el, lang)| el == "title" && lang.is_none()),
+            "a title is escapable raw text, so it decodes its references"
+        );
+        assert_eq!(html.grammar.word_characters, vec!['-'], "a hyphen is a letter");
+        assert_eq!(html.grammar.block_comment.as_ref(), Some(&("<!--".to_owned(), "-->".to_owned())));
+        assert!(html.grammar.keywords.contains(&"p".to_owned()), "an element name is a keyword");
+        assert!(html.grammar.keywords.contains(&"DOCTYPE".to_owned()), "the declaration colours");
+        assert!(html.grammar.builtins.contains(&"class".to_owned()), "an attribute name is a builtin");
+        assert!(html.grammar.types.is_empty(), "the third list is empty, and the type colour is the tag-name rule");
+
+        // What that adds up to, read through the tokeniser the window uses.
+        use quill_core::syntax::{highlight, Token};
+        let text = "<div class=\"card\">Tom &amp; Jerry 5 < 3</div>";
+        let found: Vec<(&str, Token)> = highlight(text, &html.grammar)
+            .into_iter()
+            .map(|(range, token)| (&text[range], token))
+            .collect();
+        assert!(found.contains(&("div", Token::Keyword)), "the element name: {found:?}");
+        assert!(found.contains(&("class", Token::Builtin)), "the attribute name: {found:?}");
+        assert!(found.contains(&("\"card\"", Token::String)), "the value: {found:?}");
+        assert!(found.contains(&("&amp;", Token::Number)), "the reference in prose: {found:?}");
+        assert!(
+            !found.iter().any(|(word, _)| *word == "Tom" || *word == "Jerry" || *word == "5" || *word == "3"),
+            "a word of the prose is not coloured: {found:?}"
+        );
+    }
+
+    /// The body of a `<style>` block is coloured by the plugin that claims its language, asked at
+    /// the moment of use. That is the seam `colour_the_embedded` reads, and it is what makes the
+    /// withdrawal happen in the same frame rather than at the next restart.
+    #[test]
+    fn switching_the_css_plugin_off_withdraws_the_colouring_inside_a_style_block() {
+        let (mut plugins, problems) = Plugins::load(None);
+        assert!(problems.is_empty(), "{problems:?}");
+        let html = plugins.get("html").expect("the html plugin");
+        assert!(
+            html.grammar.raw_text.iter().any(|(el, lang)| el == "style" && lang.as_deref() == Some("css")),
+            "the style block names css, which is what the window asks for"
+        );
+        assert!(plugins.for_language("css").is_some(), "css is on, so the block is coloured");
+        plugins.set_enabled(None, "css", false);
+        assert!(plugins.for_language("css").is_none(), "and off, so it is not");
     }
 
     /// The same rule a fourth time, for the key `task-1687` added. Mermaid and CSS name no debugger,

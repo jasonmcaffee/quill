@@ -3954,13 +3954,85 @@ fn a_css_file_is_coloured_by_its_plugin() {
 }
 
 #[test]
+fn an_html_file_is_coloured_by_its_plugin() {
+    // `task-1694`. Not a repository, for the reason the CSS one above gives: a window in one has a
+    // git message in its status bar for the first few frames.
+    let folder = std::env::temp_dir().join("quill-screenshot-html");
+    std::fs::create_dir_all(&folder).expect("make the folder");
+    let path = folder.join("page.html");
+    std::fs::write(
+        &path,
+        "<!-- the card -->\n<div class=\"card\">\n  <style>\n    .card { background-color: #ff79c6; }\n  </style>\n  <my-widget>Tom &amp; Jerry</my-widget>\n</div>\n",
+    )
+    .expect("write page.html");
+    let mut harness = harness_in(&folder);
+    harness.state_mut().open_path_permanently(&path);
+    harness.run();
+    harness.run();
+    // Read out of the document's own spans, so the things the plugin had to be taught are checked
+    // as colours rather than only looked at.
+    let text = harness.state().document().text().to_string();
+    let chars = harness.state().document().chars();
+    let inside = |needle: &str| text.find(needle).unwrap_or_else(|| panic!("no {needle}")) + 1;
+    assert_eq!(
+        chars.style_at(inside("<!--")).color,
+        Color::rgb(0x62, 0x72, 0xA4),
+        "the comment, in Dracula's blue-grey"
+    );
+    assert_eq!(
+        chars.style_at(inside("div")).color,
+        Color::rgb(0xFF, 0x79, 0xC6),
+        "an element name is a keyword, in Dracula's pink"
+    );
+    assert_eq!(
+        chars.style_at(inside("class")).color,
+        Color::rgb(0xBD, 0x93, 0xF9),
+        "an attribute name is a builtin, in Dracula's purple"
+    );
+    assert_eq!(
+        chars.style_at(inside("\"card\"")).color,
+        Color::rgb(0xF1, 0xFA, 0x8C),
+        "a quoted value is a string, in Dracula's yellow"
+    );
+    assert_eq!(
+        chars.style_at(inside("my-widget")).color,
+        Color::rgb(0x8B, 0xE9, 0xFD),
+        "an element the language does not name is a type, in Dracula's cyan"
+    );
+    assert_eq!(
+        chars.style_at(inside("&amp;")).color,
+        Color::rgb(0xFF, 0xB8, 0x6C),
+        "a character reference in prose is a number, in Dracula's orange"
+    );
+    assert_eq!(
+        chars.style_at(inside("Tom")).color,
+        Color::rgb(0xE8, 0xEB, 0xF1),
+        "a word of the prose is not coloured"
+    );
+    // The body of the style block is coloured by the plugin that claims css, asked at the moment
+    // of use — the same seam `colour_the_embedded` reads.
+    assert_eq!(
+        chars.style_at(inside("background-color")).color,
+        Color::rgb(0xBD, 0x93, 0xF9),
+        "the style block is css, so its property is a builtin"
+    );
+    assert_eq!(
+        chars.style_at(inside("#ff79c6")).color,
+        Color::rgb(0xFF, 0xB8, 0x6C),
+        "the style block is css, so its hex colour is a number"
+    );
+    assert!(!harness.state().document().is_modified(), "colouring must not mark the file changed");
+    harness.snapshot(shot("syntax_html"));
+}
+
+#[test]
 fn the_plugins_page_lists_the_ones_that_ship_with_quill() {
     let mut harness = harness("");
     harness.state_mut().settings_window.open();
     harness.state_mut().settings_window.page = quill_app::settings::Page::Plugins;
     harness.run();
     harness.run();
-    for name in ["CSS", "JavaScript", "TypeScript", "Rust"] {
+    for name in ["CSS", "JavaScript", "TypeScript", "Rust", "HTML"] {
         harness.get_by_label(name);
     }
     harness.get_by_label("Marketplace");

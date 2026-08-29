@@ -3482,7 +3482,8 @@ impl QuillApp {
         // repository. `quill_core::folding::Tokens` is the second answer, kept beside the first.
         let mut spans: Vec<(std::ops::Range<usize>, quill_core::Color)> = Vec::new();
         let mut tokens = quill_core::folding::Tokens::default();
-        quill_core::syntax::scan(&text, &plugin.grammar, |range, token| {
+        let mut embedded: Vec<quill_core::syntax::Embedded> = Vec::new();
+        quill_core::syntax::scan_with_embedded(&text, &plugin.grammar, &mut embedded, |range, token| {
             match token {
                 quill_core::Token::Comment => tokens.note(range.clone(), true),
                 quill_core::Token::String => tokens.note(range.clone(), false),
@@ -3494,6 +3495,15 @@ impl QuillApp {
                 }
             }
         });
+        // A markup file's raw text elements are other languages, and the plugin that claims each
+        // one is what colours it — the same question the Markdown preview asks of a fence.
+        if !embedded.is_empty() {
+            self.colour_the_embedded(&text, &embedded, &mut spans, &mut tokens);
+            // The embedded spans were produced after the outer pass, and `set_syntax` applies
+            // them in the order given, skipping anything that starts before the previous end.
+            spans.sort_by_key(|(range, _)| range.start);
+            tokens.put_in_order();
+        }
         let file = self.files.at_mut(index);
         file.document.set_syntax(base, &spans);
         // `set_syntax` bumps the revision, so what is remembered is the revision *after* it, or the
@@ -3503,6 +3513,46 @@ impl QuillApp {
         file.coloured_revision = Some(now);
         file.cached.fold_tokens = Some((now, tokens));
         file.cached.stale = true;
+    }
+
+    /// The raw text elements of a markup file, coloured by the plugin that claims each one's
+    /// language.
+    ///
+    /// `quill-core` says where a `<style>` block is and what language it names and colours
+    /// nothing, so this runs the ordinary scan over that stretch with that language's grammar and
+    /// offsets the ranges into the file — the mirror of [`PluginHighlighter`], which asks the
+    /// same question of a fence in a Markdown document. A language nothing claims answers with
+    /// nothing, and the block keeps the colour the outer pass gave it; switching the CSS plugin
+    /// off withdraws the colouring inside `<style>` in the same frame, because the plugin is
+    /// asked at the moment of use. One level deep: the embedded scan's own embedded list is
+    /// discarded. The block's own comments and strings are noted too, or a `}` inside a CSS
+    /// string would fold.
+    fn colour_the_embedded(
+        &self,
+        text: &str,
+        embedded: &[quill_core::syntax::Embedded],
+        spans: &mut Vec<(std::ops::Range<usize>, quill_core::Color)>,
+        tokens: &mut quill_core::folding::Tokens,
+    ) {
+        for region in embedded {
+            let Some(inside) = self.plugins.for_language(&region.language) else {
+                continue;
+            };
+            let start = region.range.start;
+            quill_core::syntax::scan(&text[region.range.clone()], &inside.grammar, |range, token| {
+                let shifted = range.start + start..range.end + start;
+                match token {
+                    quill_core::Token::Comment => tokens.note(shifted.clone(), true),
+                    quill_core::Token::String => tokens.note(shifted.clone(), false),
+                    _ => {}
+                }
+                if token != quill_core::Token::Text {
+                    if let Some(colour) = inside.theme.colour(token) {
+                        spans.push((shifted, colour));
+                    }
+                }
+            });
+        }
     }
 
     /// Write a bundled plugin out to the settings folder and load it back from there.
@@ -7749,9 +7799,42 @@ impl quill_core::CodeHighlighter for PluginHighlighter<'_> {
         let Some(plugin) = self.plugins.for_language(language) else {
             return Vec::new();
         };
-        quill_core::syntax::highlight(code, &plugin.grammar)
-            .into_iter()
-            .filter_map(|(range, token)| plugin.theme.colour(token).map(|colour| (range, colour)))
-            .collect()
+        if !plugin.grammar.markup {
+            return quill_core::syntax::highlight(code, &plugin.grammar)
+                .into_iter()
+                .filter_map(|(range, token)| {
+                    plugin.theme.colour(token).map(|colour| (range, colour))
+                })
+                .collect();
+        }
+        // A fence of HTML is coloured the same way a `.html` file is: the outer pass reads the
+        // markup and names the raw text elements, and the plugin that claims each one's language
+        // colours it. The same two consequences as for a file hold here: a language nothing
+        // claims answers with nothing, and the embedded list is one level deep.
+        let mut spans: Vec<(std::ops::Range<usize>, quill_core::Color)> = Vec::new();
+        let mut embedded: Vec<quill_core::syntax::Embedded> = Vec::new();
+        quill_core::syntax::scan_with_embedded(code, &plugin.grammar, &mut embedded, |range, token| {
+            if token != quill_core::Token::Text {
+                if let Some(colour) = plugin.theme.colour(token) {
+                    spans.push((range, colour));
+                }
+            }
+        });
+        for region in &embedded {
+            let Some(inside) = self.plugins.for_language(&region.language) else {
+                continue;
+            };
+            let start = region.range.start;
+            quill_core::syntax::scan(&code[region.range.clone()], &inside.grammar, |range, token| {
+                if token != quill_core::Token::Text {
+                    if let Some(colour) = inside.theme.colour(token) {
+                        spans.push((range.start + start..range.end + start, colour));
+                    }
+                }
+            });
+        }
+        // The fence's reader walks the spans in order and stops at the first past its line.
+        spans.sort_by_key(|(range, _)| range.start);
+        spans
     }
 }

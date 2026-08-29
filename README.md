@@ -5,7 +5,7 @@ with folders that expand in place, a terminal along the bottom with tabs, and it
 through its background while the text stays solid.
 
 It is also, now, an editor you can write code in: line numbers down the left, a tab for each open
-file, a right click menu on the explorer, git in full, and plugins that colour CSS, JavaScript,
+file, a right click menu on the explorer, git in full, and plugins that colour CSS, HTML, JavaScript,
 TypeScript, Rust and Mermaid.
 
 And it is an **AI-first IDE**, which is a claim with a definition rather than a slogan: *everything a
@@ -283,9 +283,9 @@ what is drawn: a breakpoint it could not bind stays hollow rather than pretendin
 is the whole of it from the command line, which is what lets an agent set a breakpoint, run to it and
 read a variable rather than guessing about a program.
 
-**Plugins** colour a file by what its text is. Five ship with Quill — JavaScript, TypeScript, Rust,
-CSS and Mermaid — and each gives its files an icon, a set of words to colour, and the Dracula colour
-scheme. A plugin is a folder holding a `plugin.conf` and an icon, in the same `name = value` format
+**Plugins** colour a file by what its text is. Six ship with Quill — JavaScript, TypeScript, Rust,
+CSS, HTML and Mermaid — and each gives its files an icon, a set of words to colour, and the Dracula
+colour scheme. A plugin is a folder holding a `plugin.conf` and an icon, in the same `name = value` format
 the settings file uses; **nothing in one is executed**, so installing one is copying a folder.
 `Settings -> Plugins` lists them, and `Install` writes a plugin's folder out where it can be edited
 by hand. [How plugins work](#how-plugins-work) is the whole of it: what a manifest holds, what the
@@ -667,6 +667,8 @@ editor. A list is comma separated, a flag is `true` or `false`, and a colour is 
 | `language.types` | a third list of words, tried after the other two. |
 | `language.word_characters` | characters that are part of a word wherever they appear, such as the hyphen in CSS. |
 | `language.hex_colors` | whether `#` and hexadecimal digits are a number. |
+| `language.markup` | whether the file is markup — text with tags in it rather than tags with text in them. Off unless a manifest asks for it; with it on the tokeniser runs a five-state machine and a word means nothing unless it is inside a tag. |
+| `language.raw_text` | the elements of a markup language whose contents are not markup, as `element` or `element=language`. An entry that names a language is a raw text element and one that names none is an escapable one, so a character reference is read inside `<title>` and not inside `<script>`. |
 | `language.renders` | the built-in renderer this language's files are drawn with. |
 | `theme.name` | what the colour scheme is called. |
 | `theme.keyword`, `.builtin`, `.function`, `.type`, `.string`, `.number`, `.comment`, `.operator`, `.text` | one colour a token. A token with no colour is left as ordinary text. |
@@ -677,13 +679,18 @@ which none of the tokeniser's rules could read: a hyphen is a letter in CSS, and
 word there could not name a single property; `#ff0000` is a colour and the number rule wants a digit
 first, so half the colours in a stylesheet were coloured and half were not; and a stylesheet has three
 kinds of word worth telling apart — the at-rule, the property and the value — where a grammar had two
-lists.
+lists. `language.markup` and `language.raw_text` follow the same rule, and they are the first two that
+change the rules rather than adding to a list: with `markup` on, the tokeniser runs five states —
+text, tag name, attribute, value and raw text — and a `<` opens a tag only when a letter, `/`, `!` or
+`?` follows it, which is the HTML Standard's own tag-open state and the reason `5 < 3` in prose stays
+prose. The HTML plugin is the one that asks for them, and `tasks/task-1694-html-plugin-tdd.md` records
+why a word-list plugin could not read HTML at all.
 
 ### Where plugins come from, and in what order
 
-Five ship inside the binary: JavaScript, TypeScript, Rust, CSS and Mermaid. They are bundled so that a
-Quill that has just been installed colours a `.rs` file the first time it opens one, and so that the
-marketplace has something in it with no network involved.
+Six ship inside the binary: JavaScript, TypeScript, Rust, CSS, HTML and Mermaid. They are bundled so
+that a Quill that has just been installed colours a `.rs` file the first time it opens one, and so
+that the marketplace has something in it with no network involved.
 
 `Plugins::load` reads those first, then every folder under `<settings folder>/plugins`. **A plugin on
 disk shadows a bundled one with the same id**, so a bundled plugin can be corrected by hand without
@@ -709,6 +716,16 @@ inside a string is not a keyword.
 Those last two are a **heuristic and are meant to be one**. `Promise.all(` colours `all` as a function
 and `Promise` as a type without Quill understanding a single thing about JavaScript. Real
 understanding is a language server, and that is not what this is.
+
+A grammar with `language.markup` on is read by a different pass rather than by the rules above,
+because HTML is **prose with code in the tags** where every other language Quill reads is code with
+prose in the comments. Outside a tag everything is text — no strings, no numbers, no operators — so
+an apostrophe in a contraction is an apostrophe and `5 < 3` is arithmetic; a `<` opens a tag only
+when a letter, `/`, `!` or `?` follows it. The first word of a tag is a keyword if the language names
+it and a type if it does not, an attribute is a builtin if the language names it and plain text if
+it does not, and the body of a raw text element is read as the language its manifest names, coloured
+by the plugin that claims that language. `tasks/task-1694-html-plugin-tdd.md` has the five states and
+the reasons for each.
 
 Nothing in `quill-core` knows what a colour scheme is. A `Token` says what a stretch of text *is*, and
 the window turns it into a colour: `colour_the_file` runs the tokeniser, maps each token through the
@@ -751,7 +768,9 @@ is an ordinary plugin folder that can be edited by hand, and it shadows the bund
 A plugin's icon is `icon.png` beside the manifest, decoded once and drawn in front of every file the
 plugin claims. A bundled plugin's icon is generated rather than drawn, and each one records how:
 `crates/quill-app/plugins/mermaid/icon.md` and its neighbour under `css/` each hold the prompt, the endpoint and the two
-commands, so it can be made again without guessing.
+commands, so it can be made again without guessing. The HTML one is the exception: when it was made
+the image service's upstream was failing, so `plugins/html/icon.md` records the programmatic `< / >`
+mark drawn instead, and `task-1717` swaps in the generated picture.
 
 ### Writing one
 
@@ -984,6 +1003,7 @@ Each stands on its own, and states any fact it needs rather than pointing at ano
 | `tasks/task-1663-highlights-tdd.md` | Highlighting a passage: where the ranges live so they move with the text, and the file beside the project that remembers them. |
 | `tasks/task-1664-split-view-tdd.md` | The editing area split into panes: why a tab moves rather than being copied, and why the layout caches moved onto the tab. |
 | `tasks/task-1671-css-plugin-tdd.md` | The CSS plugin: the four shapes of CSS the tokeniser could not read, and the three grammar keys added for them. |
+| `tasks/task-1694-html-plugin-tdd.md` | The HTML plugin: why a word-list plugin would colour a paragraph of English like a stylesheet, the five states `language.markup` turns on, and the embedded-language seam a `<style>` block is coloured through. |
 | `tasks/task-1672-zoom-tdd.md` | The zoom that keeps the line you were reading where it was. |
 | `tasks/task-1673-split-view-tdd.md` | The source and its preview scrolling together, dragging a tab into another pane, and the scrollbar. |
 | `tasks/task-1679-mcp-tdd.md` | The MCP server: why the tools are generated, what the two shapes were measured at, and why the server holds no session. |

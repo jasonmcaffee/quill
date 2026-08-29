@@ -2329,9 +2329,45 @@ often**. `inset`, `left` and `content` are properties; `flex`, `grid` and `all` 
 `display: flex` and `transition: all` are far commoner than the shorthand properties of the same
 name. `tasks/task-1671-css-plugin-tdd.md` has the table and the rest.
 
+**HTML is the first plugin that asks for `language.markup`, and it is a rule rather than a list.**
+`task-1694` asked for the same thing CSS got, and the answer is the same shape: a key in the manifest
+that is off unless a language asks for it. But the key changes the rules rather than adding to a
+list, because HTML cannot be done the CSS way. CSS needed three word lists read one token at a time;
+HTML cannot, because most of an HTML file is prose and seventy-six of its element names are ordinary
+English words — `body`, `table`, `form`, `main`, `code`, `time` — so a word-list plugin would colour
+a paragraph of English like a stylesheet, and an apostrophe read as a quote would make every
+contraction yellow to the end of its line.
+
+With `markup` on, `syntax::scan` runs five states — text, tag name, attribute, value and raw text —
+and a `<` opens a tag **only** when a letter, `/`, `!` or `?` follows it, which is the HTML
+Standard's own tag-open state and the reason `5 < 3` in prose stays prose. The first word of a tag
+the language names is a keyword and one it does not name is a type, because its position is certain
+and only whether the language defines it is unknown; an attribute the language names is a builtin and
+one it does not is plain text, which is the CSS rule applied where it belongs. `language.raw_text =
+script=javascript, style=css, textarea, title` is the second key: an entry that names a language is a
+raw text element and one that names none is an escapable one, so `&amp;` inside a `<title>` is still
+coloured and `&amp;` inside a `<script>` is not, exactly as a browser reads them, and the
+distinction is derived rather than written down twice.
+
+The body of a raw text element is another language, and `quill-core` says where it is and what it
+names rather than colouring it — `scan_with_embedded` reports an `Embedded` range and the window's
+`colour_the_file` runs the ordinary scan over that stretch with the plugin that claims its language,
+the mirror of `PluginHighlighter` asking the same question of a fence in a Markdown document. So a
+`<style>` block is coloured exactly as a `.css` file is, and switching the CSS plugin off withdraws
+the colouring inside `<style>` in the same frame. One level deep: the embedded scan's own list is
+discarded. `syntax::tags` is the second pass folding runs for a markup file, and it is what keeps a
+`<` inside a comment, an attribute value or a `<script>` body from opening a fold; there is no list
+of void elements, because an end tag pops back to the nearest matching name on the stack. Completion
+asks `syntax::markup_position` — read backwards from the caret — which of the language's word lists
+to offer: the element names at a tag name, the attribute names at an attribute, and none of them in
+prose, a value or raw text. `tasks/task-1694-html-plugin-tdd.md` has the states, the colours and the
+eight things deliberately left out.
+
 A bundled plugin's icon is generated rather than drawn, and each one records how:
 `plugins/mermaid/icon.md` and `plugins/css/icon.md` each have the prompt, the endpoint and the two
-commands, so it can be made again without guessing.
+commands, so it can be made again without guessing. The HTML one is the exception: when it was made
+the image service's upstream was failing, so `plugins/html/icon.md` records the programmatic
+`< / >` mark drawn instead, and `task-1717` swaps in the generated picture.
 
 A colour scheme **colours the tokens and not the editing area**. The window letting the desktop show
 through is the whole character of the product, and a scheme that repaints the background opaque would
@@ -2371,6 +2407,11 @@ trade that away to be a shade nearer a screenshot.
 - `tasks/task-1671-css-plugin-tdd.md` — the CSS plugin: the four shapes of CSS the tokeniser could
   not read, the three grammar keys added for them, which CSS word goes in which of the three lists,
   and why `Ctrl+C` reached no program on Windows.
+- `tasks/task-1694-html-plugin-tdd.md` — the HTML plugin: why a word-list plugin would colour a
+  paragraph of English like a stylesheet, the five states `language.markup` turns on and the
+  tag-open rule the HTML Standard gives, the two raw text categories derived from one key, the
+  embedded-language seam a `<style>` block is coloured through, and the eight things deliberately
+  left out.
 - `tasks/task-1672-zoom-tdd.md` — the zoom that kept the line you were reading: why a scroll
   position cannot survive a change of size, the three ways of putting the view back that were
   weighed, where the anchor lives and when it is cleared, and the split view where one notch of the
