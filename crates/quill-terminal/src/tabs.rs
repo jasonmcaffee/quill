@@ -74,6 +74,17 @@ impl Tabs {
         self.sessions.get_mut(self.active)
     }
 
+    /// The tab at `index`, whatever is showing. `None` when the number is past the end, which the
+    /// caller answers with the not-found refusal rather than reaching for the tab that is showing.
+    pub fn at(&self, index: usize) -> Option<&Session> {
+        self.sessions.get(index)
+    }
+
+    /// The tab at `index`, mutable, for the verbs that change a tab by number.
+    pub fn at_mut(&mut self, index: usize) -> Option<&mut Session> {
+        self.sessions.get_mut(index)
+    }
+
     pub fn sessions(&self) -> &[Session] {
         &self.sessions
     }
@@ -214,6 +225,22 @@ mod tests {
         assert_eq!(tabs.active_index(), 0);
         tabs.show(9);
         assert_eq!(tabs.active_index(), 0, "a tab that is not there is not shown");
+    }
+
+    #[test]
+    fn a_tab_is_reached_by_its_number_whatever_is_showing() {
+        let mut tabs = tabs();
+        tabs.open_detached(Size::new(8, 40));
+        tabs.open_detached(Size::new(8, 40));
+        tabs.show(0);
+        assert_eq!(tabs.active_index(), 0);
+        // The second tab, which is not the one showing, is reached by its number and written to by
+        // its number, and neither of those touches the tab that is showing.
+        tabs.at_mut(1).expect("the second tab").feed(b"the second one\r\n");
+        assert!(tabs.at(1).expect("the second tab").snapshot().contains("the second one"));
+        assert!(!tabs.at(0).expect("the first tab").snapshot().contains("the second one"));
+        assert!(tabs.at(9).is_none(), "a number past the end is nothing, not the tab showing");
+        assert!(tabs.at_mut(9).is_none());
     }
 
     #[test]

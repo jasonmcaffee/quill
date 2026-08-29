@@ -104,8 +104,14 @@ pub enum Waiting {
     /// shown. Settling first costs a quarter of a second and makes the picture the answer to "what
     /// does it look like now" rather than "what did it look like on the way there".
     Screenshot { path: PathBuf, until: Instant, settled: Instant, asked: bool },
-    /// Some text on the terminal's screen.
-    TerminalText { needle: String, lines: Option<usize>, until: Instant },
+    /// Some text on a terminal tab's screen.
+    ///
+    /// `tab` is the tab the wait was asked about, resolved to a number when the request arrived,
+    /// and it is what the wait keeps looking at: a hold that started on one tab is answered by that
+    /// tab and by nothing else, because a promise kept by looking at a different screen is not a
+    /// promise. Following the tab that is showing while the wait runs is the race `task-1705` is
+    /// about, so the number is fixed rather than re-asked on every frame.
+    TerminalText { tab: usize, needle: String, lines: Option<usize>, until: Instant },
     /// Some text a run has written, which is how an agent waits for a dev server to say it is
     /// listening before it uses it.
     RunOutput { name: Option<String>, needle: String, tail: Option<usize>, until: Instant },
@@ -327,8 +333,8 @@ impl QuillApp {
                     ),
                 })
             }
-            Waiting::TerminalText { needle, lines, .. } => {
-                let screen = self.terminal_text(*lines)?;
+            Waiting::TerminalText { tab, needle, lines, .. } => {
+                let screen = self.terminal_text(*tab, *lines)?;
                 screen.contains(needle.as_str()).then(|| {
                     Reply::done(
                         &request.command,
@@ -460,8 +466,8 @@ impl QuillApp {
                     path.display()
                 ),
             ),
-            Waiting::TerminalText { needle, lines, .. } => {
-                let screen = self.terminal_text(*lines).unwrap_or_default();
+            Waiting::TerminalText { tab, needle, lines, .. } => {
+                let screen = self.terminal_text(*tab, *lines).unwrap_or_default();
                 return Reply {
                     ok: false,
                     command: "terminal.read".to_owned(),
@@ -3330,9 +3336,10 @@ impl QuillApp {
     }
 
     fn cli_terminal_select(&mut self, request: &Request) -> Outcome {
-        let Some(index) = request.whole("index") else {
-            return no(request, code::USAGE, "Say which terminal tab, counting from 0.");
-        };
+        if self.terminal.tabs.is_empty() {
+            return no(request, code::NOT_APPLICABLE, "There is no terminal tab to show.");
+        }
+        let index = self.cli_terminal_tab(request).expect("a tab, checked above");
         if index >= self.terminal.tabs.count() {
             return no(
                 request,
@@ -3348,7 +3355,7 @@ impl QuillApp {
         if self.terminal.tabs.is_empty() {
             return no(request, code::NOT_APPLICABLE, "There is no terminal tab to close.");
         }
-        let index = request.whole("index").unwrap_or_else(|| self.terminal.tabs.active_index());
+        let index = self.cli_terminal_tab(request).expect("a tab, checked above");
         if index >= self.terminal.tabs.count() {
             return no(request, code::NOT_FOUND, format!("There is no terminal tab {index}."));
         }
@@ -3407,26 +3414,39 @@ impl QuillApp {
         )
     }
 
-    /// Which terminal tab a command is about: `--tab` when it is given, the one showing otherwise.
+    /// Which terminal tab a command is about: `--tab` when it is given, the positional `index` when
+    /// the command has one and it was given, the one showing otherwise.
     ///
-    /// `None` when there is no terminal tab at all, which is a different thing to be told than a
-    /// number that is out of range and is why this does not answer with the active index blindly.
+    /// The flag is the settled convention for naming a tab and the positional is the thing the old
+    /// callers have, so the flag wins when both are given. `None` when there is no terminal tab at
+    /// all, which is a different thing to be told than a number that is out of range and is why this
+    /// does not answer with the active index blindly.
     fn cli_terminal_tab(&self, request: &Request) -> Option<usize> {
         if self.terminal.tabs.is_empty() {
             return None;
         }
-        Some(request.whole("tab").unwrap_or_else(|| self.terminal.tabs.active_index()))
+        Some(
+            request
+                .whole("tab")
+                .or_else(|| request.whole("index"))
+                .unwrap_or_else(|| self.terminal.tabs.active_index()),
+        )
     }
 
     fn cli_terminal_send(&mut self, request: &Request) -> Outcome {
-        if self.terminal.tabs.active().is_none() {
+        let Some(index) = self.cli_terminal_tab(request) else {
             return no(
                 request,
                 code::NOT_APPLICABLE,
                 "There is no terminal running. `terminal show` starts one.",
             );
+        };
+        if index >= self.terminal.tabs.count() {
+            return no(request, code::NOT_FOUND, format!("There is no terminal tab {index}."));
         }
-        let mode = self.terminal.tabs.active().map(|session| session.mode()).unwrap_or_default();
+        // The mode comes from the tab the keys are going to, because application cursor and
+        // bracketed paste are per-program and the two tabs may be running two different ones.
+        let mode = self.terminal.tabs.at(index).map(|session| session.mode()).unwrap_or_default();
         let mut bytes: Vec<u8> = Vec::new();
         let mut said = String::new();
         if let Some(name) = request.text("key") {
@@ -3457,27 +3477,36 @@ impl QuillApp {
         if bytes.is_empty() {
             return no(request, code::USAGE, "Say what to send: some text, or --key.");
         }
-        if let Some(session) = self.terminal.tabs.active() {
-            session.send(bytes.clone());
-        }
+        // Naming a tab does not show it: the bytes go to the named tab and the tab that is showing
+        // is left alone, which is the whole point of targeting.
+        self.terminal.tabs.at(index).expect("a tab, checked above").send(bytes.clone());
         self.show_the_terminal_tile(true);
-        ok(request, said, json!({ "bytes": bytes.len(), "tab": self.terminal.tabs.active_index() }))
+        ok(request, said, json!({ "bytes": bytes.len(), "tab": index }))
     }
 
     fn cli_terminal_read(&mut self, request: &Request) -> Outcome {
-        // Take in whatever the shell has written since the last frame, so a read straight after a
-        // send is not looking at the screen as it was before the command ran.
-        self.terminal.tabs.pump();
-        let count = request.whole("lines");
-        let Some(text) = self.terminal_text(count) else {
+        let Some(tab) = self.cli_terminal_tab(request) else {
             return no(
                 request,
                 code::NOT_APPLICABLE,
                 "There is no terminal running. `terminal show` starts one.",
             );
         };
+        if tab >= self.terminal.tabs.count() {
+            return no(request, code::NOT_FOUND, format!("There is no terminal tab {tab}."));
+        }
+        // Take in whatever the shell has written since the last frame, so a read straight after a
+        // send is not looking at the screen as it was before the command ran.
+        self.terminal.tabs.pump();
+        let count = request.whole("lines");
+        let Some(text) = self.terminal_text(tab, count) else {
+            // The tab may have closed while the request was on the queue, in which case there is
+            // no screen to read and the honest answer is the one `close` gives for the same state.
+            return no(request, code::NOT_FOUND, format!("There is no terminal tab {tab}."));
+        };
         match request.text("wait-for") {
             Some(needle) if !text.contains(&needle) => Outcome::Hold(Waiting::TerminalText {
+                tab,
                 needle,
                 lines: count,
                 until: waits_for(request, "timeout", DEFAULT_WAIT),
@@ -3485,9 +3514,9 @@ impl QuillApp {
             Some(needle) => ok(
                 request,
                 String::new(),
-                json!({ "text": text, "waitedFor": needle, "found": true }),
+                json!({ "text": text, "tab": tab, "waitedFor": needle, "found": true }),
             ),
-            None => ok(request, String::new(), json!({ "text": text })),
+            None => ok(request, String::new(), json!({ "text": text, "tab": tab })),
         }
     }
 
@@ -3503,10 +3532,11 @@ impl QuillApp {
         )
     }
 
-    /// What the terminal tab that is showing has on its screen, with the blank lines under it
-    /// trimmed away and at most `count` lines kept.
-    fn terminal_text(&self, count: Option<usize>) -> Option<String> {
-        let session = self.terminal.tabs.active()?;
+    /// What the tab at `tab` has on its screen, with the blank lines under it trimmed away and at
+    /// most `count` lines kept. `None` when the tab is not there any more, which is what a tab that
+    /// closed while a read was on the queue answers with.
+    fn terminal_text(&self, tab: usize, count: Option<usize>) -> Option<String> {
+        let session = self.terminal.tabs.at(tab)?;
         let whole = session.snapshot().text();
         let mut rows: Vec<&str> = whole.lines().collect();
         while rows.last().is_some_and(|row| row.trim().is_empty()) {

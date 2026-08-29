@@ -1315,29 +1315,33 @@ quill-cli terminal list --json
 ### terminal select
 
 ```
-quill-cli terminal select <index>
+quill-cli terminal select [index] [--tab <index>]
 ```
 
-Show one of the terminal tabs.
+Show one of the terminal tabs. The only verb that changes which tab is showing.
 
-- `index` — Its number, counting from 0.
+- `index` (optional) — Its number, counting from 0. The `--tab` flag when it is given.
+- `--tab <index>` — Which tab to show, counting from 0.
 
 ```sh
 quill-cli terminal select 1
+quill-cli terminal select --tab 1
 ```
 
 ### terminal close
 
 ```
-quill-cli terminal close [index]
+quill-cli terminal close [index] [--tab <index>]
 ```
 
 Close a terminal tab. Closing the last one puts the terminal away.
 
-- `index` (optional) — Its number. The tab that is showing when it is left out.
+- `index` (optional) — Its number. The `--tab` flag when it is given, the tab that is showing when both are left out.
+- `--tab <index>` — Which tab to close, counting from 0. The one that is showing when it is left out.
 
 ```sh
 quill-cli terminal close
+quill-cli terminal close --tab 1
 ```
 
 ### terminal rename
@@ -1377,18 +1381,20 @@ quill-cli terminal move --tab 2 0
 ### terminal send
 
 ```
-quill-cli terminal send [text] [--no-enter] [--key <name>]
+quill-cli terminal send [text] [--tab <index>] [--no-enter] [--key <name>]
 ```
 
-Send a command to the shell in the terminal tab that is showing. Enter is pressed for you unless you say not to.
+Send a command to the shell in a terminal tab, the one that is showing when `--tab` is left out. Naming a tab does not show it. Enter is pressed for you unless you say not to.
 
 - `text` (optional) — The command. Everything after the verb is taken as the command, so it needs no quotes. Everything after it on the line belongs to it.
 
+- `--tab <index>` — Which tab to send to, counting from 0. The one that is showing when it is left out.
 - `--no-enter` — Type the text and leave it on the prompt without running it.
 - `--key <name>` — Send a key instead of text: enter, tab, escape, up, down, left, right, backspace, ctrl-c, ctrl-d, ctrl-l.
 
 ```sh
 quill-cli terminal send git status
+quill-cli terminal send --tab 1 cargo check
 quill-cli terminal send --key ctrl-c
 quill-cli terminal send --no-enter cd ..
 ```
@@ -1396,18 +1402,20 @@ quill-cli terminal send --no-enter cd ..
 ### terminal read
 
 ```
-quill-cli terminal read [--lines <number>] [--wait-for <text>] [--timeout <milliseconds>]
+quill-cli terminal read [--tab <index>] [--lines <number>] [--wait-for <text>] [--timeout <milliseconds>]
 ```
 
-Read what the terminal tab that is showing has on its screen.
+Read what a terminal tab has on its screen, the one that is showing when `--tab` is left out. Reading a tab does not show it.
 
+- `--tab <index>` — Which tab to read, counting from 0. The one that is showing when it is left out.
 - `--lines <number>` — Only the last so many lines.
-- `--wait-for <text>` — Wait until this text is on the screen before answering, which is how to wait for a command to finish.
+- `--wait-for <text>` — Wait until this text is on the named tab's screen before answering, which is how to wait for a command to finish.
 - `--timeout <milliseconds>` — How long to wait for --wait-for. 10000 by default.
 
 ```sh
 quill-cli terminal read --lines 20
-quill-cli terminal read --wait-for "$" --timeout 15000
+quill-cli terminal read --tab 1
+quill-cli terminal read --tab 1 --wait-for "$" --timeout 15000
 ```
 
 ### terminal height

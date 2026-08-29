@@ -6009,6 +6009,119 @@ fn the_terminal_is_opened_and_put_away_from_the_command_line() {
     assert_eq!(did(&mut harness, "terminal list")["count"], serde_json::json!(0));
 }
 
+/// `task-1705`. The two verbs where targeting matters most — `send` and `read` — take `--tab`, and
+/// naming a tab does not show it. Two detached tabs, each with its own content, and the second is the
+/// one showing: the test speaks to the first without the second ever being selected.
+///
+/// A detached tab has no shell, so `send` has no bytes to deliver here — what is under test is the
+/// addressing, which is the new logic, and the reply says which tab it went to. That a `send`
+/// reaches the shell it names is what the live verification does with two real shells.
+#[test]
+fn the_command_line_speaks_to_a_terminal_tab_that_is_not_showing() {
+    let mut harness = harness_in(&sample_folder());
+    harness.state_mut().new_detached_terminal_tab(8, 60);
+    harness.state_mut().new_detached_terminal_tab(8, 60);
+    harness.run();
+    // Each tab gets content of its own, reached by number, and the second is the one showing.
+    harness
+        .state_mut()
+        .terminal
+        .tabs
+        .at_mut(0)
+        .expect("the first tab")
+        .feed(b"the first shell is here\r\n");
+    harness
+        .state_mut()
+        .terminal
+        .tabs
+        .at_mut(1)
+        .expect("the second tab")
+        .feed(b"the second shell is here\r\n");
+    harness.run();
+    assert_eq!(
+        harness.state().terminal.tabs.active_index(),
+        1,
+        "the second tab is the one showing"
+    );
+
+    // `send --tab 0` is addressed to the first tab and says so, and leaves the showing tab alone.
+    let sent = did(&mut harness, "terminal send --tab 0 echo from the first");
+    assert_eq!(sent["tab"], serde_json::json!(0), "the reply names the tab it went to");
+    assert_eq!(
+        harness.state().terminal.tabs.active_index(),
+        1,
+        "naming a tab to send to does not show it"
+    );
+    // And with no --tab, a send goes to the tab that is showing, which is the old behaviour.
+    let sent_default = did(&mut harness, "terminal send echo from the showing one");
+    assert_eq!(sent_default["tab"], serde_json::json!(1));
+
+    // `read --tab 0` reads the first tab's screen without showing it, and the showing tab's content
+    // is not what comes back.
+    let read = did(&mut harness, "terminal read --tab 0");
+    let text = read["text"].as_str().expect("the screen as text");
+    assert!(text.contains("the first shell is here"), "{text:?}");
+    assert!(!text.contains("the second shell is here"), "{text:?}");
+    assert_eq!(
+        harness.state().terminal.tabs.active_index(),
+        1,
+        "reading a tab does not show it"
+    );
+    // And a read with no --tab reads the tab that is showing.
+    let read_default = did(&mut harness, "terminal read");
+    assert!(read_default["text"]
+        .as_str()
+        .expect("the screen as text")
+        .contains("the second shell is here"));
+
+    // `--wait-for` is answered by the named tab: the text is on the first tab, not the showing one.
+    let found = did(&mut harness, "terminal read --tab 0 --wait-for \"the first shell\"");
+    assert_eq!(found["found"], serde_json::json!(true));
+
+    // And the race the ticket is about: a wait for text that is on the showing tab but not on the
+    // named tab is not answered by the showing tab. It is held, because the wait was pinned to the
+    // first tab when it was asked and keeps looking there.
+    let ctx = harness.ctx.clone();
+    let held = harness
+        .state_mut()
+        .run_command_line("terminal read --tab 0 --wait-for \"the second shell\"", &ctx);
+    assert!(
+        held.is_none(),
+        "the wait is held, because the second shell's text is not on the first tab"
+    );
+
+    // `select --tab` shows the named tab, and is still the only verb that does.
+    did(&mut harness, "terminal select --tab 0");
+    assert_eq!(harness.state().terminal.tabs.active_index(), 0);
+    // `close --tab` closes the named tab.
+    did(&mut harness, "terminal close --tab 0");
+    assert_eq!(harness.state().terminal.tabs.count(), 1);
+    assert_eq!(harness.state().terminal.tabs.active_index(), 0, "the one left is now the only one");
+
+    // A --tab past the end is refused rather than reaching for the tab that is showing.
+    assert_eq!(refused(&mut harness, "terminal send --tab 9 echo"), "not-found");
+    assert_eq!(refused(&mut harness, "terminal read --tab 9"), "not-found");
+}
+
+/// `task-1705`. The flag is the settled way of naming a tab and the positional is what the old
+/// callers have, so when both are given the flag wins.
+#[test]
+fn the_tab_flag_wins_over_the_positional_when_both_are_given() {
+    let mut harness = harness_in(&sample_folder());
+    for _ in 0..3 {
+        harness.state_mut().new_detached_terminal_tab(8, 60);
+    }
+    harness.run();
+    // Three tabs, the third showing. `select 0 --tab 1` names the first tab with the positional and
+    // the second with the flag, and it is the second that is shown.
+    did(&mut harness, "terminal select 0 --tab 1");
+    assert_eq!(
+        harness.state().terminal.tabs.active_index(),
+        1,
+        "the flag names the tab, not the positional"
+    );
+}
+
 #[test]
 fn every_entry_on_every_menu_is_listed_and_can_be_run_by_name() {
     // The rule `task-1661` asks for, checked against the real menus rather than against a list.
