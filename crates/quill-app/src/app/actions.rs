@@ -26,6 +26,10 @@ pub enum Action {
     OpenFolder,
     /// Choose a file and open it in the editor.
     OpenFile,
+    /// Ask for an HTTP address or HTML path and render it in a tab.
+    OpenWebAddress,
+    /// Render one HTML file selected in the explorer.
+    OpenInBrowser(PathBuf),
     /// Open the `Go to File` modal: type part of a name, and open the file it finds.
     ///
     /// A different thing from [`Action::OpenFile`], which asks the platform for a file anywhere on
@@ -1221,6 +1225,7 @@ fn file_menu(state: &MenuState) -> Menu {
         ),
         Entry::Separator,
         Entry::with_shortcut("Open File", Action::OpenFile, Shortcut::command(egui::Key::O)),
+        Entry::item("Open Web Address...", Action::OpenWebAddress),
         // Searching the project rather than the disk, which is what `task-1659` asks for and what
         // IntelliJ puts on this key. It took the shortcut `Open Folder` used to have, because two
         // menu items claiming one key equivalent is a fault on macOS and there is a test for it;
@@ -1627,7 +1632,7 @@ pub fn explorer_menu(
     // absent is Quill's rule for a control that can never apply, and every one of these is live the
     // instant the pointer is over a row.
     let on_a_row = aimed == Aim::AtARow;
-    vec![
+    let mut entries = vec![
         Entry::Submenu {
             name: "New".to_owned(),
             entries: vec![
@@ -1658,7 +1663,14 @@ pub fn explorer_menu(
         Entry::Separator,
         Entry::item(crate::services::launcher::file_manager_name(), Action::RevealPath(path.to_path_buf())),
         Entry::item("Reload from Disk", Action::ReloadPath(path.to_path_buf())),
-    ]
+    ];
+    if on_a_row && !directory && crate::services::file_kind::is_html(path) {
+        entries.insert(1, Entry::Submenu {
+            name: "Open in Browser".to_owned(),
+            entries: vec![Entry::item("Tab", Action::OpenInBrowser(path.to_path_buf()))],
+        });
+    }
+    entries
 }
 
 /// The explorer's menu with the `Git` submenu on the end, which is what is actually shown.
@@ -2017,6 +2029,22 @@ mod tests {
             new.iter().any(|entry| matches!(entry, Entry::Item { action, .. } if makes(action))),
             "Folder makes one inside the folder that was clicked"
         );
+    }
+
+    /// `task-1756`: only HTML rows offer the rendered-tab action, and it keeps the selected path.
+    #[test]
+    fn html_rows_offer_open_in_browser_as_a_tab() {
+        let html = PathBuf::from("/project/site/index.html");
+        let entries = explorer_menu(&html, false, false, Aim::AtARow);
+        let browser = entries.iter().find_map(|entry| match entry {
+            Entry::Submenu { name, entries } if name == "Open in Browser" => Some(entries),
+            _ => None,
+        }).expect("an Open in Browser submenu");
+        assert!(browser.iter().any(|entry| {
+            matches!(entry, Entry::Item { name, action: Action::OpenInBrowser(path), .. } if name == "Tab" && path == &html)
+        }));
+        let markdown = explorer_menu(std::path::Path::new("/project/readme.md"), false, false, Aim::AtARow);
+        assert!(!markdown.iter().any(|entry| matches!(entry, Entry::Submenu { name, .. } if name == "Open in Browser")));
     }
 
     #[test]

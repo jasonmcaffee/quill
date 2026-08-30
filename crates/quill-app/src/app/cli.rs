@@ -59,6 +59,7 @@ use crate::components::modal;
 use crate::components::status_bar;
 use crate::components::prompt_dialog::{Prompt, Purpose};
 use crate::services::control::Pending;
+use crate::services::browser::BrowserCommand;
 use crate::services::file_kind;
 use crate::services::run_configurations::{self, Configuration, Origin};
 use crate::settings;
@@ -597,6 +598,7 @@ impl QuillApp {
         match area {
             "" => self.cli_top(request, verb, ctx),
             "window" => self.cli_window(request, verb, ctx),
+            "browser" => self.cli_browser(request, verb),
             "tab" => self.cli_tab(request, verb),
             "pane" => self.cli_pane(request, verb),
             "editor" => self.cli_editor(request, verb, ctx),
@@ -1342,6 +1344,56 @@ impl QuillApp {
 
     // ----------------------------------------------------------------------------------- the tabs
 
+    /// The refusal every editor command answers with while a rendered page is the tab that is showing.
+    ///
+    /// A browser tab holds an empty document behind its native view, so without this an agent asking
+    /// for the text of a web page is handed nothing and told it succeeded, and typing into one would
+    /// mark a document nobody can see as modified.
+    fn not_a_document(&self, request: &Request) -> Option<Outcome> {
+        self.files.active().is_browser().then(|| {
+            no(request, code::NOT_APPLICABLE, "This tab renders a web page rather than text. Use `browser status`, or open the file itself with `tab open`.")
+        })
+    }
+
+    /// `quill-cli browser ...` through the same host and commands as the menu and toolbar.
+    fn cli_browser(&mut self, request: &Request, verb: &str) -> Outcome {
+        if verb == "open" {
+            let Some(address) = request.text("address") else { return no(request, code::USAGE, "Give an HTTP address or HTML path.") };
+            return match self.open_browser(&address) {
+                Ok(id) => ok(request, format!("Opened browser tab {id}"), json!({ "id": id, "address": address })),
+                Err(problem) => no(request, code::FAILED, problem),
+            };
+        }
+        let Some(tab) = self.files.active().browser.as_ref() else {
+            return no(request, code::NOT_APPLICABLE, "The tab that is showing is not a browser tab.");
+        };
+        if verb == "status" {
+            return ok(request, tab.name(), json!({
+                "id": tab.id,
+                "title": tab.title,
+                "url": tab.current_url(),
+                "loading": tab.loading,
+                "showing": self.browser.showing() == Some(tab.id),
+                "canGoBack": tab.can_go_back(),
+                "canGoForward": tab.can_go_forward(),
+                "problem": tab.problem,
+            }));
+        }
+        let command = match verb {
+            "back" => BrowserCommand::Back,
+            "forward" => BrowserCommand::Forward,
+            "reload" => BrowserCommand::Reload,
+            _ => return unknown(request),
+        };
+        let id = tab.id;
+        let before = self.message.take();
+        self.run_browser_command(id, command);
+        match std::mem::replace(&mut self.message, before) {
+            Some(problem) => no(request, code::NOT_APPLICABLE, problem),
+            None => done(request, format!("Sent {verb} to browser tab {id}")),
+        }
+    }
+
     fn cli_tab(&mut self, request: &Request, verb: &str) -> Outcome {
         match verb {
             "open" => self.cli_tab_open(request),
@@ -1648,6 +1700,9 @@ impl QuillApp {
     }
 
     fn cli_tab_save(&mut self, request: &Request) -> Outcome {
+        if self.files.active().is_browser() {
+            return no(request, code::NOT_APPLICABLE, "A browser tab has no editable source. Use browser reload to reload it.");
+        }
         if self.files.active().is_picture() {
             return no(request, code::NOT_APPLICABLE, "A picture cannot be edited, so there is nothing to save.");
         }
@@ -1675,6 +1730,9 @@ impl QuillApp {
         if self.files.active().is_picture() {
             return no(request, code::NOT_APPLICABLE, "A picture cannot be edited, so there is nothing to save.");
         }
+        if self.files.active().is_browser() {
+            return no(request, code::NOT_APPLICABLE, "A browser tab has no editable source to save.");
+        }
         match self.files.active_mut().document.save_as(&path) {
             Ok(()) => {
                 self.tree.reload();
@@ -1689,6 +1747,9 @@ impl QuillApp {
     }
 
     fn cli_tab_reload(&mut self, request: &Request) -> Outcome {
+        if self.files.active().is_browser() {
+            return no(request, code::NOT_APPLICABLE, "Use `browser reload` for a rendered page.");
+        }
         let Some(path) = self.files.active().path().map(Path::to_path_buf) else {
             return no(request, code::NOT_APPLICABLE, "This tab has never been saved.");
         };
@@ -1754,6 +1815,7 @@ impl QuillApp {
                 "path": file.path().map(|path| path.to_string_lossy()),
                 "modified": file.document.is_modified(),
                 "picture": file.is_picture(),
+                "browser": file.is_browser(),
                 "transient": file.transient,
                 "viewMode": view_mode_name(file.view_mode),
                 "pane": file.pane,
@@ -2298,6 +2360,9 @@ impl QuillApp {
     /// notice this one, because a command is applied before the frame draws anything and so there is
     /// nothing for its before-and-after comparison to see.
     fn cli_editor_scroll(&mut self, request: &Request) -> Outcome {
+        if let Some(refusal) = self.not_a_document(request) {
+            return refusal;
+        }
         if self.files.active().is_picture() {
             return no(request, code::NOT_APPLICABLE, "This tab holds a picture, which is panned rather than scrolled.");
         }
@@ -2375,6 +2440,7 @@ impl QuillApp {
             "name": file.name(),
             "path": file.path().map(|path| path.to_string_lossy()),
             "picture": file.is_picture(),
+            "browser": file.is_browser(),
             "modified": self.document().is_modified(),
             "lines": self.document().text().len_lines(),
             "characters": self.document().text().len_chars(),
@@ -2394,6 +2460,9 @@ impl QuillApp {
     }
 
     fn cli_editor_text(&mut self, request: &Request) -> Outcome {
+        if let Some(refusal) = self.not_a_document(request) {
+            return refusal;
+        }
         if self.files.active().is_picture() {
             return no(request, code::NOT_APPLICABLE, "This tab holds a picture rather than text.");
         }
@@ -2419,6 +2488,9 @@ impl QuillApp {
     }
 
     fn cli_editor_set_text(&mut self, request: &Request) -> Outcome {
+        if let Some(refusal) = self.not_a_document(request) {
+            return refusal;
+        }
         if self.files.active().is_picture() {
             return no(request, code::NOT_APPLICABLE, "This tab holds a picture rather than text.");
         }
@@ -2450,6 +2522,9 @@ impl QuillApp {
     }
 
     fn cli_editor_insert(&mut self, request: &Request) -> Outcome {
+        if let Some(refusal) = self.not_a_document(request) {
+            return refusal;
+        }
         if self.files.active().is_picture() {
             return no(request, code::NOT_APPLICABLE, "This tab holds a picture rather than text.");
         }
@@ -2535,6 +2610,9 @@ impl QuillApp {
     /// through the same command the keys do, so an indent done by an agent and the same thing done
     /// by hand are the same thing.
     fn cli_editor_indent(&mut self, request: &Request) -> Outcome {
+        if let Some(refusal) = self.not_a_document(request) {
+            return refusal;
+        }
         if self.files.active().is_picture() {
             return no(request, code::NOT_APPLICABLE, "This tab holds a picture rather than text.");
         }

@@ -225,10 +225,7 @@ fn area_description(area: &'static str, commands: &[&'static Command]) -> String
         out.push_str(command.summary);
         out.push('\n');
     }
-    out.push_str(
-        "\nEvery command in Quill, with its arguments, its flags and its examples, is also \
-         available as data: run the `quill` tool with command `commands`.\n",
-    );
+    out.push_str("\nFull catalogue: run the `quill` tool with command `commands`.\n");
     out
 }
 

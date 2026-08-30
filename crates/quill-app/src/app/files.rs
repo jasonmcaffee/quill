@@ -126,6 +126,8 @@ pub struct ViewAnchor {
 /// One open file, and everything about it that is not about the window.
 pub struct OpenFile {
     pub document: Document,
+    /// Rendered web content, when this tab belongs to the embedded browser rather than the editor.
+    pub browser: Option<crate::services::browser::BrowserTab>,
     pub view_mode: ViewMode,
     /// How far the source is scrolled.
     pub scroll: f32,
@@ -216,6 +218,7 @@ impl OpenFile {
     pub fn new(document: Document) -> Self {
         Self {
             document,
+            browser: None,
             view_mode: ViewMode::Raw,
             scroll: 0.0,
             preview_scroll: 0.0,
@@ -266,6 +269,16 @@ impl OpenFile {
         Self { picture: Some(Picture::open(path)), ..Self::new(Document::at_path(path)) }
     }
 
+    /// A permanent rendered browser tab whose native view is owned by the window's browser host.
+    pub fn browser(tab: crate::services::browser::BrowserTab) -> Self {
+        Self { browser: Some(tab), ..Self::new(Document::new()) }
+    }
+
+    /// True when this tab renders a web page rather than an editable document.
+    pub fn is_browser(&self) -> bool {
+        self.browser.is_some()
+    }
+
     /// True when this tab holds a picture, which is what decides how the editing area is drawn and
     /// what `Save` refuses to do.
     pub fn is_picture(&self) -> bool {
@@ -274,6 +287,9 @@ impl OpenFile {
 
     /// What the tab is called: the file's name, or `untitled` when it has never been saved.
     pub fn name(&self) -> String {
+        if let Some(browser) = &self.browser {
+            return browser.name();
+        }
         self.document
             .path()
             .and_then(|path| path.file_name())
@@ -865,6 +881,7 @@ impl OpenFiles {
                 file.preview_scroll = 0.0;
                 file.transient = !permanent;
                 file.picture = None;
+                file.browser = None;
                 file.forget_git();
                 file.forget_what_was_worked_out();
                 file.forget_where_it_was_being_read();
@@ -920,6 +937,7 @@ impl OpenFiles {
         let empty = self.files.iter().position(|file| {
             mine(file)
                 && file.path().is_none()
+                && !file.is_browser()
                 && file.document.text().is_empty()
                 && !file.document.is_modified()
         });

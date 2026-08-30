@@ -8,6 +8,10 @@ It is also, now, an editor you can write code in: line numbers down the left, a 
 file, a right click menu on the explorer, git in full, and plugins that colour CSS, HTML, JavaScript,
 TypeScript, Rust and Mermaid.
 
+HTML can open as a rendered tab too. `File -> Open Web Address...` accepts HTTP and HTTPS addresses,
+and an HTML file in the explorer has `Open in Browser -> Tab`. Local pages keep working CSS, scripts,
+images and root-relative links through a project-scoped origin instead of a public server.
+
 And it is an **AI-first IDE**, which is a claim with a definition rather than a slogan: *everything a
 person can do in this window, an agent can do too, through the Model Context Protocol, and both are
 held to the same automated tests.* Not a plugin bolted on, not a subset of the interesting parts — the
@@ -43,6 +47,7 @@ each switch does; `tasks/quill-installer-tdd.md` says why it is built the way it
 quill-cli launch .                                   # start a Quill here and wait for it
 quill-cli tab open README.md                         # open a file
 quill-cli editor view preview                        # look at its Markdown preview
+quill-cli browser open examples/site/index.html      # render a local web page
 quill-cli terminal send cargo test                   # run something in the terminal
 quill-cli terminal read --wait-for "test result"     # wait for it, and read what it said
 quill-cli window screenshot shot.png                 # a real picture of the window

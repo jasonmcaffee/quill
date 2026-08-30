@@ -458,6 +458,73 @@ quill-cli window message
 quill-cli window message Ready for the next step
 ```
 
+## browser — rendered web pages in Quill tabs
+
+Rendered tabs use the operating system browser engine. Local HTML is served from a constrained project origin, so its CSS, scripts and images work without exposing the filesystem to page JavaScript. A window renders one page at a time: every rendered tab keeps its own address, title and history, and the one view follows whichever tab is showing, so these commands act on the tab that is showing and say so when it is not a rendered one.
+
+### browser open
+
+```
+quill-cli browser open <address>
+```
+
+Render an HTTP address or local HTML file in a new Quill tab.
+
+- `address` — An HTTP or HTTPS address, or an HTML path relative to the project folder. Everything after it on the line belongs to it.
+
+```sh
+quill-cli browser open https://example.com
+quill-cli browser open examples/site/index.html
+```
+
+### browser status
+
+```
+quill-cli browser status
+```
+
+Read the address, title, loading state, whether this is the tab the one view is pointed at, and the history directions of the rendered tab that is showing.
+
+```sh
+quill-cli browser status --json
+```
+
+### browser back
+
+```
+quill-cli browser back
+```
+
+Go back through the rendered tab's own history, which is kept apart from every other tab's.
+
+```sh
+quill-cli browser back
+```
+
+### browser forward
+
+```
+quill-cli browser forward
+```
+
+Go forward through the rendered tab's own history.
+
+```sh
+quill-cli browser forward
+```
+
+### browser reload
+
+```
+quill-cli browser reload
+```
+
+Reload the rendered tab that is showing, including its linked local resources.
+
+```sh
+quill-cli browser reload
+```
+
 ## tab — the files that are open
 
 A tab holds a file. A relative path is resolved against the project folder, and every reply says which absolute path it used.

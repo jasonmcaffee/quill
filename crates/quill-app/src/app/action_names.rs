@@ -28,6 +28,8 @@ impl Action {
             Action::NewWindow => "new-window".to_owned(),
             Action::OpenFolder => "open-folder".to_owned(),
             Action::OpenFile => "open-file".to_owned(),
+            Action::OpenWebAddress => "open-web-address".to_owned(),
+            Action::OpenInBrowser(_) => "open-in-browser".to_owned(),
             Action::GoToFile => "go-to-file".to_owned(),
             Action::FindInFiles => "find-in-files".to_owned(),
             Action::GoToDefinition => "go-to-definition".to_owned(),
@@ -153,6 +155,8 @@ impl Action {
             "new-window" => Action::NewWindow,
             "open-folder" => Action::OpenFolder,
             "open-file" => Action::OpenFile,
+            "open-web-address" => Action::OpenWebAddress,
+            "open-in-browser" => Action::OpenInBrowser(with_path()),
             "go-to-file" => Action::GoToFile,
             "find-in-files" => Action::FindInFiles,
             "go-to-definition" => Action::GoToDefinition,
@@ -230,6 +234,7 @@ impl Action {
                 | "rename-path"
                 | "reveal-path"
                 | "reload-path"
+                | "open-in-browser"
         )
     }
 
@@ -242,6 +247,7 @@ impl Action {
         match name {
             "open-folder" => Some("project open <folder>"),
             "open-file" => Some("tab open <path>"),
+            "open-web-address" => Some("browser open <address-or-path>"),
             "save-as" => Some("tab save-as <path>"),
             _ => None,
         }

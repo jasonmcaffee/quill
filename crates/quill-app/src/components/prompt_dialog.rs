@@ -24,6 +24,8 @@ const FOOTER: f32 = 52.0;
 /// What a prompt is for, which is what the window looks at when it is confirmed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Purpose {
+    /// Render the typed HTTP address or HTML path in a browser tab.
+    OpenWebAddress,
     /// Make an empty file in this folder, with the name that is typed.
     NewFile(PathBuf),
     /// Make a folder inside this one, with the name that is typed.

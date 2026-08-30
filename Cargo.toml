@@ -22,6 +22,10 @@ unicode-segmentation = "1.13"
 # macros: nothing here is a Rust type going over the wire, it is a small open protocol another
 # language has to be able to speak, so the values are built and read as values.
 serde_json = "1.0"
+url = "2.5"
+percent-encoding = "2.3"
+mime_guess = "2.0"
+wry = { version = "0.56.1", default-features = false, features = ["os-webview"] }
 egui = "0.36"
 eframe = { version = "0.36", default-features = false, features = ["wgpu", "default_fonts"] }
 fontdb = "0.24"

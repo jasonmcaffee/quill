@@ -121,6 +121,46 @@ token from the credential helper git already uses, so there is no second credent
   Windows needs before the desktop will show through the window.
 - `theme/` — the palette, the measurements and the drawn icons.
 
+## Browser tabs are one native child, and three rules keep it from hanging the window
+
+`services/browser.rs` owns WebView2 on Windows and WKWebView on macOS through Wry. The native view
+never lives in `OpenFile`. An `OpenFile` holds only a testable `BrowserTab`, while one lazy
+`BrowserHost` owns the browser profile, the view and the constrained local resource roots. Keep that
+split: everything about a tab that can be tested with no window is in `BrowserTab`.
+
+Local HTML uses a `quill://` project origin. Resolve every requested resource under the registered
+canonical root, refuse traversal and write methods, and expose no JavaScript host bridge. Linked CSS,
+scripts and images are remembered, so a changed resource reloads the page that used it and an
+untouched project costs nothing.
+
+Three things were each measured on `task-1756` after they had hung or blanked the window, and each is
+a rule rather than a preference:
+
+- **A window has ONE native view, whatever the tab count, and it is pointed at the tab that is
+  showing.** Creating a second WebView2 controller while another view lives on the thread blocks in a
+  nested Windows message pump on a completion that never arrives — no crash, no error, and no frame
+  ever drawn again, though the process still pumps messages. Every other explanation was eliminated
+  (shared environment, shared data folder, custom protocol, every builder handler, focus, visibility,
+  the transparent DirectComposition window, `run_and_return`), and a minimal eframe + wry probe with
+  all of them matched creates two views happily. Do not "improve" this into a view per tab without
+  measuring it again. Because of it, a tab's history lives in `BrowserTab` — otherwise one tab's
+  `Back` would land on another's page.
+- **The view is created before the egui pass, from `raw_input_hook`, never inside `App::ui`.** The
+  creation blocks in a message pump, and inside the pass there is a pass for a dispatched message to
+  re-enter. The placements it uses are the ones the last frame drew, which is where the view already
+  is.
+- **An address the view is *sent* to needs `engine_url`; one it *reports* needs `canonical`.** wry
+  rewrites the URL a view is built with to `http://quill.<origin>/` and hands `load_url` straight to
+  `Navigate`, where an unknown scheme is refused in silence: the pane keeps showing the old page while
+  the toolbar says it is loading the new one, which no state Quill reports would ever show you.
+
+The pane reports the native child's bounds after drawing its Quill-owned toolbar, and the view is
+hidden while an egui modal, popup or context menu is open — `egui::Popup::is_any_open` covers the menu
+bar and every dropdown in one answer — because a native child paints above egui. A hidden view uses
+WebView2's low-memory target, and closing the last rendered tab drops the view and its processes
+entirely: 197 MB with none open, 527 MB with one, 531 MB with four. Toolbar navigation and
+`quill-cli browser` both go through `QuillApp::run_browser_command`.
+
 ## The look is written down, and a new control is measured against it
 
 `design/style-guide.md` says what a control in Quill is built from: the palette is closed, a list row
