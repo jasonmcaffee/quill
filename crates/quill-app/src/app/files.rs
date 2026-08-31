@@ -124,6 +124,17 @@ pub struct ViewAnchor {
 }
 
 /// One open file, and everything about it that is not about the window.
+/// A tab in the editing area that a plugin draws.
+///
+/// It has no path on disk, is never modified and cannot be saved. Its label comes from the manifest, and
+/// `key` is the `<plugin id>/<tab id>` the command line and the project's `.quill` folder name it by.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginTab {
+    pub key: String,
+    pub plugin: String,
+    pub label: String,
+}
+
 pub struct OpenFile {
     pub document: Document,
     pub view_mode: ViewMode,
@@ -152,6 +163,12 @@ pub struct OpenFile {
     pub git_asked: bool,
     /// The picture, when this tab holds one rather than text.
     pub picture: Option<Picture>,
+    /// The plugin, when this tab is a plugin's own rather than a file.
+    ///
+    /// The picture precedent, followed exactly. A tab is a `Document`, and a tab that holds something
+    /// else holds it beside one: the four questions the window asks a tab — is it modified, can it be
+    /// saved, has it a preview, has it a gutter — answer the same way for a picture and for a plugin.
+    pub plugin: Option<PluginTab>,
     /// The revision this file's marked passages were last pushed into `services::file_marks` at.
     ///
     /// A document that has not changed since it was last pushed cannot have gained a mark, so this
@@ -227,6 +244,7 @@ impl OpenFile {
             transient: false,
             git_asked: false,
             picture: None,
+            plugin: None,
             marked_revision: None,
             breakpoints_at: None,
             coloured_revision: None,
@@ -274,11 +292,21 @@ impl OpenFile {
 
     /// What the tab is called: the file's name, or `untitled` when it has never been saved.
     pub fn name(&self) -> String {
+        // A tab a plugin draws is called what its manifest calls it. Falling through to the document's path
+        // named it `untitled`, because a plugin tab has no path — which is also why it is asked first.
+        if let Some(plugin) = &self.plugin {
+            return plugin.label.clone();
+        }
         self.document
             .path()
             .and_then(|path| path.file_name())
             .map(|name| name.to_string_lossy().to_string())
             .unwrap_or_else(|| "untitled".to_owned())
+    }
+
+    /// True when this tab holds a plugin's own contents rather than a file.
+    pub fn is_a_plugin(&self) -> bool {
+        self.plugin.is_some()
     }
 
     pub fn path(&self) -> Option<&Path> {
@@ -846,6 +874,27 @@ impl OpenFiles {
     /// is what makes a new pane useful: split, then open, and the file lands in the new pane.
     ///
     /// Returns the index of the tab the document ended up in.
+    /// The tab holding the plugin tab named `key`, if one is open.
+    pub fn index_of_plugin_tab(&self, key: &str) -> Option<usize> {
+        self.files
+            .iter()
+            .position(|file| file.plugin.as_ref().is_some_and(|plugin| plugin.key == key))
+    }
+
+    /// Open a tab a plugin draws, in the pane that has the keyboard.
+    ///
+    /// Permanent rather than transient: a tab a person asked for from a menu is not the tab a single
+    /// click in the explorer reuses, which is the same distinction `open` already makes.
+    pub fn open_plugin_tab(&mut self, document: Document, plugin: PluginTab) -> usize {
+        if let Some(index) = self.index_of_plugin_tab(&plugin.key) {
+            self.show(index);
+            return index;
+        }
+        let index = self.open(document, true);
+        self.files[index].plugin = Some(plugin);
+        index
+    }
+
     pub fn open(&mut self, document: Document, permanent: bool) -> usize {
         if let Some(path) = document.path() {
             if let Some(index) = self.index_of(path) {

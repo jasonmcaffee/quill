@@ -1,0 +1,684 @@
+//! One ticket, in full: the modal the board opens a card into.
+//!
+//! `tasks/agent-tasks-ui-tdd.md` §2.4 is the list this is measured against, and §5 is the design. Two columns
+//! inside one frame, which is what the browser board does, and the frame is `components::modal`'s — the same
+//! header, body, footer, rows, fields and buttons the Settings window and the nine git dialogs are made of,
+//! with the dragging and resizing `modal::show` already owns.
+//!
+//! ## The description is the editor
+//!
+//! It is a `quill_core::Document` and `components::editor_view` draws it, so the description gets Quill's own
+//! editor: the same font, the same syntax colouring inside a code fence, the same undo, the same caret. That
+//! is the largest saving in the plugin and it is the reason a task board inside a text editor is worth
+//! building at all.
+//!
+//! ## Every field writes through one function
+//!
+//! Seven controls down the right are seven calls to `AgentTasks::edit_field`, so there is one place a column
+//! is written and no second path to drift from it. `Model` and `Effort` are **absent** for a ticket assigned
+//! to a person rather than disabled, which is Quill's rule and the one place this deliberately differs from
+//! the browser.
+
+use egui::{CornerRadius, Pos2, Rect, Vec2};
+
+use super::text;
+use crate::components::modal;
+use crate::services::agent_tasks::model::{Assignee, Priority, Status, Task};
+use crate::services::agent_tasks::{clock, AgentTasks, Field, EFFORTS};
+use crate::services::plugin_ui::{Look, Request};
+
+/// How large the modal asks to be. Wide enough for two columns and the terminal under the description.
+/// How big the modal asks to be at the default font size.
+///
+/// Read through [`size`], so a window set to 48 point text asks for a modal that can hold 48 point text.
+/// `modal::show` clamps whatever is asked for to the window, so asking for more than there is costs nothing.
+pub const WIDTH_AT_DEFAULT: f32 = 1080.0;
+pub const HEIGHT_AT_DEFAULT: f32 = 720.0;
+
+/// How big the modal asks to be in this window.
+pub fn size(look: &Look<'_>) -> (f32, f32) {
+    (WIDTH_AT_DEFAULT * look.scale(), HEIGHT_AT_DEFAULT * look.scale())
+}
+
+/// How wide the column of fields down the right is, and the width below which it is dropped.
+///
+/// `components::modal` lets any dialog be resized down to 320 points, and 320 minus a fixed 260 point column
+/// left six points for the description: the two columns became one unreadable one. Below [`TWO_COLUMNS`] the
+/// fields go **under** the description instead, which is what the browser board's own narrow layout does.
+const ASIDE_AT_DEFAULT: f32 = 260.0;
+const TWO_COLUMNS_AT_DEFAULT: f32 = 720.0;
+const PAD: f32 = 14.0;
+/// How tall one field in the right column is.
+const FIELD: f32 = 46.0;
+/// How tall the comments section is: its count, two comments, the box and its two buttons.
+const COMMENTS_AT_DEFAULT: f32 = 176.0;
+/// How much of a one column modal the fields take, when the dialog is too narrow for two columns.
+const FIELDS_ALONE_AT_DEFAULT: f32 = 330.0;
+
+/// What the modal reported.
+#[derive(Debug, Default)]
+pub struct Outcome {
+    pub requests: Vec<Request>,
+    /// The modal was closed, by its cross, by `Escape`, or by a click outside it.
+    pub closed: bool,
+}
+
+/// Draw the ticket that is open in the detail, as a modal. Does nothing when none is.
+pub fn show(board: &mut AgentTasks, ctx: &egui::Context, look: &Look<'_>) -> Outcome {
+    let mut outcome = Outcome::default();
+    let Some(task) = board.detail().task.clone() else {
+        return outcome;
+    };
+    // A ticket nobody has named yet is a new one, and the footer says so: `Discard` deletes the row rather than
+    // closing the modal, because `+ Add Task` created it before anybody typed.
+    let new = board.detail().is_new;
+    let (width, height) = size(look);
+    let (inner, should_close) = modal::show(ctx, "agent-tasks-ticket", width, height, |ui, area| {
+        contents(board, ui, area, look, &task, new)
+    });
+    outcome.requests = inner.requests;
+    outcome.closed = inner.closed || should_close;
+    outcome
+}
+
+fn contents(
+    board: &mut AgentTasks,
+    ui: &mut egui::Ui,
+    area: Rect,
+    look: &Look<'_>,
+    task: &Task,
+    new: bool,
+) -> Outcome {
+    let mut outcome = Outcome::default();
+    let heading = match new {
+        true => "New task".to_owned(),
+        false => task.key.clone(),
+    };
+    if modal::header(ui, area, &heading) {
+        outcome.closed = true;
+    }
+    let body = modal::body(area);
+    let footer = Rect::from_min_max(Pos2::new(area.min.x, body.max.y), area.max);
+
+    // Two columns when there is room for two, and one when there is not: a fixed 260 point column beside a
+    // dialog resized to its 320 point minimum left six points for everything else.
+    // Both scaled by the font, because a column 260 points wide holds seven fields at 16 point text and two at
+    // 48, and a modal that split into two columns at 720 points put a 48 point ticket's fields into a column
+    // narrower than one of its own labels.
+    if body.width() >= TWO_COLUMNS_AT_DEFAULT * look.scale() {
+        let split = (body.max.x - ASIDE_AT_DEFAULT * look.scale()).round();
+        let main = Rect::from_min_max(body.min, Pos2::new(split - PAD, body.max.y));
+        let aside = Rect::from_min_max(Pos2::new(split, body.min.y), body.max);
+        ui.painter().rect_filled(
+            Rect::from_min_max(
+                Pos2::new(split - PAD / 2.0, body.min.y),
+                Pos2::new(split - PAD / 2.0 + 1.0, body.max.y),
+            ),
+            0,
+            look.palette.divider,
+        );
+        outcome.requests.extend(left_column(board, ui, main, look, task, new));
+        outcome.requests.extend(right_column(board, ui, aside, look, task, new));
+    } else {
+        // One column: the fields first, because at this width they are what a person came for — the description
+        // is easier to read in a tab — and then whatever height is left goes to the rest.
+        let fields =
+            Rect::from_min_max(body.min, Pos2::new(body.max.x, body.min.y + FIELDS_ALONE_AT_DEFAULT * look.scale()));
+        let rest = Rect::from_min_max(Pos2::new(body.min.x, fields.max.y + PAD), body.max);
+        outcome.requests.extend(right_column(board, ui, fields, look, task, new));
+        if rest.height() > 120.0 {
+            outcome.requests.extend(left_column(board, ui, rest, look, task, new));
+        }
+    }
+
+    // The footer. A new ticket gets `Discard` and `Done`; one that exists gets `Start work` and `Close`, and
+    // `Delete` is in the right column with the rest of what happens to a ticket.
+    // The second of each pair is **enabled**, not `primary`: `Discard` was passing `false` and so could not be
+    // pressed at all, which left a new ticket with no way to be thrown away from its own editor.
+    let buttons: &[(&str, bool)] = match new {
+        true => &[("Discard", true), ("Done", true)],
+        false => &[("Close", true)],
+    };
+    // `footer` rather than `footer_confirmed_by`: this modal's body holds a multiline description and two fields
+    // that post on `Enter`, so a footer that took `Enter` as its own would close the modal while somebody was
+    // typing into it — and in the same frame as posting a todo. `Escape` still closes it, which `modal::show`
+    // owns and every dialog in Quill shares.
+    if let Some(pressed) = modal::footer(ui, footer, buttons) {
+        match (new, pressed) {
+            (true, 0) => match board.discard_the_ticket() {
+                Ok(()) => outcome.closed = true,
+                Err(problem) => outcome.requests.push(Request::Message(problem)),
+            },
+            _ => outcome.closed = true,
+        }
+    }
+    // What the footer says beside its buttons, which is the browser's own sentence.
+    if new {
+        text(
+            ui.painter(),
+            Pos2::new(footer.min.x + PAD, footer.center().y - 6.0),
+            "Starts saving as you type",
+            look.font_size - 1.5,
+            look.palette.text_faint,
+        );
+    }
+    outcome
+}
+
+/// The description, the todos, the terminal and the comments.
+fn left_column(
+    board: &mut AgentTasks,
+    ui: &mut egui::Ui,
+    area: Rect,
+    look: &Look<'_>,
+    task: &Task,
+    new: bool,
+) -> Vec<Request> {
+    let mut requests = Vec::new();
+    let mut pen = area.min.y;
+
+    // The title, first and largest, saving as it is typed. What makes `+ Add Task` able to create the row
+    // before anybody has named it.
+    let title_at = Rect::from_min_size(Pos2::new(area.min.x, pen), Vec2::new(area.width(), 30.0));
+    let mut title = board.detail().title_draft.clone();
+    let response = ui.put(
+        crate::components::controls::field_text_rect(ui, title_at, 2.0),
+        egui::TextEdit::singleline(&mut title)
+            .frame(egui::Frame::NONE)
+            .hint_text(egui::RichText::new("What needs doing?").color(look.palette.text_faint))
+            .desired_width(area.width())
+            .font(egui::FontId::proportional(look.font_size + 4.0))
+            .text_color(look.palette.text_strong),
+    );
+    if response.changed() {
+        board.detail_mut().title_draft = title;
+        if let Err(problem) = board.save_the_title() {
+            requests.push(Request::Message(problem));
+        }
+    }
+    pen = title_at.max.y + 8.0;
+
+    // How the rest of the height is shared, and it has to **add up**: the sections are laid out one under
+    // another with no scroll, so a budget that overflowed drew the last of them off the bottom edge and the
+    // comments over their own buttons. The description is the one section allowed to take what is left, which is
+    // the browser's own rule — a ticket is opened to write in far more often than to read a rendered copy.
+    let room = area.max.y - pen;
+    let (todo_height, terminal_height, comment_height) = match new {
+        // A new ticket has no todos, no terminal and no comments: nothing has happened to it yet.
+        true => (0.0, 0.0, 0.0),
+        false => {
+            let todos = board.detail().todos.len() as f32;
+            let wanted = todos * look.row_height + look.row_height + 8.0;
+            (
+                wanted.clamp(look.row_height * 2.0, 130.0 * look.scale()),
+                140.0 * look.scale(),
+                COMMENTS_AT_DEFAULT * look.scale(),
+            )
+        }
+    };
+    let labels = match new {
+        true => look.font_size + 4.0,
+        // One label over the description and one over the todos, plus the gaps between five sections.
+        false => (look.font_size + 4.0) * 2.0 + 40.0,
+    };
+    let description_height =
+        (room - todo_height - terminal_height - comment_height - labels).max(90.0);
+
+    label(ui, look, Pos2::new(area.min.x, pen), "Description");
+    // The two view buttons, on the label's own row and right aligned, which is where a section's controls go.
+    // `task-28`.
+    if let Some(rendered) = super::raw_or_rendered(
+        ui,
+        look,
+        Rect::from_min_size(Pos2::new(area.min.x, pen - 3.0), Vec2::new(area.width(), 18.0)),
+        "the description",
+        board.detail().description_rendered,
+    ) {
+        board.show_the_description_rendered(rendered);
+    }
+    pen += look.font_size + 4.0;
+    let description_at = Rect::from_min_size(Pos2::new(area.min.x, pen), Vec2::new(area.width(), description_height));
+    requests.extend(super::description::show(board, ui, description_at, look));
+    pen = description_at.max.y + 10.0;
+
+    if !new {
+        label(
+            ui,
+            look,
+            Pos2::new(area.min.x, pen),
+            &format!("Todos {}/{}", task.todo_done_count, task.todo_count),
+        );
+        pen += look.font_size + 4.0;
+        let todos_at = Rect::from_min_size(Pos2::new(area.min.x, pen), Vec2::new(area.width(), todo_height));
+        requests.extend(super::detail::todo_rows(board, ui, todos_at, look));
+        pen = todos_at.max.y + 10.0;
+
+        let terminal_at = Rect::from_min_size(Pos2::new(area.min.x, pen), Vec2::new(area.width(), terminal_height));
+        requests.extend(super::detail::terminal_section(board, ui, terminal_at, look, task));
+        pen = terminal_at.max.y + 10.0;
+
+        let comments_at = Rect::from_min_max(Pos2::new(area.min.x, pen), area.max);
+        requests.extend(super::detail::comment_section(board, ui, comments_at, look));
+    }
+    requests
+}
+
+/// Everything that is a property of the ticket rather than its contents.
+fn right_column(
+    board: &mut AgentTasks,
+    ui: &mut egui::Ui,
+    area: Rect,
+    look: &Look<'_>,
+    task: &Task,
+    new: bool,
+) -> Vec<Request> {
+    let mut requests = Vec::new();
+    let mut pen = area.min.y;
+    let width = area.width() - PAD;
+
+    // The JIRA panel, at the top of the column, which is where the reference capture puts it.
+    //
+    // **What it does not do is sync.** There is no HTTP client in Quill, which `tasks/agent-tasks-plugin-tdd.md`
+    // §10 records, so the key is a field somebody types rather than one a sync brought in. Copy hands over the
+    // row's own `jira_url` when it has one and the key otherwise, because there is no configured JIRA site to
+    // build an address against and a guessed address that opens nothing is worse than the key.
+    //
+    // The browser draws this panel only on a ticket that came from JIRA, and here it is drawn on every ticket
+    // that exists. That is deliberate and it is the one place this column departs from the reference: with no
+    // sync, a panel that appeared only once a key was set could never be the thing that set one. Absent on a new
+    // ticket, which has nothing to link yet.
+    if !new {
+        let key = task.jira_key.clone().unwrap_or_default();
+        let (typed, tall) = field_row(
+            ui,
+            look,
+            Rect::from_min_size(Pos2::new(area.min.x, pen), Vec2::new(width, FIELD)),
+            "JIRA",
+            &key,
+            "no issue",
+        );
+        if let Some(typed) = typed {
+            requests.extend(write(board, task, Field::JiraKey(typed)));
+        }
+        pen += tall;
+        // Copy only when there is something to copy, which is Quill's rule about a control that cannot apply.
+        if !key.trim().is_empty() {
+            let copy = Rect::from_min_size(Pos2::new(area.min.x, pen), Vec2::new(width.min(130.0), 20.0));
+            if crate::components::controls::choice_button(ui, copy, "Copy issue link", false) {
+                requests.push(Request::Copy(board.jira_link(&key)));
+                requests.push(Request::Message(format!("copied the link to {key}")));
+            }
+            // What a sync would have filled in, when a row carries it: a ticket that came from JIRA has its issue
+            // type and the status JIRA itself holds, and neither is a thing this board can change.
+            let said = [task.jira_issue_type.clone(), task.jira_status.clone()]
+                .into_iter()
+                .flatten()
+                .filter(|value| !value.trim().is_empty())
+                .collect::<Vec<String>>()
+                .join(" · ");
+            if !said.is_empty() {
+                text(
+                    ui.painter(),
+                    Pos2::new(copy.max.x + 8.0, pen + 3.0),
+                    &said,
+                    look.font_size - 2.5,
+                    look.palette.text_faint,
+                );
+            }
+            pen += 26.0;
+        }
+    }
+
+    // The lane, which is what `Status` is in the browser. Absent for a new ticket: it is in New and moving it
+    // before it has a title is not a thing anybody wants.
+    if !new {
+        let (chosen, tall) = dropdown_row(
+            ui,
+            look,
+            Rect::from_min_size(Pos2::new(area.min.x, pen), Vec2::new(width, FIELD)),
+            "Status",
+            &Status::ALL.map(|status| (status.name().to_owned(), status.label().to_owned())),
+            task.status.name(),
+            None,
+        );
+        if let Some(chosen) = chosen {
+            if let Some(status) = Status::parse(&chosen) {
+                if let Err(problem) = board.move_card(task.id, status, i64::MAX) {
+                    requests.push(Request::Message(problem));
+                }
+            }
+        }
+        pen += tall + 6.0;
+    }
+
+    let (chosen, tall) = dropdown_row(
+        ui,
+        look,
+        Rect::from_min_size(Pos2::new(area.min.x, pen), Vec2::new(width, FIELD)),
+        "Assignee",
+        &Assignee::ALL.map(|assignee| (assignee.name().to_owned(), assignee.name().to_owned())),
+        task.assignee.name(),
+        None,
+    );
+    if let Some(chosen) = chosen {
+        requests.extend(write(board, task, Field::Assignee(chosen)));
+    }
+    pen += tall + 6.0;
+
+    // **Absent** for a ticket assigned to a person rather than disabled, which is Quill's rule: the `F` button
+    // is not drawn for a `.rs` file either.
+    if task.assignee.is_an_agent() {
+        // **A dropdown, not a text field.** `task-28`: an agent could not be started because a model identifier
+        // had to be typed from memory. `agent::models_for` keeps whatever the row already says in the list, so
+        // opening a ticket in a dropdown cannot change which model it names.
+        let model = task.model.clone().unwrap_or_default();
+        let models: Vec<(String, String)> = crate::services::agent_tasks::agent::models_for(
+            task.assignee,
+            task.model.as_deref(),
+        )
+        .into_iter()
+        .map(|name| (name.clone(), name))
+        .collect();
+        let (chosen, tall) = dropdown_row(
+            ui,
+            look,
+            Rect::from_min_size(Pos2::new(area.min.x, pen), Vec2::new(width, FIELD)),
+            "Model",
+            &models,
+            &model,
+            Some("the agent's default"),
+        );
+        if let Some(chosen) = chosen {
+            requests.extend(write(board, task, Field::Model(chosen)));
+        }
+        pen += tall + 6.0;
+        let (chosen, tall) = dropdown_row(
+            ui,
+            look,
+            Rect::from_min_size(Pos2::new(area.min.x, pen), Vec2::new(width, FIELD)),
+            "Effort",
+            &EFFORTS.iter().map(|level| ((*level).to_owned(), (*level).to_owned())).collect::<Vec<_>>(),
+            task.effort.as_deref().unwrap_or(""),
+            Some("the agent's default"),
+        );
+        if let Some(chosen) = chosen {
+            requests.extend(write(board, task, Field::Effort(chosen)));
+        }
+        pen += tall + 6.0;
+    }
+
+    let (chosen, tall) = dropdown_row(
+        ui,
+        look,
+        Rect::from_min_size(Pos2::new(area.min.x, pen), Vec2::new(width, FIELD)),
+        "Priority",
+        &Priority::ALL.map(|priority| (priority.name().to_owned(), priority.name().to_owned())),
+        task.priority.name(),
+        None,
+    );
+    if let Some(chosen) = chosen {
+        requests.extend(write(board, task, Field::Priority(chosen)));
+    }
+    pen += tall + 6.0;
+
+    let epics: Vec<(String, String)> =
+        board.board().epics.iter().map(|epic| (epic.id.to_string(), epic.name.clone())).collect();
+    let (chosen, tall) = dropdown_row(
+        ui,
+        look,
+        Rect::from_min_size(Pos2::new(area.min.x, pen), Vec2::new(width, FIELD)),
+        "Epic",
+        &epics,
+        &task.epic_id.map(|id| id.to_string()).unwrap_or_default(),
+        Some("None"),
+    );
+    if let Some(chosen) = chosen {
+        requests.extend(write(board, task, Field::Epic(chosen)));
+    }
+    pen += tall + 6.0;
+
+    // The projects this window knows about, which is the list `File -> Open Recent` draws: a folder somebody has
+    // opened is a folder they might point a ticket at. A ticket may still name one this window has never opened,
+    // so whatever the row says is kept in the list the way a model is.
+    let project = task.project.clone().unwrap_or_default();
+    let projects: Vec<(String, String)> = board
+        .known_projects(task.project.as_deref())
+        .into_iter()
+        .map(|path| (path.clone(), path))
+        .collect();
+    let (chosen, tall) = dropdown_row(
+        ui,
+        look,
+        Rect::from_min_size(Pos2::new(area.min.x, pen), Vec2::new(width, FIELD)),
+        "Project",
+        &projects,
+        &project,
+        Some("the folder this window has open"),
+    );
+    if let Some(chosen) = chosen {
+        requests.extend(write(board, task, Field::Project(chosen)));
+    }
+    pen += tall + 6.0;
+
+    if !new {
+        let now = clock::now();
+        text(
+            ui.painter(),
+            Pos2::new(area.min.x, pen),
+            &format!("Created {}", clock::relative(&task.created_at, &now)),
+            look.font_size - 2.0,
+            look.palette.text_faint,
+        );
+        pen += look.font_size + 12.0;
+
+        // The three things that happen to a ticket. Absent when they cannot apply, which is why Start is not
+        // drawn on a ticket that already has an agent running.
+        let attached = board.terminal_for(task.id).is_some_and(|terminal| terminal.session.is_running());
+        let mut buttons: Vec<(&str, &str)> = Vec::new();
+        if attached {
+            buttons.push(("Stop", "stop"));
+        } else if task.session_id.is_none() {
+            buttons.push(("Start work", "start"));
+        } else if crate::services::agent_tasks::agent::can_resume(task.assignee) {
+            buttons.push(("Resume session", "resume"));
+        } else {
+            // **`Start work again`, not `Resume session`.** Codex names its own sessions, so the id on a Codex
+            // ticket is only Quill's marker that a worker was here and there is no conversation to hand back.
+            // `Resume session` refused and told the person to press Start, which was not drawn on the card or
+            // here, so a Codex ticket whose process had gone offered exactly one button and that button could
+            // only fail. The label says `again` because it is a new conversation, which the comments are what
+            // the new agent reads.
+            buttons.push(("Start work again", "start"));
+        }
+        for (label, command) in buttons {
+            let at = Rect::from_min_size(Pos2::new(area.min.x, pen), Vec2::new(width, 28.0));
+            if modal::button(ui, at, label, true, true) {
+                match board.command_now(command, std::slice::from_ref(&task.key)) {
+                    Ok(answer) if !answer.message.is_empty() => requests.push(Request::Message(answer.message)),
+                    Ok(_) => {}
+                    Err(problem) => requests.push(Request::Message(problem)),
+                }
+            }
+            pen += 34.0;
+        }
+        let at = Rect::from_min_size(Pos2::new(area.min.x, pen), Vec2::new(width, 28.0));
+        // Pressed once it says what it will do, pressed twice it does it. The browser board asks with a
+        // `confirm()`; Quill has `components::prompt_dialog` for a question, and a second press is the smaller
+        // answer that fits in a column 260 points wide. Deleting a ticket takes its todos and its comments with
+        // it, so it is the one control here that asks.
+        let asking = board.delete_asked;
+        let label = match asking {
+            true => "Delete for good",
+            false => "Delete",
+        };
+        if modal::button(ui, at, label, true, false) {
+            match asking {
+                true => {
+                    board.delete_asked = false;
+                    if let Err(problem) = board.discard_the_ticket() {
+                        requests.push(Request::Message(problem));
+                    }
+                }
+                false => board.delete_asked = true,
+            }
+        }
+        if asking {
+            pen += 34.0;
+            let at = Rect::from_min_size(Pos2::new(area.min.x, pen), Vec2::new(width, 22.0));
+            if crate::components::controls::choice_button(ui, at, "Keep it", false) {
+                board.delete_asked = false;
+            }
+        }
+    }
+    requests
+}
+
+/// Write one field, and report what could not be written.
+fn write(board: &mut AgentTasks, task: &Task, field: Field) -> Vec<Request> {
+    match board.edit_field(task.id, field) {
+        Ok(()) => Vec::new(),
+        Err(problem) => vec![Request::Message(problem)],
+    }
+}
+
+/// A section's or a field's name, drawn and **named**.
+///
+/// Named because `CLAUDE.md` asks that every control have a plain name a test can find it by, and a heading
+/// over a field is what tells a person and a test which field they are looking at. Painted text alone is
+/// invisible to both.
+/// A section's heading that can be pressed to shut the section, and says which state it is in.
+///
+/// The triangle is the disclosure every tree in Quill draws, and the whole heading is the target rather than
+/// only the triangle, because a heading is easier to hit than an eight point mark. Answers whether it was
+/// pressed; the caller flips its own flag, because the flag lives on the provider and this draws.
+fn disclosure(
+    ui: &mut egui::Ui,
+    look: &Look<'_>,
+    at: Pos2,
+    said: &str,
+    shut: bool,
+) -> bool {
+    let painter = ui.painter().clone();
+    let middle = at.y + look.font_size / 2.0;
+    let mark = 4.0;
+    let tint = look.palette.text_dim;
+    match shut {
+        // Pointing right when shut and down when open, which is what the explorer's folders do.
+        true => painter.add(egui::Shape::convex_polygon(
+            vec![
+                Pos2::new(at.x, middle - mark),
+                Pos2::new(at.x + mark * 1.4, middle),
+                Pos2::new(at.x, middle + mark),
+            ],
+            tint,
+            egui::Stroke::NONE,
+        )),
+        false => painter.add(egui::Shape::convex_polygon(
+            vec![
+                Pos2::new(at.x - mark, middle - mark / 2.0),
+                Pos2::new(at.x + mark, middle - mark / 2.0),
+                Pos2::new(at.x, middle + mark),
+            ],
+            tint,
+            egui::Stroke::NONE,
+        )),
+    };
+    let words = Pos2::new(at.x + 12.0, at.y);
+    let width = text(&painter, words, said, look.font_size - 1.5, tint);
+    let area = Rect::from_min_size(at, Vec2::new(width + 14.0, look.font_size + 2.0));
+    let response = ui.interact(
+        area,
+        ui.id().with(("agent-tasks-disclosure", said)),
+        egui::Sense::click(),
+    );
+    let name = match shut {
+        true => format!("{said}, shut"),
+        false => format!("{said}, open"),
+    };
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), !shut, name.clone())
+    });
+    response.clicked()
+}
+
+fn label(ui: &mut egui::Ui, look: &Look<'_>, at: Pos2, said: &str) {
+    let width = text(ui.painter(), at, said, look.font_size - 1.5, look.palette.text_dim);
+    let area = Rect::from_min_size(at, Vec2::new(width, look.font_size));
+    let response = ui.interact(area, ui.id().with(("agent-tasks-label", said)), egui::Sense::hover());
+    let name = said.to_owned();
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, name.clone()));
+}
+
+/// A named value chosen from a list, answering what was chosen when it changed.
+///
+/// `task-28`: "Dropdowns. We need UI dropdowns for values." Every one of the ticket's fields that holds one of
+/// a known set is this, and there is one of these rather than seven arrangements of buttons and boxes.
+///
+/// `components::controls::dropdown` is what draws it, which is the control the toolbar and
+/// `Settings -> Appearance` already use, so a dropdown on a ticket opens and closes and looks like every other
+/// dropdown in Quill. `options` is `(value, said)` pairs — the value written to the row and the words a person
+/// reads — which is the shape `choice_row` took before this, so the call sites did not have to change shape.
+///
+/// `empty` is what the list calls holding nothing, for a field that may. `None` means the field is required and
+/// the list offers no way to clear it.
+fn dropdown_row(
+    ui: &mut egui::Ui,
+    look: &Look<'_>,
+    area: Rect,
+    name: &str,
+    options: &[(String, String)],
+    chosen: &str,
+    empty: Option<&str>,
+) -> (Option<String>, f32) {
+    // **Painted rather than named.** `label` registers a `Label` in the accessibility tree, and the dropdown
+    // below carries the same name — which is the pairing a person wants and two nodes with one name, so a test
+    // asking for `Model` could not tell which it had. The control is the one that answers to the name; the words
+    // above it are the words above it.
+    text(ui.painter(), area.min, name, look.font_size - 1.5, look.palette.text_dim);
+    let at = Rect::from_min_size(
+        Pos2::new(area.min.x, area.min.y + look.font_size + 2.0),
+        Vec2::new(area.width(), 24.0),
+    );
+    let picked = super::value_dropdown(ui, at, name, options, chosen, empty);
+    (picked, look.font_size + 30.0)
+}
+
+/// A named field, answering what was typed when it changed.
+fn field_row(
+    ui: &mut egui::Ui,
+    look: &Look<'_>,
+    area: Rect,
+    name: &str,
+    value: &str,
+    hint: &str,
+) -> (Option<String>, f32) {
+    label(ui, look, area.min, name);
+    let at = Rect::from_min_size(
+        Pos2::new(area.min.x, area.min.y + look.font_size + 2.0),
+        Vec2::new(area.width(), 22.0),
+    );
+    ui.painter().rect(
+        at,
+        CornerRadius::same(look.corner_radius as u8),
+        look.palette.field,
+        egui::Stroke::new(1.0, look.palette.control_border),
+        egui::StrokeKind::Inside,
+    );
+    let mut typed = value.to_owned();
+    // Its own id scope for the reason a row of choices has one: two fields whose hint happens to match would be
+    // two text boxes sharing an id.
+    let changed = ui
+        .push_id(name, |ui| {
+            let response = ui.put(
+                crate::components::controls::field_text_rect(ui, at, 6.0),
+                egui::TextEdit::singleline(&mut typed)
+                    .frame(egui::Frame::NONE)
+                    .hint_text(egui::RichText::new(hint).color(look.palette.text_faint))
+                    .font(egui::FontId::proportional(look.font_size - 1.0))
+                    .text_color(look.palette.text),
+            );
+            response.changed()
+        })
+        .inner;
+    (changed.then_some(typed), look.font_size + 28.0)
+}

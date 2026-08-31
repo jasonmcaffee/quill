@@ -85,8 +85,14 @@ mod tests {
 
     #[test]
     fn the_bundled_icons_all_decode() {
+        // Every plugin that ships a picture ships one that decodes. A plugin that draws ships none: its
+        // rail button is `pane.icon`, which `theme::icon` draws, so it follows the window's colours and
+        // the pointer's opacity the way every other button in the rail does. `the_bundled_plugins_all_
+        // parse_and_claim_what_they_should` is what asserts which plugins are in which of the two.
         for (id, _, icon) in crate::services::plugins::bundled::ALL {
-            let bytes = icon.expect("every bundled plugin ships an icon");
+            let Some(bytes) = icon else {
+                continue;
+            };
             let (size, pixels) = decode(bytes).unwrap_or_else(|| panic!("{id} should decode"));
             assert_eq!(size, [32, 32], "{id} is drawn at 32 points across");
             assert_eq!(pixels.len(), 32 * 32);

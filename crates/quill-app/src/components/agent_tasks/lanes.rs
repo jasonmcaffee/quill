@@ -1,0 +1,568 @@
+//! The four lanes, and the four listings that are not lanes.
+//!
+//! Which lane a card is in and where a drag lands are `services::agent_tasks::board`; this paints them.
+
+use egui::{CornerRadius, Pos2, Rect, Vec2};
+
+use super::{card, text};
+use crate::services::agent_tasks::model::Status;
+use crate::services::agent_tasks::{board as arithmetic, AgentTasks, View};
+use crate::services::plugin_ui::{Look, Request};
+
+/// How wide a lane is when there is room, how narrow it is squeezed to before the board starts
+/// scrolling instead, and the gap between two.
+///
+/// 300 points is what the design image shows. A pane can be 420 points wide down the side of the window,
+/// which holds one lane and a sliver, so below the point where four lanes fit they are narrowed as far as
+/// [`LANE_MIN`] and the board scrolls sideways after that. Narrowing further would leave a lane too thin
+/// for a card's title, which is worse than scrolling.
+const LANE: f32 = 300.0;
+const LANE_MIN: f32 = 240.0;
+const GAP: f32 = 12.0;
+/// How tall the strip at the top of a lane holding its name and its count is.
+/// How tall a lane's heading is at the default font size, read through `lane_header` so a window set to large
+/// text gets a heading that can hold it. See `Look::scale`.
+const LANE_HEADER_AT_DEFAULT: f32 = 34.0;
+/// How much of a lane's foot is kept clear of cards, which is what `+ Add task` sits in.
+const FOOT_AT_DEFAULT: f32 = 40.0;
+/// How much of the New lane is kept clear under its heading, which is what the agent chooser and its play
+/// button sit in. Reserved whether or not New holds a card, so the cards under it do not jump when the last
+/// one is dragged out of the lane.
+const QUICK_LAUNCH_AT_DEFAULT: f32 = 30.0;
+
+/// How far below a lane's heading its cards start.
+///
+/// Only the New lane reserves the quick launch band, so this is a function of the lane rather than a
+/// constant. Everything that positions a card reads it, including the line drawn where a dragged card would
+/// land: an earlier version added the band to the drawing and not to that line, which put the line half a
+/// card away from where the card actually went.
+fn under_the_heading(status: Status, look: &Look<'_>) -> f32 {
+    match status {
+        Status::New => (LANE_HEADER_AT_DEFAULT + QUICK_LAUNCH_AT_DEFAULT) * look.scale(),
+        _ => LANE_HEADER_AT_DEFAULT * look.scale(),
+    }
+}
+
+/// How tall a lane's heading is in this window.
+fn lane_header(look: &Look<'_>) -> f32 {
+    LANE_HEADER_AT_DEFAULT * look.scale()
+}
+
+/// How much of a lane's foot is kept clear of cards in this window.
+fn foot(look: &Look<'_>) -> f32 {
+    FOOT_AT_DEFAULT * look.scale()
+}
+const PAD: f32 = 8.0;
+
+/// What the window knows about a ticket that its row does not: whether its agent is running here, and
+/// whether Start would do anything.
+fn live_for(
+    board: &AgentTasks,
+    task: &crate::services::agent_tasks::model::Task,
+) -> card::Live {
+    let attached = board.terminal_for(task.id).is_some_and(|terminal| terminal.session.is_running());
+    card::Live {
+        attached,
+        // Start claims an unclaimed ticket. One that already has a session is resumed instead, and one
+        // assigned to a person is handed to the configured agent — which is still a start, so it counts.
+        //
+        // **And a Codex ticket whose process has gone can be started again.** Codex names its own sessions, so
+        // the id on the ticket is only Quill's marker that a worker was here and there is nothing to resume. The
+        // card showed no Start and the modal offered `Resume session`, which refused and told the person to press
+        // Start — a button that was not drawn anywhere. The only thing that can be done to such a ticket is start
+        // it afresh, so that is what is offered.
+        can_start: task.session_id.is_none()
+            || (!attached
+                && !crate::services::agent_tasks::agent::can_resume(task.assignee)
+                && task.assignee.is_an_agent()),
+    }
+}
+
+/// The board: four lanes across, scrolling sideways when the pane is narrower than they are.
+pub fn show(board: &mut AgentTasks, ui: &mut egui::Ui, look: &Look<'_>, area: Rect) -> Vec<Request> {
+    let mut requests = Vec::new();
+    // **Clicking the board gives it the keyboard**, which is what makes the arrow keys reach it at all. Added
+    // before anything else is drawn, because egui gives a press to the last widget that overlaps it: a background
+    // added first is under every card and every button, so it answers only for a press nothing else wanted.
+    let background = ui.interact(area, ui.id().with("agent-tasks-board-background"), egui::Sense::click());
+    // Named, because every control in Quill has a plain name and a test finds one by it. This is the one that
+    // gives the board the keyboard.
+    background.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Other, ui.is_enabled(), "Board background")
+    });
+    if background.clicked() {
+        requests.push(Request::TakeTheKeyboard(true));
+        // And away from a ticket's terminal, if it had them: the keys now move the ring on the board.
+        board.focus_the_terminal(false);
+    }
+    // How wide a lane is here, and how far the board has been scrolled sideways. Four lanes at their full
+    // width need 1236 points; anything narrower squeezes them to `LANE_MIN` and then scrolls.
+    let room = area.width() - PAD * 2.0;
+    let lanes = Status::ALL.len() as f32;
+    let lane_width =
+        ((room - GAP * (lanes - 1.0)) / lanes).clamp(LANE_MIN, LANE);
+    let content = lane_width * lanes + GAP * (lanes - 1.0);
+    let scroll = board.scroll_the_lanes(ui, area, content - room);
+    let mut to_open = None;
+    let mut to_start = None;
+    let mut add_a_task = false;
+    let mut next_agent = false;
+    let mut start_the_next: Option<String> = None;
+    let mut dragged = None;
+    let mut dropped: Option<(Status, i64)> = None;
+    let pointer = ui.ctx().pointer_interact_pos();
+    let released = ui.ctx().input(|input| input.pointer.any_released());
+    let query = board.query().to_owned();
+    let dragging = board.dragging;
+    let mut lane_lefts = Vec::new();
+
+    // Laid out in three passes, and the order is a borrow rather than a preference: the geometry needs
+    // nothing, the scroll offsets change the provider, and the drawing reads it. Doing them in one pass is
+    // what made an earlier version clone the whole board every frame — every ticket's description copied to
+    // satisfy the borrow checker, which on a board of any size is the largest thing the frame does.
+    //
+    // First: where each lane is, and how many cards it holds.
+    let room_for_cards = |lane: Rect, status: Status| lane.height() - under_the_heading(status, look) - foot(look);
+    let mut geometry: Vec<(Status, Rect, usize)> = Vec::new();
+    for (index, status) in Status::ALL.into_iter().enumerate() {
+        let left = area.min.x + PAD + index as f32 * (lane_width + GAP) - scroll;
+        if left > area.max.x || left + lane_width < area.min.x {
+            continue;
+        }
+        // **The lane keeps its full width and is clipped by the pane's edge**, rather than being shrunk to what
+        // is visible. Clamping the rectangle to the viewport meant that a lane half off the right edge was a
+        // narrower lane: its cards were re-laid out at the reduced width, so scrolling the board sideways made
+        // the cards in the edge lane shrink and their text reflow as they went, instead of sliding behind the
+        // edge the way a column of cards should. The clip rectangle each lane's cards are drawn into is what
+        // stops the drawing escaping the pane.
+        let lane_area = Rect::from_min_max(
+            Pos2::new(left, area.min.y + PAD),
+            Pos2::new(left + lane_width, area.max.y - PAD),
+        );
+        let held = board
+            .board()
+            .lane(status)
+            .map(|lane| lane.tasks.iter().filter(|task| arithmetic::matches(task, &query)).count())
+            .unwrap_or(0);
+        geometry.push((status, lane_area, held));
+    }
+    // Second: how far each of them is scrolled, which is the only thing here that changes anything.
+    let downs: Vec<f32> = geometry
+        .iter()
+        .map(|(status, lane_area, held)| {
+            let content = *held as f32 * (card::height(look) + card::GAP);
+            let most = (content - room_for_cards(*lane_area, *status)).max(0.0);
+            // The visible part, because a lane keeps its full width even when it runs off the edge and a wheel
+            // over the pane next door is not a wheel over this lane.
+            board.scroll_a_lane(ui, *status, lane_area.intersect(area), most)
+        })
+        .collect();
+    // The keyboard, between the geometry and the drawing, because moving the ring needs the counts each lane
+    // holds **after** the search has narrowed it and the drawing needs to know where the ring ended up.
+    //
+    // Only when the window says this plugin has the keys, and only when nothing is typing: `Look` carries the
+    // first, and a text box or a modal holding the keyboard is what the other two check. Without all three, an
+    // arrow key moving the caret in the editor would also move the ring on a board nobody was looking at.
+    // All four lanes rather than the ones on screen, because the ring has to be able to cross to a lane the board
+    // has scrolled past — and then the board is scrolled so that lane is showing.
+    let counts = board.lane_counts();
+    let mut open_the_chosen = None;
+    if look.has_the_keyboard
+        && !crate::app::text_box_has_the_keyboard(ui.ctx())
+        && !crate::app::a_modal_has_the_keyboard(ui.ctx())
+    {
+        // **Consumed, not just read.** A key the board acts on has to be taken out of the frame's input, or
+        // whatever is drawn after the board sees the same press: the Enter that opens a ticket was still there when
+        // the modal drew, so the modal took it as its own confirm and shut again in the frame it opened.
+        let (across, down, enter) = ui.ctx().input_mut(|input| {
+            let none = egui::Modifiers::NONE;
+            (
+                i64::from(input.consume_key(none, egui::Key::ArrowRight))
+                    - i64::from(input.consume_key(none, egui::Key::ArrowLeft)),
+                i64::from(input.consume_key(none, egui::Key::ArrowDown))
+                    - i64::from(input.consume_key(none, egui::Key::ArrowUp)),
+                input.consume_key(none, egui::Key::Enter),
+            )
+        });
+        if across != 0 || down != 0 {
+            board.move_the_choice(&counts, across, down);
+            if let Some((lane, _)) = board.chosen {
+                board.show_the_lane(lane, lane_width, GAP, room, content - room);
+            }
+        }
+        if enter {
+            open_the_chosen = board.the_chosen_ticket(&counts);
+        }
+    }
+    let ring = board.chosen;
+
+    // Third: the drawing, which only reads.
+    let snapshot = board.board();
+    for (index, (status, lane_area, _)) in geometry.iter().copied().enumerate() {
+        lane_lefts.push((status, lane_area.min.x));
+        ui.painter().rect_filled(
+            lane_area,
+            CornerRadius::same(look.corner_radius as u8),
+            look.ground(look.palette.panel),
+        );
+        let cards: Vec<&crate::services::agent_tasks::model::Task> = snapshot
+            .lane(status)
+            .map(|lane| lane.tasks.iter().filter(|task| arithmetic::matches(task, &query)).collect())
+            .unwrap_or_default();
+        header(ui, look, lane_area, status, cards.len());
+        // **A lane scrolls rather than stopping.** It used to draw as many cards as fit and then a `3 more`
+        // that nothing could reach, so a card past the fold was a card nobody could open, tick or drag.
+        let room = room_for_cards(lane_area, status);
+        let content = cards.len() as f32 * (card::height(look) + card::GAP);
+        let down = downs.get(index).copied().unwrap_or(0.0);
+        let mut tops = Vec::new();
+        let cards_area = Rect::from_min_max(
+            Pos2::new(lane_area.min.x, lane_area.min.y + under_the_heading(status, look)),
+            Pos2::new(lane_area.max.x, lane_area.max.y - foot(look)),
+        );
+        let mut lane_ui = ui.new_child(egui::UiBuilder::new().max_rect(cards_area));
+        // Intersected with the board's own area, not replaced by the lane's. A lane now keeps its full width even
+        // when half of it is off the edge, so its cards' rectangle reaches past the pane and the clip has to be
+        // the part of it that is really on screen.
+        lane_ui.set_clip_rect(cards_area.intersect(area));
+        for (row, task) in cards.iter().enumerate() {
+            let top = cards_area.min.y + row as f32 * (card::height(look) + card::GAP) - down;
+            tops.push(top);
+            if top + card::height(look) < cards_area.min.y || top > cards_area.max.y {
+                continue;
+            }
+            let at = Rect::from_min_size(
+                Pos2::new(lane_area.min.x + 6.0, top),
+                Vec2::new(lane_area.width() - 12.0, card::height(look)),
+            );
+            let pressed = card::show(
+                &mut lane_ui,
+                look,
+                at,
+                task,
+                snapshot,
+                dragging == Some(task.id),
+                live_for(board, task),
+            );
+            // The ring, so the keyboard's place on the board can be seen. Drawn after the card, because the card
+            // paints its own ground and border and a ring drawn first would be under them.
+            if ring == Some((status, row)) {
+                lane_ui.painter().rect_stroke(
+                    at.expand(2.0),
+                    CornerRadius::same(look.corner_radius as u8 + 1),
+                    egui::Stroke::new(1.5, look.palette.accent),
+                    egui::StrokeKind::Outside,
+                );
+            }
+            if pressed.open {
+                to_open = Some(task.id);
+            }
+            if pressed.start {
+                to_start = Some(task.key.clone());
+            }
+            if pressed.drag {
+                dragged = Some(task.id);
+            }
+        }
+        // How much of the lane is out of sight, as the same thin bar the board's own sideways scroll draws.
+        if content > room {
+            let track = Rect::from_min_max(
+                Pos2::new(lane_area.max.x - 4.0, cards_area.min.y),
+                Pos2::new(lane_area.max.x - 2.0, cards_area.max.y),
+            );
+            let share = (room / content).clamp(0.08, 1.0);
+            let at = down / (content - room);
+            ui.painter().rect_filled(track, 0, look.palette.divider);
+            ui.painter().rect_filled(
+                Rect::from_min_size(
+                    Pos2::new(track.min.x, track.min.y + (track.height() - track.height() * share) * at),
+                    Vec2::new(track.width(), track.height() * share),
+                ),
+                0,
+                look.palette.text_faint,
+            );
+        }
+        // Where a card being dragged would land in this lane, drawn as the accent line every drop target
+        // in Quill is drawn as.
+        if let (Some(_), Some(pointer)) = (dragging, pointer) {
+            if lane_area.contains(pointer) {
+                // The index among the cards that are **drawn**, turned into the index among all of them: with a
+                // search narrowing the lane, dropping between the second and third visible card wrote `2` into a
+                // lane whose second and third rows were different tickets, quietly reordering hidden ones.
+                let among_visible = arithmetic::position_at(&tops, card::height(look), pointer.y);
+                let position = arithmetic::among_all(
+                    snapshot.lane(status).map(|lane| lane.tasks.as_slice()).unwrap_or_default(),
+                    &query,
+                    among_visible,
+                );
+                // **Drawn where the card will appear, which is the visible index and this lane's scroll.** The
+                // line used to be placed from `position`, the index among all the cards including the ones a
+                // search had hidden, and it ignored how far the lane was scrolled down — so in a long lane the
+                // line was drawn a card's height away from the pointer for every row scrolled past, and in a
+                // filtered lane it was drawn against a row nobody could see. Releasing still moved the card to
+                // the right place; the line was simply pointing somewhere else.
+                let y = cards_area.min.y
+                    + among_visible as f32 * (card::height(look) + card::GAP)
+                    - down
+                    - card::GAP / 2.0;
+                ui.painter().rect_filled(
+                    Rect::from_min_size(
+                        Pos2::new(lane_area.min.x + 6.0, y),
+                        Vec2::new(lane_area.width() - 12.0, 2.0),
+                    ),
+                    0,
+                    look.palette.accent,
+                );
+                if released {
+                    dropped = Some((status, position));
+                }
+            }
+        }
+        // The agent chooser and its play button under the New lane's heading, which is where the reference
+        // capture puts them: a quick launch that starts the **next** ticket in New with a chosen agent
+        // without opening it.
+        if status == Status::New {
+            let strip = Rect::from_min_size(
+                Pos2::new(lane_area.min.x + 6.0, lane_area.min.y + lane_header(look) + 2.0),
+                Vec2::new(lane_area.width() - 12.0, 24.0),
+            );
+            let play = Rect::from_min_size(Pos2::new(strip.max.x - 24.0, strip.min.y), Vec2::splat(24.0));
+            let chooser = Rect::from_min_max(strip.min, Pos2::new(play.min.x - 6.0, strip.max.y));
+            let chosen = board.configuration().agent;
+            // One button that cycles rather than a dropdown, because egui keeps one popup open at a time and
+            // there are two agents to choose between. Pressing it names the other one.
+            if crate::components::controls::choice_button_named(
+                ui,
+                chooser,
+                chosen.name(),
+                &format!("Agent for a new ticket: {}", chosen.name()),
+                false,
+            ) {
+                next_agent = true;
+            }
+            // Nothing to start when New is empty, so the button is not drawn — but its room is still
+            // reserved, so the cards do not move when the lane empties.
+            if !cards.is_empty()
+                && crate::components::controls::icon_button(
+                    ui,
+                    play,
+                    &format!("Start the next ticket with {}", chosen.name()),
+                    crate::theme::icon::run,
+                )
+            {
+                start_the_next = cards.first().map(|task| task.key.clone());
+            }
+        }
+        // `+ Add task` at the foot of the New lane, which is where the design image puts it.
+        if status == Status::New {
+            let at = Rect::from_min_size(
+                Pos2::new(lane_area.min.x + 6.0, lane_area.max.y - 34.0),
+                Vec2::new(lane_area.width() - 12.0, 28.0),
+            );
+            // Acted on after the loop, because the board is being read while it is drawn and creating a
+            // ticket changes it. That is the rule every component here follows: report, then act.
+            if crate::components::controls::choice_button(ui, at, "+ Add task", false) {
+                add_a_task = true;
+            }
+        }
+    }
+    if next_agent {
+        if let Err(problem) = board.use_the_next_agent() {
+            requests.push(Request::Message(problem));
+        }
+    }
+    if let Some(key) = start_the_next {
+        match board.command_now("start", &[key]) {
+            Ok(answer) => requests.push(Request::Message(answer.message)),
+            Err(problem) => requests.push(Request::Message(problem)),
+        }
+        requests.push(Request::Repaint);
+    }
+    if add_a_task {
+        match board.command_now("new-task", &[]) {
+            // The new ticket's detail opens, which is what makes the editor able to name it: the row exists
+            // from the moment it is created, so typing into the title saves as it is typed.
+            Ok(_) => {}
+            Err(problem) => requests.push(Request::Message(problem)),
+        }
+    }
+    if let Some(id) = dragged {
+        board.dragging = Some(id);
+    }
+    // How far there is left to scroll, drawn as a thin bar along the bottom when there is any, which is
+    // the only thing that says the lanes go on past the edge.
+    if content > room {
+        let track = Rect::from_min_max(
+            Pos2::new(area.min.x + PAD, area.max.y - 3.0),
+            Pos2::new(area.max.x - PAD, area.max.y - 1.0),
+        );
+        let share = (room / content).clamp(0.1, 1.0);
+        let at = match content > room {
+            true => scroll / (content - room),
+            false => 0.0,
+        };
+        let thumb = Rect::from_min_size(
+            Pos2::new(track.min.x + (track.width() - track.width() * share) * at, track.min.y),
+            Vec2::new(track.width() * share, track.height()),
+        );
+        ui.painter().rect_filled(track, 0, look.palette.divider);
+        ui.painter().rect_filled(thumb, 0, look.palette.text_faint);
+    }
+    if let Some((status, position)) = dropped {
+        let moved = board.dragging.take();
+        if let Some(id) = moved {
+            if let Err(problem) = board.move_card(id, status, position) {
+                requests.push(Request::Message(problem));
+            }
+        }
+    } else if released {
+        board.dragging = None;
+    }
+    if let Some(key) = to_start {
+        match board.command_now("start", &[key]) {
+            Ok(answer) => requests.push(Request::Message(answer.message)),
+            Err(problem) => requests.push(Request::Message(problem)),
+        }
+        requests.push(Request::Repaint);
+    }
+    // Enter opens the ticket the ring is on, which is the one thing the keyboard can do beyond moving.
+    if let Some(id) = open_the_chosen {
+        to_open = Some(id);
+    }
+    if let Some(id) = to_open {
+        // **Always the modal**, whatever the window's size. `components::modal` already fits a dialog to the room
+        // there is and never lets it grow past the window, so the modal is the one view that works at every
+        // size — and it is the only one with the description, the fields and Delete in it. Falling back to the
+        // pane's own detail below 1160 points meant a person with a smaller window could not reach a ticket's
+        // editor at all.
+        if let Err(problem) = board.open_the_modal(id) {
+            requests.push(Request::Message(problem));
+        }
+    }
+    requests
+}
+
+/// A lane's name, its coloured dot and its count.
+///
+/// The dot's colour says which lane it is without reading the name, which is what the design image does:
+/// New is quiet, In Progress is the modified colour, QA Failed is the unsaved colour and Agent Done is
+/// the added colour. All four come from `theme::color`.
+fn header(ui: &mut egui::Ui, look: &Look<'_>, lane: Rect, status: Status, count: usize) {
+    let painter = ui.painter().clone();
+    let dot = match status {
+        Status::New => look.palette.text_dim,
+        Status::QaFailed => look.palette.unsaved,
+        Status::InProgress => look.palette.modified,
+        Status::AgentDone => look.palette.added,
+    };
+    let centre = Pos2::new(lane.min.x + 16.0, lane.min.y + lane_header(look) / 2.0);
+    painter.circle_filled(centre, 4.0, dot);
+    text(
+        &painter,
+        Pos2::new(lane.min.x + 28.0, lane.min.y + lane_header(look) / 2.0 - look.font_size / 2.0),
+        status.label(),
+        look.font_size - 1.5,
+        look.palette.text_dim,
+    );
+    let said = painter.layout_no_wrap(
+        count.to_string(),
+        egui::FontId::proportional(look.font_size - 1.5),
+        look.palette.text_dim,
+    );
+    painter.galley(
+        Pos2::new(lane.max.x - 12.0 - said.size().x, lane.min.y + lane_header(look) / 2.0 - said.size().y / 2.0),
+        said,
+        look.palette.text_dim,
+    );
+}
+
+/// The Backlog and Completed views: one column of cards rather than four.
+pub fn listing(
+    board: &mut AgentTasks,
+    ui: &mut egui::Ui,
+    look: &Look<'_>,
+    area: Rect,
+    view: View,
+) -> Vec<Request> {
+    let mut requests = Vec::new();
+    // How many there are and how far the listing is scrolled, before it is read: the scroll changes the
+    // provider and the read borrows it, which is the same three pass order the lanes follow.
+    let held = board.listing(view).len();
+    let content = held as f32 * (card::height(look) + card::GAP);
+    let down = board.listing_scroll(ui, area, (content - (area.height() - PAD * 2.0)).max(0.0));
+    // Read when the view was chosen rather than here: a query inside the draw is the one thing the design
+    // says the board never does.
+    let tasks = board.listing(view);
+    if tasks.is_empty() {
+        text(
+            ui.painter(),
+            area.min + Vec2::new(PAD, PAD),
+            "Nothing here",
+            look.font_size,
+            look.palette.text_dim,
+        );
+        return requests;
+    }
+    let snapshot = board.board();
+    let mut listing_ui = ui.new_child(egui::UiBuilder::new().max_rect(area));
+    listing_ui.set_clip_rect(area);
+    let mut to_open = None;
+    for (row, task) in tasks.iter().enumerate() {
+        let top = area.min.y + PAD + row as f32 * (card::height(look) + card::GAP) - down;
+        if top + card::height(look) < area.min.y || top > area.max.y {
+            continue;
+        }
+        let at = Rect::from_min_size(
+            Pos2::new(area.min.x + PAD, top),
+            Vec2::new((area.width() - PAD * 2.0).min(LANE), card::height(look)),
+        );
+        if card::show(&mut listing_ui, look, at, task, snapshot, false, live_for(board, task)).open {
+            to_open = Some(task.id);
+        }
+    }
+    if let Some(id) = to_open {
+        if let Err(problem) = board.open_the_modal(id) {
+            requests.push(Request::Message(problem));
+        }
+    }
+    requests
+}
+
+/// The Epics view: one row an epic, with its colour.
+pub fn epics(board: &mut AgentTasks, ui: &mut egui::Ui, look: &Look<'_>, area: Rect) -> Vec<Request> {
+    let painter = ui.painter().clone();
+    let epics = board.board().epics.clone();
+    if epics.is_empty() {
+        text(
+            &painter,
+            area.min + Vec2::splat(PAD),
+            "No epics yet. `plugin run agent-tasks new-epic <name>` makes one.",
+            look.font_size,
+            look.palette.text_dim,
+        );
+        return Vec::new();
+    }
+    let content = epics.len() as f32 * look.row_height;
+    let down = board.listing_scroll(ui, area, (content - (area.height() - PAD * 2.0)).max(0.0));
+    for (row, epic) in epics.iter().enumerate() {
+        let top = area.min.y + PAD + row as f32 * look.row_height - down;
+        if top + look.row_height < area.min.y || top > area.max.y {
+            continue;
+        }
+        if let Some(colour) = crate::services::plugins::colour(&epic.color) {
+            painter.circle_filled(
+                Pos2::new(area.min.x + PAD + 6.0, top + look.row_height / 2.0),
+                5.0,
+                egui::Color32::from_rgb(colour.r, colour.g, colour.b),
+            );
+        }
+        text(
+            &painter,
+            Pos2::new(area.min.x + PAD + 20.0, top + look.row_height / 2.0 - look.font_size / 2.0),
+            &epic.name,
+            look.font_size,
+            look.palette.text,
+        );
+    }
+    Vec::new()
+}

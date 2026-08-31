@@ -56,6 +56,11 @@ const WORKSPACE_FILE: &str = "workspace.conf";
 const OPEN_FILES_FILE: &str = "open-files.txt";
 const EXPANDED_FILE: &str = "expanded-folders.txt";
 const TERMINAL_TABS_FILE: &str = "terminal-tabs.txt";
+/// The tabs a plugin drew, one `<plugin id>/<tab id>` a line.
+///
+/// A file of its own rather than a value in `workspace.conf`, because it is a list and the rest of that file
+/// is single values, which is the same reason the open files and the expanded folders each have one.
+const PLUGIN_TABS_FILE: &str = "plugin-tabs.txt";
 
 /// How many files are remembered. A window with more tabs than this open has a problem the state file
 /// is not going to fix, and a list that grows without limit is a file that grows without limit.
@@ -66,6 +71,13 @@ const OPEN_LIMIT: usize = 60;
 pub struct ProjectState {
     /// The files that were open, in tab order.
     pub open_files: Vec<PathBuf>,
+    /// The tabs a plugin drew, by their `<plugin id>/<tab id>`.
+    ///
+    /// A separate list rather than an entry in `open_files`, because every list beside `open_files` is
+    /// indexed with it — the pane, the scroll and the caret — and none of those means anything for a tab
+    /// with no document. A plugin tab has no scroll of its own to remember either: what it is showing is the
+    /// plugin's own state, kept in the plugin's own file.
+    pub plugin_tabs: Vec<String>,
     /// Which of them was showing.
     pub active_file: usize,
     /// Which pane each of them was in, in the same order. All zeros for a state file written before
@@ -93,6 +105,11 @@ pub struct ProjectState {
     pub expanded_folders: Vec<PathBuf>,
     /// False when the explorer had been put away.
     pub explorer_visible: bool,
+    /// Whether the editing area — the pane holding the tabs — was showing. `task-28`.
+    ///
+    /// True for a file that does not mention it, which is every file written before this, because a project that
+    /// reopened with no editing area would look broken to somebody who never hid one.
+    pub editor_visible: bool,
     /// True when the terminal tile was showing.
     pub terminal_visible: bool,
     /// How many terminal tabs there were. The shells themselves cannot be brought back — what a
@@ -158,7 +175,7 @@ impl WindowPlace {
 impl ProjectState {
     /// The state a project that has never been opened in Quill has.
     pub fn new() -> Self {
-        Self { explorer_visible: true, ..Self::default() }
+        Self { explorer_visible: true, editor_visible: true, ..Self::default() }
     }
 }
 
@@ -178,6 +195,9 @@ pub fn load(root: &Path) -> ProjectState {
     if let Some(on) = values.flag("explorer.visible") {
         state.explorer_visible = on;
     }
+    if let Some(on) = values.flag("editor.visible") {
+        state.editor_visible = on;
+    }
     if let Some(on) = values.flag("terminal.visible") {
         state.terminal_visible = on;
     }
@@ -190,6 +210,9 @@ pub fn load(root: &Path) -> ProjectState {
     if let Some(count) = values.number("terminal.tabs") {
         state.terminal_tabs = (count.max(0.0) as usize).min(16);
     }
+    state.plugin_tabs =
+        read_names(&std::fs::read_to_string(folder.join(PLUGIN_TABS_FILE)).unwrap_or_default());
+    state.plugin_tabs.truncate(OPEN_LIMIT);
     state.terminal_tab_names =
         read_names(&std::fs::read_to_string(folder.join(TERMINAL_TABS_FILE)).unwrap_or_default());
     state.terminal_tab_names.resize(state.terminal_tabs, String::new());
@@ -250,6 +273,7 @@ pub fn save(root: &Path, state: &ProjectState) {
     }
     let mut values = Values::new();
     values.set("explorer.visible", flag(state.explorer_visible));
+    values.set("editor.visible", flag(state.editor_visible));
     values.set("terminal.visible", flag(state.terminal_visible));
     values.set("terminal.tabs", state.terminal_tabs.to_string());
 
@@ -297,6 +321,11 @@ pub fn save(root: &Path, state: &ProjectState) {
     // value nobody has chosen.
     if state.terminal_tab_names.iter().any(|name| !name.trim().is_empty()) {
         write(&folder.join(TERMINAL_TABS_FILE), &names_text(&state.terminal_tab_names));
+    }
+    // Only written once a plugin tab has been open, for the same reason: a project that has never had one is
+    // left with no file at all rather than an empty one.
+    if !state.plugin_tabs.is_empty() {
+        write(&folder.join(PLUGIN_TABS_FILE), &names_text(&state.plugin_tabs));
     }
 }
 
@@ -465,6 +494,7 @@ mod tests {
     fn what_was_open_is_what_comes_back() {
         let root = project("quill-project-state-round-trip");
         let state = ProjectState {
+            plugin_tabs: Vec::new(),
             open_files: vec![root.join("readme.md"), root.join("chapters/one.md")],
             active_file: 1,
             file_panes: vec![0, 0],
@@ -474,6 +504,7 @@ mod tests {
             active_pane: 0,
             expanded_folders: vec![root.join("chapters")],
             explorer_visible: false,
+            editor_visible: true,
             terminal_visible: true,
             terminal_tabs: 2,
             terminal_tab_names: vec!["build".to_owned(), String::new()],
@@ -497,6 +528,7 @@ mod tests {
     fn where_each_file_was_being_read_comes_back_with_it() {
         let root = project("quill-project-state-scroll");
         let state = ProjectState {
+            plugin_tabs: Vec::new(),
             open_files: vec![root.join("readme.md"), root.join("chapters/one.md")],
             file_panes: vec![0, 0],
             file_scrolls: vec![0.0, 412.5],
@@ -515,6 +547,7 @@ mod tests {
     fn a_scroll_goes_with_the_file_it_belongs_to_when_that_file_has_gone() {
         let root = project("quill-project-state-scroll-gone");
         let state = ProjectState {
+            plugin_tabs: Vec::new(),
             open_files: vec![
                 root.join("gone.md"),
                 root.join("readme.md"),
@@ -587,6 +620,7 @@ mod tests {
     fn a_split_project_comes_back_split() {
         let root = project("quill-project-state-split");
         let state = ProjectState {
+            plugin_tabs: Vec::new(),
             open_files: vec![root.join("readme.md"), root.join("chapters/one.md")],
             active_file: 1,
             file_panes: vec![0, 1],
@@ -608,6 +642,7 @@ mod tests {
         // leave chapters/one.md wearing the pane that belonged to the file before it.
         let root = project("quill-project-state-split-missing");
         let state = ProjectState {
+            plugin_tabs: Vec::new(),
             open_files: vec![root.join("gone.md"), root.join("chapters/one.md")],
             file_panes: vec![0, 1],
             pane_widths: vec![0.5, 0.5],
@@ -641,6 +676,7 @@ mod tests {
         save(
             &root,
             &ProjectState {
+                plugin_tabs: Vec::new(),
                 open_files: vec![root.join("chapters/one.md")],
                 ..ProjectState::new()
             },
@@ -660,6 +696,7 @@ mod tests {
         save(
             &root,
             &ProjectState {
+                plugin_tabs: Vec::new(),
                 open_files: vec![root.join("readme.md"), root.join("gone.md")],
                 active_file: 1,
                 ..ProjectState::new()

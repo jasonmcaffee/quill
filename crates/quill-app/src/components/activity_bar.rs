@@ -52,6 +52,9 @@ const MARGIN: f32 = 8.0;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RailState {
     pub explorer_visible: bool,
+    /// Whether the editing area — the pane holding the tabs — is showing. `task-28` asks for its button under
+    /// the folder one, so it is the second in the top group.
+    pub editor_visible: bool,
     /// True when the commit panel is open.
     pub git_open: bool,
     /// False outside a repository, which dims the git button rather than removing it — the same rule
@@ -62,6 +65,27 @@ pub struct RailState {
     pub run_visible: bool,
     /// True when the debug tile is the one showing along the bottom.
     pub debug_visible: bool,
+}
+
+/// A button the rail draws for a pane a plugin contributed.
+///
+/// The rail's own two groups say what a panel **is** — a list at the top, a character grid at the
+/// bottom — and a contributed button joins the group its manifest named. It is drawn after Quill's own,
+/// so installing a plugin never moves a button somebody's hand already knows.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PluginButton {
+    /// What the tooltip says, from `pane.label`.
+    pub label: String,
+    /// Which drawn icon, from `pane.icon`.
+    pub icon: String,
+    /// True when the pane is showing.
+    pub on: bool,
+    /// Which of the rail's two groups it is in.
+    pub bottom: bool,
+    /// The pane's `<plugin id>/<pane id>`, which is what the action carries.
+    pub key: String,
+    /// Which dock slot it is, so a right click opens the right panel's menu.
+    pub slot: usize,
 }
 
 /// What the rail reported this frame.
@@ -81,6 +105,17 @@ pub struct RailOutcome {
 
 /// Draw the rail into `area`, and report what was pressed.
 pub fn show(ui: &mut egui::Ui, area: Rect, state: RailState, opacity: f32) -> RailOutcome {
+    show_with(ui, area, state, opacity, &[])
+}
+
+/// The same, with the buttons the plugins that are switched on contributed.
+pub fn show_with(
+    ui: &mut egui::Ui,
+    area: Rect,
+    state: RailState,
+    opacity: f32,
+    plugins: &[PluginButton],
+) -> RailOutcome {
     let painter = ui.painter_at(area);
     painter.rect_filled(area, CornerRadius::ZERO, crate::theme::faded(color::EXPLORER_FOOTER, opacity));
     painter.line_segment(
@@ -102,7 +137,7 @@ pub fn show(ui: &mut egui::Ui, area: Rect, state: RailState, opacity: f32) -> Ra
         bool,
         Action,
         Option<crate::app::dock::Panel>,
-    ); 2] = [
+    ); 3] = [
         (
             "Project",
             icon::folder,
@@ -110,6 +145,20 @@ pub fn show(ui: &mut egui::Ui, area: Rect, state: RailState, opacity: f32) -> Ra
             true,
             Action::ToggleExplorer,
             Some(crate::app::dock::Panel::Explorer),
+        ),
+        (
+            // **Under the folder icon**, which is where `task-28` asks for it. Named `Editor` rather than
+            // `Files`: the `View` menu's entries call it that, `panel list` calls the panels beside it by their
+            // own names, and no two controls in one window may share a name — `Project` above is the explorer.
+            //
+            // It is not a `Panel`, so a right click on it opens no menu: the editing area is what is left when
+            // the panels have taken their room, and there is no edge to move it to.
+            "Editor",
+            icon::editing_area,
+            state.editor_visible,
+            true,
+            Action::ToggleEditor,
+            None,
         ),
         (
             // Not `Git`: the menu bar already has a `Git`, and no two controls in one window may share
@@ -188,7 +237,60 @@ pub fn show(ui: &mut egui::Ui, area: Rect, state: RailState, opacity: f32) -> Ra
         }
     }
 
+    // The plugins' buttons, after Quill's own in whichever group each manifest named. A button that
+    // would not fit is not drawn: the rail is as tall as the window and a button half off the end reads
+    // as a fault rather than as a full rail.
+    let mut top_next = 3;
+    let mut bottom_next = 3;
+    for button in plugins {
+        let centre = match button.bottom {
+            true => {
+                let at = Pos2::new(
+                    centre_x,
+                    area.bottom() - MARGIN - BUTTON / 2.0 - bottom_next as f32 * STEP,
+                );
+                bottom_next += 1;
+                at
+            }
+            false => {
+                let at = Pos2::new(centre_x, area.top() + MARGIN + BUTTON / 2.0 + top_next as f32 * STEP);
+                top_next += 1;
+                at
+            }
+        };
+        if centre.y - BUTTON / 2.0 < area.top() || centre.y + BUTTON / 2.0 > area.bottom() {
+            continue;
+        }
+        let pressed = rail_button(ui, centre, &button.label, pane_icon(&button.icon), button.on, true);
+        if pressed.clicked {
+            outcome.chosen = Some(Action::PluginPane { pane: button.key.clone() });
+        }
+        if let Some(at) = pressed.menu {
+            outcome.menu = Some((at, crate::app::dock::Panel::Plugin(button.slot as u8)));
+        }
+    }
+
     outcome
+}
+
+/// The drawing behind a `pane.icon` name.
+///
+/// The names are `plugins::PANE_ICONS`, and a manifest naming one Quill cannot draw was refused when it
+/// was read, so the fallback here is never reached by a manifest that loaded.
+pub fn pane_icon(name: &str) -> fn(&egui::Painter, Pos2, egui::Color32) {
+    match name {
+        "board" => icon::board,
+        "folder" => icon::folder,
+        "terminal" => icon::terminal,
+        "run" => icon::run,
+        "bug" => icon::bug,
+        "clock" => icon::clock,
+        "branch" => icon::branch,
+        "tick" => icon::tick,
+        "plus" => icon::plus,
+        "image" => icon::image,
+        _ => icon::board,
+    }
 }
 
 /// What one button in the rail reported.

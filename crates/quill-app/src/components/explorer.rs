@@ -300,13 +300,48 @@ pub fn show(
             }
             for path in matches {
                 let depth = tree.depth_of(path);
-                let refusal = crate::services::file_kind::openable(path).err();
+                // **Asked by name.** `task-28`: this was `file_kind::openable`, which reads a file whose
+                // extension it does not know, so filtering a large project opened and read up to
+                // `SEARCH_LIMIT` files **every frame** while somebody was typing. `all_files` holds only
+                // regular files, so the kind is known without asking; the size is not, and the tab is
+                // where a file too large to open says so.
+                let refusal = crate::services::file_kind::openable_in_a_listing(
+                    path,
+                    crate::services::file_kind::Kind::File,
+                    None,
+                )
+                .err();
                 let row = file_row(ui, path, depth, view, refusal, decorate(path));
                 row.collect(path, false, &mut drawn, &mut carried, &mut released);
                 row.apply(&mut outcome, path, false);
             }
         } else {
-            for row in tree.rows() {
+            // **Only the rows on screen.** `task-28`: every row in the tree was drawn every frame, and each
+            // one allocates a rectangle and interacts, so a folder of twenty thousand files opened out was
+            // twenty thousand widgets a frame and the window could not be used until it was closed again.
+            //
+            // Every row is exactly `size::ROW` tall, so which rows are visible is arithmetic rather than a
+            // measurement — the same reasoning `editor_view::visible_lines` uses about a document. The
+            // space above the first drawn row and below the last is added back, so the scroll bar still
+            // describes the whole tree.
+            let rows = tree.rows();
+            let visible = visible_rows(ui, rows.len());
+            // A reveal has to work for a row that is not being drawn, which is the one thing
+            // virtualisation takes away: `folder_row` and `file_row` scroll to their own rectangle, and a
+            // row that was never drawn has none. So the scroll is asked for here as well, from the row's
+            // place in the list, which is known whether or not it is on screen.
+            if let Some(index) = revealed_row(&rows, view) {
+                let top = ui.cursor().top() + index as f32 * size::ROW;
+                ui.scroll_to_rect(
+                    Rect::from_min_size(
+                        Pos2::new(ui.clip_rect().left(), top),
+                        Vec2::new(1.0, size::ROW),
+                    ),
+                    None,
+                );
+            }
+            ui.add_space(visible.start as f32 * size::ROW);
+            for row in &rows[visible.clone()] {
                 if row.entry.is_directory {
                     let clicked = folder_row(ui, &row.entry, row.depth, view);
                     if clicked.open {
@@ -333,6 +368,7 @@ pub fn show(
                     clicked.apply(&mut outcome, &row.entry.path, false);
                 }
             }
+            ui.add_space((rows.len() - visible.end) as f32 * size::ROW);
         }
         if let Some(error) = &tree.last_error {
             ui.add_space(6.0);
@@ -703,6 +739,36 @@ fn file_row(
         click.twice = false;
     }
     click
+}
+
+/// Which rows fall inside what is being drawn into, given how many there are.
+///
+/// One row either side of the visible band, so a row half off the top or the bottom edge is drawn rather
+/// than appearing as the list is scrolled.
+fn visible_rows(ui: &egui::Ui, total: usize) -> std::ops::Range<usize> {
+    let top = ui.cursor().top();
+    let clip = ui.clip_rect();
+    let first = ((clip.top() - top) / size::ROW).floor().max(0.0) as usize;
+    let first = first.saturating_sub(1).min(total);
+    let count = (clip.height() / size::ROW).ceil() as usize + 2;
+    first..(first + count).min(total)
+}
+
+/// Where in the list the row the window asked to be scrolled to is, if it asked for one.
+///
+/// `reveal` is about the file that is showing and `reveal_selected` about the explorer's own cursor, which
+/// is the same pair `file_row` and `folder_row` read. Both are one frame long, so this answers `None` on
+/// nearly every frame.
+fn revealed_row(
+    rows: &[crate::services::file_tree::Row<'_>],
+    view: View<'_>,
+) -> Option<usize> {
+    let wanted = match (view.reveal, view.reveal_selected) {
+        (_, true) => view.selected?,
+        (true, false) => view.current?,
+        (false, false) => return None,
+    };
+    rows.iter().position(|row| row.entry.path == wanted)
 }
 
 fn allocate_row(ui: &mut egui::Ui) -> Rect {

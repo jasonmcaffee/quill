@@ -77,6 +77,13 @@ pub enum Action {
     SetViewMode(ViewMode),
     /// Show or hide the file explorer.
     ToggleExplorer,
+    /// Show or hide the editing area: the pane to the right of the explorer, holding the tabs.
+    ///
+    /// `task-28` asks for it as a toggle in the rail under the folder icon. Hiding it gives the whole width to
+    /// whatever panels are showing, which is what somebody reading a project rather than editing one wants.
+    /// **It can never leave an empty window**: hiding it with no panel showing shows the explorer as well, and
+    /// hiding the last panel while it is hidden brings it back. See `QuillApp::run_action`.
+    ToggleEditor,
     /// Show or hide the column of line numbers down the left of the editing area.
     ToggleLineNumbers,
     /// Set the editor's text one size larger, or one smaller, walking the sizes the Settings window
@@ -189,6 +196,20 @@ pub enum Action {
     /// Quill's own about box, which is a line in the status bar rather than a window.
     About,
     Quit,
+    /// Show or hide a pane a plugin contributed, named `<plugin id>/<pane id>`.
+    ///
+    /// A `String` where every other variant is a unit or a small value, because the set of panes is
+    /// decided when the manifests are read rather than at compile time. That is the one property the
+    /// four docked panels could not have, and it is why the pane is named rather than numbered.
+    PluginPane { pane: String },
+    /// Run a command a plugin declared, from its own menu.
+    ///
+    /// The plugin's id and the command's name, which are exactly what `quill-cli plugin run` carries and
+    /// what a button inside the pane calls, so all three reach `UiProvider::command` by one path.
+    PluginCommand { plugin: String, command: String },
+    /// Open a plugin's own tab in the editing area, named `<plugin id>/<tab id>`.
+    PluginTab { tab: String },
+
 }
 
 /// The six things that can be done to the blocks of the file that is showing.
@@ -804,6 +825,11 @@ pub struct Menu {
 /// What the menus need to know about the window to say what can be done and what is switched on.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MenuState {
+    /// The menus the plugins that are switched on contributed, in the order the plugins are listed.
+    ///
+    /// Worked out from `plugins::Surfaces` when the plugins are read rather than once a frame, so a menu
+    /// appears and disappears with its plugin and nothing walks a manifest while the window is drawing.
+    pub plugin_menus: Vec<PluginMenu>,
     pub can_undo: bool,
     pub can_redo: bool,
     pub has_selection: bool,
@@ -817,6 +843,8 @@ pub struct MenuState {
     /// and `Markdown` over prose. The buttons take the same answer from the same function.
     pub preview_kind: crate::services::file_kind::PreviewKind,
     pub explorer_visible: bool,
+    /// Whether the editing area is showing, so `View` says `Hide Editor` or `Show Editor`. `task-28`.
+    pub editor_visible: bool,
     /// Which edge each panel is docked to, so a panel's own menu can tick the side it is already on
     /// — `task-1697`. The whole arrangement rather than four sides, because it is one value the
     /// window already holds and its `Default` is the arrangement Quill ships with.
@@ -906,14 +934,71 @@ pub struct MenuState {
 /// the application menu first whatever it is called. Inside the window it is drawn first for the same
 /// reason, so the bar reads `Quill  File  Edit  View` on both platforms.
 pub fn menus(state: &MenuState) -> Vec<Menu> {
-    vec![
+    let mut found = vec![
         quill_menu(),
         file_menu(state),
         edit_menu(state),
         view_menu(state),
         run_menu(state),
         git_menu(state),
-    ]
+    ];
+    // Then one menu per plugin that contributed one, in the order the plugins are listed. **After**
+    // Quill's own six, so `Quill`, `File`, `Edit`, `View`, `Run` and `Git` never move: a menu bar whose
+    // entries shift when a plugin is installed is a menu bar somebody's hand has to relearn.
+    //
+    // A plugin cannot add an entry to one of the six. VS Code allows that through about forty named
+    // anchors with `when` expressions, which is the largest part of its contribution model and the
+    // hardest to keep tested. `tasks/ui-plugin-architecture.md` §10 records what adding anchors would
+    // take; it changes nothing here.
+    found.extend(state.plugin_menus.iter().map(plugin_menu));
+    found
+}
+
+/// One plugin's menu, turned from what its manifest said into the entries the menu bar draws.
+///
+/// **No entry carries a shortcut.** Quill has a test that no two menu items claim one key equivalent,
+/// because two items claiming one chord is a real fault on macOS, and a manifest that could claim
+/// `Cmd+S` would be able to break that test from outside the repository. A plugin's command is reachable
+/// from its menu, from its own pane and from the command line, which is three ways.
+fn plugin_menu(menu: &PluginMenu) -> Menu {
+    Menu { name: menu.name.clone(), entries: plugin_entries(&menu.plugin, &menu.items) }
+}
+
+fn plugin_entries(
+    plugin: &str,
+    items: &[crate::services::plugins::MenuItem],
+) -> Vec<Entry> {
+    use crate::services::plugins::MenuItem;
+    items
+        .iter()
+        .map(|item| match item {
+            MenuItem::Separator => Entry::Separator,
+            MenuItem::Command { command, label } => Entry::Item {
+                name: label.clone(),
+                action: Action::PluginCommand {
+                    plugin: plugin.to_owned(),
+                    command: command.clone(),
+                },
+                shortcut: None,
+                enabled: true,
+                checked: false,
+                keyboard: false,
+            },
+            MenuItem::Submenu { label, items } => {
+                Entry::Submenu { name: label.clone(), entries: plugin_entries(plugin, items) }
+            }
+        })
+        .collect()
+}
+
+/// One plugin's menu as the window holds it: what the manifest said, and which plugin said it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PluginMenu {
+    /// The `plugin.id`, which is what a chosen entry's action carries.
+    pub plugin: String,
+    /// `menu.name`.
+    pub name: String,
+    pub items: Vec<crate::services::plugins::MenuItem>,
 }
 
 /// What runs a configuration from the keyboard, per platform.
@@ -1431,6 +1516,12 @@ fn view_menu(state: &MenuState) -> Menu {
                 explorer,
                 Action::ToggleExplorer,
                 Shortcut::command(egui::Key::Num0),
+            ),
+            // No chord. Command and zero belongs to the explorer, and `Reset Font Size` already goes without one
+            // for the same reason: the obvious key is taken.
+            Entry::item(
+                if state.editor_visible { "Hide Editor" } else { "Show Editor" },
+                Action::ToggleEditor,
             ),
             Entry::item(
                 if state.line_numbers { "Hide Line Numbers" } else { "Show Line Numbers" },

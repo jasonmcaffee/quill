@@ -28,21 +28,53 @@ use egui::{Pos2, Rect};
 
 use crate::settings::Panes;
 
+/// How many panes a plugin may contribute to one window.
+///
+/// A number rather than a growing list, so [`Layout`] and [`Regions`] stay `Copy` and allocate nothing:
+/// they are built and thrown away several times a frame, once for the real layout and again for each
+/// preview of a drop. Four is more panes than the plugins that exist ask for, and a fifth is refused
+/// with a message rather than silently dropped, which is the rule every registry in `services::plugins`
+/// keeps.
+pub const PLUGIN_PANES: usize = 4;
+
+/// How many slots [`Layout`] and [`Regions`] hold: Quill's own four, then the plugins'.
+pub const SLOTS: usize = 4 + PLUGIN_PANES;
+
 /// The panels that can be moved.
 ///
-/// Four, because four is what the window has. Not a trait and not a registry: a fifth is a variant,
-/// and the compiler then names every place that has to answer for it — the bargain [`crate::app::actions::Action`]
-/// and [`crate::app::ViewMode`] already make.
+/// Quill's own four are variants, and the compiler names every place that has to answer for a fifth —
+/// the bargain [`crate::app::actions::Action`] and [`crate::app::ViewMode`] already make. A pane a
+/// plugin contributed cannot be a variant, because the set is decided when the manifests are read
+/// rather than at compile time, so it is a **slot**: `Plugin(0)` is the first contributed pane in
+/// `plugins::Surfaces`. Which pane is in which slot is the window's business, and the settings file
+/// records a pane's side against its own `<plugin id>/<pane id>` name rather than against a number, so
+/// installing a second plugin does not move the first one's pane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Panel {
     Explorer,
     Terminal,
     Run,
     Debug,
+    Plugin(u8),
 }
 
 impl Panel {
+    /// Quill's own four. A plugin's panes are not in it, because there is no compile time list of them;
+    /// [`Panel::all`] is the one that includes them.
     pub const ALL: [Panel; 4] = [Panel::Explorer, Panel::Terminal, Panel::Run, Panel::Debug];
+
+    /// Quill's own four, then `contributed` plugin panes.
+    ///
+    /// What the rail, the dock's menus and `quill-cli panels` walk. `contributed` comes from
+    /// `plugins::Surfaces`, so a plugin that is switched off is not in it and its pane is gone from
+    /// every one of them in the same frame.
+    pub fn all(contributed: usize) -> Vec<Panel> {
+        let mut found = Panel::ALL.to_vec();
+        for slot in 0..contributed.min(PLUGIN_PANES) {
+            found.push(Panel::Plugin(slot as u8));
+        }
+        found
+    }
 
     /// Where this panel sits in the arrays [`Layout`] and [`Panes`] keep.
     pub fn index(self) -> usize {
@@ -51,6 +83,15 @@ impl Panel {
             Panel::Terminal => 1,
             Panel::Run => 2,
             Panel::Debug => 3,
+            Panel::Plugin(slot) => 4 + (slot as usize).min(PLUGIN_PANES - 1),
+        }
+    }
+
+    /// The slot number, for a pane a plugin contributed.
+    pub fn plugin_slot(self) -> Option<usize> {
+        match self {
+            Panel::Plugin(slot) => Some(slot as usize),
+            _ => None,
         }
     }
 
@@ -64,6 +105,13 @@ impl Panel {
             Panel::Terminal => "terminal",
             Panel::Run => "run",
             Panel::Debug => "debug",
+            // A slot's name, used only where a name is needed and no plugin is at hand: a divider's id
+            // and a test. What the settings file and the command line call a contributed pane is its
+            // `<plugin id>/<pane id>`, which the window resolves — see `Layout::read_from`.
+            Panel::Plugin(0) => "plugin-1",
+            Panel::Plugin(1) => "plugin-2",
+            Panel::Plugin(2) => "plugin-3",
+            Panel::Plugin(_) => "plugin-4",
         }
     }
 
@@ -76,11 +124,14 @@ impl Panel {
             Panel::Terminal => "Terminal tile",
             Panel::Run => "Run tile",
             Panel::Debug => "Debug tile",
+            // A contributed pane's label comes from its manifest, so this is the fallback for a slot
+            // with no plugin in it, which nothing draws.
+            Panel::Plugin(_) => "Plugin pane",
         }
     }
 
     pub fn from_name(name: &str) -> Option<Panel> {
-        Panel::ALL.into_iter().find(|panel| panel.name() == name)
+        Panel::all(PLUGIN_PANES).into_iter().find(|panel| panel.name() == name)
     }
 
     /// True for the three panels that draw a character grid.
@@ -88,7 +139,20 @@ impl Panel {
     /// It is what `task-1683`'s rule is really about: two grids in one strip are two half-sized
     /// grids, so a side shows one of these at a time. The explorer is a list and never competes.
     pub fn is_a_tile(self) -> bool {
-        !matches!(self, Panel::Explorer)
+        !matches!(self, Panel::Explorer | Panel::Plugin(_))
+    }
+
+    /// The same question, told what the plugins' manifests said.
+    ///
+    /// A contributed pane is a tile when its `pane.group` is `bottom`, which is the rail's own distinction:
+    /// the bottom group holds the things with a character grid in them, and two grids stacked in one strip
+    /// are two half sized grids. `is_a_tile` cannot answer for a plugin because the answer is in a manifest,
+    /// so every caller that has the surfaces to hand asks this one instead.
+    pub fn is_a_tile_given(self, tiles: &[bool]) -> bool {
+        match self {
+            Panel::Plugin(slot) => tiles.get(slot as usize).copied().unwrap_or(false),
+            other => other.is_a_tile(),
+        }
     }
 }
 
@@ -133,13 +197,29 @@ impl Side {
     pub fn is_a_column(self) -> bool {
         matches!(self, Side::Left | Side::Right)
     }
+
+    /// True for the two sides that are taken across the whole width.
+    ///
+    /// The other half of [`Self::is_a_column`], written out because "not a column" reads as a denial
+    /// where "a strip" is the thing itself, and because the rule that one tile shows at a time is a rule
+    /// about a strip.
+    pub fn is_a_strip(self) -> bool {
+        !self.is_a_column()
+    }
 }
 
 /// Which side each panel is on, and where in that side.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Layout {
-    sides: [Side; 4],
-    orders: [usize; 4],
+    sides: [Side; SLOTS],
+    orders: [usize; SLOTS],
+    /// How many of the plugin slots hold a pane.
+    ///
+    /// A slot with nothing in it is **not a panel on any side**: it is not in `panels_on`, it takes no
+    /// room and no divider is drawn for it. Without this the default layout would have four panes on the
+    /// right that nobody contributed. Set by the window from `plugins::Surfaces` when the plugins are
+    /// read, so switching a plugin off takes its pane out of the layout in the same frame.
+    plugin_panes: u8,
 }
 
 impl Default for Layout {
@@ -152,9 +232,36 @@ impl Layout {
     /// The arrangement Quill has always had: the explorer down the left, the three tiles along the
     /// bottom in the order the rail lists them.
     pub fn new() -> Self {
-        Self {
-            sides: [Side::Left, Side::Bottom, Side::Bottom, Side::Bottom],
-            orders: [0, 0, 1, 2],
+        let mut sides = [Side::Right; SLOTS];
+        sides[0] = Side::Left;
+        sides[1] = Side::Bottom;
+        sides[2] = Side::Bottom;
+        sides[3] = Side::Bottom;
+        let mut orders = [0; SLOTS];
+        orders[2] = 1;
+        orders[3] = 2;
+        Self { sides, orders, plugin_panes: 0 }
+    }
+
+    /// How many panes the plugins that are switched on contribute.
+    pub fn plugin_panes(&self) -> usize {
+        self.plugin_panes as usize
+    }
+
+    /// Say how many contributed panes there are, and where each one asked to be docked.
+    ///
+    /// `sides` is what the manifests said, and it is used only for a slot the settings file has not
+    /// spoken about: once somebody has dragged a pane, where they left it wins over what its manifest
+    /// asked for, which is the rule every panel already follows.
+    pub fn set_plugin_panes(&mut self, sides: &[Side], already_placed: &[bool]) {
+        self.plugin_panes = (sides.len().min(PLUGIN_PANES)) as u8;
+        for (slot, side) in sides.iter().enumerate().take(PLUGIN_PANES) {
+            if !already_placed.get(slot).copied().unwrap_or(false) {
+                self.sides[Panel::Plugin(slot as u8).index()] = *side;
+            }
+        }
+        for side in Side::ALL {
+            self.tidy(side);
         }
     }
 
@@ -168,8 +275,10 @@ impl Layout {
 
     /// The panels docked to `side`, in screen order.
     pub fn panels_on(&self, side: Side) -> Vec<Panel> {
-        let mut found: Vec<Panel> =
-            Panel::ALL.into_iter().filter(|panel| self.side_of(*panel) == side).collect();
+        let mut found: Vec<Panel> = Panel::all(self.plugin_panes as usize)
+            .into_iter()
+            .filter(|panel| self.side_of(*panel) == side)
+            .collect();
         found.sort_by_key(|panel| self.order_of(*panel));
         found
     }
@@ -221,6 +330,37 @@ impl Layout {
     /// Read the arrangement out of the settings file, falling back to the default for anything it
     /// does not name — so a file written by an older Quill opens as the layout that Quill had.
     pub fn read_from(values: &crate::services::store::Values) -> Layout {
+        Layout::read_from_with(values, &[])
+    }
+
+    /// The same, with the names of the panes plugins contributed, in slot order.
+    ///
+    /// A contributed pane's side is recorded against its own `<plugin id>/<pane id>` rather than against
+    /// its slot number, so installing a second plugin does not move the first one's pane to wherever the
+    /// second one's was left.
+    pub fn read_from_with(
+        values: &crate::services::store::Values,
+        plugin_panes: &[String],
+    ) -> Layout {
+        let mut layout = Layout::read_built_in(values);
+        for (slot, key) in plugin_panes.iter().enumerate().take(PLUGIN_PANES) {
+            let panel = Panel::Plugin(slot as u8);
+            if let Some(name) = values.text(&format!("panes.{key}.side")) {
+                if let Some(side) = Side::from_name(name.trim()) {
+                    layout.sides[panel.index()] = side;
+                }
+            }
+            if let Some(order) = values.number(&format!("panes.{key}.order")) {
+                layout.orders[panel.index()] = order.max(0.0) as usize;
+            }
+        }
+        for side in Side::ALL {
+            layout.tidy(side);
+        }
+        layout
+    }
+
+    fn read_built_in(values: &crate::services::store::Values) -> Layout {
         let mut layout = Layout::new();
         for panel in Panel::ALL {
             if let Some(name) = values.text(&format!("panes.{}.side", panel.name())) {
@@ -239,9 +379,23 @@ impl Layout {
     }
 
     pub fn write_into(&self, values: &mut crate::services::store::Values) {
+        self.write_into_with(values, &[]);
+    }
+
+    /// The same, with the names of the panes plugins contributed, in slot order.
+    pub fn write_into_with(
+        &self,
+        values: &mut crate::services::store::Values,
+        plugin_panes: &[String],
+    ) {
         for panel in Panel::ALL {
             values.set(&format!("panes.{}.side", panel.name()), self.side_of(panel).name());
             values.set(&format!("panes.{}.order", panel.name()), self.order_of(panel).to_string());
+        }
+        for (slot, key) in plugin_panes.iter().enumerate().take(PLUGIN_PANES) {
+            let panel = Panel::Plugin(slot as u8);
+            values.set(&format!("panes.{key}.side"), self.side_of(panel).name());
+            values.set(&format!("panes.{key}.order"), self.order_of(panel).to_string());
         }
     }
 }
@@ -262,8 +416,8 @@ pub const EDITOR_MIN_HEIGHT: f32 = 120.0;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Regions {
     /// One rectangle per panel, indexed by [`Panel::index`]. [`Rect::ZERO`] for a panel that is not
-    /// showing.
-    pub panels: [Rect; 4],
+    /// showing. The first four are Quill's own and the rest are the plugin slots.
+    pub panels: [Rect; SLOTS],
     pub editor: Rect,
 }
 
@@ -276,9 +430,33 @@ impl Regions {
 /// Lay the panels out inside `body`.
 ///
 /// `showing` says which panels are drawn at all, indexed by [`Panel::index`]. A panel that is not
-/// showing takes no room and gets [`Rect::ZERO`].
-pub fn regions(body: Rect, layout: &Layout, showing: [bool; 4], sizes: &Panes) -> Regions {
-    let mut panels = [Rect::ZERO; 4];
+/// showing takes no room and gets [`Rect::ZERO`], which is what makes a slot with no plugin in it cost
+/// nothing: nothing is showing there, so nothing is laid out for it.
+pub fn regions(body: Rect, layout: &Layout, showing: [bool; SLOTS], sizes: &Panes) -> Regions {
+    regions_with(body, layout, showing, sizes, true)
+}
+
+/// The same, told whether the editing area is showing.
+///
+/// `task-28` asks for a toggle that hides the pane holding the tabs. When it is hidden the panels take the whole
+/// width and the whole height: [`EDITOR_MIN_WIDTH`] and [`EDITOR_MIN_HEIGHT`] are what is kept **for the editing
+/// area**, so with no editing area there is nothing to keep, and [`Regions::editor`] is [`Rect::ZERO`].
+///
+/// Nothing else about the arithmetic changes. The strips are still taken first across the whole width and the
+/// columns still come out of what is left, so a terminal along the bottom with the editing area hidden is a
+/// terminal along the bottom with the explorer above it, which is what dragging it there already means.
+pub fn regions_with(
+    body: Rect,
+    layout: &Layout,
+    showing: [bool; SLOTS],
+    sizes: &Panes,
+    editor: bool,
+) -> Regions {
+    let (keep_width, keep_height) = match editor {
+        true => (EDITOR_MIN_WIDTH, EDITOR_MIN_HEIGHT),
+        false => (0.0, 0.0),
+    };
+    let mut panels = [Rect::ZERO; SLOTS];
     let visible = |side: Side| -> Vec<Panel> {
         layout.panels_on(side).into_iter().filter(|panel| showing[panel.index()]).collect()
     };
@@ -291,12 +469,12 @@ pub fn regions(body: Rect, layout: &Layout, showing: [bool; 4], sizes: &Panes) -
     let depth = |panels: &[Panel]| -> f32 {
         panels.iter().map(|panel| sizes.height_of(*panel)).fold(0.0_f32, f32::max)
     };
-    let (top_depth, bottom_depth) = share_the_depth(
-        body.height(),
-        depth(&top_panels),
-        depth(&bottom_panels),
-        EDITOR_MIN_HEIGHT,
-    );
+    let (top_depth, bottom_depth) = match editor {
+        true => share_the_depth(body.height(), depth(&top_panels), depth(&bottom_panels), keep_height),
+        // With no editing area there is nothing between the two strips, so they fill the height between them
+        // rather than each taking its own and leaving a gap.
+        false => fill_the_depth(body.height(), depth(&top_panels), depth(&bottom_panels)),
+    };
 
     let top_strip = Rect::from_min_max(body.min, Pos2::new(body.right(), body.top() + top_depth));
     let bottom_strip =
@@ -316,12 +494,10 @@ pub fn regions(body: Rect, layout: &Layout, showing: [bool; 4], sizes: &Panes) -
     let width = |panels: &[Panel]| -> f32 {
         panels.iter().map(|panel| sizes.width_of(*panel)).sum::<f32>()
     };
-    let (left_depth, right_depth) = share_the_depth(
-        middle.width(),
-        width(&left_panels),
-        width(&right_panels),
-        EDITOR_MIN_WIDTH,
-    );
+    let (left_depth, right_depth) = match editor {
+        true => share_the_depth(middle.width(), width(&left_panels), width(&right_panels), keep_width),
+        false => fill_the_depth(middle.width(), width(&left_panels), width(&right_panels)),
+    };
 
     let left_region =
         Rect::from_min_max(middle.min, Pos2::new(middle.left() + left_depth, middle.bottom()));
@@ -330,11 +506,36 @@ pub fn regions(body: Rect, layout: &Layout, showing: [bool; 4], sizes: &Panes) -
     lay_columns_out(left_region, &left_panels, sizes, &mut panels);
     lay_columns_out(right_region, &right_panels, sizes, &mut panels);
 
-    let editor = Rect::from_min_max(
-        Pos2::new(left_region.right(), middle.top()),
-        Pos2::new(right_region.left(), middle.bottom()),
-    );
+    // **`Rect::ZERO` when it is hidden**, which is what a panel that is not showing gets and what every reader
+    // of a rectangle in this module already treats as "not there".
+    let editor = match editor {
+        true => Rect::from_min_max(
+            Pos2::new(left_region.right(), middle.top()),
+            Pos2::new(right_region.left(), middle.bottom()),
+        ),
+        false => Rect::ZERO,
+    };
     Regions { panels, editor }
+}
+
+/// How much of `room` the two opposite sides get when there is nothing between them to leave space for.
+///
+/// `task-28`: hiding the editing area has to give the room to the panels, not leave a gap where it used to be. So
+/// the two sides are scaled **in proportion to what they asked for** until they fill `room` — which for the
+/// common case, one side with panels and the other with none, means that side takes all of it.
+///
+/// Two sides asking for nothing get nothing, and `regions_with` is only asked this when at least one panel is
+/// showing: `Action::ToggleEditor` will not hide the editing area with an empty window behind it.
+fn fill_the_depth(room: f32, first: f32, second: f32) -> (f32, f32) {
+    let wanted = first + second;
+    if wanted <= 0.0 || room <= 0.0 {
+        return (0.0, 0.0);
+    }
+    let scale = room / wanted;
+    let taken = first * scale;
+    // The second gets the remainder rather than its own scaled share, so the two always add up to exactly
+    // `room` however the multiplication rounds.
+    (taken, room - taken)
 }
 
 /// How much of `room` the two opposite sides get, leaving at least `keep` in the middle.
@@ -357,7 +558,7 @@ fn share_the_depth(room: f32, first: f32, second: f32, keep: f32) -> (f32, f32) 
 ///
 /// That is what makes the explorer dropped beside the terminal along the bottom come out as 248
 /// points of file tree with the terminal filling the rest, using the number the explorer already has.
-fn lay_a_strip_out(strip: Rect, order: &[Panel], sizes: &Panes, out: &mut [Rect; 4]) {
+fn lay_a_strip_out(strip: Rect, order: &[Panel], sizes: &Panes, out: &mut [Rect; SLOTS]) {
     if order.is_empty() || strip.height() <= 0.0 {
         return;
     }
@@ -379,7 +580,7 @@ fn lay_a_strip_out(strip: Rect, order: &[Panel], sizes: &Panes, out: &mut [Rect;
 
 /// A side of the window: the panels are columns left to right in order, each its own width, and the
 /// region is exactly as wide as they add up to.
-fn lay_columns_out(region: Rect, order: &[Panel], sizes: &Panes, out: &mut [Rect; 4]) {
+fn lay_columns_out(region: Rect, order: &[Panel], sizes: &Panes, out: &mut [Rect; SLOTS]) {
     if order.is_empty() || region.width() <= 0.0 {
         return;
     }
@@ -423,7 +624,7 @@ pub struct Zone {
 /// A band is [`ZONE`] deep, or as deep as whatever is already docked to that side if that is deeper —
 /// which is what lets the pointer reach *past the middle* of a panel that is already there and so
 /// choose to land after it rather than before it, with no second control and no modifier key.
-pub fn zones(body: Rect, layout: &Layout, showing: [bool; 4], sizes: &Panes) -> [Zone; 4] {
+pub fn zones(body: Rect, layout: &Layout, showing: [bool; SLOTS], sizes: &Panes) -> [Zone; 4] {
     let placed = regions(body, layout, showing, sizes);
     let occupied = |side: Side| -> f32 {
         layout
@@ -467,7 +668,7 @@ pub fn zones(body: Rect, layout: &Layout, showing: [bool; 4], sizes: &Panes) -> 
 pub fn target(
     body: Rect,
     layout: &Layout,
-    showing: [bool; 4],
+    showing: [bool; SLOTS],
     sizes: &Panes,
     carrying: Panel,
     pointer: Pos2,
@@ -503,7 +704,7 @@ pub fn target(
 pub fn position_in(
     body: Rect,
     layout: &Layout,
-    showing: [bool; 4],
+    showing: [bool; SLOTS],
     sizes: &Panes,
     side: Side,
     carrying: Panel,
@@ -526,12 +727,14 @@ mod tests {
         Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1000.0, 700.0))
     }
 
-    fn all_showing() -> [bool; 4] {
-        [true, true, true, true]
+    fn all_showing() -> [bool; SLOTS] {
+        // Quill's own four. A slot with no plugin in it is never showing, which is what makes the
+        // arithmetic below the same arithmetic it was before plugins could contribute a pane.
+        only(&Panel::ALL)
     }
 
-    fn only(panels: &[Panel]) -> [bool; 4] {
-        let mut showing = [false; 4];
+    fn only(panels: &[Panel]) -> [bool; SLOTS] {
+        let mut showing = [false; SLOTS];
         for panel in panels {
             showing[panel.index()] = true;
         }
@@ -772,5 +975,60 @@ mod tests {
         for side in Side::ALL {
             assert_eq!(Side::from_name(side.name()), Some(side));
         }
+    }
+
+    /// `task-28`: a toggle under the folder icon hides the pane holding the tabs.
+    ///
+    /// With no editing area there is nothing to keep room for, so the panels take the whole width. The default
+    /// layout puts the explorer down the left, so this is the explorer filling the window.
+    #[test]
+    fn hiding_the_editing_area_gives_the_whole_width_to_the_panels() {
+        let body = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1000.0, 700.0));
+        let layout = Layout::default();
+        let sizes = Panes::default();
+        let mut showing = [false; SLOTS];
+        showing[Panel::Explorer.index()] = true;
+
+        let with = regions_with(body, &layout, showing, &sizes, true);
+        assert_eq!(with.of(Panel::Explorer).width(), sizes.explorer_width, "it asks for its own width");
+        assert!(with.editor.width() > 0.0, "and the editing area has what is left");
+
+        let without = regions_with(body, &layout, showing, &sizes, false);
+        assert_eq!(without.editor, Rect::ZERO, "a hidden editing area takes no room, like a hidden panel");
+        assert_eq!(without.of(Panel::Explorer).width(), 1000.0, "so the explorer has the whole width");
+        assert_eq!(without.of(Panel::Explorer).height(), 700.0, "and the whole height");
+    }
+
+    /// The same for a strip: a terminal along the bottom takes the whole height with nothing above it to keep
+    /// room for. What does not change is the arrangement — the strip is still taken across the whole width.
+    #[test]
+    fn hiding_the_editing_area_gives_a_strip_the_whole_height() {
+        let body = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1000.0, 700.0));
+        let layout = Layout::default();
+        let sizes = Panes::default();
+        let mut showing = [false; SLOTS];
+        showing[Panel::Terminal.index()] = true;
+
+        let with = regions_with(body, &layout, showing, &sizes, true);
+        assert_eq!(with.of(Panel::Terminal).height(), sizes.terminal_height);
+
+        let without = regions_with(body, &layout, showing, &sizes, false);
+        assert_eq!(without.of(Panel::Terminal).height(), 700.0, "the terminal takes the whole height");
+        assert_eq!(without.of(Panel::Terminal).width(), 1000.0, "and still spans the whole width");
+        assert_eq!(without.editor, Rect::ZERO);
+    }
+
+    /// `regions` is `regions_with` with the editing area showing, which is what every existing caller and every
+    /// existing test in this module means.
+    #[test]
+    fn the_older_reader_means_the_editing_area_is_showing() {
+        let body = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1000.0, 700.0));
+        let layout = Layout::default();
+        let sizes = Panes::default();
+        let showing = [true; SLOTS];
+        assert_eq!(
+            regions(body, &layout, showing, &sizes),
+            regions_with(body, &layout, showing, &sizes, true)
+        );
     }
 }

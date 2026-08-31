@@ -94,12 +94,55 @@ pub const PROJECT_RUNNERS: &[&str] = &["cargo", "npm"];
 /// visibly. Nothing in a plugin is executed and nothing is ever fetched.
 pub const DEBUGGERS: &[&str] = &["lldb", "node"];
 
-/// The kind of plugin. One today, and the field exists so that a second one can be refused rather
-/// than half-loaded.
+/// The UI providers built into this version of Quill that a plugin's `ui.provider` may name.
+///
+/// The fourth registry of this shape, checked the same way and for the same reason as [`RENDERERS`],
+/// [`PROJECT_RUNNERS`] and [`DEBUGGERS`]: a manifest naming a provider Quill does not have should say
+/// so plainly rather than load as a plugin whose pane is permanently empty.
+///
+/// **What a plugin contributes is data and the code that draws it is Quill's.** A manifest says there
+/// is a pane, where it docks, what its button looks like and what its menu holds; the drawing shipped
+/// with the binary. So the most a manifest can do is name a provider that is already here, visibly,
+/// and nothing in a plugin is executed.
+pub const UI_PROVIDERS: &[&str] = &["agent-tasks"];
+
+/// The icons a `pane.icon` may name, drawn by [`crate::theme::icon`].
+///
+/// Checked for the same reason the three registries above are checked: a rail button drawn as nothing
+/// is worse than a manifest that was refused with the list of icons in the message.
+pub const PANE_ICONS: &[&str] =
+    &["board", "folder", "terminal", "run", "bug", "clock", "branch", "tick", "plus", "image"];
+
+/// The conditions a `pane.applies` may name.
+///
+/// Quill's answer to VS Code's `when` expressions, which are the most copied part of its contribution
+/// model and the hardest to keep tested. A control that cannot apply is absent here, and the question
+/// is a function rather than an expression, so there are two named conditions and a list to check
+/// against instead of a language to parse.
+pub const PANE_CONDITIONS: &[&str] = &["always", "in_project"];
+
+/// The kind of plugin.
+///
+/// Two, and the second one is what `tasks/ui-plugin-architecture.md` widened the seam for. A third is
+/// still refused rather than half-loaded, which is what the field was added for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     /// A description of a language: extensions, a grammar, an icon and a colour scheme.
     Language,
+    /// A plugin that draws: it contributes a rail button and a pane, a tab in the editing area, a
+    /// menu, and a page in Settings. The arrangement is data in the manifest and the drawing is code
+    /// in Quill, named by `ui.provider`.
+    Ui,
+}
+
+impl Kind {
+    /// The word the manifest, the settings file and the command line call it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Kind::Language => "language",
+            Kind::Ui => "ui",
+        }
+    }
 }
 
 /// A colour scheme: one colour per kind of token.
@@ -125,6 +168,193 @@ impl SyntaxTheme {
     }
 }
 
+/// Which group of the rail a pane's button goes in.
+///
+/// The rail's two groups say what a panel **is** rather than where it happens to be: the top group
+/// holds lists and the bottom holds tiles with a character grid in them. That is the distinction
+/// `components::activity_bar` already draws, and a contributed pane joins one of the two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RailGroup {
+    Top,
+    Bottom,
+}
+
+impl RailGroup {
+    pub fn name(self) -> &'static str {
+        match self {
+            RailGroup::Top => "top",
+            RailGroup::Bottom => "bottom",
+        }
+    }
+}
+
+/// A pane a plugin contributes, and the button in the rail that shows it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PaneContribution {
+    /// The name the command line and the settings file call it. Lower case, one word.
+    pub id: String,
+    /// What a person reads in the rail's tooltip and on the pane's own header.
+    pub label: String,
+    /// Which drawn icon goes in the rail, from [`PANE_ICONS`].
+    pub icon: String,
+    pub group: RailGroup,
+    /// The side it docks to the first time it is shown.
+    pub side: crate::app::dock::Side,
+    /// The two measurements every panel carries, because one number cannot be both: a width for when
+    /// it is a column at the side, and a height for when it is in a strip.
+    pub width: f32,
+    pub height: f32,
+    /// The condition under which the button is drawn at all, from [`PANE_CONDITIONS`].
+    pub applies: String,
+}
+
+/// A tab in the editing area a plugin contributes.
+///
+/// It has no path on disk, is never modified and cannot be saved, which are the four answers a picture
+/// tab already gives to the four questions the window asks a tab.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TabContribution {
+    pub id: String,
+    pub label: String,
+}
+
+/// One row of a plugin's menu: something to do, a separator, or a menu inside a menu.
+///
+/// Recursive, because `menu.submenu.<id>.submenu.<other>` is a submenu inside a submenu and
+/// `actions::Entry::Submenu` already holds a `Vec<Entry>`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MenuItem {
+    /// `command=Name`: the name a person reads, and the command handed to the provider.
+    Command { command: String, label: String },
+    /// A lone `-` in the list.
+    Separator,
+    Submenu { label: String, items: Vec<MenuItem> },
+}
+
+/// A menu a plugin contributes, added after the six Quill has.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MenuContribution {
+    pub name: String,
+    pub items: Vec<MenuItem>,
+}
+
+/// A page in the Settings window a plugin contributes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PageContribution {
+    pub name: String,
+    pub icon: String,
+}
+
+/// Everything one plugin adds to the window.
+///
+/// A value on the plugin rather than four questions asked of it, so the rail, the dock, the menus, the
+/// tab strip and the Settings window all read one thing and none of them can disagree with the others
+/// about what was contributed.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Contributions {
+    /// The name in [`UI_PROVIDERS`] of the code that fills the pane, the tab and the page.
+    pub provider: Option<String>,
+    pub pane: Option<PaneContribution>,
+    pub tab: Option<TabContribution>,
+    pub menu: Option<MenuContribution>,
+    pub page: Option<PageContribution>,
+}
+
+impl Contributions {
+    /// True when this manifest adds nothing at all, which is what makes a `ui` plugin unreachable and
+    /// is therefore refused.
+    pub fn is_empty(&self) -> bool {
+        self.pane.is_none() && self.tab.is_none() && self.menu.is_none() && self.page.is_none()
+    }
+}
+
+/// One contribution, with the plugin it came from.
+///
+/// A pane, a tab and a page are all reached by `<plugin id>/<contribution id>` rather than by an index,
+/// because the set is decided when the manifests are read rather than at compile time. That is the one
+/// property `dock::Panel`'s four variants could not have.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Surface<T> {
+    /// The plugin's `plugin.id`.
+    pub plugin: String,
+    /// The name in [`UI_PROVIDERS`] of the code that fills it.
+    pub provider: String,
+    pub what: T,
+}
+
+impl<T> Surface<T> {
+    /// The name the settings file, the dock and the command line call this contribution.
+    pub fn key(&self, id: &str) -> String {
+        format!("{}/{id}", self.plugin)
+    }
+}
+
+/// Everything every enabled plugin contributes, worked out once when the plugins are loaded.
+///
+/// One value rather than a question asked of each plugin every frame: the rail, the dock, the menus,
+/// the tab strip and the Settings window all read it, so none of them can disagree with the others
+/// about what is contributed. Rebuilt by [`Plugins::set_enabled`], which is what makes switching a
+/// plugin off withdraw every contribution in the same frame — the rule `Plugins::renders` already
+/// keeps for a Mermaid diagram.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Surfaces {
+    pub panes: Vec<Surface<PaneContribution>>,
+    pub tabs: Vec<Surface<TabContribution>>,
+    pub menus: Vec<Surface<MenuContribution>>,
+    pub pages: Vec<Surface<PageContribution>>,
+}
+
+impl Surfaces {
+    /// The pane named `<plugin>/<pane>`.
+    pub fn pane(&self, key: &str) -> Option<&Surface<PaneContribution>> {
+        self.panes.iter().find(|surface| surface.key(&surface.what.id) == key)
+    }
+
+    pub fn tab(&self, key: &str) -> Option<&Surface<TabContribution>> {
+        self.tabs.iter().find(|surface| surface.key(&surface.what.id) == key)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.panes.is_empty()
+            && self.tabs.is_empty()
+            && self.menus.is_empty()
+            && self.pages.is_empty()
+    }
+
+    /// The provider named by the plugin with this id, from whichever of its contributions names it.
+    ///
+    /// Every contribution of one plugin carries the same provider, so any of them answers; asking the
+    /// panes first is only because most plugins contribute one.
+    pub fn provider_of(&self, plugin: &str) -> Option<String> {
+        self.panes
+            .iter()
+            .map(|surface| (&surface.plugin, &surface.provider))
+            .chain(self.tabs.iter().map(|surface| (&surface.plugin, &surface.provider)))
+            .chain(self.menus.iter().map(|surface| (&surface.plugin, &surface.provider)))
+            .chain(self.pages.iter().map(|surface| (&surface.plugin, &surface.provider)))
+            .find(|(id, _)| id.as_str() == plugin)
+            .map(|(_, provider)| provider.clone())
+    }
+
+    /// Every plugin that contributes anything, once each, in the order the plugins are listed.
+    pub fn plugins(&self) -> Vec<String> {
+        let mut found: Vec<String> = Vec::new();
+        for id in self
+            .panes
+            .iter()
+            .map(|surface| &surface.plugin)
+            .chain(self.tabs.iter().map(|surface| &surface.plugin))
+            .chain(self.menus.iter().map(|surface| &surface.plugin))
+            .chain(self.pages.iter().map(|surface| &surface.plugin))
+        {
+            if !found.contains(id) {
+                found.push(id.clone());
+            }
+        }
+        found
+    }
+}
+
 /// One plugin.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Plugin {
@@ -137,6 +367,8 @@ pub struct Plugin {
     /// why a regular expression is coloured as division.
     pub limitations: String,
     pub kind: Kind,
+    /// What this plugin adds to the window. Empty for every `language` plugin.
+    pub contributions: Contributions,
     /// The extensions it claims, without the dot, in lower case.
     pub extensions: Vec<String>,
     /// The built-in renderer this language's files are drawn with, if it has one.
@@ -241,6 +473,43 @@ impl Plugins {
 
     pub fn get(&self, id: &str) -> Option<&Plugin> {
         self.installed.iter().find(|plugin| plugin.id == id)
+    }
+
+    /// Everything every plugin that is switched on contributes.
+    ///
+    /// Worked out from the manifests rather than remembered, so it is right after `set_enabled`,
+    /// after `install` and after a reload, with nothing to invalidate. The plugins are already sorted
+    /// by name, so the rail's buttons and the menus are in the same order every time.
+    pub fn surfaces(&self) -> Surfaces {
+        let mut surfaces = Surfaces::default();
+        for plugin in self.installed.iter().filter(|plugin| plugin.enabled) {
+            let Some(provider) = plugin.contributions.provider.clone() else {
+                continue;
+            };
+            // One closure per list rather than one generic one, because a closure in Rust is not
+            // generic over its argument and four contributions are four types.
+            fn made<T>(plugin: &Plugin, provider: &str, what: T) -> Surface<T> {
+                Surface { plugin: plugin.id.clone(), provider: provider.to_owned(), what }
+            }
+            if let Some(pane) = plugin.contributions.pane.clone() {
+                surfaces.panes.push(made(plugin, &provider, pane));
+            }
+            if let Some(tab) = plugin.contributions.tab.clone() {
+                surfaces.tabs.push(made(plugin, &provider, tab));
+            }
+            if let Some(menu) = plugin.contributions.menu.clone() {
+                surfaces.menus.push(made(plugin, &provider, menu));
+            }
+            if let Some(page) = plugin.contributions.page.clone() {
+                surfaces.pages.push(made(plugin, &provider, page));
+            }
+        }
+        surfaces
+    }
+
+    /// The plugins that draw, whether or not they are switched on, for the Plugins page's own list.
+    pub fn ui_plugins(&self) -> Vec<&Plugin> {
+        self.installed.iter().filter(|plugin| plugin.kind == Kind::Ui).collect()
     }
 
     pub fn enabled_count(&self) -> usize {
@@ -468,15 +737,24 @@ pub fn parse(values: &Values, bundled: bool) -> Result<Plugin, String> {
     // message instead of loading as half a language.
     let kind = match values.text("plugin.kind").unwrap_or("language") {
         "language" => Kind::Language,
-        other => return Err(format!("plugin.kind is `{other}`, and this version of Quill only runs `language` plugins")),
+        "ui" => Kind::Ui,
+        other => {
+            return Err(format!(
+                "plugin.kind is `{other}`, and this version of Quill runs `language` and `ui` plugins"
+            ))
+        }
     };
     let extensions: Vec<String> = list(values, "language.extensions")
         .into_iter()
         .map(|extension| extension.trim_start_matches('.').to_lowercase())
         .collect();
-    if extensions.is_empty() {
+    // A language claiming no file type would never be used, which is what this has always said. A UI
+    // plugin claims none by construction — Agent-Tasks is not a file type — so the check belongs to the
+    // kind rather than to every manifest.
+    if kind == Kind::Language && extensions.is_empty() {
         return Err("language.extensions is empty, so nothing would ever use this plugin".to_owned());
     }
+    let contributions = contributions(values, kind)?;
     // Checked against what this version can actually draw, for the same reason `plugin.kind` is: a
     // manifest naming a picture Quill does not have should say so rather than load as a language
     // whose files silently never draw.
@@ -561,6 +839,7 @@ pub fn parse(values: &Values, bundled: bool) -> Result<Plugin, String> {
         description: values.text("plugin.description").unwrap_or_default().to_owned(),
         limitations: values.text("plugin.limitations").unwrap_or_default().to_owned(),
         kind,
+        contributions,
         extensions,
         renders,
         run_file: run_file(values)?,
@@ -575,6 +854,251 @@ pub fn parse(values: &Values, bundled: bool) -> Result<Plugin, String> {
         bundled,
         enabled: true,
     })
+}
+
+/// The `ui.`, `pane.`, `tab.`, `menu.` and `settings.` keys: what a plugin adds to the window.
+///
+/// Every one of them is refused with a sentence naming what was asked for and what this version has,
+/// which is the rule `plugin.kind`, `language.renders`, `run.project` and `debug.adapter` already keep.
+/// A `language` manifest that names none of these parses exactly as it did before, which
+/// `the_older_plugins_ask_for_none_of_what_the_ui_added` keeps.
+fn contributions(values: &Values, kind: Kind) -> Result<Contributions, String> {
+    let provider = match word(values, "ui.provider") {
+        Some(named) if UI_PROVIDERS.contains(&named.as_str()) => Some(named),
+        Some(named) => {
+            return Err(format!(
+                "ui.provider is `{named}`, and this version of Quill has {}",
+                UI_PROVIDERS.join(", ")
+            ))
+        }
+        None if kind == Kind::Ui => {
+            return Err("ui.provider is missing, and a ui plugin with no provider would draw nothing"
+                .to_owned())
+        }
+        None => None,
+    };
+    let found = Contributions {
+        provider,
+        pane: pane(values)?,
+        tab: tab(values),
+        menu: menu(values)?,
+        page: page(values)?,
+    };
+    // A key that asks for something the manifest did not declare is a line that does nothing, and a line
+    // that does nothing silently is what every refusal here exists to prevent.
+    no_orphans(values, "pane.", found.pane.is_some(), "pane.id")?;
+    no_orphans(values, "tab.", found.tab.is_some(), "tab.id")?;
+    no_orphans(values, "settings.", found.page.is_some(), "settings.page")?;
+    no_orphans(values, "menu.", found.menu.is_some(), "menu.name")?;
+    // A plugin adding no button, no pane, no tab, no menu and no settings page has no way of being
+    // reached, so it is refused rather than installed as a row in a list that does nothing.
+    if kind == Kind::Ui && found.is_empty() {
+        return Err(
+            "a ui plugin contributes nothing, so there would be no way to reach it: name a pane, a tab, a menu or a settings page"
+                .to_owned(),
+        );
+    }
+    if kind == Kind::Language && !found.is_empty() {
+        return Err("plugin.kind is `language` and the manifest contributes to the window, which only a `ui` plugin does"
+            .to_owned());
+    }
+    // A language plugin that names a provider is refused too, even though it contributes nothing: it asked
+    // for code that only a `ui` plugin runs, and loading it would leave the provider unreachable.
+    if kind == Kind::Language && found.provider.is_some() {
+        return Err("plugin.kind is `language` and it names a ui.provider, which only a `ui` plugin has"
+            .to_owned());
+    }
+    // And a plugin that draws must not carry a language's keys. A manifest naming both was read as a UI
+    // plugin and its grammar, its renderer, its runner and its debugger were all silently dropped, which is
+    // the outcome every other check here exists to prevent.
+    if kind == Kind::Ui {
+        for named in [
+            "language.extensions",
+            "language.renders",
+            "language.keywords",
+            "language.line_comment",
+            "language.definers",
+            "language.imports",
+            "run.file",
+            "run.project",
+            "debug.adapter",
+            "theme.name",
+        ] {
+            if values.text(named).map(str::trim).is_some_and(|value| !value.is_empty()) {
+                return Err(format!(
+                    "plugin.kind is `ui` and the manifest sets {named}, which only a `language` plugin has"
+                ));
+            }
+        }
+    }
+    Ok(found)
+}
+
+/// `pane.*`: the button in the rail, and the pane it opens.
+///
+/// Five of the six keys have a default, so a manifest asking for a pane writes two lines. The
+/// defaults are the explorer's width and the terminal's height, because those are the two numbers the
+/// window already uses for a column at the side and a strip along the bottom.
+fn pane(values: &Values) -> Result<Option<PaneContribution>, String> {
+    let Some(id) = word(values, "pane.id") else {
+        return Ok(None);
+    };
+    let group = match values.text("pane.group").map(str::trim).unwrap_or("top") {
+        "top" => RailGroup::Top,
+        "bottom" => RailGroup::Bottom,
+        other => return Err(format!("pane.group is `{other}`, and the rail has top and bottom")),
+    };
+    let named_side = values.text("pane.side").map(str::trim).unwrap_or("right");
+    let side = crate::app::dock::Side::from_name(named_side).ok_or_else(|| {
+        format!("pane.side is `{named_side}`, and a panel docks to left, right, top or bottom")
+    })?;
+    let icon = match word(values, "pane.icon") {
+        Some(named) if PANE_ICONS.contains(&named.as_str()) => named,
+        Some(named) => {
+            return Err(format!(
+                "pane.icon is `{named}`, and this version of Quill draws {}",
+                PANE_ICONS.join(", ")
+            ))
+        }
+        None => "board".to_owned(),
+    };
+    let applies = match word(values, "pane.applies") {
+        Some(named) if PANE_CONDITIONS.contains(&named.as_str()) => named,
+        Some(named) => {
+            return Err(format!(
+                "pane.applies is `{named}`, and this version of Quill knows {}",
+                PANE_CONDITIONS.join(", ")
+            ))
+        }
+        None => "always".to_owned(),
+    };
+    Ok(Some(PaneContribution {
+        label: word(values, "pane.label")
+            .or_else(|| word(values, "plugin.name"))
+            .unwrap_or_else(|| id.clone()),
+        id,
+        icon,
+        group,
+        side,
+        width: measurement(values, "pane.width", 320.0)?,
+        height: measurement(values, "pane.height", 260.0)?,
+        applies,
+    }))
+}
+
+/// `tab.*`: a tab in the editing area, which is opened from a menu rather than by opening a file.
+fn tab(values: &Values) -> Option<TabContribution> {
+    let id = word(values, "tab.id")?;
+    Some(TabContribution {
+        label: word(values, "tab.label")
+            .or_else(|| word(values, "plugin.name"))
+            .unwrap_or_else(|| id.clone()),
+        id,
+    })
+}
+
+/// `menu.*`: the plugin's own menu, its entries, and any submenus nested inside it.
+///
+/// `menu.entries` is a comma list of `command=Name`, and a lone `-` is a separator.
+/// `menu.submenu.<id>` names a submenu and `menu.submenu.<id>.entries` fills it, so
+/// `menu.submenu.new.submenu.other` is a submenu inside a submenu and the reader is recursive.
+fn menu(values: &Values) -> Result<Option<MenuContribution>, String> {
+    let Some(name) = word(values, "menu.name") else {
+        return Ok(None);
+    };
+    Ok(Some(MenuContribution { name, items: menu_items(values, "menu")? }))
+}
+
+/// The entries under one `menu.` or `menu.submenu.<id>.` prefix, and the submenus under it.
+fn menu_items(values: &Values, prefix: &str) -> Result<Vec<MenuItem>, String> {
+    let mut items = Vec::new();
+    for entry in list(values, &format!("{prefix}.entries")) {
+        if entry == "-" {
+            items.push(MenuItem::Separator);
+            continue;
+        }
+        let Some((command, label)) = entry.split_once('=') else {
+            return Err(format!(
+                "{prefix}.entries holds `{entry}`, which is not `command=Name`"
+            ));
+        };
+        let command = command.trim();
+        let label = label.trim();
+        if command.is_empty() || label.is_empty() {
+            return Err(format!("{prefix}.entries holds `{entry}`, which is not `command=Name`"));
+        }
+        items.push(MenuItem::Command { command: command.to_owned(), label: label.to_owned() });
+    }
+    // The submenus, in the order the manifest names them, which `Values` keeps sorted so that a menu
+    // is the same shape every time it is read.
+    for (key, label) in values.starting_with(&format!("{prefix}.submenu.")) {
+        // `menu.submenu.new` names one; `menu.submenu.new.entries` fills it and is not a name.
+        if key.contains('.') {
+            continue;
+        }
+        let label = label.trim();
+        if label.is_empty() {
+            return Err(format!("{prefix}.submenu.{key} has no name"));
+        }
+        let nested = menu_items(values, &format!("{prefix}.submenu.{key}"))?;
+        if nested.is_empty() {
+            return Err(format!(
+                "{prefix}.submenu.{key} is empty, so it would open onto nothing"
+            ));
+        }
+        items.push(MenuItem::Submenu { label: label.to_owned(), items: nested });
+    }
+    Ok(items)
+}
+
+/// `settings.*`: the plugin's page in the Settings window.
+fn page(values: &Values) -> Result<Option<PageContribution>, String> {
+    let Some(name) = word(values, "settings.page") else {
+        return Ok(None);
+    };
+    let icon = match word(values, "settings.icon") {
+        Some(named) if PANE_ICONS.contains(&named.as_str()) => named,
+        Some(named) => {
+            return Err(format!(
+                "settings.icon is `{named}`, and this version of Quill draws {}",
+                PANE_ICONS.join(", ")
+            ))
+        }
+        None => "board".to_owned(),
+    };
+    Ok(Some(PageContribution { name, icon }))
+}
+
+/// A number from the manifest, with the default when it is absent and a refusal when it is not a
+/// number, because a width of `wide` silently becoming 320 is the outcome every check here prevents.
+fn measurement(values: &Values, name: &str, default: f32) -> Result<f32, String> {
+    match values.text(name).map(str::trim).filter(|text| !text.is_empty()) {
+        // A width of `wide` silently becoming 320 is the outcome every check here exists to prevent, so it
+        // is refused with what it said and what a width is.
+        Some(text) => match text.parse::<f32>() {
+            Ok(number) if number > 0.0 => Ok(number),
+            _ => Err(format!("{name} is `{text}`, and a measurement is a number of points above zero")),
+        },
+        None => Ok(default),
+    }
+}
+
+/// Refuse a `pane.`, `tab.` or `settings.` key on a manifest that asks for no such contribution.
+///
+/// `pane.width` with no `pane.id` is a line somebody wrote expecting it to do something, and it does
+/// nothing. Saying so is the difference between a manifest that is wrong and a manifest that is wrong and
+/// silent about it.
+fn no_orphans(values: &Values, prefix: &str, present: bool, needs: &str) -> Result<(), String> {
+    if present {
+        return Ok(());
+    }
+    let orphans = values.starting_with(prefix);
+    match orphans.first() {
+        Some((rest, _)) => Err(format!(
+            "the manifest sets {prefix}{rest} and has no {needs}, so nothing would read it"
+        )),
+        None => Ok(()),
+    }
 }
 
 /// `run.file`: the command that runs one file of this language, with `{file}` for the path.
@@ -804,6 +1328,10 @@ pub mod bundled {
             include_str!("../../plugins/css/plugin.conf"),
             Some(include_bytes!("../../plugins/css/icon.png")),
         ),
+        // The first plugin that draws. It has no icon of its own: its rail button is `pane.icon`,
+        // which is a drawn icon rather than a picture, so it follows the pointer's opacity and the
+        // window's colours the way every other button in the rail does.
+        ("agent-tasks", include_str!("../../plugins/agent-tasks/plugin.conf"), None),
         (
             "mermaid",
             include_str!("../../plugins/mermaid/plugin.conf"),
@@ -894,6 +1422,265 @@ mod tests {
         assert!(!plugin.claims(Path::new("thing")));
     }
 
+    /// A manifest for a plugin that draws, with every contribution on it. Used by the tests below and
+    /// by the surfaces tests, so that a change to the keys is a change in one place.
+    fn ui_manifest() -> String {
+        [
+            "plugin.id = board-plugin",
+            "plugin.name = Board",
+            "plugin.kind = ui",
+            "ui.provider = agent-tasks",
+            "pane.id = board",
+            "pane.icon = board",
+            "pane.side = right",
+            "pane.width = 420",
+            "tab.id = board",
+            "menu.name = Board",
+            "menu.entries = open=Open Board, -, sync=Sync",
+            "menu.submenu.new = New",
+            "menu.submenu.new.entries = task=Task, epic=Epic",
+            "settings.page = Board",
+        ]
+        .join("\n")
+    }
+
+    #[test]
+    fn a_ui_plugin_reads_all_five_contributions_and_needs_no_file_type() {
+        let plugin = parse(&Values::parse(&ui_manifest()), false).expect("a ui manifest");
+        assert_eq!(plugin.kind, Kind::Ui);
+        // The check that refuses a language with no extensions belongs to the kind: Agent-Tasks is not
+        // a file type and never will be.
+        assert!(plugin.extensions.is_empty());
+        let contributed = &plugin.contributions;
+        assert_eq!(contributed.provider.as_deref(), Some("agent-tasks"));
+        let pane = contributed.pane.as_ref().expect("a pane");
+        assert_eq!(pane.id, "board");
+        assert_eq!(pane.label, "Board", "the label falls back to plugin.name");
+        assert_eq!(pane.group, RailGroup::Top, "top is the default");
+        assert_eq!(pane.side, crate::app::dock::Side::Right);
+        assert_eq!(pane.width, 420.0);
+        assert_eq!(pane.height, 260.0, "the terminal's height is the default for a strip");
+        assert_eq!(pane.applies, "always");
+        assert_eq!(contributed.tab.as_ref().expect("a tab").label, "Board");
+        assert_eq!(contributed.page.as_ref().expect("a page").name, "Board");
+        let menu = contributed.menu.as_ref().expect("a menu");
+        assert_eq!(menu.name, "Board");
+        assert_eq!(
+            menu.items,
+            vec![
+                MenuItem::Command { command: "open".to_owned(), label: "Open Board".to_owned() },
+                MenuItem::Separator,
+                MenuItem::Command { command: "sync".to_owned(), label: "Sync".to_owned() },
+                MenuItem::Submenu {
+                    label: "New".to_owned(),
+                    items: vec![
+                        MenuItem::Command { command: "task".to_owned(), label: "Task".to_owned() },
+                        MenuItem::Command { command: "epic".to_owned(), label: "Epic".to_owned() },
+                    ],
+                },
+            ],
+            "the entries are in the order the manifest names them, and a submenu comes after them"
+        );
+    }
+
+    #[test]
+    fn a_submenu_inside_a_submenu_is_read() {
+        let text = [
+            "plugin.id = a",
+            "plugin.kind = ui",
+            "ui.provider = agent-tasks",
+            "menu.name = A",
+            "menu.submenu.new = New",
+            "menu.submenu.new.entries = task=Task",
+            "menu.submenu.new.submenu.from = From",
+            "menu.submenu.new.submenu.from.entries = jira=JIRA",
+        ]
+        .join("\n");
+        let plugin = parse(&Values::parse(&text), false).expect("nested submenus");
+        let menu = plugin.contributions.menu.expect("a menu");
+        let MenuItem::Submenu { label, items } = &menu.items[0] else {
+            panic!("the first item should be the New submenu, got {:?}", menu.items[0]);
+        };
+        assert_eq!(label, "New");
+        assert_eq!(items.len(), 2, "one command and one submenu inside it");
+        assert!(matches!(items[1], MenuItem::Submenu { .. }), "{:?}", items[1]);
+    }
+
+    #[test]
+    fn every_refusal_names_what_was_asked_for_and_what_this_version_has() {
+        // The rule `plugin.kind`, `language.renders`, `run.project` and `debug.adapter` already keep,
+        // made once for each new key. A message that only says `invalid` sends somebody to the source.
+        let cases: &[(&str, &[&str])] = &[
+            ("plugin.id = a\nplugin.kind = wasm", &["wasm", "language", "ui"]),
+            ("plugin.id = a\nplugin.kind = ui", &["ui.provider is missing"]),
+            ("plugin.id = a\nplugin.kind = ui\nui.provider = chat", &["chat", "agent-tasks"]),
+            (
+                "plugin.id = a\nplugin.kind = ui\nui.provider = agent-tasks",
+                &["contributes nothing", "pane", "tab", "menu", "settings page"],
+            ),
+            (
+                "plugin.id = a\nplugin.kind = ui\nui.provider = agent-tasks\npane.id = b\npane.group = middle",
+                &["middle", "top", "bottom"],
+            ),
+            (
+                "plugin.id = a\nplugin.kind = ui\nui.provider = agent-tasks\npane.id = b\npane.side = middle",
+                &["middle", "left", "right", "top", "bottom"],
+            ),
+            (
+                "plugin.id = a\nplugin.kind = ui\nui.provider = agent-tasks\npane.id = b\npane.icon = sparkle",
+                &["sparkle", "board", "terminal"],
+            ),
+            (
+                "plugin.id = a\nplugin.kind = ui\nui.provider = agent-tasks\npane.id = b\npane.applies = has_git",
+                &["has_git", "always", "in_project"],
+            ),
+            (
+                "plugin.id = a\nplugin.kind = ui\nui.provider = agent-tasks\nmenu.name = A\nmenu.entries = open",
+                &["open", "command=Name"],
+            ),
+            (
+                "plugin.id = a\nplugin.kind = ui\nui.provider = agent-tasks\nmenu.name = A\nmenu.submenu.new = New",
+                &["menu.submenu.new", "empty"],
+            ),
+            (
+                "plugin.id = a\nplugin.kind = ui\nui.provider = agent-tasks\nsettings.page = A\nsettings.icon = sparkle",
+                &["sparkle", "board"],
+            ),
+            // A measurement that is not a measurement. Silently becoming the default is the outcome every
+            // check here exists to prevent.
+            (
+                "plugin.id = a\nplugin.kind = ui\nui.provider = agent-tasks\npane.id = b\npane.width = wide",
+                &["pane.width", "wide", "number of points"],
+            ),
+            (
+                "plugin.id = a\nplugin.kind = ui\nui.provider = agent-tasks\npane.id = b\npane.height = 0",
+                &["pane.height", "above zero"],
+            ),
+            // A key that asks for a contribution the manifest did not declare.
+            (
+                "plugin.id = a\nplugin.kind = ui\nui.provider = agent-tasks\nmenu.name = A\nmenu.entries = x=X\npane.width = 400",
+                &["pane.width", "pane.id", "nothing would read it"],
+            ),
+            (
+                "plugin.id = a\nplugin.kind = ui\nui.provider = agent-tasks\npane.id = b\ntab.label = Board",
+                &["tab.label", "tab.id"],
+            ),
+            // A plugin that draws must not carry a language's keys, and a language must not name a provider.
+            (
+                "plugin.id = a\nplugin.kind = ui\nui.provider = agent-tasks\npane.id = b\nlanguage.extensions = .a",
+                &["language.extensions", "only a `language` plugin"],
+            ),
+            (
+                "plugin.id = a\nplugin.kind = ui\nui.provider = agent-tasks\npane.id = b\ndebug.adapter = lldb",
+                &["debug.adapter", "only a `language` plugin"],
+            ),
+            (
+                "plugin.id = a\nlanguage.extensions = .a\nui.provider = agent-tasks",
+                &["ui.provider", "only a `ui` plugin"],
+            ),
+            // Unchanged: a language with no file type is still refused, and for the same reason.
+            ("plugin.id = a\nlanguage.extensions =", &["language.extensions is empty"]),
+            // A language manifest that contributes to the window is refused rather than half-loaded,
+            // because a pane drawn by a plugin with no provider would be a pane nothing fills.
+            (
+                "plugin.id = a\nlanguage.extensions = .a\npane.id = b",
+                &["language", "only a `ui` plugin"],
+            ),
+        ];
+        for (text, expected) in cases {
+            let problem = parse(&Values::parse(text), false)
+                .expect_err(&format!("this should be refused:\n{text}"));
+            for word in *expected {
+                assert!(problem.contains(word), "`{word}` is not in `{problem}`");
+            }
+        }
+    }
+
+    #[test]
+    fn the_older_plugins_ask_for_none_of_what_the_ui_added() {
+        // The rule every round of keys has kept since `task-1671`: a language that names none of the
+        // new keys is read by exactly the code that read it before. This is what proves the reader's
+        // change has not moved Rust, CSS, HTML, JavaScript, TypeScript or Mermaid.
+        let (plugins, problems) = Plugins::load(None);
+        assert!(problems.is_empty(), "{problems:?}");
+        for plugin in plugins.all().iter().filter(|plugin| plugin.kind == Kind::Language) {
+            assert_eq!(
+                plugin.contributions,
+                Contributions::default(),
+                "{} contributes to the window and should not",
+                plugin.id
+            );
+        }
+        let mermaid = plugins.get("mermaid").expect("the mermaid plugin");
+        assert_eq!(mermaid.kind, Kind::Language, "Mermaid is a language, not a plugin that draws");
+    }
+
+    /// `task-28` asked for the board to be a tab and not a pane, so it contributes four things and one of
+    /// them is the provider. A pane is still something a manifest may ask for — `a_manifest_may_contribute_a_pane`
+    /// below is what keeps the reader honest about that, since no bundled plugin asks for one any more.
+    #[test]
+    fn the_agent_tasks_plugin_contributes_a_tab_a_menu_and_a_page_and_no_pane() {
+        let (plugins, problems) = Plugins::load(None);
+        assert!(problems.is_empty(), "{problems:?}");
+        let board = plugins.get("agent-tasks").expect("the agent-tasks plugin");
+        assert_eq!(board.kind, Kind::Ui);
+        assert_eq!(board.contributions.provider.as_deref(), Some("agent-tasks"));
+        assert!(board.contributions.pane.is_none(), "the board is a tab and nothing else");
+        assert!(board.contributions.tab.is_some());
+        assert!(board.contributions.menu.is_some());
+        assert!(board.contributions.page.is_some());
+        assert!(!board.limitations.is_empty(), "it says what it does not do");
+        assert!(
+            board.limitations.contains("no pane"),
+            "and it says the board has no pane, since that is a control somebody may look for: {}",
+            board.limitations
+        );
+    }
+
+    /// A manifest that asks for a pane still gets one, read out of the file the way every other key is.
+    ///
+    /// This used to be covered by Agent-Tasks\'s own manifest and stopped being when `task-28` removed its
+    /// pane. Reading a pane is Quill\'s side of the plugin contract rather than one plugin\'s arrangement, so
+    /// it is tested against a manifest written here.
+    #[test]
+    fn a_manifest_may_contribute_a_pane() {
+        let manifest = "plugin.id = a-board\nplugin.name = A Board\nplugin.kind = ui\n\
+                        ui.provider = agent-tasks\npane.id = board\npane.label = A Board\n\
+                        pane.icon = board\npane.group = top\npane.side = right\npane.width = 420\n";
+        let plugin = parse(&Values::parse(manifest), false).expect("a manifest with a pane in it");
+        let pane = plugin.contributions.pane.as_ref().expect("a pane");
+        assert_eq!(pane.id, "board");
+        assert_eq!(pane.label, "A Board");
+        assert_eq!(pane.side, crate::app::dock::Side::Right);
+        assert_eq!(pane.group, RailGroup::Top);
+        assert_eq!(pane.width, 420.0);
+    }
+
+    #[test]
+    fn the_surfaces_are_what_the_enabled_plugins_contribute_and_nothing_else() {
+        let (mut plugins, problems) = Plugins::load(None);
+        assert!(problems.is_empty(), "{problems:?}");
+        let surfaces = plugins.surfaces();
+        // No bundled plugin contributes a pane since `task-28`, so nothing is in a dock slot and the rail has
+        // no contributed button.
+        assert!(surfaces.panes.is_empty(), "the one plugin that draws contributes a tab, not a pane");
+        assert!(surfaces.pane("agent-tasks/board").is_none());
+        assert!(surfaces.pane("agent-tasks/nothing").is_none());
+        assert_eq!(surfaces.tabs.len(), 1, "one plugin draws today");
+        assert_eq!(surfaces.tabs[0].plugin, "agent-tasks");
+        assert_eq!(surfaces.tabs[0].provider, "agent-tasks");
+        assert_eq!(surfaces.tabs[0].key("board"), "agent-tasks/board");
+        assert!(surfaces.tab("agent-tasks/board").is_some());
+        assert_eq!(surfaces.menus.len(), 1);
+        assert_eq!(surfaces.pages.len(), 1);
+        // Switching it off withdraws every contribution at once, which is the rule `Plugins::renders`
+        // already keeps for a Mermaid diagram: the window asks before it draws.
+        plugins.set_enabled(None, "agent-tasks", false);
+        assert!(plugins.surfaces().is_empty(), "a plugin that is off contributes nothing");
+        plugins.set_enabled(None, "agent-tasks", true);
+        assert_eq!(plugins.surfaces().tabs.len(), 1, "and switching it back on is one frame too");
+    }
+
     #[test]
     fn the_bundled_plugins_all_parse_and_claim_what_they_should() {
         let (plugins, problems) = Plugins::load(None);
@@ -907,11 +1694,22 @@ mod tests {
         assert_eq!(plugins.for_path(Path::new("a.html")).map(|p| p.id.as_str()), Some("html"));
         assert_eq!(plugins.for_path(Path::new("a.htm")).map(|p| p.id.as_str()), Some("html"));
         assert_eq!(plugins.for_path(Path::new("a.md")), None, "Markdown is not a plugin's business");
-        // Every one of them ships an icon and a colour scheme, which is what the ticket asks for.
+        // Every language ships a file icon and a colour scheme, which is what the ticket asked for.
+        // A plugin that draws ships neither: it has no files to put an icon in front of, and a colour
+        // scheme it chose would be the one thing a plugin is never allowed to decide. Its rail button
+        // is `pane.icon`, a drawn icon rather than a picture, so it follows the window's colours.
         for plugin in plugins.all() {
-            assert!(plugin.icon.is_some(), "{} has no icon", plugin.id);
-            assert!(!plugin.theme.is_empty(), "{} has no colour scheme", plugin.id);
             assert!(!plugin.description.is_empty(), "{} says nothing about itself", plugin.id);
+            match plugin.kind {
+                Kind::Language => {
+                    assert!(plugin.icon.is_some(), "{} has no icon", plugin.id);
+                    assert!(!plugin.theme.is_empty(), "{} has no colour scheme", plugin.id);
+                }
+                Kind::Ui => {
+                    assert!(plugin.theme.is_empty(), "{} names colours, which no plugin may", plugin.id);
+                    assert!(plugin.extensions.is_empty(), "{} claims a file type", plugin.id);
+                }
+            }
         }
     }
 

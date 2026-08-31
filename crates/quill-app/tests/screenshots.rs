@@ -983,6 +983,62 @@ fn the_filter_box_narrows_the_list_to_matching_files() {
     harness.snapshot(shot("filter"));
 }
 
+/// `task-28`: "There should be a toggle on the left, under the folder icon, for file view. When that is
+/// pressed, it shows/hides the file pane on the right of folder pane (file pane has all the tabs)."
+///
+/// The pane holding the tabs is the editing area. The button is the third in the rail's top group, under the
+/// folder, and it is called `Editor` because that is what the `View` menu's two entries call it and no two
+/// controls in one window may share a name.
+#[test]
+fn the_editing_area_can_be_hidden_from_the_rail_and_the_explorer_takes_the_width() {
+    let mut harness = harness("Some writing in a file.");
+    assert!(harness.state().editor_visible, "it starts showing");
+    let full = harness.state().panel_area(quill_app::app::dock::Panel::Explorer).width();
+
+    // The button a person presses, found by its tooltip.
+    harness.get_by_label("Editor").click();
+    harness.run();
+    assert!(!harness.state().editor_visible, "the button hid it");
+    // No tab strip, because there is nothing for it to be the top of.
+    assert!(
+        harness.query_by_label("untitled").is_none() && harness.query_all_by_label_contains(".txt").count() == 0,
+        "no tab is drawn while the editing area is hidden"
+    );
+    let widened = harness.state().panel_area(quill_app::app::dock::Panel::Explorer).width();
+    assert!(widened > full, "the explorer took the room: {full} then {widened}");
+
+    // And back, from the `View` menu this time, which is the other control for the same action.
+    did(&mut harness, "action run toggle-editor");
+    harness.run();
+    assert!(harness.state().editor_visible, "the menu entry brought it back");
+    assert_eq!(
+        harness.state().panel_area(quill_app::app::dock::Panel::Explorer).width(),
+        full,
+        "and the explorer is the width it was"
+    );
+}
+
+/// Hiding the editing area can never leave a window with nothing in it. Stated in both directions, because both
+/// are reachable: hide the explorer then the editing area, or hide the editing area then the explorer.
+#[test]
+fn the_window_always_has_either_a_panel_or_the_editing_area() {
+    let mut harness = harness("");
+    // Hide every panel, then ask for the editing area to go: the explorer comes back instead of nothing.
+    did(&mut harness, "action run toggle-explorer");
+    harness.run();
+    assert!(!harness.state().explorer_visible);
+    did(&mut harness, "action run toggle-editor");
+    harness.run();
+    assert!(!harness.state().editor_visible, "the editing area is hidden as asked");
+    assert!(harness.state().explorer_visible, "and the explorer came back, so there is something to look at");
+
+    // The other way round: with the editing area hidden, hiding the explorer brings the editing area back.
+    did(&mut harness, "action run toggle-explorer");
+    harness.run();
+    assert!(!harness.state().explorer_visible, "the explorer is hidden as asked");
+    assert!(harness.state().editor_visible, "and the editing area came back");
+}
+
 #[test]
 fn the_explorer_can_be_hidden_and_brought_back() {
     let mut harness = harness("");
@@ -1559,6 +1615,51 @@ fn opening_a_folder_shows_it_in_the_explorer() {
     std::fs::remove_dir_all(&other).ok();
 }
 
+/// `task-28`: expanding a folder with a lot of files in it froze the window until it was force quit.
+///
+/// Two of the three causes were the read, and `services::file_tree` and `services::file_kind` have their own
+/// tests for those. This is the third: every row in the tree was drawn every frame, and each row allocates a
+/// rectangle and interacts, so a folder of thousands of files was thousands of widgets a frame after the read
+/// had finished.
+///
+/// What is asserted is that a row far below the visible band is **not in the widget tree**, and that
+/// scrolling to it puts it there. A count of widgets would be the more direct measurement and it is not
+/// available: the accessibility tree holds the whole window, so the number would move whenever anything else
+/// in the window gained a control.
+#[test]
+fn the_explorer_draws_only_the_rows_that_are_on_screen() {
+    let mut harness = harness("");
+    let folder = std::env::temp_dir().join(format!("quill-many-rows-{}", std::process::id()));
+    std::fs::create_dir_all(&folder).expect("make the folder");
+    // Named so they sort in the order they are numbered, because the explorer sorts by name and
+    // `entry100` sorts before `entry2`.
+    for index in 0..600 {
+        std::fs::write(folder.join(format!("entry{index:04}.txt")), "text\n").expect("write a file");
+    }
+    harness.state_mut().open_folder(&folder);
+    harness.run();
+    assert_eq!(harness.state().tree.rows().len(), 600, "every file is in the tree");
+
+    // The first row is drawn and a row hundreds below it is not, which is the whole of the change.
+    assert!(harness.query_by_label("entry0000.txt").is_some(), "the first row is on screen");
+    assert!(
+        harness.query_by_label("entry0599.txt").is_none(),
+        "the last row is hundreds of rows below the panel, so it is not drawn"
+    );
+
+    // And it is reachable: the window's own reveal is what a person or `quill-cli` asks for, and it has to
+    // work for a row that was never drawn, which is the one thing virtualisation could have taken away.
+    let last = folder.join("entry0599.txt");
+    harness.state_mut().open_path_permanently(&last);
+    harness.run();
+    harness.run();
+    assert!(
+        harness.query_by_label("entry0599.txt").is_some(),
+        "revealing a row scrolls to it and draws it, whether or not it was on screen before"
+    );
+    std::fs::remove_dir_all(&folder).ok();
+}
+
 #[test]
 fn opening_a_folder_clears_the_filter_and_brings_the_explorer_back() {
     let mut harness = harness("");
@@ -1730,7 +1831,7 @@ fn opening_the_about_box_shuts_whatever_else_was_open() {
 fn open_settings(harness: &mut Harness<'static, QuillApp>) {
     harness.state_mut().menu_placement = MenuPlacement::InWindow;
     harness.run();
-    harness.get_by_label("Edit").click();
+    harness.get_by_label("Edit the comment by human just now").click();
     harness.run();
     harness.get_by_label("Settings").click();
     harness.run();
@@ -4340,13 +4441,17 @@ fn the_rails_version_control_button_opens_the_commit_panel_and_shuts_it() {
     let mut harness = harness_in(&root);
     assert!(harness.state().git.is_some(), "the folder should be a repository");
     harness.get_by_label("Version Control").click();
-    harness.run();
+    // `nudge`, not `run`: opening the panel asks git for the status of the repository, and the thread that
+    // answers asks for a repaint when it is done. A `run` that lands while that is still in flight panics
+    // for a reason that is not a fault in Quill, which is what made this test fail in the full suite and
+    // pass on its own.
+    nudge(&mut harness);
     assert!(
         harness.state().git.as_ref().is_some_and(|git| git.panel.open),
         "the panel should be open"
     );
     harness.get_by_label("Version Control").click();
-    harness.run();
+    nudge(&mut harness);
     assert!(
         harness.state().git.as_ref().is_some_and(|git| !git.panel.open),
         "and pressing it again should shut it"
@@ -10981,3 +11086,1337 @@ fn every_menu_row_for_moving_a_panel_can_be_run_from_the_command_line() {
     assert_eq!(side_of(&harness, Panel::Terminal), Side::Bottom);
     assert_eq!(side_of(&harness, Panel::Explorer), Side::Left);
 }
+
+// ---------------------------------------------------------------------------- the plugins that draw
+//
+// `tasks/ui-plugin-architecture.md` is the design and `tasks/agent-tasks-plugin-tdd.md` is the plugin.
+// Every test below drives the real window: the rail button is pressed rather than a field being set, and
+// the answer is read back through `quill-cli` rather than out of the window's own state, which is the
+// rule the debugger's tests already keep.
+
+/// `task-28`: "Let\'s just have agent-tasks be opened in a tab, rather than that other pane view."
+///
+/// The board used to contribute a pane docked to the right as well as a tab, and the same board drew in
+/// both. A 420 point column shows one lane at a time and needs scrolling sideways to reach the second, so
+/// the pane is gone and the tab is the only place the board is drawn.
+///
+/// Quill\'s pane machinery is untouched, and this is the test that says so: the board contributes no pane,
+/// and `the_pane_is_moved_and_put_away_from_the_command_line` drives one from a manifest written for it.
+#[test]
+fn the_board_contributes_a_tab_and_no_pane() {
+    use quill_app::app::dock::Panel;
+    let mut harness = harness("");
+    let listed = did(&mut harness, "plugins list");
+    let plugins = listed["plugins"].as_array().expect("the plugins");
+    let board = plugins
+        .iter()
+        .find(|plugin| plugin["id"] == "agent-tasks")
+        .expect("the agent-tasks plugin");
+    assert_eq!(board["kind"], "ui");
+    assert_eq!(board["provider"], "agent-tasks");
+    let contributes: Vec<&str> =
+        board["contributes"].as_array().expect("what it adds").iter().filter_map(|it| it.as_str()).collect();
+    assert_eq!(contributes, ["tab", "menu", "settings page"], "a tab, a menu and a page, and no pane");
+
+    // No slot is taken, so the rail has no contributed button and the dock has no plugin column.
+    assert!(harness.state().plugin_ui.pane(0).is_none(), "there is no contributed pane to be in slot 0");
+    assert_eq!(harness.state().panel_area(Panel::Plugin(0)).width(), 0.0);
+    let panels = did(&mut harness, "panel list");
+    let names: Vec<&str> =
+        panels["panels"].as_array().expect("the panels").iter().filter_map(|it| it["name"].as_str()).collect();
+    assert_eq!(
+        names,
+        ["explorer", "terminal", "run", "debug"],
+        "Quill\'s own four and nothing contributed: {names:?}"
+    );
+
+    // The board is reached from its menu entry instead, which is the control a person uses.
+    harness.get_by_label("Open Board").click();
+    harness.run();
+    assert!(
+        harness.state().files.active().name().contains("Agent-Tasks"),
+        "the menu entry opened the board as a tab, and the tab is showing"
+    );
+}
+
+/// A contributed pane is shown, moved and put away from the command line.
+///
+/// **From a manifest written for this test**, since `task-28` took the pane out of Agent-Tasks\'s own
+/// manifest. That is a better test than the one it replaces: Quill\'s pane machinery used to be verified
+/// only through one plugin\'s incidental use of it, so removing that plugin\'s pane would have taken the
+/// coverage with it. `a_manifest_changed_by_hand_takes_effect_on_a_reload_with_no_restart` is where this
+/// pattern comes from — a plugin folder on disk shadows the bundled one of the same id.
+#[test]
+fn the_pane_is_moved_and_put_away_from_the_command_line() {
+    use quill_app::app::dock::{Panel, Side};
+    let folder = copy_out_of_the_repository(&sample_folder(), "quill-plugin-pane");
+    let settings = folder.join(".quill-settings");
+    let plugin = settings.join("plugins").join("agent-tasks");
+    std::fs::create_dir_all(&plugin).expect("a plugin folder");
+    std::fs::write(
+        plugin.join("plugin.conf"),
+        "plugin.id = agent-tasks\nplugin.name = Agent-Tasks\nplugin.kind = ui\n\
+         ui.provider = agent-tasks\npane.id = board\npane.label = Agent-Tasks\npane.side = right\n\
+         pane.width = 420\n",
+    )
+    .expect("a manifest that contributes a pane");
+    let mut harness = harness_in(&folder);
+    harness.state_mut().use_store(quill_app::services::store::Store::at(&settings));
+    harness.run();
+
+    let shown = did(&mut harness, "plugins tab agent-tasks/board --open");
+    assert_eq!(shown["showing"], true);
+    assert_eq!(shown["side"], "right");
+    // The same drag the header takes, asked for by name.
+    let moved = did(&mut harness, "plugins pane agent-tasks/board --side bottom");
+    assert_eq!(moved["side"], "bottom");
+    assert_eq!(side_of(&harness, Panel::Plugin(0)), Side::Bottom);
+    let away = did(&mut harness, "plugins pane agent-tasks/board --hide");
+    assert_eq!(away["showing"], false);
+    harness.run();
+    // A pane that is put away takes no room, which is what `Rect::ZERO` in `regions` means. Read off the
+    // rectangles the frame actually used rather than off `panel_area`, which answers where a panel
+    // *would* be so that a menu can offer to move one that is hidden.
+    assert_eq!(harness.state().panel_rect_for_tests(Panel::Plugin(0)).width(), 0.0);
+    let _ = Side::Right;
+    std::fs::remove_dir_all(&folder).ok();
+}
+
+#[test]
+fn a_pane_or_a_command_nobody_has_is_refused_with_what_there_is() {
+    let mut harness = harness("");
+    assert_eq!(refused(&mut harness, "plugins pane agent-tasks/nothing --show"), "not-found");
+    // `task-28`: the board is a tab and contributes no pane, so asking for its pane by its own name is
+    // refused in exactly the same way as asking for one that never existed.
+    assert_eq!(refused(&mut harness, "plugins pane agent-tasks/board --show"), "not-found");
+    assert_eq!(refused(&mut harness, "plugins pane chat/thread --show"), "not-found");
+    assert_eq!(refused(&mut harness, "plugins tab agent-tasks/nothing --open"), "not-found");
+    assert_eq!(refused(&mut harness, "plugins view rust"), "not-found");
+    assert_eq!(refused(&mut harness, "plugins show nothing-like-this"), "not-found");
+    let reply = run(&mut harness, "plugins run agent-tasks fly");
+    assert!(!reply.ok);
+    assert!(reply.message.contains("no `fly` command"), "{}", reply.message);
+    assert!(reply.message.contains("board"), "the refusal lists what there is: {}", reply.message);
+}
+
+#[test]
+fn the_plugin_opens_a_tab_in_the_editing_area_beside_the_file_tabs() {
+    let mut harness = harness("Some prose.");
+    assert_eq!(harness.state().files.len(), 1, "the file it opened with");
+    let opened = did(&mut harness, "plugins tab agent-tasks/board --open");
+    assert_eq!(opened["open"], true);
+    harness.run();
+    assert_eq!(harness.state().files.len(), 2, "the file, and the board beside it");
+    // The plugin's own tab, by name. `some tab is unmodified` was true of the file beside it and said nothing
+    // about the board.
+    let tabs = did(&mut harness, "status --section tabs");
+    let rows = tabs["tabs"].as_array().expect("the tabs");
+    let board = rows
+        .iter()
+        .find(|tab| tab["name"] == "Agent-Tasks")
+        .unwrap_or_else(|| panic!("the board's tab should be called what its manifest calls it: {rows:?}"));
+    assert_eq!(board["modified"], false, "a plugin tab is never modified");
+    // And saving it writes nothing, rather than writing an empty `untitled.md` into the project.
+    let before: Vec<std::path::PathBuf> = std::fs::read_dir(sample_folder())
+        .expect("the sample folder")
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .collect();
+    did(&mut harness, "action run save");
+    harness.run();
+    let after: Vec<std::path::PathBuf> = std::fs::read_dir(sample_folder())
+        .expect("the sample folder")
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .collect();
+    assert_eq!(before.len(), after.len(), "saving a plugin tab wrote a file");
+    // Opening it again shows the one that is open rather than opening a second.
+    did(&mut harness, "plugins tab agent-tasks/board --open");
+    harness.run();
+    assert_eq!(harness.state().files.len(), 2);
+    let closed = did(&mut harness, "plugins tab agent-tasks/board --close");
+    assert_eq!(closed["open"], false);
+    harness.run();
+    assert_eq!(harness.state().files.len(), 1);
+}
+
+#[test]
+fn the_plugins_menu_is_after_quills_own_six_and_its_entries_run_through_one_path() {
+    let mut harness = harness("");
+    let listed = did(&mut harness, "action list");
+    let actions = listed["actions"].as_array().expect("the actions").clone();
+    // The menus in the order they are drawn, each named once.
+    let mut menus: Vec<String> = Vec::new();
+    for entry in &actions {
+        let menu = entry["menu"].as_str().unwrap_or_default().to_owned();
+        if !menu.is_empty() && !menus.contains(&menu) {
+            menus.push(menu);
+        }
+    }
+    // The list carries a submenu's own name as well as a menu's, so the six built in menus are checked
+    // by where they are rather than by the list being exactly seven long.
+    let at = |name: &str| menus.iter().position(|menu| menu == name);
+    let built_in: Vec<usize> = ["Quill", "File", "Edit", "View", "Run", "Git"]
+        .iter()
+        .map(|name| at(name).unwrap_or_else(|| panic!("{name} is missing: {menus:?}")))
+        .collect();
+    assert!(
+        built_in.windows(2).all(|pair| pair[0] < pair[1]),
+        "Quill's own six are still in their own order: {menus:?}"
+    );
+    let plugin = at("Agent-Tasks").unwrap_or_else(|| panic!("the plugin's menu: {menus:?}"));
+    assert!(
+        plugin > built_in[5],
+        "the plugin's menu comes after Git, so no entry a hand already knows has moved: {menus:?}"
+    );
+    // Its entries are reachable by name, which is what `action_names.rs` gives them for nothing.
+    let entries: Vec<&serde_json::Value> =
+        actions.iter().filter(|entry| entry["menu"] == "Agent-Tasks").collect();
+    let labels: Vec<&str> = entries.iter().filter_map(|entry| entry["label"].as_str()).collect();
+    assert!(labels.contains(&"Open Board"), "{labels:?}");
+    assert!(labels.contains(&"Reload Board"), "{labels:?}");
+    // There is no `Sync JIRA` entry, because this board does not sync and a control that cannot apply is absent.
+    assert!(!labels.contains(&"Sync JIRA"), "{labels:?}");
+    // A submenu's own entries are listed under the submenu's name, which is what `Recent Projects`
+    // already does, so `New` is a menu of its own in the list and `Task` is in it.
+    let nested: Vec<&str> = actions
+        .iter()
+        .filter(|entry| entry["menu"] == "New")
+        .filter_map(|entry| entry["label"].as_str())
+        .collect();
+    assert_eq!(nested, ["Task", "Epic", "Sprint"], "the nested submenu is read recursively");
+    let names: Vec<&str> = entries.iter().filter_map(|entry| entry["name"].as_str()).collect();
+    assert!(
+        names.iter().any(|name| name.starts_with("plugin-run:agent-tasks:")),
+        "a contributed entry names itself, so `action run` reaches it: {names:?}"
+    );
+    // No plugin entry claims a chord, because two menu items claiming one key equivalent is a real
+    // fault on macOS and there is a test for it.
+    assert!(
+        entries.iter().all(|entry| entry["shortcut"].as_str().unwrap_or_default().is_empty()),
+        "a contributed entry must not claim a shortcut: {entries:?}"
+    );
+    // And running one by that name goes down the same path the entry does.
+    let name = names
+        .iter()
+        .find(|name| name.ends_with(":open-tab"))
+        .expect("the Open Board entry names itself");
+    did(&mut harness, &format!("action run {name}"));
+    harness.run();
+    assert!(harness.state().plugin_ui.is_open("agent-tasks"), "the menu entry opened the board");
+}
+
+#[test]
+fn nothing_the_plugin_owns_is_built_until_its_button_is_pressed() {
+    // IntelliJ's own rule, and its documented reason: a tool window nobody clicks loads and runs no
+    // plugin code. Here it is the difference between opening a database when Quill starts and opening it
+    // when somebody first looks at the board.
+    let mut harness = harness("");
+    assert!(!harness.state().plugin_ui.is_open("agent-tasks"), "not opened by loading the manifest");
+    did(&mut harness, "plugins tab agent-tasks/board --open");
+    assert!(harness.state().plugin_ui.is_open("agent-tasks"), "opened by being shown");
+    // And switching it off closes it, so it drops the board file it held.
+    did(&mut harness, "plugins disable agent-tasks");
+    harness.run();
+    assert!(!harness.state().plugin_ui.is_open("agent-tasks"));
+    let listed = did(&mut harness, "plugins list");
+    let board = listed["plugins"]
+        .as_array()
+        .expect("the plugins")
+        .iter()
+        .find(|plugin| plugin["id"] == "agent-tasks")
+        .expect("still installed")
+        .clone();
+    assert_eq!(board["enabled"], false);
+}
+
+#[test]
+fn switching_the_plugin_off_withdraws_every_contribution_in_the_same_frame() {
+    use quill_app::app::dock::Panel;
+    let mut harness = harness("");
+    did(&mut harness, "plugins tab agent-tasks/board --open");
+    harness.run();
+    assert!(harness.state().panel_area(Panel::Plugin(0)).width() > 100.0);
+    did(&mut harness, "plugins disable agent-tasks");
+    harness.run();
+    // The pane, the rail button, the menu and the Settings page all go at once, which is the rule
+    // `Plugins::renders` already keeps for a Mermaid diagram: the window asks before it draws.
+    assert_eq!(harness.state().panel_area(Panel::Plugin(0)).width(), 0.0);
+    let listed = did(&mut harness, "action list");
+    let menus: Vec<&str> = listed["actions"]
+        .as_array()
+        .expect("the actions")
+        .iter()
+        .filter_map(|entry| entry["menu"].as_str())
+        .collect();
+    assert!(!menus.contains(&"Agent-Tasks"), "the menu goes with the plugin: {menus:?}");
+    assert_eq!(refused(&mut harness, "plugins view agent-tasks"), "not-found");
+    // And switching it back on brings all of it back, with no restart.
+    did(&mut harness, "plugins enable agent-tasks");
+    harness.run();
+    did(&mut harness, "plugins tab agent-tasks/board --open");
+    harness.run();
+    assert!(harness.state().panel_area(Panel::Plugin(0)).width() > 100.0);
+}
+
+#[test]
+fn the_board_can_be_read_and_changed_entirely_from_the_command_line() {
+    // Quill's rule: everything a person can do in the window an agent can do too, through the same code.
+    // A board drawn with `egui` is invisible to a test and to an agent unless it can be read, which is
+    // what `plugins view` is for — a screenshot cannot answer how many tickets are in progress.
+    let mut harness = harness("");
+    did(&mut harness, "plugins tab agent-tasks/board --open");
+    let empty = did(&mut harness, "plugins view agent-tasks");
+    assert_eq!(empty["total"], 0);
+    let lanes: Vec<&str> = empty["lanes"]
+        .as_array()
+        .expect("the lanes")
+        .iter()
+        .filter_map(|lane| lane["status"].as_str())
+        .collect();
+    assert_eq!(lanes, ["new", "qa_failed", "in_progress", "agent_done"], "four lanes, in drawn order");
+
+    let made = did(&mut harness, "plugins run agent-tasks new-task Rewrite the importer");
+    assert_eq!(made["task"], "task-1");
+    let with_one = did(&mut harness, "plugins view agent-tasks");
+    assert_eq!(with_one["total"], 1);
+    let new_lane = with_one["lanes"].as_array().expect("the lanes")[0].clone();
+    assert_eq!(new_lane["count"], 1);
+    assert_eq!(new_lane["cards"].as_array().expect("the cards")[0]["title"], "Rewrite the importer");
+
+    // Todos and comments, which are what the card's two counts are.
+    did(&mut harness, "plugins run agent-tasks todo-add task-1 Read the old importer");
+    did(&mut harness, "plugins run agent-tasks todo-add task-1 Write the new one");
+    did(&mut harness, "plugins run agent-tasks todo-done task-1 1");
+    did(&mut harness, "plugins run agent-tasks comment task-1 The format changed in April.");
+    let card = did(&mut harness, "plugins view agent-tasks")["lanes"].as_array().expect("the lanes")[0]
+        ["cards"]
+        .as_array()
+        .expect("the cards")[0]
+        .clone();
+    assert_eq!(card["todos"], "1/2");
+    assert_eq!(card["comments"], 1);
+
+    // Moved between lanes, which is what a drag does.
+    did(&mut harness, "plugins run agent-tasks move-task task-1 agent_done 0");
+    let moved = did(&mut harness, "plugins view agent-tasks");
+    assert_eq!(moved["lanes"].as_array().expect("the lanes")[0]["count"], 0);
+    assert_eq!(moved["lanes"].as_array().expect("the lanes")[3]["count"], 1);
+
+    // A lane that does not exist is refused with the four that do.
+    let reply = run(&mut harness, "plugins run agent-tasks move-task task-1 done 0");
+    assert!(!reply.ok);
+    assert!(reply.message.contains("agent_done"), "{}", reply.message);
+}
+
+#[test]
+fn a_ticket_carries_its_todos_and_its_comments_when_it_is_asked_for_by_key() {
+    let mut harness = harness("");
+    did(&mut harness, "plugins tab agent-tasks/board --open");
+    did(&mut harness, "plugins run agent-tasks new-task Plugin architecture");
+    did(&mut harness, "plugins run agent-tasks todo-add task-1 Weigh the four mechanisms");
+    did(&mut harness, "plugins run agent-tasks comment task-1 Zed has no UI surface at all.");
+    let ticket = did(&mut harness, "plugins run agent-tasks task task-1");
+    assert_eq!(ticket["task"]["key"], "task-1");
+    assert_eq!(ticket["todos"].as_array().expect("the todos").len(), 1);
+    assert_eq!(ticket["todos"].as_array().expect("the todos")[0]["done"], false);
+    let comments = ticket["comments"].as_array().expect("the comments");
+    assert_eq!(comments.len(), 1);
+    assert_eq!(comments[0]["author"], "human");
+    assert!(comments[0]["body"].as_str().expect("a body").contains("Zed"));
+    assert_eq!(refused(&mut harness, "plugins run agent-tasks task task-99"), "failed");
+}
+
+#[test]
+fn the_search_finds_a_ticket_by_its_key_its_title_or_its_description() {
+    let mut harness = harness("");
+    did(&mut harness, "plugins tab agent-tasks/board --open");
+    did(&mut harness, "plugins run agent-tasks new-task Plugin architecture for UI");
+    did(&mut harness, "plugins run agent-tasks new-task Rewrite the importer");
+    let found = did(&mut harness, "plugins run agent-tasks search plugin");
+    assert_eq!(found["found"].as_array().expect("what it found"), &vec![serde_json::json!("task-1")]);
+    let by_key = did(&mut harness, "plugins run agent-tasks search task-2");
+    assert_eq!(by_key["found"].as_array().expect("what it found").len(), 1);
+    let nothing = did(&mut harness, "plugins run agent-tasks search mermaid");
+    assert!(nothing["found"].as_array().expect("what it found").is_empty());
+}
+
+#[test]
+fn plugins_show_lists_every_command_the_board_answers() {
+    // The catalogue is `&'static`, so a plugin's own commands cannot be rows in it. `plugins show` is
+    // what an agent reads instead, and it asks the provider rather than a list written down twice.
+    let mut harness = harness("");
+    let shown = did(&mut harness, "plugins show agent-tasks");
+    assert_eq!(shown["kind"], "ui");
+    let commands: Vec<&str> = shown["commands"]
+        .as_array()
+        .expect("the commands")
+        .iter()
+        .filter_map(|command| command["command"].as_str())
+        .collect();
+    for expected in
+        ["board", "task", "new-task", "move-task", "todo-add", "comment", "start", "resume", "search"]
+    {
+        assert!(commands.contains(&expected), "`{expected}` is not offered: {commands:?}");
+    }
+    assert!(
+        shown["commands"].as_array().expect("the commands").iter().all(|command| {
+            command["summary"].as_str().is_some_and(|summary| !summary.is_empty())
+        }),
+        "every command says what it does, because the description is what makes an agent choose it"
+    );
+    assert!(!shown["limitations"].as_str().expect("what it does not do").is_empty());
+}
+
+#[test]
+fn a_manifest_changed_by_hand_takes_effect_on_a_reload_with_no_restart() {
+    // The property this design has that IntelliJ's dynamic plugins buy with a page of restrictions: a provider
+    // is already in the binary, so loading a plugin is reading a file. This writes a manifest, reloads, and
+    // asserts the window changed — which is the claim. Disabling a plugin instead would have tested the tick
+    // box.
+    let folder = copy_out_of_the_repository(&sample_folder(), "quill-plugin-reload");
+    let settings = folder.join(".quill-settings");
+    let plugin = settings.join("plugins").join("agent-tasks");
+    std::fs::create_dir_all(&plugin).expect("a plugin folder");
+    let manifest = |label: &str, side: &str| {
+        format!(
+            "plugin.id = agent-tasks\nplugin.name = Agent-Tasks\nplugin.kind = ui\n\
+             ui.provider = agent-tasks\npane.id = board\npane.label = {label}\npane.side = {side}\n"
+        )
+    };
+    std::fs::write(plugin.join("plugin.conf"), manifest("The Board", "left")).expect("a manifest");
+    let mut harness = harness_in(&folder);
+    harness.state_mut().use_store(quill_app::services::store::Store::at(&settings));
+    harness.run();
+    // A plugin on disk shadows the bundled one of the same id, which is what makes a manifest correctable by
+    // hand at all.
+    let shown = did(&mut harness, "plugins show agent-tasks");
+    assert_eq!(shown["bundled"], false, "the one on disk is the one that loaded");
+    let listed = did(&mut harness, "plugins list");
+    assert!(
+        listed["plugins"].as_array().expect("the plugins").iter().any(|it| it["id"] == "agent-tasks"),
+        "it is installed"
+    );
+    assert_eq!(
+        harness.state().plugin_ui.pane(0).expect("the pane").label,
+        "The Board",
+        "the label came from the file"
+    );
+    // Change the file and reload. No restart, and the window is different in the same frame.
+    std::fs::write(plugin.join("plugin.conf"), manifest("Tickets", "bottom")).expect("a changed manifest");
+    let reloaded = did(&mut harness, "plugins reload");
+    assert!(reloaded["refused"].as_array().expect("what was refused").is_empty());
+    harness.run();
+    assert_eq!(
+        harness.state().plugin_ui.pane(0).expect("the pane").label,
+        "Tickets",
+        "the reload read the file again"
+    );
+    // And a manifest that will not parse is skipped with its reason rather than stopping Quill.
+    std::fs::write(plugin.join("plugin.conf"), "plugin.id = agent-tasks\nplugin.kind = wasm\n")
+        .expect("a manifest Quill refuses");
+    let refused = did(&mut harness, "plugins reload");
+    let reasons = refused["refused"].as_array().expect("what was refused");
+    assert_eq!(reasons.len(), 1, "{reasons:?}");
+    assert!(reasons[0].as_str().expect("a reason").contains("wasm"), "{reasons:?}");
+    let _ = std::fs::remove_dir_all(&folder);
+}
+
+#[test]
+fn the_plugins_pane_takes_the_windows_own_transparency_and_font() {
+    // A pane that ignored the opacity setting would be the one opaque rectangle in a window whose
+    // transparency is the whole character of the product. The provider is handed the value rather than
+    // reaching for it, so this is what proves the handing over works.
+    use quill_app::services::plugin_ui::Look;
+    let mut harness = harness("");
+    did(&mut harness, "settings set appearance.background.opacity 0.5");
+    did(&mut harness, "settings set appearance.font.size 17");
+    harness.run();
+    let look = Look::of(&harness.state().settings, &harness.state().renderer);
+    assert_eq!(look.opacity, 0.5);
+    assert_eq!(look.font_size, 17.0);
+    assert_eq!(look.ground(look.palette.editor).a(), 128, "half opacity reaches the pane's own ground");
+}
+
+/// The board in a narrow editing area, which is the layout the pane used to be for.
+///
+/// `task-28` removed the pane, and the one lane at a time layout it chose below 900 points did not go with
+/// it: a tab in a narrow window reaches the same code. So this is the same picture of the same arrangement,
+/// taken where it still happens.
+#[test]
+fn the_board_in_a_narrow_editing_area() {
+    let mut harness = harness("");
+    did(&mut harness, "plugins tab agent-tasks/board --open");
+    // Narrow, by giving most of the width to the explorer, which is what a 420 point pane used to be.
+    did(&mut harness, "panel size explorer --width 700");
+    did(&mut harness, "plugins run agent-tasks new-sprint Current Sprint");
+    did(&mut harness, "plugins run agent-tasks new-task Quill \u{2014} Plugin architecture for UI");
+    did(&mut harness, "plugins run agent-tasks new-task Rust vector db");
+    did(&mut harness, "plugins run agent-tasks new-task Rust vector synthetic testing");
+    did(&mut harness, "plugins run agent-tasks move-task task-2 in_progress 0");
+    did(&mut harness, "plugins run agent-tasks move-task task-3 in_progress 1");
+    did(&mut harness, "plugins run agent-tasks todo-add task-2 Read the pgvector docs");
+    did(&mut harness, "plugins run agent-tasks todo-done task-2 1");
+    did(&mut harness, "plugins run agent-tasks comment task-2 Graded against a configured baseline.");
+    // `new-task` opens the ticket it made, so the lanes are asked for by name rather than assumed.
+    did(&mut harness, "plugins run agent-tasks board");
+    harness.run();
+    harness.snapshot(shot("agent_tasks_narrow_tab").as_str());
+}
+
+#[test]
+fn the_board_as_a_tab_filling_the_editing_area() {
+    let mut harness = harness("");
+    did(&mut harness, "plugins run agent-tasks new-sprint Current Sprint");
+    did(&mut harness, "plugins run agent-tasks new-task Quill \u{2014} Plugin architecture for UI");
+    did(&mut harness, "plugins run agent-tasks new-task Rust vector db");
+    did(&mut harness, "plugins run agent-tasks move-task task-2 agent_done 0");
+    did(&mut harness, "plugins run agent-tasks board");
+    did(&mut harness, "plugins tab agent-tasks/board --open");
+    harness.run();
+    harness.snapshot(shot("agent_tasks_tab").as_str());
+}
+
+#[test]
+fn a_tickets_own_detail_with_its_todos_and_its_comments() {
+    let mut harness = harness("");
+    did(&mut harness, "plugins tab agent-tasks/board --open");
+    did(&mut harness, "plugins run agent-tasks new-sprint Current Sprint");
+    did(&mut harness, "plugins run agent-tasks new-task Plugin architecture for UI");
+    did(&mut harness, "plugins run agent-tasks todo-add task-1 Weigh the four mechanisms");
+    did(&mut harness, "plugins run agent-tasks todo-add task-1 Write the manifest keys");
+    did(&mut harness, "plugins run agent-tasks todo-add task-1 Draw the pane");
+    did(&mut harness, "plugins run agent-tasks todo-done task-1 1");
+    did(&mut harness, "plugins run agent-tasks comment task-1 Zed and Lapce both have no UI surface.");
+    did(&mut harness, "plugins run agent-tasks task task-1");
+    harness.run();
+    harness.snapshot(shot("agent_tasks_detail").as_str());
+}
+
+#[test]
+fn the_plugins_own_menu_with_its_submenu_open() {
+    let mut harness = harness("");
+    harness.state_mut().menu_placement = MenuPlacement::InWindow;
+    harness.run();
+    // The plugin's own menu, which is the seventh in the bar. Its rail button answers to the same name, so
+    // the menu is the one in the title bar: the first of the two, because the bar is drawn above the rail.
+    harness.get_all_by_label("Agent-Tasks").next().expect("the menu in the bar").click();
+    harness.run();
+    harness.snapshot(shot("agent_tasks_menu").as_str());
+}
+
+#[test]
+fn where_a_contributed_pane_was_left_is_remembered_against_its_own_name() {
+    use quill_app::app::dock::{Panel, Side};
+    use quill_app::settings;
+    // A pane's side and its two measurements are recorded against `<plugin id>/<pane id>`, so a second
+    // plugin installed later cannot be handed the first one's width. This is that round trip through a
+    // real settings file rather than through the value in memory.
+    let folder = copy_out_of_the_repository(&sample_folder(), "quill-plugin-pane-layout");
+    let store = quill_app::services::store::Store::at(folder.join(".quill-settings"));
+    let mut panes = settings::Panes::new();
+    panes.dock.set_plugin_panes(&[Side::Right], &[false]);
+    panes.dock.dock(Panel::Plugin(0), Side::Bottom, None);
+    panes.set_height_of(Panel::Plugin(0), 333.0);
+    let keys = vec!["agent-tasks/board".to_owned()];
+    settings::save_with(&store, &settings::Settings::new(), &panes, &keys);
+    let (_, read) = settings::load_with(&store, &keys);
+    assert_eq!(read.dock.side_of(Panel::Plugin(0)), Side::Bottom, "where it was dragged to");
+    assert_eq!(read.height_of(Panel::Plugin(0)), 333.0, "and how tall it was left");
+    // Read back with nothing named, which is what the first read of a window does: the pane keeps its
+    // manifest's side, because nothing recorded yet is not the same as recorded as the default.
+    let (_, unnamed) = settings::load_with(&store, &[]);
+    assert_eq!(unnamed.dock.side_of(Panel::Plugin(0)), Side::Right);
+    let _ = std::fs::remove_dir_all(&folder);
+}
+
+#[test]
+fn the_window_gives_the_plugins_a_turn_on_the_clock() {
+    // The watchdog runs from the frame rather than from a thread, and `plugins run agent-tasks tick` is
+    // the same path asked for by hand. This drives the path an agent uses and reads the board back.
+    let mut harness = harness("");
+    did(&mut harness, "plugins tab agent-tasks/board --open");
+    did(&mut harness, "plugins run agent-tasks new-task Something to work");
+    // A card in progress with no session is not the watchdog's business, because nobody launched it: it is
+    // there because a person put it there.
+    did(&mut harness, "plugins run agent-tasks move-task task-1 in_progress 0");
+    let ticked = did(&mut harness, "plugins run agent-tasks tick");
+    assert_eq!(
+        ticked["acted"].as_array().expect("what it acted on").len(),
+        0,
+        "a card with no recorded session has no worker to nudge or reclaim"
+    );
+    let board = did(&mut harness, "plugins view agent-tasks");
+    assert_eq!(board["lanes"].as_array().expect("the lanes")[2]["count"], 1, "and it was left alone");
+}
+
+#[test]
+fn a_pane_that_asks_for_a_project_is_absent_when_there_is_none() {
+    // Quill's rule everywhere: a control that cannot apply is absent rather than dimmed. Agent-Tasks asks for
+    // `always`, so the other condition is driven through a manifest of its own — installing one is what a
+    // person does, and it is the only way to exercise a value no shipped plugin asks for.
+    let folder = copy_out_of_the_repository(&sample_folder(), "quill-plugin-in-project");
+    let settings = folder.join(".quill-settings");
+    let plugin = settings.join("plugins").join("needs-a-project");
+    std::fs::create_dir_all(&plugin).expect("a plugin folder");
+    std::fs::write(
+        plugin.join("plugin.conf"),
+        "plugin.id = needs-a-project\nplugin.name = Needs A Project\nplugin.kind = ui\n\
+         ui.provider = agent-tasks\npane.id = board\npane.applies = in_project\n",
+    )
+    .expect("a manifest");
+    let (plugins, problems) = quill_app::services::plugins::Plugins::load(Some(
+        &quill_app::services::store::Store::at(&settings),
+    ));
+    assert!(problems.is_empty(), "the manifest should parse: {problems:?}");
+    let mut ui = quill_app::app::plugin_panes::PluginUi::default();
+    ui.refresh(&plugins);
+    let slot = ui
+        .slot_of("needs-a-project/board")
+        .expect("the contributed pane");
+    ui.set_project(Some(folder.clone()));
+    assert!(ui.applies(slot), "with a project open, `in_project` applies");
+    ui.set_project(None);
+    assert!(!ui.applies(slot), "with none, it does not, so its rail button is absent");
+    assert!(
+        ui.set_visible(slot, true).is_some_and(|said| said.contains("project")),
+        "and showing it is refused with what it asked for"
+    );
+    // Agent-Tasks itself asks for `always`, which is the other value and applies with no project at all.
+    let board = ui.slot_of("agent-tasks/board").expect("the board");
+    assert!(ui.applies(board));
+    let _ = std::fs::remove_dir_all(&folder);
+}
+
+#[test]
+fn a_pane_that_is_showing_stays_the_pane_that_is_showing_when_the_plugins_change() {
+    // Which slot a pane is in comes from the manifests and moves when a plugin is switched on or off, so
+    // what is showing is held by the pane's own name. Keyed by slot, switching one plugin off would leave
+    // another plugin's pane showing or hidden according to what the first one was doing.
+    let mut harness = harness("");
+    did(&mut harness, "plugins tab agent-tasks/board --open");
+    harness.run();
+    assert!(harness.state().plugin_ui.is_visible(0));
+    // Switching another plugin off and on again is a `Surfaces` rebuild, which is the moment a slot could
+    // move underneath the pane that is showing.
+    did(&mut harness, "plugins disable rust");
+    harness.run();
+    assert!(harness.state().plugin_ui.is_visible(0), "the board is still showing");
+    did(&mut harness, "plugins enable rust");
+    harness.run();
+    assert!(harness.state().plugin_ui.is_visible(0));
+    // And switching the board itself off stops it showing rather than leaving a stale flag behind for
+    // whatever pane lands in that slot next.
+    did(&mut harness, "plugins disable agent-tasks");
+    harness.run();
+    assert!(!harness.state().plugin_ui.is_visible(0));
+    did(&mut harness, "plugins enable agent-tasks");
+    harness.run();
+    assert!(
+        !harness.state().plugin_ui.is_visible(0),
+        "a plugin switched back on does not bring its pane back showing: nobody asked for it"
+    );
+}
+
+#[test]
+fn reloading_the_plugins_closes_a_tab_whose_contribution_has_gone() {
+    // A manifest edited by hand can take a tab away, and a tab whose plugin no longer offers it would draw
+    // nothing and could not be told what it was. So a reload closes it, for the reason switching a plugin
+    // off does.
+    let mut harness = harness("Some prose.");
+    did(&mut harness, "plugins tab agent-tasks/board --open");
+    harness.run();
+    assert_eq!(harness.state().files.len(), 2);
+    // Switching the plugin off is the same rebuild a reload does, and it is the one a test can drive
+    // without writing a manifest into the person's own settings folder.
+    did(&mut harness, "plugins disable agent-tasks");
+    harness.run();
+    assert_eq!(harness.state().files.len(), 1, "the board's tab went with the plugin");
+    assert_eq!(refused(&mut harness, "plugins tab agent-tasks/board --open"), "not-found");
+}
+
+#[test]
+fn a_command_with_its_arguments_missing_is_refused_rather_than_taking_the_window_down() {
+    // A command line that panics is worse than one that says what it needed, and an agent gets a command's
+    // arguments wrong more often than a person does. Every command that reads the rest of the line is
+    // driven here with nothing after its verb.
+    let mut harness = harness("");
+    did(&mut harness, "plugins tab agent-tasks/board --open");
+    did(&mut harness, "plugins run agent-tasks new-task Something");
+    for line in [
+        "plugins run agent-tasks todo-add",
+        "plugins run agent-tasks todo-add task-1",
+        "plugins run agent-tasks comment",
+        "plugins run agent-tasks comment task-1",
+        "plugins run agent-tasks comment-send task-1",
+        "plugins run agent-tasks send task-1",
+        "plugins run agent-tasks task",
+        "plugins run agent-tasks move-task",
+        "plugins run agent-tasks move-task task-1",
+        "plugins run agent-tasks priority task-1",
+        "plugins run agent-tasks assign task-1",
+        "plugins run agent-tasks todo-done task-1",
+        "plugins run agent-tasks new-epic",
+        "plugins run agent-tasks new-sprint",
+        "plugins run agent-tasks view",
+        "plugins run agent-tasks start",
+        "plugins run agent-tasks resume",
+        "plugins run agent-tasks stop",
+        "plugins run agent-tasks interrupt",
+        "plugins run agent-tasks heartbeat",
+    ] {
+        let reply = run(&mut harness, line);
+        // Either it was refused with a sentence, or it did something harmless. What must not happen is a
+        // panic, and reaching this assertion at all is what proves there was none.
+        assert!(
+            reply.ok || !reply.message.is_empty(),
+            "`{line}` was refused with nothing to read"
+        );
+    }
+    // And the ticket is still there afterwards, which is what proves nothing was left half done. By its key
+    // rather than by the board's count: `new-sprint` with no name names itself and succeeds, which makes an empty
+    // sprint the active one, so the count is a count of the wrong thing.
+    let ticket = did(&mut harness, "plugins run agent-tasks task task-1");
+    assert_eq!(ticket["task"]["key"], "task-1");
+}
+
+#[test]
+fn resume_session_is_refused_for_a_codex_ticket_and_says_what_to_press_instead() {
+    // The two agents differ and the difference is not a preference: Claude takes the session id it is
+    // given, and Codex names its own. Starting a fresh Codex agent and calling it a resumed one would be
+    // the one outcome every check on this board exists to prevent.
+    let mut harness = harness("");
+    did(&mut harness, "plugins tab agent-tasks/board --open");
+    did(&mut harness, "plugins run agent-tasks new-task Something for Codex");
+    did(&mut harness, "plugins run agent-tasks assign task-1 codex");
+    let reply = run(&mut harness, "plugins run agent-tasks resume task-1");
+    assert!(!reply.ok, "a Codex ticket cannot be resumed");
+    assert!(reply.message.contains("names its own sessions"), "{}", reply.message);
+    assert!(reply.message.contains("Start"), "it says what to press instead: {}", reply.message);
+    // And a Claude ticket that has never had a session says that instead, which is a different miss.
+    did(&mut harness, "plugins run agent-tasks assign task-1 claude");
+    let reply = run(&mut harness, "plugins run agent-tasks resume task-1");
+    assert!(!reply.ok);
+    assert!(reply.message.contains("never had a session"), "{}", reply.message);
+}
+
+#[test]
+fn a_ticket_cannot_be_started_twice_and_a_failed_start_gives_the_claim_back() {
+    // Two agents on one ticket is the worst thing this board can do, so **only an unclaimed ticket can be
+    // claimed** and a claim whose agent could not be spawned is given back.
+    //
+    // Driven with `step` rather than `run`, because starting an agent on a machine that has one leaves a
+    // terminal printing and a printing terminal asks for frames: `Harness::run` gives four steps to settle and
+    // panics otherwise, which is right for a settled window and wrong here. That is the rule `task-1654` wrote
+    // down about waiting loops, wearing a different hat.
+    let mut harness = harness("");
+    did(&mut harness, "plugins tab agent-tasks/board --open");
+    did(&mut harness, "plugins run agent-tasks new-task Something to work");
+    did(&mut harness, "plugins run agent-tasks board");
+    // Asked without letting the window settle, because a started agent prints and a printing terminal asks for
+    // frames: `run` would give up after four steps. `did_while_waiting` is the helper the debugger's own tests
+    // use for exactly this.
+    let ctx = harness.ctx.clone();
+    let reply = harness
+        .state_mut()
+        .run_command_line("plugins run agent-tasks start task-1", &ctx)
+        .expect("start was answered on the frame it was asked");
+    harness.step();
+    let board = did_while_waiting(&mut harness, "plugins view agent-tasks");
+    let lanes = board["lanes"].as_array().expect("the lanes").clone();
+    if reply.ok {
+        // The machine has an agent to launch, so it started. A second Start is then refused rather than
+        // launching a second agent on the same conversation.
+        assert_eq!(lanes[2]["count"], 1, "it is in progress");
+        let again = harness
+            .state_mut()
+            .run_command_line("plugins run agent-tasks start task-1", &ctx)
+            .expect("the second start was answered");
+        harness.step();
+        assert!(!again.ok, "a ticket that already has a session cannot be started again");
+        assert!(
+            again.message.contains("already") || again.message.contains("Resume session"),
+            "{}",
+            again.message
+        );
+        did_while_waiting(&mut harness, "plugins run agent-tasks stop task-1");
+    } else {
+        // It could not start, so the claim was given back and the ticket is where it was. The store's own tests
+        // drive the release directly; this is the window doing it.
+        let _ = &ctx;
+        assert_eq!(lanes[0]["count"], 1, "the ticket is still in New: {}", reply.message);
+        assert_eq!(lanes[2]["count"], 0);
+        assert_eq!(
+            lanes[0]["cards"].as_array().expect("the cards")[0]["session"],
+            serde_json::Value::Null,
+            "and it names no session"
+        );
+    }
+}
+
+#[test]
+fn sending_a_ticket_back_from_agent_done_to_qa_failed_asks_its_agent_to_come_back() {
+    // The board being replaced resumes the session on this transition, because a person rejecting finished work
+    // wants to tell the agent why. A resume that cannot happen says so in the status bar rather than failing
+    // the move: the move is what was asked for.
+    let mut harness = harness("");
+    did(&mut harness, "plugins tab agent-tasks/board --open");
+    did(&mut harness, "plugins run agent-tasks new-task Finished work");
+    did(&mut harness, "plugins run agent-tasks move-task task-1 agent_done 0");
+    did(&mut harness, "plugins run agent-tasks move-task task-1 qa_failed 0");
+    harness.run();
+    let board = did(&mut harness, "plugins view agent-tasks");
+    assert_eq!(board["lanes"].as_array().expect("the lanes")[1]["count"], 1, "it moved");
+    // It has never had a session, so the attempt to hand one back says exactly that.
+    let said = board["message"].as_str().unwrap_or_default();
+    assert!(
+        said.contains("never had a session"),
+        "the move says why the session could not come back: `{said}`"
+    );
+}
+
+/// Which agent a new ticket goes to, read from the provider rather than from a command.
+///
+/// The same field the Settings page writes and the chooser under the New lane cycles, so a test that reads it
+/// here is reading what both of them changed.
+fn chosen_agent(harness: &mut Harness<'static, QuillApp>) -> String {
+    let provider = harness
+        .state_mut()
+        .plugin_ui
+        .provider("agent-tasks")
+        .expect("the board is open");
+    let tasks = provider
+        .as_any_mut()
+        .and_then(|any| any.downcast_mut::<quill_app::services::agent_tasks::AgentTasks>())
+        .expect("the Agent-Tasks provider");
+    tasks.configuration().agent.name().to_owned()
+}
+
+#[test]
+fn the_arrow_keys_move_a_ring_round_the_board_and_enter_opens_what_it_is_on() {
+    // The board can be driven from the keyboard, which the first pass could not do at all: every card had to be
+    // clicked. The keys are read only while the window says this plugin holds them, so the test clicks the board
+    // first, which is what gives it the keyboard.
+    let mut harness = harness("");
+    did(&mut harness, "plugins tab agent-tasks/board --open");
+    did(&mut harness, "plugins run agent-tasks new-task First in New");
+    did(&mut harness, "plugins run agent-tasks new-task Second in New");
+    did(&mut harness, "plugins run agent-tasks new-task Waiting on review");
+    did(&mut harness, "plugins run agent-tasks move-task task-3 agent_done 0");
+    did(&mut harness, "plugins run agent-tasks back");
+    harness.run();
+    // Nothing is ringed until a key is pressed, so a board nobody has touched draws no ring.
+    assert_eq!(chosen_card(&mut harness), None, "no ring before a key is pressed");
+    harness.get_by_label("Board background").click();
+    harness.run();
+    harness.key_press(egui::Key::ArrowDown);
+    harness.run();
+    assert_eq!(chosen_card(&mut harness), Some(("new".to_owned(), 0)), "the first press lands on the first card");
+    harness.key_press(egui::Key::ArrowDown);
+    harness.run();
+    assert_eq!(chosen_card(&mut harness), Some(("new".to_owned(), 1)), "and down moves down the lane");
+    // Past the last card stops at the last card rather than wrapping to the top.
+    harness.key_press(egui::Key::ArrowDown);
+    harness.run();
+    assert_eq!(chosen_card(&mut harness), Some(("new".to_owned(), 1)), "and stops at the last one");
+    // Right steps over the two empty lanes rather than stopping on `QA FAILED 0`.
+    harness.key_press(egui::Key::ArrowRight);
+    harness.run();
+    assert_eq!(
+        chosen_card(&mut harness),
+        Some(("agent_done".to_owned(), 0)),
+        "right steps over the lanes that hold nothing"
+    );
+    // Enter opens the ticket the ring is on.
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    let provider = harness.state_mut().plugin_ui.provider("agent-tasks").expect("the board is open");
+    let tasks = provider
+        .as_any_mut()
+        .and_then(|any| any.downcast_mut::<quill_app::services::agent_tasks::AgentTasks>())
+        .expect("the Agent-Tasks provider");
+    assert_eq!(
+        tasks.detail().task.as_ref().map(|task| task.key.clone()),
+        Some("task-3".to_owned()),
+        "Enter opened the ticket the ring was on"
+    );
+}
+
+/// Which card the keyboard's ring is on: the lane's name and how far down it.
+fn chosen_card(harness: &mut Harness<'static, QuillApp>) -> Option<(String, usize)> {
+    let provider = harness.state_mut().plugin_ui.provider("agent-tasks").expect("the board is open");
+    let tasks = provider
+        .as_any_mut()
+        .and_then(|any| any.downcast_mut::<quill_app::services::agent_tasks::AgentTasks>())
+        .expect("the Agent-Tasks provider");
+    tasks.chosen.map(|(lane, row)| (lane.name().to_owned(), row))
+}
+
+#[test]
+fn a_ticket_can_name_its_jira_issue_and_copy_the_link_to_it() {
+    // The JIRA panel on the ticket. Nothing here talks to JIRA and nothing here pretends to: the key is recorded
+    // and the link is copied, and both say so.
+    let mut harness = harness("");
+    did(&mut harness, "plugins tab agent-tasks/board --open");
+    did(&mut harness, "plugins run agent-tasks new-task A ticket that came from a JIRA issue");
+    did(&mut harness, "plugins run agent-tasks jira-key task-1 ENX-1932");
+    did(&mut harness, "plugins run agent-tasks open task-1");
+    harness.run();
+    let ticket = did(&mut harness, "plugins run agent-tasks task task-1");
+    assert_eq!(ticket["task"]["jira"], "ENX-1932", "the ticket names its issue");
+    // With no `jira_url` on the row, the key itself is what Copy hands over: there is no configured JIRA site to
+    // build an address against, and a guessed one would open nothing.
+    harness.get_by_label("Copy issue link").click();
+    // Read across frames rather than from the last one. The modal is drawn after the point in the frame where a
+    // plugin's copy is handed to egui, so the request the button makes is acted on one frame later, and only that
+    // frame's output carries it.
+    let mut copied = String::new();
+    for _ in 0..4 {
+        harness.step();
+        if let Some(text) = harness.output().platform_output.commands.iter().find_map(|command| match command {
+            egui::OutputCommand::CopyText(text) => Some(text.clone()),
+            _ => None,
+        }) {
+            copied = text;
+            break;
+        }
+    }
+    assert_eq!(copied, "ENX-1932", "the key is what was copied");
+    // Cleared by emptying the field, which is what the command does with nothing after it.
+    did(&mut harness, "plugins run agent-tasks jira-key task-1");
+    harness.run();
+    let ticket = did(&mut harness, "plugins run agent-tasks task task-1");
+    assert_eq!(ticket["task"]["jira"], serde_json::Value::Null, "and it can be cleared");
+}
+
+#[test]
+fn a_person_can_change_their_own_comment_and_cannot_change_an_agents() {
+    // `Edit` on a comment, which the browser board has and the first pass did not. The refusal is in the store
+    // rather than only in the button: what an agent said is a record of what it said, so the command line cannot
+    // rewrite one either.
+    let mut harness = harness("");
+    did(&mut harness, "plugins tab agent-tasks/board --open");
+    did(&mut harness, "plugins run agent-tasks new-task A ticket with comments on it");
+    did(&mut harness, "plugins run agent-tasks comment task-1 The forma changed in April.");
+    // The comments and their buttons are in the modal, so the ticket is opened in it.
+    did(&mut harness, "plugins run agent-tasks open task-1");
+    harness.run();
+    let ticket = did(&mut harness, "plugins run agent-tasks task task-1");
+    let comments = ticket["comments"].as_array().expect("the comments");
+    let id = comments[0]["id"].as_i64().expect("the comment's id");
+    // Through the buttons, which is what a person presses: `Edit`, type, `Save`.
+    harness.get_by_label("Edit").click();
+    harness.run();
+    {
+        let provider = harness.state_mut().plugin_ui.provider("agent-tasks").expect("the board is open");
+        let tasks = provider
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<quill_app::services::agent_tasks::AgentTasks>())
+            .expect("the Agent-Tasks provider");
+        assert_eq!(tasks.detail().editing_comment, Some(id), "`Edit` opens that comment");
+        assert_eq!(
+            tasks.detail().comment_edit,
+            "The forma changed in April.",
+            "and the draft starts as what the comment says"
+        );
+        tasks.detail_mut().comment_edit = "The format changed in April.".to_owned();
+    }
+    harness.get_by_label("Save").click();
+    harness.run();
+    let ticket = did(&mut harness, "plugins run agent-tasks task task-1");
+    let comments = ticket["comments"].as_array().expect("the comments");
+    assert_eq!(comments[0]["body"], "The format changed in April.", "the comment was changed");
+    assert_eq!(comments.len(), 1, "and changed rather than added to");
+    // That an agent's comment cannot be changed is the store's rule, tested where the rule lives:
+    // `store::tests::an_agents_comment_is_a_record_and_cannot_be_edited`.
+}
+
+#[test]
+fn the_new_lane_chooses_an_agent_and_starts_the_next_ticket_with_it() {
+    // The quick launch under the New lane's heading: the chooser names which agent, and the play button next to
+    // it starts the ticket at the top of New without opening it. Both are pressed here by the labels they carry,
+    // which is what a person does with them.
+    let mut harness = harness("");
+    did(&mut harness, "plugins tab agent-tasks/board --open");
+    did(&mut harness, "plugins run agent-tasks new-task First in the lane");
+    // Creating a ticket opens it, so the pane is showing that ticket rather than the lanes. `back` returns to
+    // the lanes, which is where the quick launch is. It also shuts the modal, and that matters: the modal is an
+    // `egui::Area` in the foreground layer, so while it is open nothing on the board behind it can be pressed.
+    did(&mut harness, "plugins run agent-tasks back");
+    harness.run();
+    // The chooser names the agent a new ticket goes to, which starts as `claude`.
+    harness.get_by_label("Agent for a new ticket: claude").click();
+    harness.run();
+    assert_eq!(chosen_agent(&mut harness), "codex", "pressing the chooser names the other agent");
+    // And it is the same setting the Settings page writes, so the two cannot disagree.
+    harness.get_by_label("Agent for a new ticket: codex").click();
+    harness.run();
+    assert_eq!(chosen_agent(&mut harness), "claude", "and pressing it again comes back round");
+    // The play button starts the ticket at the top of New. No agent is on this machine under test, so what it
+    // proves is that the button reaches `start` for that ticket and reports what happened.
+    harness.get_by_label("Start the next ticket with claude").click();
+    // `nudge`, not `run`: starting a ticket launches a terminal, and a live terminal asks for a frame whenever
+    // it prints, so a `run` that insists the window goes quiet fails for a reason that is not a fault.
+    nudge(&mut harness);
+    // `did_while_waiting`, for the same reason: the command goes down the same path but steps the window rather
+    // than insisting it settles.
+    let board = did_while_waiting(&mut harness, "plugins view agent-tasks");
+    let said = board["message"].as_str().unwrap_or_default();
+    assert!(!said.is_empty(), "the play button says what happened: `{said}`");
+}
+
+#[test]
+fn the_detail_can_name_a_ticket_add_a_todo_and_post_a_comment() {
+    // `+ Add task` creates an untitled row, so the detail has to be able to name it, or the board can make a
+    // ticket it cannot label. All three go through the same functions the buttons call.
+    let mut harness = harness("");
+    did(&mut harness, "plugins tab agent-tasks/board --open");
+    did(&mut harness, "plugins run agent-tasks new-task");
+    harness.run();
+    let board = harness.state_mut();
+    let provider = board
+        .plugin_ui
+        .provider("agent-tasks")
+        .expect("the board is open");
+    // Reaching the provider by its own type is what a button in the pane does; the command line path is
+    // covered elsewhere.
+    let tasks = provider
+        .as_any_mut()
+        .and_then(|any| any.downcast_mut::<quill_app::services::agent_tasks::AgentTasks>())
+        .expect("the Agent-Tasks provider");
+    assert_eq!(tasks.detail().task.as_ref().expect("the new ticket").title, "");
+    tasks.detail_mut().title_draft = "Named after the fact".to_owned();
+    tasks.save_the_title().expect("the title saved");
+    tasks.detail_mut().todo_draft = "Read the old importer".to_owned();
+    tasks.post_the_todo().expect("the todo posted");
+    tasks.detail_mut().draft = "The format changed in April.".to_owned();
+    tasks.post_the_comment(false).expect("the comment posted");
+    harness.run();
+    let ticket = did(&mut harness, "plugins run agent-tasks task task-1");
+    assert_eq!(ticket["task"]["title"], "Named after the fact");
+    assert_eq!(ticket["task"]["todos"], "0/1");
+    assert_eq!(ticket["todos"].as_array().expect("the todos")[0]["text"], "Read the old importer");
+    assert_eq!(ticket["comments"].as_array().expect("the comments").len(), 1);
+    assert_eq!(ticket["comments"].as_array().expect("the comments")[0]["author"], "human");
+}
+
+/// `task-28`: "I'm unable to get an agent to do work because the model is a text field."
+///
+/// Choosing in each dropdown writes the column it names. One test per field would be seven tests over one
+/// function; what makes this one test rather than seven is that each field is checked on the row afterwards, so
+/// a field that wrote nothing, or wrote somebody else's column, fails on its own assertion.
+/// `task-28`: "The description, comments, etc should have icons to view as raw, or as markdown."
+///
+/// Both views, on both things, from the buttons a person presses and from the command an agent runs. The premise
+/// the ticket carried was that this depends on a markdown plugin; there is none, and markdown is built into
+/// `quill-core`, so the buttons are always there.
+#[test]
+fn a_description_and_a_comment_are_read_as_markdown_or_as_their_source() {
+    let mut harness = harness("");
+    did(&mut harness, "plugins tab agent-tasks/board --open");
+    did(&mut harness, "plugins run agent-tasks new-sprint Current Sprint");
+    did(&mut harness, "plugins run agent-tasks new-task Read me either way");
+    harness.run();
+    let board = harness.state_mut();
+    let tasks = board
+        .plugin_ui
+        .provider("agent-tasks")
+        .and_then(|provider| provider.as_any_mut())
+        .and_then(|any| any.downcast_mut::<quill_app::services::agent_tasks::AgentTasks>())
+        .expect("the Agent-Tasks provider");
+    tasks.save_the_description("# A heading\n\nSome prose, and `code`.\n").expect("the description");
+    harness.run();
+    did(&mut harness, "plugins run agent-tasks comment task-1 ## From a person\n\n- one\n- two");
+    harness.run();
+
+    // The description starts as its source, because that is the field somebody writes in.
+    let view = did(&mut harness, "plugins view agent-tasks");
+    assert_eq!(view["showing"]["description"], "raw", "a description opens open for writing");
+    // A comment starts rendered, because a comment is read far more often than it is written.
+    assert!(
+        view["showing"]["comments_as_source"].as_array().expect("the list").is_empty(),
+        "no comment starts as its source"
+    );
+
+    // The button a person presses, named for what it does.
+    harness.get_by_label("Read the description as markdown").click();
+    harness.run();
+    assert_eq!(did(&mut harness, "plugins view agent-tasks")["showing"]["description"], "markdown");
+    harness.get_by_label("Read the description as its source").click();
+    harness.run();
+    assert_eq!(did(&mut harness, "plugins view agent-tasks")["showing"]["description"], "raw");
+
+    // And the same change from the command line, which is the agent's way to it.
+    did(&mut harness, "plugins run agent-tasks show description markdown");
+    assert_eq!(did(&mut harness, "plugins view agent-tasks")["showing"]["description"], "markdown");
+    did(&mut harness, "plugins run agent-tasks show description raw");
+    assert_eq!(did(&mut harness, "plugins view agent-tasks")["showing"]["description"], "raw");
+
+    // One comment, by its own id, which is what the reported comments carry.
+    let ticket = did(&mut harness, "plugins run agent-tasks task task-1");
+    let id = ticket["comments"][0]["id"].as_i64().expect("the comment's id");
+    did(&mut harness, &format!("plugins run agent-tasks show comment {id} raw"));
+    let view = did(&mut harness, "plugins view agent-tasks");
+    assert_eq!(
+        view["showing"]["comments_as_source"].as_array().expect("the list").len(),
+        1,
+        "that comment is being read as its source"
+    );
+    did(&mut harness, &format!("plugins run agent-tasks show comment {id} markdown"));
+    assert!(
+        did(&mut harness, "plugins view agent-tasks")["showing"]["comments_as_source"]
+            .as_array()
+            .expect("the list")
+            .is_empty()
+    );
+
+    // A word that is neither, and a comment that is not on this ticket, are refused with what there is.
+    let reply = run(&mut harness, "plugins run agent-tasks show description sideways");
+    assert!(!reply.ok);
+    assert!(reply.message.contains("markdown"), "{}", reply.message);
+    let reply = run(&mut harness, "plugins run agent-tasks show comment 9999 raw");
+    assert!(!reply.ok);
+    assert!(reply.message.contains("no comment 9999"), "{}", reply.message);
+}
+
+#[test]
+fn choosing_in_each_dropdown_writes_the_field_it_names() {
+    use quill_app::services::agent_tasks::agent;
+    use quill_app::services::agent_tasks::model::Assignee;
+    let mut harness = harness("");
+    did(&mut harness, "plugins tab agent-tasks/board --open");
+    did(&mut harness, "plugins run agent-tasks new-sprint Current Sprint");
+    did(&mut harness, "plugins run agent-tasks new-task Choose things for me");
+    harness.run();
+
+    // Choose one option out of one dropdown, by the words a person reads in the list.
+    let pick = |harness: &mut Harness<'static, QuillApp>, control: &str, said: &str| {
+        harness.get_by_label(control).click();
+        harness.run();
+        harness.get_by_label(said).click();
+        harness.run();
+    };
+
+    pick(&mut harness, "Priority", "high");
+    pick(&mut harness, "Assignee", "codex");
+    // The model list follows the agent that was just chosen, which is the reason `Assignee` is chosen first.
+    let codex_model = agent::models_for(Assignee::Codex, None).first().cloned().expect("a Codex model");
+    pick(&mut harness, "Model", &codex_model);
+    pick(&mut harness, "Effort", "high");
+    pick(&mut harness, "Status", "In Progress");
+
+    let ticket = did(&mut harness, "plugins run agent-tasks task task-1");
+    assert_eq!(ticket["task"]["priority"], "high", "the Priority dropdown wrote the priority");
+    assert_eq!(ticket["task"]["assignee"], "codex", "the Assignee dropdown wrote the assignee");
+    assert_eq!(ticket["task"]["model"], codex_model, "the Model dropdown wrote the model");
+    assert_eq!(ticket["task"]["effort"], "high", "the Effort dropdown wrote the effort");
+    assert_eq!(ticket["task"]["status"], "in_progress", "the Status dropdown moved the lane");
+
+    // A dropdown that may hold nothing says so, and choosing that clears the column rather than writing an
+    // empty string that nothing knows how to read.
+    pick(&mut harness, "Effort", "the agent's default");
+    let ticket = did(&mut harness, "plugins run agent-tasks task task-1");
+    assert!(ticket["task"]["effort"].is_null(), "choosing nothing clears it: {}", ticket["task"]);
+}
+
+#[test]
+fn add_task_opens_an_editor_with_every_field_a_ticket_needs() {
+    // The fault this fixes: `+ Add Task` made a row and offered a title. A ticket needs a priority, an
+    // assignee, a model, an effort, a project and an epic before it can be started, and none of the six had a
+    // control, so a ticket could be created and not configured.
+    let mut harness = harness("");
+    did(&mut harness, "plugins tab agent-tasks/board --open");
+    did(&mut harness, "plugins run agent-tasks new-task");
+    harness.run();
+    // The modal is open, on a ticket nobody has named, which is what makes its footer an editor's.
+    let view = did(&mut harness, "plugins view agent-tasks");
+    assert_eq!(view["total"], 1);
+    // `Discard` and `Done` are the editor's own footer, and a control rather than a painted heading: a ticket
+    // that exists gets `Close` instead.
+    assert!(harness.query_all_by_label_contains("Discard").count() > 0, "the editor's footer");
+    assert!(harness.query_all_by_label_contains("Done").count() > 0);
+    // Every field is reachable by name, which is what proves each has a control rather than a comment saying it
+    // should have one.
+    for control in ["Assignee", "Model", "Effort", "Priority", "Epic", "Project"] {
+        assert!(
+            harness.query_all_by_label_contains(control).count() > 0,
+            "`{control}` has no control in the editor"
+        );
+    }
+    // `task-28`: these are **dropdowns** now rather than rows of buttons, so an option is in the widget tree
+    // once its list is open. Each list is opened and read, which is also what proves the control opens at all.
+    for (control, options) in [
+        ("Assignee", ["claude", "codex", "human"].as_slice()),
+        ("Effort", ["low", "medium", "high", "xhigh", "max"].as_slice()),
+        ("Priority", ["low", "medium", "high"].as_slice()),
+    ] {
+        harness.get_by_label(control).click();
+        harness.run();
+        for option in options {
+            assert!(
+                harness.query_all_by_label_contains(option).count() > 0,
+                "`{option}` is not in the `{control}` list once it is open"
+            );
+        }
+        // Shut it again, or the next one would open into a popup egui has already claimed.
+        harness.get_by_label(control).click();
+        harness.run();
+    }
+    // And the `Model` list offers the models the chosen agent has, which is what the ticket asked for: it used
+    // to be a text field, so an agent could not be started without an identifier typed from memory.
+    harness.get_by_label("Model").click();
+    harness.run();
+    for model in quill_app::services::agent_tasks::agent::models_for(
+        quill_app::services::agent_tasks::model::Assignee::Claude,
+        None,
+    ) {
+        assert!(
+            harness.query_all_by_label_contains(&model).count() > 0,
+            "`{model}` is not in the Model list"
+        );
+    }
+    harness.get_by_label("Model").click();
+    harness.run();
+    // And each of them writes. Driven through the same function the buttons call.
+    let board = harness.state_mut();
+    let tasks = board
+        .plugin_ui
+        .provider("agent-tasks")
+        .and_then(|provider| provider.as_any_mut())
+        .and_then(|any| any.downcast_mut::<quill_app::services::agent_tasks::AgentTasks>())
+        .expect("the Agent-Tasks provider");
+    let id = tasks.detail().task.as_ref().expect("the new ticket").id;
+    use quill_app::services::agent_tasks::Field;
+    tasks.edit_field(id, Field::Assignee("codex".to_owned())).expect("the assignee");
+    tasks.edit_field(id, Field::Priority("high".to_owned())).expect("the priority");
+    tasks.edit_field(id, Field::Model("gpt-5.3-codex".to_owned())).expect("the model");
+    tasks.edit_field(id, Field::Effort("xhigh".to_owned())).expect("the effort");
+    tasks.edit_field(id, Field::Project("/tmp".to_owned())).expect("the project");
+    tasks.detail_mut().title_draft = "Configured all the way".to_owned();
+    tasks.save_the_title().expect("the title");
+    tasks.save_the_description("Two lines of markdown.\n\nAnd a second.").expect("the description");
+    harness.run();
+    let ticket = did(&mut harness, "plugins run agent-tasks task task-1");
+    assert_eq!(ticket["task"]["title"], "Configured all the way");
+    assert_eq!(ticket["task"]["assignee"], "codex");
+    assert_eq!(ticket["task"]["priority"], "high");
+    assert_eq!(ticket["task"]["model"], "gpt-5.3-codex");
+    assert_eq!(ticket["task"]["effort"], "xhigh");
+    assert!(ticket["description"].as_str().expect("a description").contains("markdown"));
+    // A value nothing knows is refused with what there is, rather than written.
+    let board = harness.state_mut();
+    let tasks = board
+        .plugin_ui
+        .provider("agent-tasks")
+        .and_then(|provider| provider.as_any_mut())
+        .and_then(|any| any.downcast_mut::<quill_app::services::agent_tasks::AgentTasks>())
+        .expect("the provider");
+    let problem = tasks
+        .edit_field(id, Field::Assignee("gemini".to_owned()))
+        .expect_err("an assignee the board does not know");
+    assert!(problem.contains("gemini") && problem.contains("claude"), "{problem}");
+    let problem = tasks
+        .edit_field(id, Field::Effort("enormous".to_owned()))
+        .expect_err("an effort the agents do not know");
+    assert!(problem.contains("enormous") && problem.contains("xhigh"), "{problem}");
+}
+
+#[test]
+fn the_ticket_modal_holds_every_section_the_browser_board_has() {
+    // `tasks/agent-tasks-ui-tdd.md` §2.4 is the list. Each section is found by the name a person reads, which
+    // is what makes this a check on the interface rather than on the code that draws it.
+    let mut harness = harness("");
+    did(&mut harness, "plugins tab agent-tasks/board --open");
+    did(&mut harness, "plugins run agent-tasks new-task Something to work on");
+    did(&mut harness, "plugins run agent-tasks close");
+    did(&mut harness, "plugins run agent-tasks todo-add task-1 Read the old importer");
+    did(&mut harness, "plugins run agent-tasks comment task-1 The format changed in April.");
+    did(&mut harness, "plugins run agent-tasks open task-1");
+    harness.run();
+    for section in [
+        "Description",
+        "Todos",
+        "Terminal",
+        "Post comment",
+        "Send to terminal",
+        "Assignee",
+        "Priority",
+        "Epic",
+        "Project",
+        "Status",
+        "Start work",
+        "Delete",
+        "Close",
+    ] {
+        assert!(
+            harness.query_all_by_label_contains(section).count() > 0,
+            "`{section}` is not in the ticket modal"
+        );
+    }
+    // The key is the heading, not `New task`: this ticket has been named.
+    assert!(harness.query_all_by_label_contains("task-1").count() > 0);
+    // And the modal closes, leaving the board.
+    did(&mut harness, "plugins run agent-tasks close");
+    harness.run();
+    assert_eq!(
+        harness.query_all_by_label_contains("Post comment").count(),
+        0,
+        "the modal is gone once it is closed"
+    );
+}
+
+
+#[test]
+fn a_ticket_in_full_as_a_modal() {
+    let mut harness = harness("");
+    did(&mut harness, "plugins tab agent-tasks/board --open");
+    did(&mut harness, "plugins run agent-tasks new-sprint Current Sprint");
+    did(&mut harness, "plugins run agent-tasks new-task Quill \u{2014} Plugin architecture for UI");
+    did(&mut harness, "plugins run agent-tasks close");
+    did(&mut harness, "plugins run agent-tasks priority task-1 high");
+    did(&mut harness, "plugins run agent-tasks todo-add task-1 Weigh the four mechanisms");
+    did(&mut harness, "plugins run agent-tasks todo-add task-1 Write the manifest keys");
+    did(&mut harness, "plugins run agent-tasks todo-add task-1 Draw the pane and the modal");
+    did(&mut harness, "plugins run agent-tasks todo-done task-1 1");
+    did(&mut harness, "plugins run agent-tasks comment task-1 Zed and Lapce both have no UI surface at all.");
+    did(&mut harness, "plugins run agent-tasks open task-1");
+    harness.run();
+    harness.state_mut().plugin_ui.provider("agent-tasks").expect("the board");
+    // A description with two paragraphs in it, written the way a person writes one.
+    let board = harness.state_mut();
+    let tasks = board
+        .plugin_ui
+        .provider("agent-tasks")
+        .and_then(|provider| provider.as_any_mut())
+        .and_then(|any| any.downcast_mut::<quill_app::services::agent_tasks::AgentTasks>())
+        .expect("the provider");
+    tasks
+        .save_the_description(
+            "Widen the plugin system so a plugin can draw: a rail button, a pane, a tab, a menu and a \
+             Settings page.\n\nIntelliJ does this declaratively and VS Code does it with 46 contribution \
+             points. Zed and Lapce have no UI surface at all.",
+        )
+        .expect("a description");
+    harness.run();
+    harness.snapshot(shot("agent_tasks_modal").as_str());
+}
+
+#[test]
+fn the_editor_for_a_new_ticket() {
+    let mut harness = harness("");
+    did(&mut harness, "plugins tab agent-tasks/board --open");
+    did(&mut harness, "plugins run agent-tasks new-sprint Current Sprint");
+    did(&mut harness, "plugins run agent-tasks new-task");
+    harness.run();
+    harness.snapshot(shot("agent_tasks_editor").as_str());
+}
+
+#[test]
+fn the_boards_own_settings_page_with_its_agent_configuration() {
+    let mut harness = harness("");
+    did(&mut harness, "plugins tab agent-tasks/board --open");
+    did(&mut harness, "action run settings");
+    harness.run();
+    harness.get_all_by_label("Agent-Tasks").last().expect("the Settings row").click();
+    harness.run();
+    harness.snapshot(shot("agent_tasks_settings").as_str());
+}
+

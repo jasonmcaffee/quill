@@ -44,6 +44,22 @@ impl Values {
         self.0.get(name).map(String::as_str)
     }
 
+    /// Every name that begins with `prefix`, with the prefix removed, in name order.
+    ///
+    /// What reads a family of keys whose names are not known in advance, which is what a plugin's
+    /// submenus are: `menu.submenu.new` and `menu.submenu.new.entries` are two members of one family
+    /// and nothing in Quill knows the word `new` until the manifest is read. The order is the map's
+    /// order, so a family read twice is read the same way both times and a menu built from one is the
+    /// same shape every time.
+    pub fn starting_with(&self, prefix: &str) -> Vec<(String, String)> {
+        self.0
+            .iter()
+            .filter_map(|(name, value)| {
+                name.strip_prefix(prefix).map(|rest| (rest.to_owned(), value.clone()))
+            })
+            .collect()
+    }
+
     pub fn number(&self, name: &str) -> Option<f32> {
         self.text(name).and_then(|value| value.trim().parse().ok())
     }

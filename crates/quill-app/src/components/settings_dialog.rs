@@ -64,6 +64,12 @@ pub struct SettingsOutcome {
     pub closed: bool,
     /// What the Plugins page asked for.
     pub plugins: PluginsOutcome,
+    /// Which contributed page to draw, and where.
+    ///
+    /// Only the window can reach a plugin's provider, so the dialog says which slot and hands over the
+    /// rectangle, and the window draws it there. That is the arrangement `components::activity_bar`
+    /// already uses: it reports what was pressed rather than acting on it.
+    pub plugin_page: Option<(usize, Rect)>,
 }
 
 /// Draw the Settings window. Does nothing when it is not open.
@@ -82,6 +88,15 @@ pub fn show(
     quill_cli: &std::path::Path,
     installed_on_disk: &dyn Fn(&str) -> bool,
     icon_for: &dyn Fn(&str) -> Option<egui::TextureHandle>,
+    // The name each plugin that contributed a page calls it, in slot order. Passed in rather than read
+    // from the plugins, because a page's name is `settings.page` in its manifest and the dialog draws
+    // rows rather than reading manifests.
+    plugin_pages: &[String],
+    // Draws a contributed page, given the page's slot and the rectangle every page gets. A closure
+    // because only the window can reach a plugin's provider, and because the page has to be drawn
+    // **inside** the modal: the modal is an `egui::Area` of its own, so anything painted into the window
+    // underneath it is covered by its own background.
+    plugin_page: &mut dyn FnMut(&mut egui::Ui, usize, Rect),
 ) -> SettingsOutcome {
     let mut outcome = SettingsOutcome::default();
     if !state.open {
@@ -105,12 +120,15 @@ pub fn show(
             quill_cli,
             installed_on_disk,
             icon_for,
+            plugin_pages,
+            plugin_page,
         )
     });
 
     outcome.changed = inner.changed;
     let inner_closed = inner.closed;
     outcome.plugins = inner.plugins;
+    outcome.plugin_page = inner.plugin_page;
     if inner_closed || should_close {
         state.open = false;
         outcome.closed = true;
@@ -135,6 +153,8 @@ fn contents(
     quill_cli: &std::path::Path,
     installed_on_disk: &dyn Fn(&str) -> bool,
     icon_for: &dyn Fn(&str) -> Option<egui::TextureHandle>,
+    plugin_pages: &[String],
+    plugin_page: &mut dyn FnMut(&mut egui::Ui, usize, Rect),
 ) -> SettingsOutcome {
     let mut outcome = SettingsOutcome::default();
 
@@ -176,7 +196,7 @@ fn contents(
     ui.painter_at(area).rect_filled(list, CornerRadius::ZERO, color::EXPLORER_FOOTER);
     line(ui, Pos2::new(list.right(), list.top()), Pos2::new(list.right(), list.bottom()));
 
-    show_list(ui, list, state);
+    show_list(ui, list, state, plugin_pages);
     match state.page {
         Page::Appearance => {
             outcome.changed |= appearance_page(ui, page_area, settings, families);
@@ -201,6 +221,13 @@ fn contents(
             outcome.changed |=
                 mcp_page::show(ui, page_area, &mut state.mcp, settings, mcp_running, quill_cli)
                     .changed;
+        }
+        // A contributed page is drawn by its own plugin. The window hands over a closure that can reach
+        // the provider, and it is called here rather than after this function returns, because the modal
+        // is an area of its own and anything painted into the window underneath it is covered.
+        Page::Plugin(slot) => {
+            plugin_page(ui, slot as usize, page_area);
+            outcome.plugin_page = Some((slot as usize, page_area));
         }
     }
 
@@ -234,7 +261,12 @@ fn contents(
 }
 
 /// The search box and the list of pages, grouped under their headings.
-fn show_list(ui: &mut egui::Ui, area: Rect, state: &mut SettingsWindow) {
+fn show_list(
+    ui: &mut egui::Ui,
+    area: Rect,
+    state: &mut SettingsWindow,
+    plugin_pages: &[String],
+) {
     let search = Rect::from_min_size(
         Pos2::new(area.left() + 12.0, area.top() + 12.0),
         Vec2::new(area.width() - 24.0, 26.0),
@@ -261,8 +293,9 @@ fn show_list(ui: &mut egui::Ui, area: Rect, state: &mut SettingsWindow) {
     let mut pen = search.bottom() + 14.0;
     let mut group_drawn: Option<&str> = None;
     let mut any = false;
-    for page in Page::ALL {
-        if !page.matches(&state.search) {
+    for page in Page::all(plugin_pages.len()) {
+        let title = title_of(page, plugin_pages);
+        if !matches_search(page, &title, &state.search) {
             continue;
         }
         any = true;
@@ -294,7 +327,7 @@ fn show_list(ui: &mut egui::Ui, area: Rect, state: &mut SettingsWindow) {
             Rect::from_min_size(Pos2::new(area.left(), pen), Vec2::new(area.width(), size::ROW));
         // A page with no group of its own is not indented under one.
         let indent = if page.group().is_empty() { 16.0 } else { 46.0 };
-        if page_row(ui, row, page, state.page == page, indent) {
+        if page_row(ui, row, &title, state.page == page, indent) {
             state.page = page;
         }
         pen += size::ROW;
@@ -311,8 +344,31 @@ fn show_list(ui: &mut egui::Ui, area: Rect, state: &mut SettingsWindow) {
 
 /// One page in the list. The chosen one is drawn as a filled row, the way the open file is in the
 /// explorer, so the two lists in the application look like each other.
-fn page_row(ui: &mut egui::Ui, row: Rect, page: Page, chosen: bool, indent: f32) -> bool {
-    let response = ui.interact(row, ui.id().with(("settings-page", page.title())), Sense::click());
+/// What a page is called in the list.
+///
+/// Quill's own five answer for themselves; a contributed page's name is `settings.page` in its manifest,
+/// which is what `plugin_pages` carries.
+pub fn title_of(page: Page, plugin_pages: &[String]) -> String {
+    match page.plugin_slot().and_then(|slot| plugin_pages.get(slot)) {
+        Some(name) => name.clone(),
+        None => page.title().to_owned(),
+    }
+}
+
+/// Whether a page is worth showing for what has been typed in the search box.
+///
+/// A contributed page is matched on its own name and its group, which is what `Page::matches` does for
+/// the other five; it cannot do it here because it does not know the name.
+fn matches_search(page: Page, title: &str, search: &str) -> bool {
+    let needle = search.trim().to_lowercase();
+    if needle.is_empty() {
+        return true;
+    }
+    [title, page.group()].iter().any(|text| text.to_lowercase().contains(&needle))
+}
+
+fn page_row(ui: &mut egui::Ui, row: Rect, title: &str, chosen: bool, indent: f32) -> bool {
+    let response = ui.interact(row, ui.id().with(("settings-page", title.to_owned())), Sense::click());
     let pill = row.shrink2(Vec2::new(8.0, 1.0));
     if chosen {
         ui.painter().rect_filled(pill, CornerRadius::same(5), color::SELECTED_ROW);
@@ -321,7 +377,7 @@ fn page_row(ui: &mut egui::Ui, row: Rect, page: Page, chosen: bool, indent: f32)
     }
     let tint = if chosen { color::TEXT_STRONG } else { color::TEXT_CONTROL };
     let galley = ui.painter().layout_no_wrap(
-        page.title().to_owned(),
+        title.to_owned(),
         egui::FontId::proportional(12.5),
         tint,
     );
@@ -331,7 +387,7 @@ fn page_row(ui: &mut egui::Ui, row: Rect, page: Page, chosen: bool, indent: f32)
         tint,
     );
     response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), chosen, page.title())
+        egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), chosen, title)
     });
     response.clicked()
 }

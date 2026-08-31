@@ -17,7 +17,15 @@ quill-terminal = { path = "crates/quill-terminal" }
 # it belongs to rather than under `crates`, because `quill-cli/` holds the CLI's documentation as
 # well as its code and the two are read together.
 quill-cli = { path = "quill-cli" }
+# `kill(pid, 0)` and nothing else: the one question a window asks about another window that owns a ticket's
+# worker, which is whether it is still running.
+libc = "0.2"
 unicode-segmentation = "1.13"
+# The Agent-Tasks plugin's database. `bundled` compiles SQLite's own C into Quill, so there is nothing
+# to install, no server to be running and no port: the board is one file. See
+# `tasks/agent-tasks-plugin-tdd.md` for why this rather than the PostgreSQL the application being
+# replaced needs. Nothing is fetched at run time, which is the rule the whole repository keeps.
+rusqlite = { version = "0.32", features = ["bundled"] }
 # The control channel speaks JSON, one object a line. Written by hand rather than with the derive
 # macros: nothing here is a Rust type going over the wire, it is a small open protocol another
 # language has to be able to speak, so the values are built and read as values.

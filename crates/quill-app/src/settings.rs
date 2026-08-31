@@ -16,6 +16,17 @@ use crate::services::store::{Store, Values};
 /// The width the explorer starts at, and the smallest and largest it can be dragged to.
 pub const EXPLORER_WIDTH: f32 = 248.0;
 pub const EXPLORER_MIN: f32 = 150.0;
+
+/// What a pane a plugin contributed is, until its manifest says otherwise.
+///
+/// The explorer's width and the terminal's height, because those are the two numbers the window already
+/// uses for a column at the side and a strip along the bottom, and a plugin that names neither should
+/// look like it belongs rather than like it guessed.
+pub const PLUGIN_PANE_WIDTH: f32 = 320.0;
+pub const PLUGIN_PANE_HEIGHT: f32 = 260.0;
+/// The narrowest and shortest a contributed pane is ever dragged to.
+pub const PLUGIN_PANE_MIN_WIDTH: f32 = 220.0;
+pub const PLUGIN_PANE_MIN_HEIGHT: f32 = 120.0;
 pub const EXPLORER_MAX: f32 = 620.0;
 
 /// The height the terminal starts at, and its limits.
@@ -193,11 +204,37 @@ pub enum Page {
     Terminal,
     /// The Model Context Protocol server, which is how an AI agent drives Quill.
     Mcp,
+    /// A page a plugin contributed, by its place in `plugins::Surfaces::pages`.
+    ///
+    /// A slot rather than a name, so `Page` stays `Copy` — it is passed by value through the dialog and
+    /// through `MenuState`. Which page a slot is comes from the manifests, and the page's own name comes
+    /// with it, so [`Page::label`] answers `Plugin` with a placeholder and the dialog asks the surfaces
+    /// for the real one. Nothing persists a chosen page, so a slot shifting when a plugin is switched off
+    /// costs nothing.
+    Plugin(u8),
 }
 
 impl Page {
+    /// Quill's own five. A plugin's page is not in it, because there is no compile time list of them;
+    /// [`Page::all`] is the one that includes them.
     pub const ALL: [Page; 5] =
         [Page::Appearance, Page::Editor, Page::Plugins, Page::Terminal, Page::Mcp];
+
+    /// Quill's own five, then one per plugin that contributed a page, in the order the plugins are
+    /// listed.
+    pub fn all(contributed: usize) -> Vec<Page> {
+        let mut found = Page::ALL.to_vec();
+        found.extend((0..contributed).map(|slot| Page::Plugin(slot as u8)));
+        found
+    }
+
+    /// The slot number, for a page a plugin contributed.
+    pub fn plugin_slot(self) -> Option<usize> {
+        match self {
+            Page::Plugin(slot) => Some(slot as usize),
+            _ => None,
+        }
+    }
 
     /// The name in the list on the left, and the last part of the heading.
     pub fn title(self) -> &'static str {
@@ -207,6 +244,10 @@ impl Page {
             Page::Plugins => "Plugins",
             Page::Terminal => "Terminal",
             Page::Mcp => "MCP",
+            // A contributed page's real name is `settings.page` in its manifest, which this function has
+            // no way to reach. `settings_dialog::title_of` is what draws it, asking the surfaces; this is
+            // the answer for a slot with no plugin in it, which nothing draws.
+            Page::Plugin(_) => "Plugin",
         }
     }
 
@@ -222,6 +263,9 @@ impl Page {
             // The same heading as the terminal: both are a way of reaching something outside the
             // editor from inside it.
             Page::Mcp => "Tools",
+            // A contributed page is listed under `Plugins`, so a person looking for what a plugin added
+            // finds it under the heading that says where it came from.
+            Page::Plugin(_) => "Plugins",
         }
     }
 
@@ -233,6 +277,9 @@ impl Page {
             Page::Plugins => &["Marketplace", "Installed", "Colour Scheme", "Syntax"],
             Page::Terminal => &["Font", "Shell"],
             Page::Mcp => &["Install", "Server", "Configuration"],
+            // A contributed page's headings are its own, and a manifest does not name them: the plugin
+            // draws its page. So it has none here, which means the search box finds it by its name.
+            Page::Plugin(_) => &[],
         }
     }
 
@@ -458,6 +505,13 @@ pub struct Panes {
     pub debug_height: f32,
     /// How wide the debug tile is as a column.
     pub debug_width: f32,
+    /// How wide and how tall each pane a plugin contributed is, by slot.
+    ///
+    /// Two arrays for the same reason the four panels have two numbers each: one number cannot be both a
+    /// column's width and a strip's height. They start at what the manifest asked for, and a drag on the
+    /// pane's divider changes them like any other panel's.
+    pub plugin_widths: [f32; crate::app::dock::PLUGIN_PANES],
+    pub plugin_heights: [f32; crate::app::dock::PLUGIN_PANES],
     /// Which edge each panel is docked to, and where in that edge — `task-1697`.
     ///
     /// It lives here, in the person's own settings, rather than in the project's `.quill`: the
@@ -489,6 +543,8 @@ impl Panes {
             run_width: RUN_WIDTH,
             debug_height: DEBUG_HEIGHT,
             debug_width: DEBUG_WIDTH,
+            plugin_widths: [PLUGIN_PANE_WIDTH; crate::app::dock::PLUGIN_PANES],
+            plugin_heights: [PLUGIN_PANE_HEIGHT; crate::app::dock::PLUGIN_PANES],
             dock: crate::app::dock::Layout::new(),
             preview_fraction: 0.5,
             find_split: crate::components::find_in_files::SPLIT,
@@ -497,6 +553,29 @@ impl Panes {
     }
 
     pub fn read_from(values: &Values) -> Self {
+        Self::read_from_with(values, &[])
+    }
+
+    /// The same, told the names of the panes plugins contributed, in slot order.
+    ///
+    /// A contributed pane's two measurements are recorded against its own `<plugin id>/<pane id>` rather
+    /// than against its slot number, for the reason its side is: installing a second plugin must not give
+    /// the first one's pane the second one's width.
+    pub fn read_from_with(values: &Values, plugin_panes: &[String]) -> Self {
+        let mut panes = Self::read_built_in(values);
+        for (slot, key) in plugin_panes.iter().enumerate().take(crate::app::dock::PLUGIN_PANES) {
+            if let Some(width) = values.number(&format!("panes.{key}.width")) {
+                panes.plugin_widths[slot] = width.clamp(PLUGIN_PANE_MIN_WIDTH, PANEL_MAX_WIDTH);
+            }
+            if let Some(height) = values.number(&format!("panes.{key}.height")) {
+                panes.plugin_heights[slot] = height.max(PLUGIN_PANE_MIN_HEIGHT);
+            }
+        }
+        panes.dock = crate::app::dock::Layout::read_from_with(values, plugin_panes);
+        panes
+    }
+
+    fn read_built_in(values: &Values) -> Self {
         let mut panes = Self::new();
         if let Some(width) = values.number("panes.explorer.width") {
             panes.explorer_width = width.clamp(EXPLORER_MIN, EXPLORER_MAX);
@@ -542,6 +621,20 @@ impl Panes {
     }
 
     pub fn write_into(&self, values: &mut Values) {
+        self.write_into_with(values, &[]);
+    }
+
+    /// The same, told the names of the panes plugins contributed, in slot order.
+    pub fn write_into_with(&self, values: &mut Values, plugin_panes: &[String]) {
+        self.write_built_in(values);
+        for (slot, key) in plugin_panes.iter().enumerate().take(crate::app::dock::PLUGIN_PANES) {
+            values.set(&format!("panes.{key}.width"), format!("{:.0}", self.plugin_widths[slot]));
+            values.set(&format!("panes.{key}.height"), format!("{:.0}", self.plugin_heights[slot]));
+        }
+        self.dock.write_into_with(values, plugin_panes);
+    }
+
+    fn write_built_in(&self, values: &mut Values) {
         values.set("panes.explorer.width", format!("{:.0}", self.explorer_width));
         values.set("panes.terminal.height", format!("{:.0}", self.terminal_height));
         values.set("panes.run.height", format!("{:.0}", self.run_height));
@@ -550,7 +643,6 @@ impl Panes {
         values.set("panes.terminal.width", format!("{:.0}", self.terminal_width));
         values.set("panes.run.width", format!("{:.0}", self.run_width));
         values.set("panes.debug.width", format!("{:.0}", self.debug_width));
-        self.dock.write_into(values);
         values.set("panes.preview.fraction", format!("{:.3}", self.preview_fraction));
         values.set("panes.find.split", format!("{:.3}", self.find_split));
         values.set("panes.references.split", format!("{:.3}", self.references_split));
@@ -568,6 +660,7 @@ impl Panes {
             Panel::Terminal => self.terminal_width,
             Panel::Run => self.run_width,
             Panel::Debug => self.debug_width,
+            Panel::Plugin(slot) => self.plugin_widths[(slot as usize).min(self.plugin_widths.len() - 1)],
         }
     }
 
@@ -579,6 +672,7 @@ impl Panes {
             Panel::Terminal => self.terminal_height,
             Panel::Run => self.run_height,
             Panel::Debug => self.debug_height,
+            Panel::Plugin(slot) => self.plugin_heights[(slot as usize).min(self.plugin_heights.len() - 1)],
         }
     }
 
@@ -591,6 +685,10 @@ impl Panes {
             Panel::Terminal => self.terminal_width = width,
             Panel::Run => self.run_width = width,
             Panel::Debug => self.debug_width = width,
+            Panel::Plugin(slot) => {
+                let at = (slot as usize).min(self.plugin_widths.len() - 1);
+                self.plugin_widths[at] = width;
+            }
         }
     }
 
@@ -602,6 +700,10 @@ impl Panes {
             Panel::Terminal => self.terminal_height = height,
             Panel::Run => self.run_height = height,
             Panel::Debug => self.debug_height = height,
+            Panel::Plugin(slot) => {
+                let at = (slot as usize).min(self.plugin_heights.len() - 1);
+                self.plugin_heights[at] = height;
+            }
         }
     }
 
@@ -612,6 +714,7 @@ impl Panes {
             Panel::Terminal => TERMINAL_WIDTH_MIN,
             Panel::Run => RUN_WIDTH_MIN,
             Panel::Debug => DEBUG_WIDTH_MIN,
+            Panel::Plugin(_) => PLUGIN_PANE_MIN_WIDTH,
         }
     }
 
@@ -630,6 +733,7 @@ impl Panes {
             Panel::Terminal => TERMINAL_MIN,
             Panel::Run => RUN_MIN,
             Panel::Debug => DEBUG_MIN,
+            Panel::Plugin(_) => PLUGIN_PANE_MIN_HEIGHT,
         }
     }
 
@@ -639,46 +743,24 @@ impl Panes {
     /// answers about which of a pair a drag moved. `room` is how much there is to give, which is
     /// what stops a panel being dragged past the edge of the window.
     pub fn resize(&mut self, panel: crate::app::dock::Panel, by: f32, room: f32) {
-        use crate::app::dock::Panel;
         if self.dock.side_of(panel).is_a_column() {
             let most = self.max_width_of(panel).min(room.max(self.min_width_of(panel)));
             let width = (self.width_of(panel) + by).clamp(self.min_width_of(panel), most);
-            match panel {
-                Panel::Explorer => self.explorer_width = width,
-                Panel::Terminal => self.terminal_width = width,
-                Panel::Run => self.run_width = width,
-                Panel::Debug => self.debug_width = width,
-            }
+            self.set_width_of(panel, width);
         } else {
             let most = room.max(self.min_height_of(panel));
             let height = (self.height_of(panel) + by).clamp(self.min_height_of(panel), most);
-            match panel {
-                Panel::Explorer => self.explorer_height = height,
-                Panel::Terminal => self.terminal_height = height,
-                Panel::Run => self.run_height = height,
-                Panel::Debug => self.debug_height = height,
-            }
+            self.set_height_of(panel, height);
         }
     }
 
     /// Put one panel back to the size it started at, which is what a double click on its divider means.
     pub fn reset_size_of(&mut self, panel: crate::app::dock::Panel) {
-        use crate::app::dock::Panel;
         let fresh = Panes::new();
         if self.dock.side_of(panel).is_a_column() {
-            match panel {
-                Panel::Explorer => self.explorer_width = fresh.explorer_width,
-                Panel::Terminal => self.terminal_width = fresh.terminal_width,
-                Panel::Run => self.run_width = fresh.run_width,
-                Panel::Debug => self.debug_width = fresh.debug_width,
-            }
+            self.set_width_of(panel, fresh.width_of(panel));
         } else {
-            match panel {
-                Panel::Explorer => self.explorer_height = fresh.explorer_height,
-                Panel::Terminal => self.terminal_height = fresh.terminal_height,
-                Panel::Run => self.run_height = fresh.run_height,
-                Panel::Debug => self.debug_height = fresh.debug_height,
-            }
+            self.set_height_of(panel, fresh.height_of(panel));
         }
     }
 }
@@ -691,15 +773,36 @@ impl Default for Panes {
 
 /// Read both from the store in one go.
 pub fn load(store: &Store) -> (Settings, Panes) {
+    load_with(store, &[])
+}
+
+/// The same, told the names of the panes plugins contributed, in slot order.
+///
+/// A window reads its settings before it knows what the plugins contribute — the plugins are read from
+/// the same store — so the plain [`load`] is what the first read uses and this is what a later reload
+/// uses. A pane whose name is not in the list keeps its manifest's side and size, which is right: there
+/// is nothing recorded about it yet.
+pub fn load_with(store: &Store, plugin_panes: &[String]) -> (Settings, Panes) {
     let values = store.read_values();
-    (Settings::read_from(&values), Panes::read_from(&values))
+    (Settings::read_from(&values), Panes::read_from_with(&values, plugin_panes))
 }
 
 /// Write both to the store in one go, keeping any value in the file that neither of them owns.
 pub fn save(store: &Store, settings: &Settings, panes: &Panes) {
+    save_with(store, settings, panes, &[]);
+}
+
+/// The same, told the names of the panes plugins contributed, in slot order, so a contributed pane's
+/// side and size are written against its own name rather than being lost.
+pub fn save_with(
+    store: &Store,
+    settings: &Settings,
+    panes: &Panes,
+    plugin_panes: &[String],
+) {
     let mut values = store.read_values();
     settings.write_into(&mut values);
-    panes.write_into(&mut values);
+    panes.write_into_with(&mut values, plugin_panes);
     store.write_values(&values);
 }
 
@@ -849,6 +952,10 @@ mod tests {
         let mut dock = crate::app::dock::Layout::new();
         dock.dock(crate::app::dock::Panel::Terminal, crate::app::dock::Side::Right, None);
         let panes = Panes {
+            // Two contributed panes are named below, so only the first two slots are remembered; a
+            // slot no plugin is in keeps its default, because there is no pane whose size to record.
+            plugin_widths: [420.0, 300.0, PLUGIN_PANE_WIDTH, PLUGIN_PANE_WIDTH],
+            plugin_heights: [280.0, 260.0, PLUGIN_PANE_HEIGHT, PLUGIN_PANE_HEIGHT],
             explorer_width: 320.0,
             explorer_height: 220.0,
             terminal_height: 400.0,
@@ -863,8 +970,22 @@ mod tests {
             references_split: 0.4,
         };
         let mut values = Values::new();
-        panes.write_into(&mut values);
-        assert_eq!(Panes::read_from(&values), panes);
+        // Two contributed panes, named the way the settings file names them, so this also pins that a
+        // pane's width follows its own name rather than its slot number.
+        let contributed = vec!["agent-tasks/board".to_owned(), "chat/thread".to_owned()];
+        panes.write_into_with(&mut values, &contributed);
+        assert_eq!(Panes::read_from_with(&values, &contributed), panes);
+        assert_eq!(
+            values.text("panes.agent-tasks/board.width"),
+            Some("420"),
+            "the first contributed pane's width is recorded against its own name"
+        );
+        // Read back with the two plugins the other way round: each pane keeps its own width, which is the
+        // whole reason the name rather than the slot is the key.
+        let swapped = vec!["chat/thread".to_owned(), "agent-tasks/board".to_owned()];
+        let read = Panes::read_from_with(&values, &swapped);
+        assert_eq!(read.plugin_widths[0], 300.0, "chat's pane kept chat's width");
+        assert_eq!(read.plugin_widths[1], 420.0, "and the board kept the board's");
     }
 
     #[test]

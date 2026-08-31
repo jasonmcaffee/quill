@@ -34,6 +34,9 @@ arboard.workspace = true
 muda.workspace = true
 # Only the PNG decoder, for the pictures plugins put in front of their files.
 image.workspace = true
+# The Agent-Tasks plugin's board. One file on disk, with SQLite compiled in.
+rusqlite.workspace = true
+libc.workspace = true
 
 # The application menu on macOS takes its name from the running program, and the program is `quill`. Setting
 # the process name to `Quill` is what makes the menu bar read `Quill  File  Edit  View` rather than starting

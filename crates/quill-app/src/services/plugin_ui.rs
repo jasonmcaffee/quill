@@ -1,0 +1,502 @@
+//! The code half of the UI plugins: what a provider is, what it is handed, and what it may ask for.
+//!
+//! `services::plugins` reads the manifest and says *what* a plugin contributes and *where*. This file
+//! is the other half: the trait the contributed pane, tab and settings page are filled by, and the two
+//! values that cross the boundary in each direction. `tasks/ui-plugin-architecture.md` is the design.
+//!
+//! ## A provider is code that shipped in the binary
+//!
+//! `plugins::UI_PROVIDERS` is the fourth registry of its shape, after the renderers, the project
+//! detectors and the debuggers. A manifest names a provider, the name is checked, and the drawing
+//! shipped with Quill. Nothing in a plugin folder is executed, which is the property the whole plugin
+//! system has had since it was written and which this addition does not give up.
+//!
+//! The three alternatives were weighed and each is the right answer to a question this is not asking.
+//! A dynamic library means a Rust type crossing a `dlopen` boundary, which is undefined behaviour
+//! unless both sides were built by the same compiler with the same flags, and `egui::Ui` is generic
+//! and closure heavy, which is exactly the shape that cannot cross. WebAssembly copies its arguments
+//! by value and cannot pass an object graph, so drawing through it means designing a widget protocol
+//! first. A separate process is what Quill already does for git, for debug adapters and for terminals,
+//! and it is the named route for a third party plugin; it needs the same widget protocol.
+//!
+//! So the first UI plugin draws with `egui`, through the same `components::controls` and
+//! `components::modal` every other part of the window uses, and the widget protocol is left for the
+//! day something needs it.
+//!
+//! ## Drawing returns requests rather than doing things
+//!
+//! A provider that wanted to open a file would have to reach the window's `OpenFiles`, and then two
+//! things would own the tab strip. So a provider returns [`Request`]s and `QuillApp` acts on them once
+//! the pane has been drawn. That is the rule `components::activity_bar` already keeps: nothing there
+//! changes anything, and each button reports the `Action` it stands for.
+//!
+//! ## A provider cannot read a setting it was not given
+//!
+//! [`Look`] is handed over rather than reached for. It carries the palette, the fonts, the row heights
+//! and the opacity, all of them the window's own, and there is no way for a provider to name a colour.
+//! That is the rule the syntax themes already keep — Dracula's own background is deliberately unused,
+//! because a scheme that repainted the editing area would take the transparency away — and the rule a
+//! Mermaid diagram's own `style` directive already meets, which is read and ignored.
+
+use std::path::PathBuf;
+
+use egui::Color32;
+
+use crate::settings::Settings;
+use crate::theme::{color, size};
+
+/// What a row in a menu is, from `design/style-guide.md`: 24 points against a list row's 28.
+///
+/// Named here rather than in `theme::size` because the menus draw their own rows and nothing else in
+/// the window needed the number until a plugin did.
+pub const MENU_ROW: f32 = 24.0;
+
+/// Everything a provider needs to look like the rest of the window.
+///
+/// Built once a frame from the settings and the theme. A pane that ignored `opacity` would be the one
+/// opaque rectangle in a window whose transparency is the whole character of the product, so it is
+/// here rather than left to each provider to remember.
+#[derive(Clone)]
+pub struct Look<'a> {
+    /// The fonts, for a provider that draws a character grid.
+    ///
+    /// A borrow of Quill's own renderer, which is the one thing here that is machinery rather than a value.
+    /// It is what lets a provider draw a **real terminal** — `components::terminal_panel::grid`, the same one
+    /// the terminal tile and the run tile share, with its keyboard, its selection, its mouse reports and its
+    /// resize — instead of painting a picture of one. A provider that is not in the binary could not be given
+    /// this, which is one more thing the widget tree of `tasks/ui-plugin-architecture.md` §10 would have to
+    /// answer for.
+    pub renderer: &'a crate::services::text_renderer::TextRenderer,
+    /// The family the editor sets text in, as chosen in `Settings -> Appearance`.
+    pub font_family: String,
+    /// The point size the editor sets text in.
+    pub font_size: f32,
+    /// The point size a character grid is set in, which is the terminal's own setting.
+    pub monospace_size: f32,
+    /// How opaque the window background is. A provider paints its own ground with this applied.
+    pub opacity: f32,
+    pub palette: Palette,
+    /// What a row in a list is, from `design/style-guide.md`.
+    pub row_height: f32,
+    /// What a row in a menu is.
+    pub menu_row_height: f32,
+    pub corner_radius: f32,
+    /// Whether this plugin holds the keyboard this frame.
+    ///
+    /// **What stops a plugin reading a key press meant for something else.** Quill has one value that says who
+    /// has the keys, and a plugin drawing a pane cannot see it, so the window tells it here. Agent-Tasks reads it
+    /// before taking an arrow key: without it, moving the caret in the editor would also move the chosen card on
+    /// a board nobody was looking at.
+    pub has_the_keyboard: bool,
+}
+
+impl std::fmt::Debug for Look<'_> {
+    /// Written by hand because a `TextRenderer` holds a font database and a glyph atlas and has no `Debug`.
+    /// What is printed is what a test wants to see when an assertion about the look fails.
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        out.debug_struct("Look")
+            .field("font_family", &self.font_family)
+            .field("font_size", &self.font_size)
+            .field("monospace_size", &self.monospace_size)
+            .field("opacity", &self.opacity)
+            .finish()
+    }
+}
+
+impl<'a> Look<'a> {
+    /// The look of this window, this frame.
+    pub fn of(
+        settings: &Settings,
+        renderer: &'a crate::services::text_renderer::TextRenderer,
+    ) -> Self {
+        Self {
+            renderer,
+            font_family: settings.font_family.clone(),
+            font_size: settings.font_size,
+            monospace_size: settings.terminal_font_size,
+            opacity: settings.opacity,
+            palette: Palette::QUILL,
+            row_height: size::ROW,
+            menu_row_height: MENU_ROW,
+            corner_radius: f32::from(size::CONTROL_CORNER),
+            // False unless the window says otherwise, because that is the safe answer: a plugin that was told it
+            // had the keys when it did not would take them from the editor.
+            has_the_keyboard: false,
+        }
+    }
+
+    /// The same look, with the keyboard given to the plugin about to be drawn.
+    pub fn holding_the_keyboard(mut self, holding: bool) -> Self {
+        self.has_the_keyboard = holding;
+        self
+    }
+
+    /// How much bigger everything drawn at a fixed size has to be, from the font the editor is set in.
+    ///
+    /// **Because Quill offers 48 and 64 point text.** Every height on the board was written for the default 16
+    /// points — a card 84 points tall, a lane heading 34, the board's own header 66 — so choosing a large font
+    /// scaled the words and left the boxes, and a card title overlapped its own footer while a lane heading
+    /// overlapped the first card. One number rather than a separate rule per box, so the proportions the design
+    /// settled on are kept whatever size the text is.
+    ///
+    /// Floored rather than allowed below one: a person who chooses 9 point text wants small text, not cards too
+    /// short to press, and a tick box that shrinks with the font stops being a target.
+    pub fn scale(&self) -> f32 {
+        (self.font_size / crate::settings::DEFAULT_FONT_SIZE).max(1.0)
+    }
+
+    /// A colour with the window's opacity applied, which is what a provider paints a ground with.
+    ///
+    /// One function rather than each provider multiplying an alpha, because the arithmetic is the
+    /// window's and a provider that got it slightly wrong would show as a seam down the edge of its
+    /// pane.
+    pub fn ground(&self, colour: Color32) -> Color32 {
+        let alpha = (self.opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+        Color32::from_rgba_unmultiplied(colour.r(), colour.g(), colour.b(), alpha)
+    }
+}
+
+/// The colours a provider draws with.
+///
+/// `theme::color` passed through as a value, so a plugin's rows, fields, buttons and chosen row are
+/// the ones every list in Quill draws. There is deliberately no way to add one: a manifest key that
+/// set a colour would undo the reason the palette is closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Palette {
+    pub editor: Color32,
+    pub panel: Color32,
+    pub panel_footer: Color32,
+    pub control: Color32,
+    pub control_border: Color32,
+    pub field: Color32,
+    pub divider: Color32,
+    pub menu: Color32,
+    pub accent: Color32,
+    pub selected_row: Color32,
+    pub unsaved: Color32,
+    pub text_strong: Color32,
+    pub text: Color32,
+    pub text_control: Color32,
+    pub text_dim: Color32,
+    pub text_faint: Color32,
+    pub added: Color32,
+    pub modified: Color32,
+}
+
+impl Palette {
+    /// Quill's own palette, which is the only one there is.
+    pub const QUILL: Palette = Palette {
+        editor: color::EDITOR,
+        panel: color::EXPLORER,
+        panel_footer: color::EXPLORER_FOOTER,
+        control: color::CONTROL,
+        control_border: color::CONTROL_BORDER,
+        field: color::FIELD,
+        divider: color::DIVIDER,
+        menu: color::MENU,
+        accent: color::ACCENT,
+        selected_row: color::SELECTED_ROW,
+        unsaved: color::UNSAVED,
+        text_strong: color::TEXT_STRONG,
+        text: color::TEXT,
+        text_control: color::TEXT_CONTROL,
+        text_dim: color::TEXT_DIM,
+        text_faint: color::TEXT_FAINT,
+        added: color::GIT_ADDED,
+        modified: color::GIT_MODIFIED,
+    };
+}
+
+/// What a provider asks the window to do, having drawn.
+///
+/// Every variant is something only the window can do. A provider does none of them itself, so there is
+/// one owner of the tab strip, one owner of the status bar and one place a file is opened.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Request {
+    /// Open a file in a tab, which is what a provider does when a ticket names one.
+    OpenFile(PathBuf),
+    /// Say something in the status bar, which is where every honest miss in Quill is reported.
+    Message(String),
+    /// Show this plugin's own tab in the editing area.
+    ShowTab,
+    /// Show or hide this plugin's pane.
+    ShowPane(bool),
+    /// Draw again next frame even if nothing was touched, which is what a provider with a terminal in
+    /// it needs while that terminal is printing.
+    Repaint,
+    /// Take the keyboard, or give it back.
+    ///
+    /// A plugin with a terminal in it needs the keys, and the window is the only thing that can say who has them:
+    /// `QuillApp::focus` is one value and the editing area, the explorer and the terminal tile already share it
+    /// through that one value. A provider that decided for itself would be a second owner of the keyboard, and
+    /// both would read the same key press.
+    TakeTheKeyboard(bool),
+    /// Show this file or folder in the platform's own file manager.
+    ///
+    /// The window's business rather than a provider's, for the reason the clipboard is: opening a folder is asking
+    /// the operating system to do something, and `services::launcher` is the one place Quill does that.
+    Reveal(PathBuf),
+    /// Put this on the clipboard.
+    ///
+    /// The clipboard is the platform's and the window owns the one handle to it, which is why a provider asks
+    /// rather than reaching: two owners of a clipboard is two programs fighting over one selection.
+    Copy(String),
+}
+
+/// What a command answered.
+///
+/// A string for a person and a value for a machine, because the same command is run from a menu entry
+/// and from `quill-cli plugin run`, and the command line's caller is often an agent that wants the
+/// number rather than the sentence.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Answer {
+    /// One line for the status bar. Empty when there is nothing to say.
+    pub message: String,
+    /// The same answer as data, for the command line and for a test.
+    pub value: serde_json::Value,
+}
+
+impl Answer {
+    pub fn said(message: impl Into<String>) -> Self {
+        Self { message: message.into(), value: serde_json::Value::Null }
+    }
+
+    pub fn with(mut self, value: serde_json::Value) -> Self {
+        self.value = value;
+        self
+    }
+
+    pub fn nothing() -> Self {
+        Self::default()
+    }
+}
+
+/// What a provider is told about the window when it is opened.
+///
+/// Handed in on [`UiProvider::open`] rather than read from a global, so a test opens a provider on a
+/// temporary folder and the released binary opens it on the person's own.
+#[derive(Clone, Default)]
+pub struct Context {
+    /// The folder this window has open, when it has one.
+    pub project: Option<PathBuf>,
+    /// The folders this machine has had open, newest first, which is the list `File -> Open Recent` draws.
+    ///
+    /// **Handed over rather than reached for**, which is the rule the project folder and the opacity already
+    /// follow: a provider cannot read `services::store`, and a plugin that could would be a plugin deciding
+    /// what a window knows. Agent-Tasks offers these as the choices in a ticket's `Project` dropdown, because a
+    /// folder somebody has opened is a folder they might point a ticket at.
+    pub recent_projects: Vec<PathBuf>,
+    /// The folder this plugin keeps its own files in: `<settings folder>/plugins/<plugin id>`.
+    ///
+    /// `None` in a test that has no store, which is what stops a test reading or writing the settings
+    /// of the person running it — the rule `QuillApp::load_settings` already keeps.
+    pub folder: Option<PathBuf>,
+    /// How to ask the window to draw again from another thread.
+    ///
+    /// A provider that owns a process needs this and one that only draws does not. Without it, a terminal that
+    /// printed while nobody was pointing at the window would be a terminal nobody saw until the pointer moved,
+    /// and the alternative — asking for a frame on a timer — keeps the graphics card busy while an agent sits
+    /// at its prompt. `quill_git::Worker` and the terminal tile already work this way.
+    pub wake: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+}
+
+impl std::fmt::Debug for Context {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        out.debug_struct("Context")
+            .field("project", &self.project)
+            .field("recent_projects", &self.recent_projects.len())
+            .field("folder", &self.folder)
+            .field("wake", &self.wake.is_some())
+            .finish()
+    }
+}
+
+/// What a plugin's code is asked to do. One implementation per name in `plugins::UI_PROVIDERS`.
+pub trait UiProvider: std::fmt::Debug {
+    /// The name in the manifest, which is the name in the registry.
+    fn id(&self) -> &'static str;
+
+    /// Called the first time this plugin's pane, tab or settings page is shown, and never before.
+    ///
+    /// This is what makes a plugin lazy, and it is IntelliJ's own arrangement: its documented reason
+    /// for calling `createToolWindowContent` on the first click is that "if a user does not interact
+    /// with the tool window, no plugin code will be loaded or executed". For Agent-Tasks it is the
+    /// difference between opening a database file at startup and opening it when the board is first
+    /// looked at.
+    fn open(&mut self, context: &Context) -> Result<(), String>;
+
+    /// True once [`Self::open`] has succeeded, so the window can tell "not opened yet" from "opened".
+    fn is_open(&self) -> bool;
+
+    /// Draw the pane. Called once a frame while the pane is showing.
+    fn pane(&mut self, ui: &mut egui::Ui, look: &Look<'_>) -> Vec<Request>;
+
+    /// Draw the tab in the editing area. Called once a frame while that tab is showing.
+    ///
+    /// The default is the pane, because a plugin whose tab and pane show the same thing is the common
+    /// case and a provider should not have to write it twice. Agent-Tasks overrides it, because a
+    /// whole editing area holds the board and the ticket side by side where a 420 point column cannot.
+    fn tab(&mut self, ui: &mut egui::Ui, look: &Look<'_>) -> Vec<Request> {
+        self.pane(ui, look)
+    }
+
+    /// Draw the Settings page inside the rectangle every page gets.
+    fn settings(&mut self, ui: &mut egui::Ui, look: &Look<'_>) -> Vec<Request>;
+
+    /// Draw whatever modal this plugin has open, if it has one.
+    ///
+    /// A modal is drawn from the context rather than into a rectangle, because `components::modal` places it,
+    /// drags it and resizes it, and it has to be **above** the panes — including the plugin's own. So it is a
+    /// method of its own rather than something the pane draws, and the window calls it once a frame after every
+    /// pane, which is where every other modal in Quill is drawn.
+    ///
+    /// Answers what it asked for and whether it closed; the default has no modal and says so.
+    fn modal(&mut self, ctx: &egui::Context, look: &Look<'_>) -> (Vec<Request>, bool) {
+        let _ = (ctx, look);
+        (Vec::new(), false)
+    }
+
+    /// Answer a command from the menu, from a button in the pane, or from the command line.
+    ///
+    /// The one path a change goes down, which is what `QuillApp::run_action` is for the window and
+    /// `QuillApp::run_cli` is for the command line. A thing done by hand and the same thing done by an
+    /// agent are therefore the same thing rather than two paths that agree today.
+    fn command(&mut self, command: &str, arguments: &[String]) -> Result<Answer, String>;
+
+    /// Every command this provider answers, with one line each, for `quill-cli plugin show`.
+    fn commands(&self) -> Vec<(&'static str, &'static str)>;
+
+    /// What the pane is showing, as data.
+    ///
+    /// Not optional. Quill's rule is that everything a person can do in the window an agent can do
+    /// too, through the same code, and both are covered by tests. A pane drawn with `egui` is
+    /// invisible to a test and to an agent unless it can be read, and a screenshot is not an answer to
+    /// "how many tickets are in progress". This is what `quill-cli plugin view` prints and what a unit
+    /// test asserts against, built from the same reads the drawing uses.
+    fn view(&self) -> serde_json::Value;
+
+    /// Told when this plugin gains or loses the keyboard.
+    ///
+    /// The window owns `Focus`, so it is the window that says so. A provider with a terminal in it draws that
+    /// terminal as focused only while this is true, which is what stops the terminal reading a key the board's own
+    /// fields were being typed into.
+    fn keyboard(&mut self, has_it: bool) {
+        let _ = has_it;
+    }
+
+    /// Catch up with whatever this plugin owns that is not drawing. Called once a frame while it is open.
+    ///
+    /// Answers whether something is still running, so the window knows to keep drawing. The default does
+    /// nothing and answers no, which is right for a plugin that only draws: this exists for the one that
+    /// owns processes. It must be cheap, because it runs on every frame — Agent-Tasks compares two integers
+    /// per terminal and does nothing when neither moved.
+    fn catch_up(&mut self) -> bool {
+        false
+    }
+
+    /// This provider as its own type, for a caller that has to reach past the trait.
+    ///
+    /// Two callers need it, and both are inside Quill: a test driving the provider's own functions the way its
+    /// buttons do, and the drawing, which is the provider's own code. A provider that is not in the binary
+    /// could not offer this and would not be asked for it. It is `Option` rather than required so that a
+    /// provider which has no reason to offer it says so by answering nothing.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        None
+    }
+
+    /// Called when the plugin is switched off, when the project changes, or when the window closes.
+    fn close(&mut self);
+}
+
+/// Build the provider named `name`, or `None` when this version has no such name.
+///
+/// The one place a name in `plugins::UI_PROVIDERS` becomes an object, so the registry and the code
+/// cannot disagree about which names exist — `every_registered_provider_can_be_built` is the test that
+/// keeps them in step.
+pub fn provider(name: &str) -> Option<Box<dyn UiProvider>> {
+    match name {
+        "agent-tasks" => Some(Box::new(crate::services::agent_tasks::AgentTasks::new())),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::plugins::UI_PROVIDERS;
+
+    #[test]
+    fn every_registered_provider_can_be_built() {
+        // The registry is a list of names and this is the code behind them. A name with no code would
+        // load a manifest whose pane is permanently empty, which is the exact outcome checking the
+        // name against a registry exists to prevent.
+        for name in UI_PROVIDERS {
+            let built = provider(name).unwrap_or_else(|| panic!("{name} is registered with no code"));
+            assert_eq!(built.id(), *name, "a provider should know its own name");
+            assert!(!built.is_open(), "a provider is not open until it has been opened");
+            assert!(!built.commands().is_empty(), "{name} answers no commands");
+        }
+        assert!(provider("nothing-like-this").is_none());
+    }
+
+    #[test]
+    fn a_provider_is_handed_the_windows_own_look_and_cannot_name_a_colour() {
+        let mut settings = Settings::new();
+        settings.font_size = 17.0;
+        settings.opacity = 0.5;
+        // A real renderer, because `Look` carries one so that a provider can draw a character grid. Building
+        // one loads the system fonts, which this test does not read: it is here so the value can exist.
+        let renderer = crate::services::text_renderer::TextRenderer::new();
+        let look = Look::of(&settings, &renderer);
+        assert_eq!(look.font_size, 17.0);
+        assert_eq!(look.opacity, 0.5);
+        assert_eq!(look.palette, Palette::QUILL, "there is one palette and a plugin gets it");
+        // The opacity setting reaches the ground a provider paints, so a pane is as transparent as the
+        // editing area rather than the one opaque rectangle in the window.
+        let ground = look.ground(look.palette.editor);
+        assert_eq!(ground.a(), 128, "half opacity is half alpha");
+        settings.opacity = 1.0;
+        assert_eq!(Look::of(&settings, &renderer).ground(look.palette.editor).a(), 255);
+    }
+}
+
+#[cfg(test)]
+mod scale_tests {
+    use super::*;
+
+    #[test]
+    fn every_fixed_height_on_a_board_follows_the_font_the_editor_is_set_in() {
+        // Quill's font size control offers 48 and 64 point text. Every height on the board was written for the
+        // default 16 — a card 84 points tall, a lane heading 34, the board's header 66 — so a large font scaled
+        // the words and left the boxes, and a card title overlapped its own footer.
+        let renderer = crate::services::text_renderer::TextRenderer::new();
+        let mut settings = Settings::default();
+        settings.font_size = crate::settings::DEFAULT_FONT_SIZE;
+        let normal = Look::of(&settings, &renderer);
+        assert_eq!(normal.scale(), 1.0, "the default font changes nothing");
+
+        settings.font_size = 48.0;
+        let large = Look::of(&settings, &renderer);
+        assert_eq!(large.scale(), 3.0, "48 point text is three times the default");
+
+        // Small text does not shrink the boxes: somebody who chooses 9 point wants small words, not cards too
+        // short to press and tick boxes too small to hit.
+        settings.font_size = 9.0;
+        let small = Look::of(&settings, &renderer);
+        assert_eq!(small.scale(), 1.0, "a small font leaves the boxes alone");
+
+        for size in crate::settings::FONT_SIZES {
+            settings.font_size = *size;
+            let look = Look::of(&settings, &renderer);
+            let card = crate::components::agent_tasks::card::height(&look);
+            // What a card really has to hold, in the order `card::show` draws it: eight points of padding, a
+            // title of two wrapped lines, and the 22 point band at the bottom that the footer and the epic chip
+            // share. Whatever the size.
+            let needed = 8.0 + look.font_size * 2.7 + 22.0;
+            assert!(
+                card >= needed,
+                "at {size} point a card is {card} points and needs at least {needed}"
+            );
+        }
+    }
+}

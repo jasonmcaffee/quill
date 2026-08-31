@@ -6051,6 +6051,9 @@ impl QuillApp {
                             "enabled": plugin.enabled,
                             "bundled": plugin.bundled,
                             "extensions": plugin.extensions,
+                            "kind": plugin.kind.name(),
+                            "provider": plugin.contributions.provider,
+                            "contributes": contributes(plugin),
                         })
                     })
                     .collect();
@@ -6089,6 +6092,201 @@ impl QuillApp {
                     format!("{id} is switched {}", if on { "on" } else { "off" }),
                     json!({ "id": id, "enabled": on }),
                 )
+            }
+            "show" => {
+                let Some(id) = request.text("id") else {
+                    return no(request, code::USAGE, "Say which plugin.");
+                };
+                let Some(plugin) = self.plugins.get(&id).cloned() else {
+                    return no(request, code::NOT_FOUND, format!("There is no plugin called {id}."));
+                };
+                // Asked of the provider rather than of a list here, so what is printed is what the plugin
+                // will actually answer. **Built rather than opened**: `commands` is a question about the
+                // code, and opening Agent-Tasks creates a folder and a database file. A read only command
+                // that made a database would be a read only command that changed the machine, and it would
+                // also break the promise that a provider is opened when its pane, tab or page is first
+                // shown.
+                let commands: Vec<Value> = plugin
+                    .contributions
+                    .provider
+                    .as_deref()
+                    .and_then(crate::services::plugin_ui::provider)
+                    .map(|built| {
+                        built
+                            .commands()
+                            .into_iter()
+                            .map(|(name, summary)| json!({"command": name, "summary": summary}))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let mut rows = vec![
+                    format!("{:<14}{}", "id", plugin.id),
+                    format!("{:<14}{}", "name", plugin.name),
+                    format!("{:<14}{}", "kind", plugin.kind.name()),
+                    format!("{:<14}{}", "version", plugin.version),
+                    format!("{:<14}{}", "vendor", plugin.vendor),
+                    format!("{:<14}{}", "enabled", plugin.enabled),
+                    format!("{:<14}{}", "contributes", contributes(&plugin).join(", ")),
+                ];
+                if let Some(problem) = self.plugin_ui.problem_with(&plugin.id) {
+                    rows.push(format!("{:<14}{problem}", "problem"));
+                }
+                for command in &commands {
+                    rows.push(format!(
+                        "  {:<14}{}",
+                        command["command"].as_str().unwrap_or_default(),
+                        command["summary"].as_str().unwrap_or_default()
+                    ));
+                }
+                lines(
+                    request,
+                    format!("{} \u{2014} {}", plugin.id, plugin.description),
+                    rows,
+                    json!({
+                        "id": plugin.id,
+                        "name": plugin.name,
+                        "kind": plugin.kind.name(),
+                        "version": plugin.version,
+                        "vendor": plugin.vendor,
+                        "description": plugin.description,
+                        "limitations": plugin.limitations,
+                        "enabled": plugin.enabled,
+                        "bundled": plugin.bundled,
+                        "extensions": plugin.extensions,
+                        "provider": plugin.contributions.provider,
+                        "contributes": contributes(&plugin),
+                        "commands": commands,
+                        "problem": self.plugin_ui.problem_with(&plugin.id),
+                    }),
+                )
+            }
+            "reload" => {
+                let problems = self.reload_the_plugins();
+                let said = match problems.is_empty() {
+                    true => format!("{} plugins read again", self.plugins.all().len()),
+                    false => format!("{} plugins read again, {} refused", self.plugins.all().len(), problems.len()),
+                };
+                lines(
+                    request,
+                    said,
+                    problems.clone(),
+                    json!({ "plugins": self.plugins.all().len(), "refused": problems }),
+                )
+            }
+            "pane" => {
+                let Some(pane) = request.text("pane") else {
+                    return no(request, code::USAGE, "Say which pane, as <plugin id>/<pane id>.");
+                };
+                let Some(slot) = self.plugin_ui.slot_of(&pane) else {
+                    return no(
+                        request,
+                        code::NOT_FOUND,
+                        format!("There is no {pane} pane. `plugins list` says what each plugin contributes."),
+                    );
+                };
+                let panel = dock::Panel::Plugin(slot as u8);
+                if let Some(named) = request.text("side") {
+                    let Some(side) = dock::Side::from_name(named.trim()) else {
+                        return no(
+                            request,
+                            code::USAGE,
+                            format!("{named} is not a side. Say left, right, top or bottom."),
+                        );
+                    };
+                    self.panes.dock.dock(panel, side, None);
+                    self.unsaved_settings = true;
+                }
+                if request.switch("show") {
+                    self.show_the_plugin_pane(&pane, true);
+                } else if request.switch("hide") {
+                    self.show_the_plugin_pane(&pane, false);
+                }
+                if let Some(problem) = self.plugin_ui.problem_with(
+                    &self.plugin_ui.plugin_of(slot).unwrap_or_default(),
+                ) {
+                    return no(request, code::FAILED, problem.to_owned());
+                }
+                let showing = self.plugin_ui.is_visible(slot);
+                ok(
+                    request,
+                    format!(
+                        "{pane} is {} on the {}",
+                        if showing { "showing" } else { "put away" },
+                        self.panes.dock.side_of(panel).name()
+                    ),
+                    json!({
+                        "pane": pane,
+                        "showing": showing,
+                        "side": self.panes.dock.side_of(panel).name(),
+                    }),
+                )
+            }
+            "tab" => {
+                let Some(tab) = request.text("tab") else {
+                    return no(request, code::USAGE, "Say which tab, as <plugin id>/<tab id>.");
+                };
+                if self.plugin_ui.surfaces().tab(&tab).is_none() {
+                    return no(request, code::NOT_FOUND, format!("There is no {tab} tab."));
+                }
+                if request.switch("close") {
+                    if let Some(index) = self.files.index_of_plugin_tab(&tab) {
+                        self.close_tab(index);
+                    }
+                    return ok(request, format!("{tab} is closed"), json!({"tab": tab, "open": false}));
+                }
+                self.open_the_plugin_tab(&tab);
+                let open = self.files.index_of_plugin_tab(&tab).is_some();
+                match open {
+                    true => ok(request, format!("{tab} is open"), json!({"tab": tab, "open": true})),
+                    false => no(
+                        request,
+                        code::FAILED,
+                        self.message.clone().unwrap_or_else(|| format!("{tab} could not be opened")),
+                    ),
+                }
+            }
+            "run" => {
+                let Some(id) = request.text("id") else {
+                    return no(request, code::USAGE, "Say which plugin.");
+                };
+                let Some(command) = request.text("command") else {
+                    return no(request, code::USAGE, "Say which command. `plugins show` lists them.");
+                };
+                let arguments: Vec<String> = request
+                    .text("arguments")
+                    .map(|rest| rest.split_whitespace().map(str::to_owned).collect())
+                    .unwrap_or_default();
+                match self.run_plugin_command(&id, &command, &arguments) {
+                    Ok(answer) => {
+                        let said = match answer.message.is_empty() {
+                            true => format!("{id} {command}"),
+                            false => answer.message.clone(),
+                        };
+                        ok(request, said, answer.value)
+                    }
+                    Err(problem) => no(request, code::FAILED, problem),
+                }
+            }
+            "view" => {
+                let Some(id) = request.text("id") else {
+                    return no(request, code::USAGE, "Say which plugin.");
+                };
+                let Some(provider) = self.plugin_ui.surfaces().provider_of(&id) else {
+                    return no(
+                        request,
+                        code::NOT_FOUND,
+                        format!("{id} is not a plugin that draws, or it is switched off."),
+                    );
+                };
+                // Opened rather than refused when it has not been looked at yet, because "what is on the
+                // board" is a fair question to ask of a board nobody has opened in this window.
+                if let Err(problem) = self.plugin_ui.opened(&id, &provider) {
+                    return no(request, code::FAILED, problem);
+                }
+                match self.plugin_ui.view_of(&id) {
+                    Some(value) => ok(request, format!("{id}"), value),
+                    None => no(request, code::FAILED, format!("{id} has nothing to show.")),
+                }
             }
             _ => unknown(request),
         }
@@ -6328,7 +6526,15 @@ impl QuillApp {
         if Action::wants_a_path(&name) && path.is_none() {
             return no(request, code::USAGE, format!("{name} needs --path."));
         }
-        let Some(action) = Action::from_name(&name, path) else {
+        // A plugin's own entries name themselves — `plugin-run:<plugin>:<command>` — because their names
+        // come from a manifest rather than from the list `Action::from_name` reads. Resolving them here is
+        // what makes `action list` and `action run` agree about a contributed entry, which is the whole
+        // point of the naming machinery: an entry is reachable the day the manifest is written.
+        let action = match plugin_action(&name) {
+            Some(action) => Some(action),
+            None => Action::from_name(&name, path),
+        };
+        let Some(action) = action else {
             return no(
                 request,
                 code::NOT_FOUND,
@@ -6722,4 +6928,53 @@ mod tests {
         assert_eq!(offset_at(&text, 1, 3), 3);
         assert_eq!(offset_at(&text, 2, 1), 7);
     }
+}
+
+/// What one plugin adds to the window, as short words, for `plugins list` and `plugins show`.
+///
+/// A language adds none of them and answers `language`, so a reader can tell at a glance which kind of
+/// plugin a row is without reading the `kind` column beside it.
+fn contributes(plugin: &crate::services::plugins::Plugin) -> Vec<String> {
+    let mut found = Vec::new();
+    if plugin.contributions.pane.is_some() {
+        found.push("pane".to_owned());
+    }
+    if plugin.contributions.tab.is_some() {
+        found.push("tab".to_owned());
+    }
+    if plugin.contributions.menu.is_some() {
+        found.push("menu".to_owned());
+    }
+    if plugin.contributions.page.is_some() {
+        found.push("settings page".to_owned());
+    }
+    if found.is_empty() && !plugin.extensions.is_empty() {
+        found.push("language".to_owned());
+    }
+    found
+}
+
+/// The action a plugin's own entry name stands for, or `None` when the name is not one of theirs.
+///
+/// Three shapes, matching what `Action::name` writes: `plugin-pane:<plugin>/<pane>`,
+/// `plugin-tab:<plugin>/<tab>` and `plugin-run:<plugin>:<command>`.
+fn plugin_action(name: &str) -> Option<crate::app::actions::Action> {
+    use crate::app::actions::Action;
+    if let Some(pane) = name.strip_prefix("plugin-pane:") {
+        return Some(Action::PluginPane { pane: pane.to_owned() });
+    }
+    if let Some(tab) = name.strip_prefix("plugin-tab:") {
+        return Some(Action::PluginTab { tab: tab.to_owned() });
+    }
+    if let Some(rest) = name.strip_prefix("plugin-run:") {
+        let (plugin, command) = rest.split_once(':')?;
+        if plugin.is_empty() || command.is_empty() {
+            return None;
+        }
+        return Some(Action::PluginCommand {
+            plugin: plugin.to_owned(),
+            command: command.to_owned(),
+        });
+    }
+    None
 }

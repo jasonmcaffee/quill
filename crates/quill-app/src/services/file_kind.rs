@@ -16,6 +16,20 @@
 //! Rule 3 is last because it touches the disk, and the explorer asks this question about every file in a
 //! folder. Rules 1 and 2 answer it for nearly every file without reading anything.
 //!
+//! ## Nothing that draws may ask rule 3
+//!
+//! `task-28`: expanding a folder froze the window and had to be force quit. [`openable`] was being asked
+//! about every child of a folder as it was read, and for a name with an unknown extension it falls through
+//! to rule 3, which opens the file. A folder of twenty thousand extensionless files was twenty thousand
+//! opens and reads before one row was drawn — and under `/dev` the children are devices and FIFOs, where
+//! the read blocks and never returns.
+//!
+//! So there are two questions now, and which one a caller asks depends on whether it is drawing.
+//! [`openable_in_a_listing`] answers from the name and the kind of directory entry alone and never touches
+//! the disk: an unknown extension is **offered**, and whether it really holds text is decided when the tab
+//! is opened, which is where there is somewhere to say so. [`openable`] keeps rule 3 for the one caller
+//! that should have it, which is opening a file.
+//!
 //! ## Pictures
 //!
 //! A picture is not text and never will be, but `task-1658` asks to be able to look at one, so it is a
@@ -78,6 +92,9 @@ pub enum Refusal {
     NotText,
     /// The file is text, but larger than [`SIZE_LIMIT`].
     TooLarge,
+    /// It is not a file at all: a device, a pipe, a socket. Listed, because the explorer is a picture of
+    /// the folder, and never opened — opening a FIFO with no writer blocks for ever.
+    NotAFile,
 }
 
 impl Refusal {
@@ -86,11 +103,62 @@ impl Refusal {
         match self {
             Refusal::NotText => "Quill opens text files. This one is not text.",
             Refusal::TooLarge => "This file is larger than 16 MB, which is more than Quill opens.",
+            Refusal::NotAFile => {
+                "This is not a file. It is a device, a pipe or a socket, and Quill opens files."
+            }
+        }
+    }
+}
+
+/// What a directory entry is, as the directory read itself described it.
+///
+/// A directory read already knows this, so nothing that has one needs to ask the file system again.
+/// Symlinks are not followed, which is what `std::fs::DirEntry::file_type` does and what the explorer has
+/// always done: a link to a folder is drawn as an entry rather than opened out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Directory,
+    File,
+    /// Anything else: a character or block device, a FIFO, a socket.
+    Other,
+}
+
+/// Whether Quill can open this entry, decided from its name, its kind and its size alone.
+///
+/// **This touches no disk.** It is what every drawing path asks — the explorer's rows and the filter's
+/// results — and the reason is in this module's own documentation: the version that reads the file froze
+/// the window on a large folder and hung on `/dev`.
+///
+/// An unknown extension answers `Ok`. That is deliberate: it is offered, and the tab is where the answer
+/// is worked out and where there is room to say what went wrong. It is the same bargain [`is_image`]
+/// already makes for a `.png` whose bytes are not a PNG.
+///
+/// `size` is the length the directory read reported, or `None` when it did not report one, in which case
+/// the size limit is left to [`openable`] at the moment the file is opened.
+pub fn openable_in_a_listing(path: &Path, kind: Kind, size: Option<u64>) -> Result<(), Refusal> {
+    match kind {
+        Kind::Directory => Ok(()),
+        Kind::Other => Err(Refusal::NotAFile),
+        Kind::File => {
+            if size.is_some_and(|length| length > SIZE_LIMIT) {
+                return Err(Refusal::TooLarge);
+            }
+            if is_image(path) {
+                return Ok(());
+            }
+            match holds_text_by_name(path) {
+                Some(false) => Err(Refusal::NotText),
+                // Known text, or an extension this list has never heard of. Both are offered.
+                _ => Ok(()),
+            }
         }
     }
 }
 
 /// Whether Quill can open this file, and why not when it cannot.
+///
+/// Rule 3 lives here, so this **reads the file** for a name it does not recognise. Ask it when a file is
+/// being opened; ask [`openable_in_a_listing`] when a row is being drawn.
 pub fn openable(path: &Path) -> Result<(), Refusal> {
     if let Ok(metadata) = std::fs::metadata(path) {
         if metadata.is_file() && metadata.len() > SIZE_LIMIT {
@@ -120,22 +188,35 @@ pub fn is_openable(path: &Path) -> bool {
 
 /// Whether the file holds text, by the three rules in this module's own documentation.
 pub fn is_text(path: &Path) -> bool {
+    match holds_text_by_name(path) {
+        Some(answer) => answer,
+        None => looks_like_text(path),
+    }
+}
+
+/// Rules 1 and 2 alone: `Some(true)` for a name known to hold text, `Some(false)` for one known to hold
+/// something else, and `None` for a name this module has never heard of.
+///
+/// Separate from [`is_text`] because a drawing path may ask this and may not ask rule 3. `None` is the
+/// honest answer rather than a guess: what the caller does with it is the caller's decision, and the two
+/// callers make different ones.
+pub fn holds_text_by_name(path: &Path) -> Option<bool> {
     if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
         if TEXT_NAMES.contains(&name) {
-            return true;
+            return Some(true);
         }
         // A name that is only an extension, such as `.gitignore`, has no extension as far as the
         // standard library is concerned, so it is matched here.
         if let Some(rest) = name.strip_prefix('.') {
             if !rest.contains('.') && TEXT_EXTENSIONS.contains(&rest.to_ascii_lowercase().as_str()) {
-                return true;
+                return Some(true);
             }
         }
     }
     match extension(path) {
-        Some(extension) if TEXT_EXTENSIONS.contains(&extension.as_str()) => true,
-        Some(extension) if BINARY_EXTENSIONS.contains(&extension.as_str()) => false,
-        _ => looks_like_text(path),
+        Some(extension) if TEXT_EXTENSIONS.contains(&extension.as_str()) => Some(true),
+        Some(extension) if BINARY_EXTENSIONS.contains(&extension.as_str()) => Some(false),
+        _ => None,
     }
 }
 
@@ -357,6 +438,80 @@ pub fn preview_kind(path: Option<&Path>) -> PreviewKind {
 
 fn extension(path: &Path) -> Option<String> {
     path.extension().and_then(|extension| extension.to_str()).map(str::to_ascii_lowercase)
+}
+
+#[cfg(test)]
+mod tests_task_28 {
+    use super::*;
+
+    /// The listing question and the opening question must agree wherever the name is enough to answer, or a
+    /// row would be dimmed for a file that opens, or offered for one that cannot.
+    #[test]
+    fn the_listing_question_agrees_with_the_opening_one_for_every_name_it_knows() {
+        for extension in TEXT_EXTENSIONS.iter().chain(IMAGE_EXTENSIONS) {
+            let path = std::path::PathBuf::from(format!("a.{extension}"));
+            assert_eq!(
+                openable_in_a_listing(&path, Kind::File, Some(10)),
+                Ok(()),
+                "a .{extension} is offered"
+            );
+        }
+        for extension in BINARY_EXTENSIONS {
+            let path = std::path::PathBuf::from(format!("a.{extension}"));
+            let expected = match IMAGE_EXTENSIONS.contains(extension) {
+                // A picture is a second kind of thing Quill opens rather than a file it refuses.
+                true => Ok(()),
+                false => Err(Refusal::NotText),
+            };
+            assert_eq!(
+                openable_in_a_listing(&path, Kind::File, Some(10)),
+                expected,
+                "a .{extension}"
+            );
+        }
+        for name in TEXT_NAMES {
+            assert_eq!(
+                openable_in_a_listing(std::path::Path::new(name), Kind::File, Some(10)),
+                Ok(()),
+                "{name} is text without being read"
+            );
+        }
+    }
+
+    /// A name this module has never heard of is offered rather than read. That is the whole of why a folder
+    /// can be listed without opening anything in it, so it is stated as its own test.
+    #[test]
+    fn a_name_with_no_known_extension_is_offered_without_reading_it() {
+        assert_eq!(holds_text_by_name(std::path::Path::new("mystery")), None);
+        assert_eq!(holds_text_by_name(std::path::Path::new("thing.qqq")), None);
+        for path in ["mystery", "thing.qqq"] {
+            assert_eq!(
+                openable_in_a_listing(std::path::Path::new(path), Kind::File, None),
+                Ok(()),
+                "{path} is offered, and the tab is where it is decided"
+            );
+        }
+    }
+
+    /// Anything that is not a directory and not a regular file is listed and never opened. Opening a FIFO
+    /// with no writer blocks for ever, which is what froze the window.
+    #[test]
+    fn a_device_a_pipe_or_a_socket_is_never_opened() {
+        let path = std::path::Path::new("/dev/tty");
+        assert_eq!(openable_in_a_listing(path, Kind::Other, None), Err(Refusal::NotAFile));
+        assert!(Refusal::NotAFile.reason().contains("device"), "the row says why");
+    }
+
+    /// The size limit still applies in a listing when the directory read reported a length.
+    #[test]
+    fn a_file_larger_than_the_limit_is_refused_in_a_listing_too() {
+        let path = std::path::Path::new("huge.txt");
+        assert_eq!(
+            openable_in_a_listing(path, Kind::File, Some(SIZE_LIMIT + 1)),
+            Err(Refusal::TooLarge)
+        );
+        assert_eq!(openable_in_a_listing(path, Kind::File, Some(SIZE_LIMIT)), Ok(()));
+    }
 }
 
 #[cfg(test)]

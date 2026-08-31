@@ -787,7 +787,11 @@ fn handle_input(
     }
     // And a modal, which mostly has no field to answer the question above. The editing area stands
     // aside in the same words for the same reason.
-    if crate::app::a_modal_has_the_keyboard(ui.ctx()) {
+    //
+    // **Another** modal, not this grid's own. A grid drawn inside a dialog — the Agent-Tasks ticket modal's
+    // terminal — is the thing the keys are for, and asking whether any modal was open said no to it because its
+    // own was. The layer is what tells the two apart.
+    if crate::app::another_modal_has_the_keyboard(ui.ctx(), ui.layer_id()) {
         return;
     }
 
@@ -853,6 +857,17 @@ fn handle_input(
             session.send(bytes);
         }
     }
+    // **A key sent to the program is taken out of the frame**, or whatever is drawn after the terminal reads the
+    // same press. Escape pressed at an agent's prompt reached the program *and* closed the ticket modal around
+    // it; Enter reached the program *and* opened whatever the board's ring was on. Three keys, because these are
+    // the ones something else in Quill also listens for: Escape closes every modal, Enter confirms one and opens
+    // a ticket, and Tab moves between a window's controls. The letters are not consumed, because nothing else is
+    // listening for a letter while a terminal has the keyboard.
+    ui.ctx().input_mut(|input| {
+        for key in [egui::Key::Escape, egui::Key::Enter, egui::Key::Tab] {
+            input.consume_key(egui::Modifiers::NONE, key);
+        }
+    });
 }
 
 /// What a clipboard key press means to the terminal.

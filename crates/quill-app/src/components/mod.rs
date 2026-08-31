@@ -4,6 +4,9 @@
 //! returns what the user did in it. None of them changes the document or the window's state directly, so
 //! the state changes in one place, `app`, and two components cannot disagree about what happened.
 
+// The Agent-Tasks board, which is the first plugin that draws. Nothing in it decides anything: the
+// lanes, the drag and the search are `services::agent_tasks`.
+pub mod agent_tasks;
 pub mod about_dialog;
 pub mod activity_bar;
 pub mod color_wheel;
@@ -22,6 +25,7 @@ pub mod git_dialogs;
 pub mod git_panel;
 pub mod go_to_file;
 pub mod gutter;
+pub mod markdown_text;
 pub mod menu_bar;
 pub mod modal;
 pub mod picture_view;

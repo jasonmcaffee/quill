@@ -2426,6 +2426,98 @@ Switch a plugin off. Its files stay where they are.
 quill-cli plugins disable rust
 ```
 
+### plugins show
+
+```
+quill-cli plugins show <id>
+```
+
+One plugin in full: its manifest, whether it describes a language or draws, what it contributes, and every command it answers.
+
+- `id` — The plugin's id, as `plugins list` gives it.
+
+```sh
+quill-cli plugins show agent-tasks --json
+```
+
+### plugins reload
+
+```
+quill-cli plugins reload
+```
+
+Read every plugin manifest from disk again, so one changed by hand takes effect with no restart. One that will not parse is skipped with its reason.
+
+```sh
+quill-cli plugins reload --json
+```
+
+### plugins pane
+
+```
+quill-cli plugins pane <pane> [--show] [--hide] [--side <side>]
+```
+
+Show, hide or move a pane a plugin contributed: what its rail button and a drag on its header do.
+
+- `pane` — The pane, as `<plugin id>/<pane id>` — `agent-tasks/board`.
+- `--show` — Show it, building the plugin's own state the first time.
+- `--hide` — Put it away.
+- `--side <side>` — Dock it to left, right, top or bottom.
+
+```sh
+quill-cli plugins pane agent-tasks/board --show
+quill-cli plugins pane agent-tasks/board --side bottom
+```
+
+### plugins tab
+
+```
+quill-cli plugins tab <tab> [--open] [--close]
+```
+
+Open or close a plugin's own tab in the editing area: a tab with no file behind it.
+
+- `tab` — The tab, as `<plugin id>/<tab id>` — `agent-tasks/board`.
+- `--open` — Open it, or show it if it is already open.
+- `--close` — Close it.
+
+```sh
+quill-cli plugins tab agent-tasks/board --open
+```
+
+### plugins run
+
+```
+quill-cli plugins run <id> <command> [arguments]
+```
+
+Run one of a plugin's own commands, down the same path its menu entry and its buttons take. `plugins show` lists them.
+
+- `id` — The plugin's id.
+- `command` — The command, as `plugins show` lists it.
+- `arguments` — The rest of the line, handed to the command as it stands.
+
+```sh
+quill-cli plugins run agent-tasks board --json
+quill-cli plugins run agent-tasks new-task Rewrite the importer
+quill-cli plugins run agent-tasks start task-27
+```
+
+### plugins view
+
+```
+quill-cli plugins view <id>
+```
+
+What a plugin's pane holds, as data rather than pixels: for Agent-Tasks the sprint, the four lanes, their counts and their cards. A screenshot cannot answer how many tickets are in progress; this can.
+
+- `id` — The plugin's id.
+
+```sh
+quill-cli plugins view agent-tasks --json
+```
+
 ## git — status, changed files and the Git menu
 
 Use this tool first when asked for git status, uncommitted work, changed files or a diff in the open project; do not begin by running git in a shell. Call `status` for the branch and exact staged, unstaged and untracked file list, then `action` with `name: show-diff` and `path` to open a changed file's diff in Quill. These still run the machine's real git with its credential helper, SSH agent, configuration and hooks, on a thread; `wait` holds the answer open.

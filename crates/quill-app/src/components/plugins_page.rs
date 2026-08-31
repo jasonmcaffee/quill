@@ -299,16 +299,31 @@ fn detail(
         };
         heading(ui, "Overview");
         note(ui, plugin.description.clone());
-        let extensions: Vec<String> =
-            plugin.extensions.iter().map(|extension| format!(".{extension}")).collect();
-        note(ui, format!("Claims {}", extensions.join(", ")));
-        note(
-            ui,
-            format!(
-                "Colour scheme: {}. A scheme colours the tokens and not the editing area, so the window still lets the desktop through.",
-                plugin.theme.name
-            ),
-        );
+        // What a plugin claims depends on which kind it is: a language claims file types and brings a
+        // colour scheme, and a plugin that draws claims neither and adds to the window instead. Saying
+        // `Colour scheme: Dracula` about a plugin that names no colours would be a small wrongness a
+        // reader notices at once, and it would also be a claim no plugin is allowed to make.
+        match plugin.kind {
+            crate::services::plugins::Kind::Language => {
+                let extensions: Vec<String> =
+                    plugin.extensions.iter().map(|extension| format!(".{extension}")).collect();
+                note(ui, format!("Claims {}", extensions.join(", ")));
+                note(
+                    ui,
+                    format!(
+                        "Colour scheme: {}. A scheme colours the tokens and not the editing area, so the window still lets the desktop through.",
+                        plugin.theme.name
+                    ),
+                );
+            }
+            crate::services::plugins::Kind::Ui => {
+                note(ui, format!("Adds {}", contributions_of(plugin)));
+                note(
+                    ui,
+                    "It draws with Quill's own controls, so it takes the font and the transparency from Appearance and cannot name a colour of its own.".to_owned(),
+                );
+            }
+        }
         if !plugin.limitations.is_empty() {
             heading(ui, "What it does not do");
             note(ui, plugin.limitations.clone());
@@ -319,4 +334,28 @@ fn detail(
             "These ship with Quill. There is no network marketplace: a plugin is data rather than a program, nothing in one is executed, and fetching code over the network would need a trust decision a format like this has not earned. Writing a folder into the settings folder by hand installs one.".to_owned(),
         );
     });
+}
+
+/// What a plugin that draws adds to the window, as a sentence for its own row in the Plugins page.
+///
+/// Read from the manifest rather than written down here, so a plugin that later contributes a second
+/// thing says so with no change to this page.
+fn contributions_of(plugin: &crate::services::plugins::Plugin) -> String {
+    let mut added: Vec<String> = Vec::new();
+    if let Some(pane) = &plugin.contributions.pane {
+        added.push(format!("a pane called {} with a button in the rail", pane.label));
+    }
+    if let Some(tab) = &plugin.contributions.tab {
+        added.push(format!("the {} tab in the editing area", tab.label));
+    }
+    if let Some(menu) = &plugin.contributions.menu {
+        added.push(format!("the {} menu", menu.name));
+    }
+    if plugin.contributions.page.is_some() {
+        added.push("a page in these settings".to_owned());
+    }
+    match added.is_empty() {
+        true => "nothing to the window".to_owned(),
+        false => format!("{}.", added.join(", ")),
+    }
 }

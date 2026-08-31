@@ -54,8 +54,20 @@ releases="$repo/releases"
 # `notarize.env.example` beside it says where each value comes from. Anything already in the environment
 # wins, so a one-off run can still override it.
 if [ -f "$here/notarize.env" ]; then
+    # **Which is not what a plain `.` does.** The file holds ordinary assignments, so sourcing it overwrote
+    # whatever the environment already had and a one-off `CODESIGN_IDENTITY=- ./build.sh` was ignored — the
+    # run then failed asking for an identity the person had deliberately overridden. So what was set before
+    # is remembered and put back after. Named one at a time rather than done cleverly, because these four
+    # are what the file sets and a loop over the file's contents would be a way of running it twice.
+    for kept in CODESIGN_IDENTITY NOTARY_PROFILE NOTARY_KEY NOTARY_KEY_ID; do
+        eval "had_$kept=\${$kept+yes}"
+        eval "was_$kept=\${$kept-}"
+    done
     # shellcheck disable=SC1091
     . "$here/notarize.env"
+    for kept in CODESIGN_IDENTITY NOTARY_PROFILE NOTARY_KEY NOTARY_KEY_ID; do
+        eval "if [ -n \"\$had_$kept\" ]; then $kept=\"\$was_$kept\"; fi"
+    done
 fi
 
 install_it=0
@@ -245,12 +257,18 @@ chmod +x "$app/Contents/MacOS/quill" "$app/Contents/MacOS/quill-cli"
 
 # The icon. `iconutil` is Apple's own tool and so is the definition of the format; the committed
 # quill.icns is the fallback, so that the icon can also be rebuilt on a machine that is not a Mac.
-if command -v iconutil >/dev/null 2>&1 && [ -d "$repo/installer/icon/Quill.iconset" ]; then
-    iconutil --convert icns --output "$app/Contents/Resources/Quill.icns" "$repo/installer/icon/Quill.iconset"
+# The committed quill.icns is used when iconutil is absent **and when it refuses the iconset**. It refuses
+# this one on macOS 26 with `Invalid Iconset` and says nothing about which file it objects to; every image
+# is present, every one is the size its name claims, and a clean copy with no extended attributes is
+# refused as well. Aborting the whole build over the icon meant a working editor could not be installed at
+# all, which is a worse outcome than an icon built the other way.
+if command -v iconutil >/dev/null 2>&1 && [ -d "$repo/installer/icon/Quill.iconset" ] \
+    && iconutil --convert icns --output "$app/Contents/Resources/Quill.icns" \
+        "$repo/installer/icon/Quill.iconset" 2>/dev/null; then
     echo "  icon built by iconutil"
 else
     cp "$repo/installer/icon/quill.icns" "$app/Contents/Resources/Quill.icns"
-    echo "  icon taken from the committed quill.icns"
+    echo "  icon taken from the committed quill.icns, because iconutil is absent or refused the iconset"
 fi
 
 sed "s/__VERSION__/$version/g" "$here/Info.plist" > "$app/Contents/Info.plist"

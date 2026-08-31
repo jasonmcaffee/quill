@@ -287,6 +287,28 @@ pub fn folder(painter: &egui::Painter, centre: Pos2, color: Color32) {
     painter.line_segment([Pos2::new(right, top + 1.6), Pos2::new(right, bottom)], stroke);
 }
 
+/// The editing area: a panel with a tab along the top of it, for the button that shows and hides it.
+///
+/// `task-28` asks for a toggle under the folder icon for the pane holding the tabs. What that pane looks like
+/// is a rectangle with one tab on its top edge, so that is what is drawn — the same outline the folder above it
+/// is drawn with, at the same weight, so the two read as a pair.
+pub fn editing_area(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    let stroke = Stroke::new(1.4, color);
+    let left = centre.x - 5.5;
+    let right = centre.x + 5.5;
+    let top = centre.y - 4.5;
+    let bottom = centre.y + 4.5;
+    // The tab, filled so it reads as the one that is showing rather than as a notch in the outline.
+    let tab = Rect::from_min_max(Pos2::new(left, top), Pos2::new(left + 4.4, top + 2.4));
+    painter.rect_filled(tab, CornerRadius::same(1), color);
+    // The strip the tab sits on, and the body under it.
+    painter.line_segment([Pos2::new(left, top + 2.4), Pos2::new(right, top + 2.4)], stroke);
+    painter.line_segment([Pos2::new(left + 4.4, top), Pos2::new(right, top)], stroke);
+    painter.line_segment([Pos2::new(left, top), Pos2::new(left, bottom)], stroke);
+    painter.line_segment([Pos2::new(right, top), Pos2::new(right, bottom)], stroke);
+    painter.line_segment([Pos2::new(left, bottom), Pos2::new(right, bottom)], stroke);
+}
+
 /// A prompt: a chevron and an underscore, for the button that shows and hides the terminal.
 pub fn terminal(painter: &egui::Painter, centre: Pos2, color: Color32) {
     let stroke = Stroke::new(1.5, color);
@@ -680,4 +702,29 @@ fn arrow_head(painter: &egui::Painter, tip: Pos2, direction: f32, color: Color32
         color,
         Stroke::NONE,
     ));
+}
+
+/// The four columns of a task board, which is what `pane.icon = board` draws.
+///
+/// Drawn rather than lettered, which is the rule `design/style-guide.md` sets for every icon here: a
+/// drawn icon takes the tint it is given, so it follows the rail's own three states and the window's
+/// colours rather than carrying a colour of its own.
+pub fn board(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    let half = 5.5;
+    let column = 2.4;
+    // Four columns of different heights, which is what a board with different numbers of cards in each
+    // lane looks like at this size.
+    let heights = [1.0, 0.62, 0.85, 0.45];
+    for (index, share) in heights.into_iter().enumerate() {
+        let x = centre.x - half + index as f32 * (column + 1.0);
+        let height = half * 2.0 * share;
+        painter.rect_filled(
+            Rect::from_min_size(
+                Pos2::new(x, centre.y - half),
+                egui::Vec2::new(column, height),
+            ),
+            CornerRadius::same(1),
+            color,
+        );
+    }
 }

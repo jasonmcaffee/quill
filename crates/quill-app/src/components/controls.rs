@@ -267,7 +267,23 @@ pub fn labelled_flyout<T>(
 /// spacing is on can be seen without opening anything, which is how the alignments beside them
 /// already work.
 pub fn choice_button(ui: &mut egui::Ui, area: Rect, label: &str, active: bool) -> bool {
-    let response = ui.interact(area, ui.id().with(("choice", label)), Sense::click());
+    choice_button_named(ui, area, label, label, active)
+}
+
+/// A choice button that announces a name other than the word drawn on it.
+///
+/// For a button whose word alone does not say what pressing it does, and for one whose word already appears
+/// somewhere else on the same screen. The agent chooser under the New lane is both: it draws `claude`, which is
+/// also the word on every card assigned to that agent, so a test or a screen reader asking for `claude` finds
+/// several things and cannot tell which is the chooser.
+pub fn choice_button_named(
+    ui: &mut egui::Ui,
+    area: Rect,
+    label: &str,
+    announced: &str,
+    active: bool,
+) -> bool {
+    let response = ui.interact(area, ui.id().with(("choice", announced)), Sense::click());
     let painter = ui.painter();
     if active {
         painter.rect_filled(area, CornerRadius::same(size::CONTROL_CORNER), color::ACCENT);
@@ -287,7 +303,7 @@ pub fn choice_button(ui: &mut egui::Ui, area: Rect, label: &str, active: bool) -
         painter.layout_no_wrap(label.to_owned(), egui::FontId::proportional(12.5), tint);
     painter.galley(area.center() - galley.size() / 2.0, galley, tint);
     response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), active, label)
+        egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), active, announced)
     });
     response.clicked()
 }

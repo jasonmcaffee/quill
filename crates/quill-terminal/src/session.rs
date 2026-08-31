@@ -90,7 +90,7 @@ impl From<Size> for WindowSize {
 }
 
 /// What to run, and where.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct SessionSettings {
     /// The program to run. `None` uses the shell the operating system says the user has.
     pub shell: Option<String>,
@@ -104,6 +104,25 @@ pub struct SessionSettings {
     /// with no `PATH` is a bug nobody enjoys finding. The terminal's own shells leave it empty and
     /// change by nothing.
     pub env: Vec<(String, String)>,
+}
+
+/// **Written by hand so that `env` prints its names and not its values.**
+///
+/// What goes in `env` is sometimes a secret: a run configuration can carry a token, and Agent-Tasks puts the
+/// authentication key it read out of the keychain there. A derived `Debug` would put every one of those values
+/// into whatever printed it — a log line, a panic message, a `dbg!` somebody left in. Nothing prints
+/// `SessionSettings` today, and this is what keeps that true whatever anybody adds later.
+impl std::fmt::Debug for SessionSettings {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SessionSettings")
+            .field("shell", &self.shell)
+            .field("args", &self.args)
+            .field("working_directory", &self.working_directory)
+            // The names, so a reader can tell what was set, and the count, so a reader can tell how much.
+            .field("env", &self.env.iter().map(|(name, _)| name.as_str()).collect::<Vec<&str>>())
+            .finish()
+    }
 }
 
 /// Told when something happened that the window has to redraw for.
@@ -1366,6 +1385,25 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
+    }
+
+    #[test]
+    fn what_is_in_the_environment_is_named_but_never_printed() {
+        // A run configuration can carry a token and Agent-Tasks puts an authentication key here, so a `{:?}` of
+        // these settings must not be a way to read one.
+        let settings = SessionSettings {
+            shell: Some("/bin/sh".to_owned()),
+            env: vec![
+                ("ANTHROPIC_API_KEY".to_owned(), "sk-do-not-print-me".to_owned()),
+                ("PORT".to_owned(), "3000".to_owned()),
+            ],
+            ..SessionSettings::default()
+        };
+        let printed = format!("{settings:?}");
+        assert!(printed.contains("ANTHROPIC_API_KEY"), "the name is there to read: {printed}");
+        assert!(printed.contains("PORT"), "every name is there: {printed}");
+        assert!(!printed.contains("sk-do-not-print-me"), "the value is not: {printed}");
+        assert!(!printed.contains("3000"), "no value is, secret or not: {printed}");
     }
 
     #[test]

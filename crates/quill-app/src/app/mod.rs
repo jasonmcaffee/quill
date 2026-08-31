@@ -31,6 +31,8 @@
 //! is the only place an action turns into a change. The menu bar inside the window, the macOS menu bar and a
 //! test all go down that one path.
 
+// The window's side of the UI plugins: which providers are open, and which of their panes are showing.
+pub mod plugin_panes;
 pub mod action_names;
 pub mod actions;
 pub mod cli;
@@ -299,6 +301,12 @@ pub enum Focus {
     Explorer,
     /// The terminal. Typing goes to the program running in it, and Tab and Escape go with it.
     Terminal,
+    /// A plugin's own pane or tab. Typing goes to whatever it has that takes keys.
+    ///
+    /// A fifth holder rather than a flag on the plugin, because `Focus` is the one value that says who has the
+    /// keyboard: a plugin that kept its own left the editing area holding the keys as well, so one press reached
+    /// both. `Request::TakeTheKeyboard` is what asks for it.
+    Plugin,
 }
 
 /// A tab being carried by the pointer.
@@ -368,6 +376,19 @@ pub fn a_modal_has_the_keyboard(ctx: &egui::Context) -> bool {
     ctx.memory(|memory| memory.top_modal_layer().is_some())
 }
 
+/// The same question, asked by something that is **itself inside a modal**.
+///
+/// A character grid drawn inside a dialog — the ticket modal's terminal — has to take the keys, and
+/// [`a_modal_has_the_keyboard`] said no to it because a modal was open: its own. The layer settles it. Anything
+/// outside the top modal still stands aside, which is what keeps the editing area and the terminal tile from
+/// reading a key press aimed at a dialog on top of them.
+pub fn another_modal_has_the_keyboard(ctx: &egui::Context, mine: egui::LayerId) -> bool {
+    ctx.memory(|memory| match memory.top_modal_layer() {
+        Some(top) => top != mine,
+        None => false,
+    })
+}
+
 /// The name of the widget that holds egui's keyboard focus while a pane of Quill's own is being typed
 /// into.
 pub const KEYBOARD_HOLDER: &str = "quill-keyboard-holder";
@@ -397,6 +418,13 @@ pub const KEYBOARD_HOLDER: &str = "quill-keyboard-holder";
 /// another thread signals a source and hopes the sleep breaks. The timer is the one that can be
 /// counted on, which is why the heartbeat is a delay rather than a thread calling `request_repaint`.
 pub const HEARTBEAT: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// How often an open plugin is given a turn on the clock.
+///
+/// Two minutes, which is what the board being replaced runs its watchdog on, and it is the number that
+/// decides how long an agent that has stopped waits to be nudged. Nothing happens in between: a frame
+/// inside the interval costs one comparison.
+pub const PLUGIN_TICK: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// How long an adapter search is believed before it is done again.
 ///
@@ -478,6 +506,19 @@ pub fn hold_the_keyboard(ui: &mut egui::Ui) {
 pub struct QuillApp {
     /// The files that are open, one to a tab, and which of them is showing.
     pub files: OpenFiles,
+    /// Set when a plugin asked for another frame, which a pane with a terminal in it does while that
+    /// terminal is printing. Read and cleared once at the end of the frame.
+    pub(crate) plugin_wants_a_repaint: bool,
+    /// What a plugin asked to have put on the clipboard, which its terminal's copy does. Read and cleared
+    /// once at the end of the frame, because the context is not at hand where the request is acted on.
+    pub(crate) plugin_wants_copied: Option<String>,
+    /// When the plugins were last given a turn on the clock. `None` until the first frame.
+    plugins_ticked_at: Option<std::time::Instant>,
+    /// The plugins that draw: which providers are open, and which of their panes are showing.
+    ///
+    /// One value rather than a provider held per contribution, so the rail, the dock, the tab strip, the
+    /// menus and the Settings window all ask the same thing what is contributed.
+    pub plugin_ui: plugin_panes::PluginUi,
     pub tree: FileTree,
     pub renderer: TextRenderer,
     /// The font and the background, as chosen in `Edit -> Settings`.
@@ -488,6 +529,11 @@ pub struct QuillApp {
     pub filter: String,
     /// False when the explorer has been hidden.
     pub explorer_visible: bool,
+    /// False when the editing area — the pane to the right of the explorer, holding the tabs — has been hidden.
+    ///
+    /// `task-28`. Hiding it gives the whole width to the panels that are showing. It can never leave an empty
+    /// window: see `Action::ToggleEditor` in `run_action`.
+    pub editor_visible: bool,
     /// The Settings modal.
     pub settings_window: SettingsWindow,
     /// The terminal along the bottom.
@@ -826,6 +872,10 @@ impl QuillApp {
         // Start in a family this system actually has, so the first thing typed is visible.
         document.set_base_style(settings.as_style_change());
         Self {
+            plugin_wants_a_repaint: false,
+            plugin_wants_copied: None,
+            plugins_ticked_at: None,
+            plugin_ui: plugin_panes::PluginUi::default(),
             files: OpenFiles::new(document),
             tree: FileTree::new(&folder),
             renderer,
@@ -833,6 +883,7 @@ impl QuillApp {
             panes: Panes::new(),
             filter: String::new(),
             explorer_visible: true,
+            editor_visible: true,
             settings_window: SettingsWindow::default(),
             terminal: TerminalPanel::new(Some(folder)),
             run: RunPanel::new(),
@@ -908,7 +959,7 @@ impl QuillApp {
             tab_strips: Vec::new(),
             panel_drag: None,
             panes_area: Rect::ZERO,
-            panel_rects: dock::Regions { panels: [Rect::ZERO; 4], editor: Rect::ZERO },
+            panel_rects: dock::Regions { panels: [Rect::ZERO; dock::SLOTS], editor: Rect::ZERO },
             panel_menu: None,
             last_highlight: theme::color::HIGHLIGHT_YELLOW,
             marks: FileMarks::new(),
@@ -967,6 +1018,12 @@ impl QuillApp {
     pub fn prepare(&mut self, ctx: &egui::Context) {
         theme::apply(ctx);
         self.themed = true;
+        // What the plugins contribute, read from their manifests. Here rather than only in
+        // `load_settings`, because a window a test builds has no settings folder and still has to draw
+        // the rail button, the menu and the Settings page a plugin adds — the drawing is Quill's own
+        // code, so there is nothing about it that needs a folder. A provider with no folder opens its
+        // board in memory, which is what stops a test touching the one somebody is using.
+        self.refresh_the_plugins();
         self.context = Some(ctx.clone());
         let family = self.renderer.default_family();
         let regular = self.renderer.face_bytes(&family, false);
@@ -1011,6 +1068,16 @@ impl QuillApp {
         if let Some(first) = problems.first() {
             self.message = Some(format!("A plugin could not be read \u{2014} {first}"));
         }
+        self.store = Some(store);
+        self.refresh_the_plugins();
+        // Read the pane sizes and sides again now that the contributed panes have names: the first read
+        // happened before the manifests were, so it could not know what to look for.
+        if let Some(store) = self.store.as_ref() {
+            let (_, panes) = settings::load_with(store, &self.plugin_ui.pane_keys());
+            self.panes = panes;
+        }
+        self.refresh_the_plugins();
+        let store = self.store.take().expect("just set");
         // On the first run there is no settings file. One is written straight away, holding the defaults,
         // so that a person looking for it finds it and can see what its names are rather than having to
         // change a setting first to make it appear.
@@ -1041,6 +1108,13 @@ impl QuillApp {
         let state = project_state::load(self.tree.root());
         for folder in &state.expanded_folders {
             self.tree.expand(folder);
+        }
+        // The tabs a plugin drew, reopened before the files so they sit where they did: a plugin tab is
+        // opened from a menu rather than by opening a file, so nothing else would bring it back.
+        for key in state.plugin_tabs.clone() {
+            if self.plugin_ui.surfaces().tab(&key).is_some() {
+                self.open_the_plugin_tab(&key);
+            }
         }
         for path in &state.open_files {
             self.open_path_permanently(path);
@@ -1076,6 +1150,7 @@ impl QuillApp {
             }
         }
         self.explorer_visible = state.explorer_visible;
+        self.editor_visible = state.editor_visible;
         // The project's run configurations, and which of them the widget had chosen. **No run is
         // started**: unlike a terminal, which is a place to type, a run is something that was
         // started deliberately, and restarting somebody's dev server because they closed the window
@@ -1122,7 +1197,14 @@ impl QuillApp {
         let mut file_panes = Vec::new();
         let mut file_scrolls = Vec::new();
         let mut file_carets = Vec::new();
+        let mut plugin_tabs = Vec::new();
         for file in self.files.iter() {
+            // A tab a plugin drew is remembered by its own name, in a list of its own: every list beside
+            // `open_files` is indexed with it, and none of them means anything for a tab with no document.
+            if let Some(plugin) = &file.plugin {
+                plugin_tabs.push(plugin.key.clone());
+                continue;
+            }
             let Some(path) = file.path() else {
                 continue;
             };
@@ -1138,6 +1220,7 @@ impl QuillApp {
         });
         ProjectState {
             open_files,
+            plugin_tabs,
             active_file: active.unwrap_or(0),
             file_panes,
             file_scrolls,
@@ -1146,6 +1229,7 @@ impl QuillApp {
             active_pane: self.files.focused_pane(),
             expanded_folders: self.tree.expanded_folders(),
             explorer_visible: self.explorer_visible,
+            editor_visible: self.editor_visible,
             terminal_visible: self.terminal.visible,
             terminal_tabs: self.terminal.tabs.count(),
             // The names a person typed, and nothing else: `Tabs::names` would give back
@@ -1367,6 +1451,17 @@ impl QuillApp {
     /// What the menus need to know about the window.
     pub fn menu_state(&self) -> MenuState {
         MenuState {
+            plugin_menus: self
+                .plugin_ui
+                .surfaces()
+                .menus
+                .iter()
+                .map(|surface| actions::PluginMenu {
+                    plugin: surface.plugin.clone(),
+                    name: surface.what.name.clone(),
+                    items: surface.what.items.clone(),
+                })
+                .collect(),
             can_undo: self.document().can_undo(),
             can_redo: self.document().can_redo(),
             has_selection: !self.document().selection().is_empty(),
@@ -1375,6 +1470,7 @@ impl QuillApp {
             can_preview: file_kind::preview_applies(self.document().path()),
             preview_kind: file_kind::preview_kind(self.document().path()),
             explorer_visible: self.explorer_visible,
+            editor_visible: self.editor_visible,
             dock: self.panes.dock,
             line_numbers: self.settings.line_numbers,
             terminal_visible: self.terminal.visible,
@@ -1424,6 +1520,22 @@ impl QuillApp {
     /// disagree about what `Save` means.
     pub fn run_action(&mut self, action: Action, ctx: &egui::Context) {
         match action {
+            // A plugin's three actions, all of which go down `PluginUi::run` or its two siblings, which
+            // is the same path `quill-cli plugin` takes. A button in the rail, an entry in the plugin's
+            // menu and an agent asking therefore reach one function rather than three that agree today.
+            Action::PluginPane { ref pane } => {
+                let showing = match self.plugin_ui.slot_of(pane) {
+                    Some(slot) => !self.plugin_ui.is_visible(slot),
+                    None => true,
+                };
+                self.show_the_plugin_pane(pane, showing);
+            }
+            Action::PluginTab { ref tab } => self.open_the_plugin_tab(&tab.clone()),
+            Action::PluginCommand { ref plugin, ref command } => {
+                let (plugin, command) = (plugin.clone(), command.clone());
+                // The answer is already in the status bar; the menu has nothing else to do with it.
+                let _ = self.run_plugin_command(&plugin, &command, &[]);
+            }
             Action::NewWindow => {
                 launcher::open_window(self.tree.root());
             }
@@ -1585,7 +1697,23 @@ impl QuillApp {
                 }
             }
             Action::SetViewMode(mode) => self.set_view_mode(mode),
-            Action::ToggleExplorer => self.explorer_visible = !self.explorer_visible,
+            Action::ToggleExplorer => {
+                self.explorer_visible = !self.explorer_visible;
+                // Hiding the last panel while the editing area is hidden would leave a window with nothing in
+                // it, so the editing area comes back instead. The other half of this rule is in `ToggleEditor`.
+                if !self.editor_visible && !self.anything_is_showing_in_the_panes() {
+                    self.editor_visible = true;
+                }
+            }
+            Action::ToggleEditor => {
+                let hiding = self.editor_visible;
+                self.editor_visible = !self.editor_visible;
+                // Hiding it with nothing else showing shows the explorer, rather than the button doing nothing.
+                // One rule stated in both directions: there is always something to look at.
+                if hiding && !self.anything_is_showing_in_the_panes() {
+                    self.explorer_visible = true;
+                }
+            }
             Action::ToggleLineNumbers => {
                 self.settings.line_numbers = !self.settings.line_numbers;
                 self.unsaved_settings = true;
@@ -3040,6 +3168,15 @@ impl QuillApp {
     /// line. The rectangle a hidden panel would have is the layout with it switched on, worked out
     /// by the same function — which is why `dock::regions` takes what is showing rather than reading
     /// the window.
+    /// The rectangle the last frame actually gave `panel`, which is `Rect::ZERO` when it was not showing.
+    ///
+    /// [`Self::panel_area`] answers a different question — where a panel *would* be — because a menu has
+    /// to be able to offer to move a panel that is put away. A test asserting that a hidden pane takes no
+    /// room wants this one.
+    pub fn panel_rect_for_tests(&self, panel: dock::Panel) -> Rect {
+        self.panel_rects.of(panel)
+    }
+
     pub fn panel_area(&self, panel: dock::Panel) -> Rect {
         let rect = self.panel_rects.of(panel);
         if rect.width() > 1.0 && rect.height() > 1.0 {
@@ -3053,22 +3190,442 @@ impl QuillApp {
         dock::regions(self.panes_area, &self.panes.dock, showing, &self.panes).of(panel)
     }
 
+    /// Draw every contributed pane that is showing, and gather what they asked for.
+    ///
+    /// One function rather than a call per plugin, because the rectangles come from one place —
+    /// `dock::regions`, which laid out every panel including these — and because a provider is borrowed
+    /// while it draws, so what it asked for has to be acted on after the borrow has ended.
+    fn show_the_plugin_panes(
+        &mut self,
+        ui: &mut egui::Ui,
+    ) -> Vec<(String, crate::services::plugin_ui::Request)> {
+        let mut asked = Vec::new();
+        let mut closing: Option<String> = None;
+        // What each header reported, acted on after the loop: `note_a_panel_grab` changes the window and the
+        // loop is holding a borrow of the renderer for the whole of it.
+        let mut grabs: Vec<(dock::Panel, crate::components::dock::Grab)> = Vec::new();
+        let look = crate::services::plugin_ui::Look::of(&self.settings, &self.renderer)
+            .holding_the_keyboard(matches!(self.focus, Focus::Plugin));
+        for slot in 0..self.plugin_ui.pane_count() {
+            if !self.plugin_ui.is_visible(slot) {
+                continue;
+            }
+            let rect = self.panel_rects.of(dock::Panel::Plugin(slot as u8));
+            if rect.width() < 1.0 || rect.height() < 1.0 {
+                continue;
+            }
+            let Some(plugin) = self.plugin_ui.plugin_of(slot) else {
+                continue;
+            };
+            let label = self.plugin_ui.pane(slot).map(|pane| pane.label.clone()).unwrap_or_default();
+            let problem = self.plugin_ui.problem_with(&plugin).map(str::to_owned);
+            let panel = dock::Panel::Plugin(slot as u8);
+            // The header, which is what every other panel in Quill has and what the board pane did not: it
+            // names the panel, it closes it, and it is the handle the panel is dragged to another edge by.
+            // `components::dock::handle` is the one function that makes a rectangle a drag handle, and the
+            // four drop bands, the strong rectangle and the `Move to` menu are all `app::dock`'s already.
+            let header = Rect::from_min_size(
+                rect.min,
+                egui::Vec2::new(rect.width(), crate::components::agent_tasks::PANE_HEADER),
+            );
+            let count = self
+                .plugin_ui
+                .view_of(&plugin)
+                .and_then(|view| view["total"].as_u64())
+                .map(|total| total.to_string());
+            let outcome = {
+                let mut header_ui = ui.new_child(egui::UiBuilder::new().max_rect(header));
+                crate::components::agent_tasks::pane_header(
+                    &mut header_ui,
+                    header,
+                    &label,
+                    count.as_deref(),
+                    panel,
+                    self.settings.opacity,
+                )
+            };
+            grabs.push((panel, outcome.grab));
+            if outcome.closed {
+                closing = self.plugin_ui.pane_key(slot);
+            }
+            let body = Rect::from_min_max(egui::Pos2::new(rect.min.x, header.max.y), rect.max);
+            let mut pane_ui = ui.new_child(egui::UiBuilder::new().max_rect(body));
+            pane_ui.set_clip_rect(body);
+            let rect = body;
+            match problem {
+                Some(problem) => {
+                    // The provider could not be opened. Its reason is drawn where its board would be,
+                    // because a blank pane is a pane somebody reports as a bug in Quill.
+                    pane_ui.painter().rect_filled(rect, 0, look.ground(look.palette.panel));
+                    let galley = pane_ui.painter().layout(
+                        format!("{header} could not be opened.\n\n{problem}"),
+                        egui::FontId::proportional(look.font_size),
+                        look.palette.text_dim,
+                        rect.width() - 24.0,
+                    );
+                    pane_ui.painter().galley(rect.min + egui::Vec2::splat(12.0), galley, look.palette.text_dim);
+                }
+                None => {
+                    if let Some(provider) = self.plugin_ui.provider(&plugin) {
+                        let wanted = provider.pane(&mut pane_ui, &look);
+                        asked.extend(wanted.into_iter().map(|request| (plugin.clone(), request)));
+                    }
+                }
+            }
+        }
+        // After the loop, because closing a pane changes what the loop is walking and a grab changes the dock.
+        for (panel, grab) in grabs {
+            self.note_a_panel_grab(panel, grab);
+        }
+        if let Some(key) = closing {
+            self.show_the_plugin_pane(&key, false);
+        }
+        asked
+    }
+
+    /// Draw whatever modal each open plugin has, and act on what it asked for.
+    fn show_the_plugin_modals(&mut self, ui: &mut egui::Ui) {
+        let look = crate::services::plugin_ui::Look::of(&self.settings, &self.renderer)
+            .holding_the_keyboard(matches!(self.focus, Focus::Plugin));
+        let mut asked: Vec<(String, crate::services::plugin_ui::Request)> = Vec::new();
+        for plugin in self.plugin_ui.surfaces().plugins() {
+            if !self.plugin_ui.is_open(&plugin) {
+                continue;
+            }
+            if let Some(provider) = self.plugin_ui.provider(&plugin) {
+                let (wanted, _closed) = provider.modal(ui.ctx(), &look);
+                asked.extend(wanted.into_iter().map(|request| (plugin.clone(), request)));
+            }
+        }
+        for (plugin, request) in asked {
+            self.act_on_a_plugin_request(&plugin, request);
+        }
+    }
+
+    /// Act on one thing a provider asked the window for.
+    ///
+    /// A provider does none of these itself, so there is one owner of the tab strip, one owner of the
+    /// status bar and one place a file is opened.
+    ///
+    /// `plugin` is the plugin that asked. It has to be carried, because two plugins can both contribute a
+    /// pane and a request that acted on the first one would show the wrong pane the day a second plugin is
+    /// installed.
+    fn act_on_a_plugin_request(
+        &mut self,
+        plugin: &str,
+        request: crate::services::plugin_ui::Request,
+    ) {
+        use crate::services::plugin_ui::Request;
+        match request {
+            Request::OpenFile(path) => self.open_path_in_tab(&path, true),
+            Request::Message(said) => self.message = Some(said),
+            Request::ShowTab => {
+                let key = self
+                    .plugin_ui
+                    .surfaces()
+                    .tabs
+                    .iter()
+                    .find(|surface| surface.plugin == plugin)
+                    .map(|surface| surface.key(&surface.what.id));
+                if let Some(key) = key {
+                    self.open_the_plugin_tab(&key);
+                }
+            }
+            Request::ShowPane(showing) => {
+                let key = self
+                    .plugin_ui
+                    .surfaces()
+                    .panes
+                    .iter()
+                    .find(|surface| surface.plugin == plugin)
+                    .map(|surface| surface.key(&surface.what.id));
+                if let Some(key) = key {
+                    self.show_the_plugin_pane(&key, showing);
+                }
+            }
+            // A provider with a terminal in it needs the window to keep drawing while that terminal
+            // prints, which is what the terminal tile already asks for through its waker. It is a flag
+            // rather than a call, because the context is not at hand here and the frame asks for it once
+            // at the end whatever number of providers wanted it.
+            Request::Repaint => self.plugin_wants_a_repaint = true,
+            // The window owns the one handle to the platform's clipboard, which is why a provider asks.
+            Request::Copy(text) => self.plugin_wants_copied = Some(text),
+            // The keyboard, through the one value that owns it. `Focus::Plugin` is a fifth thing that can hold the
+            // keys, beside the editing area, the explorer, the terminal tile and the run tile, and naming it is
+            // what stops a key press reaching two of them.
+            Request::TakeTheKeyboard(taking) => {
+                self.focus = match taking {
+                    true => Focus::Plugin,
+                    false => Focus::Editor,
+                };
+                if let Some(provider) = self.plugin_ui.provider(plugin) {
+                    provider.keyboard(taking);
+                }
+            }
+            // `services::launcher` is the one place Quill asks the operating system to open something.
+            Request::Reveal(path) => {
+                if !crate::services::launcher::reveal(&path) {
+                    self.message = Some(format!("{} could not be shown", path.display()));
+                }
+            }
+        }
+    }
+
+    /// Show or hide the pane a plugin contributed, building its provider the first time it is shown.
+    ///
+    /// A pane in a strip is a tile, so it puts the other tiles on that side away, which is the rule the
+    /// terminal, the run tile and the debug tile already keep. What went wrong, if anything did, is said
+    /// in the status bar rather than swallowed, which is what every honest miss in Quill does.
+    pub fn show_the_plugin_pane(&mut self, pane: &str, showing: bool) {
+        let Some(slot) = self.plugin_ui.slot_of(pane) else {
+            self.message = Some(format!("there is no `{pane}` pane"));
+            return;
+        };
+        if let Some(problem) = self.plugin_ui.set_visible(slot, showing) {
+            self.message = Some(problem);
+            return;
+        }
+        if showing {
+            let panel = dock::Panel::Plugin(slot as u8);
+            // Only a pane that is a tile competes for a strip. One in the top group is a list, like the
+            // explorer, and the explorer has never put the terminal away.
+            let tiles = self.plugin_panes_that_are_tiles();
+            if panel.is_a_tile_given(&tiles) && self.panes.dock.side_of(panel).is_a_strip() {
+                self.put_the_other_tiles_away(panel);
+            }
+        } else if self.focus == Focus::Plugin && !self.plugin_ui.visible().iter().any(|showing| *showing) {
+            // **The keyboard comes back to the editing area when the last plugin pane goes.** Clicking the board
+            // gives the keys to the plugin, and hiding the pane used to leave them there: somebody typed at the
+            // caret they could see and nothing appeared until they clicked the editor. `show_the_terminal_tile`
+            // already does this and for the same reason. Only when the last one goes, because two plugin panes
+            // can be open and the keys still belong to the one that is left.
+            self.focus = Focus::Editor;
+            if let Some(provider) = self.plugin_ui.provider(pane.split('/').next().unwrap_or(pane)) {
+                provider.keyboard(false);
+            }
+        }
+        self.unsaved_settings = true;
+    }
+
+    /// Open a plugin's own tab in the editing area, or show it if it is already open.
+    ///
+    /// A contributed tab is a `Document` with a `PluginTab` beside it, which is exactly what a picture
+    /// tab is: the four questions the window asks a tab — is it modified, can it be saved, has it a
+    /// preview, has it a gutter — all answer the same way for both.
+    pub fn open_the_plugin_tab(&mut self, tab: &str) {
+        let Some(surface) = self.plugin_ui.surfaces().tab(tab).cloned() else {
+            self.message = Some(format!("there is no `{tab}` tab"));
+            return;
+        };
+        if let Err(problem) = self.plugin_ui.opened(&surface.plugin, &surface.provider) {
+            self.message = Some(problem);
+            return;
+        }
+        if let Some(index) = self.files.index_of_plugin_tab(tab) {
+            self.files.show(index);
+            self.focus = Focus::Editor;
+            return;
+        }
+        // An empty document, because the tab's contents are drawn by the plugin. It exists because a tab
+        // in Quill is a `Document`, which is the picture precedent followed exactly.
+        self.files.open_plugin_tab(
+            quill_core::Document::new(),
+            files::PluginTab {
+                key: tab.to_owned(),
+                plugin: surface.plugin.clone(),
+                label: surface.what.label.clone(),
+            },
+        );
+        self.focus = Focus::Editor;
+    }
+
+    /// Run one command against a plugin, whichever of the three ways in asked for it.
+    ///
+    /// The one place a plugin command is run from the window, so the menu entry, the button in the pane
+    /// and `quill-cli plugin run` are one path. What it said goes in the status bar.
+    pub fn run_plugin_command(
+        &mut self,
+        plugin: &str,
+        command: &str,
+        arguments: &[String],
+    ) -> Result<crate::services::plugin_ui::Answer, String> {
+        let answer = self.plugin_ui.run(plugin, command, arguments);
+        match &answer {
+            Ok(said) if !said.message.is_empty() => self.message = Some(said.message.clone()),
+            Ok(_) => {}
+            Err(problem) => self.message = Some(problem.clone()),
+        }
+        // Two commands are about the window rather than about the plugin, and the plugin says so by
+        // answering them: a plugin asks for its pane to be shown or its tab to be opened, and the window is
+        // what can do either. They are named for what they do to the window, so that asking a board for its
+        // data (`board`) and asking for it to be put on the screen (`open-tab`) are two different questions.
+        //
+        // Both are kept here even though the one plugin that draws today contributes only a tab. This is
+        // Quill's side of the plugin contract rather than Agent-Tasks's own code, and a manifest with a pane
+        // in it is still a manifest Quill supports — `tasks/ui-plugin-architecture.md`.
+        if answer.is_ok() {
+            match command {
+                "open-pane" => {
+                    if let Some(pane) = self.plugin_ui.surfaces().panes.iter().find(|surface| surface.plugin == plugin) {
+                        let key = pane.key(&pane.what.id);
+                        self.show_the_plugin_pane(&key, true);
+                    }
+                }
+                "open-tab" => {
+                    if let Some(tab) = self.plugin_ui.surfaces().tabs.iter().find(|surface| surface.plugin == plugin) {
+                        let key = tab.key(&tab.what.id);
+                        self.open_the_plugin_tab(&key);
+                    }
+                }
+                _ => {}
+            }
+        }
+        answer
+    }
+
+    /// Let every open plugin catch up with whatever it owns that is not drawing.
+    ///
+    /// Once a frame, and cheap by construction: for Agent-Tasks it reads its terminals and sends anything
+    /// queued behind an agent's prompt. It cannot wait for the pane to be looked at, because a board started
+    /// from the command line has no pane showing and its handoff would sit in the queue until the next two
+    /// minute tick. A plugin with nothing running does nothing here.
+    fn let_the_plugins_catch_up(&mut self, ctx: &egui::Context) {
+        for plugin in self.plugin_ui.surfaces().plugins() {
+            if !self.plugin_ui.is_open(&plugin) {
+                continue;
+            }
+            if let Some(provider) = self.plugin_ui.provider(&plugin) {
+                if provider.catch_up() {
+                    // Something is running, so the window keeps drawing. A terminal that is printing while
+                    // nobody is pointing at the window is the case this is for.
+                    ctx.request_repaint_after(std::time::Duration::from_millis(120));
+                }
+            }
+        }
+    }
+
+    /// Let every open plugin do whatever it does on a clock.
+    ///
+    /// Once every [`PLUGIN_TICK`], and nothing at all in between: a frame in which the interval has not
+    /// passed costs one comparison, which is `task-1666`'s rule. For Agent-Tasks this is the watchdog and
+    /// the terminals: a ticket's agent that has stopped is nudged and a ticket whose worker is gone is
+    /// struck, and every terminal is read even while the board is not showing, so an agent that printed
+    /// while the pane was put away is not counted as silent.
+    fn tick_the_plugins(&mut self) {
+        let now = std::time::Instant::now();
+        let due = self
+            .plugins_ticked_at
+            .is_none_or(|last| now.duration_since(last) >= PLUGIN_TICK);
+        if !due {
+            return;
+        }
+        self.plugins_ticked_at = Some(now);
+        for plugin in self.plugin_ui.surfaces().plugins() {
+            if !self.plugin_ui.is_open(&plugin) {
+                continue;
+            }
+            // `tick` is a command like any other, so it goes down the one path a change goes down and an
+            // agent can ask for it by hand with `plugins run agent-tasks watchdog`.
+            let _ = self.plugin_ui.run(&plugin, "tick", &[]);
+        }
+    }
+
+    /// Read every plugin manifest from disk again, and say what would not parse.
+    ///
+    /// What `Settings -> Plugins -> Reload` and `quill-cli plugins reload` both call. **No restart is
+    /// needed for anything a manifest says**, because a provider is already in the binary and loading a
+    /// plugin is reading a file. That is the property this design has that IntelliJ's dynamic plugins
+    /// buy with a page of restrictions.
+    pub fn reload_the_plugins(&mut self) -> Vec<String> {
+        let (plugins, problems) = crate::services::plugins::Plugins::load(self.store.as_ref());
+        self.plugins = plugins;
+        self.refresh_the_plugins();
+        // A manifest edited by hand can take a tab away, so a reload closes an open tab whose contribution
+        // has gone for the same reason switching a plugin off does: a tab whose plugin no longer offers it
+        // would draw nothing and could not be told what it was.
+        self.close_any_plugin_tabs_that_have_gone();
+        self.set_the_font_everywhere();
+        if let Some(first) = problems.first() {
+            self.message = Some(format!("A plugin could not be read \u{2014} {first}"));
+        }
+        problems
+    }
+
+    /// Read what the plugins contribute, and tell the dock how many panes there are and where they asked
+    /// to go.
+    ///
+    /// Called when the plugins are loaded and again whenever one is switched on or off. That is what
+    /// makes a contribution appear and disappear in the same frame rather than at the next restart, which
+    /// is the property `Plugins::renders` already gives a Mermaid diagram.
+    pub fn refresh_the_plugins(&mut self) {
+        self.plugin_ui.refresh(&self.plugins);
+        if let Some(folder) = self.store.as_ref().map(|store| store.folder().join("plugins")) {
+            self.plugin_ui.set_settings_folder(folder);
+        }
+        self.plugin_ui.set_project(Some(self.tree.root().to_path_buf()));
+        self.plugin_ui.set_recent_projects(
+            self.store.as_ref().map(|store| store.recent_projects()).unwrap_or_default(),
+        );
+        // The same waker `quill_git::Worker` and the terminal tile use, so a plugin's terminal that prints
+        // while nobody is pointing at the window is drawn rather than waiting for the pointer to move.
+        self.plugin_ui.set_waker(self.thread_waker());
+        let count = self.plugin_ui.pane_count();
+        let sides: Vec<dock::Side> =
+            (0..count).map(|slot| self.plugin_ui.pane(slot).map(|pane| pane.side).unwrap_or(dock::Side::Right)).collect();
+        // A pane whose side the settings file already records keeps where it was left; one it has not
+        // spoken about goes where its manifest asked. Where somebody dragged a pane wins over what its
+        // manifest wanted, which is the rule every panel already follows.
+        let keys = self.plugin_ui.pane_keys();
+        let placed: Vec<bool> = keys
+            .iter()
+            .map(|key| {
+                self.store
+                    .as_ref()
+                    .map(|store| store.read_values().text(&format!("panes.{key}.side")).is_some())
+                    .unwrap_or(false)
+            })
+            .collect();
+        self.panes.dock.set_plugin_panes(&sides, &placed);
+        for slot in 0..count {
+            if let Some(pane) = self.plugin_ui.pane(slot) {
+                let panel = dock::Panel::Plugin(slot as u8);
+                if !placed.get(slot).copied().unwrap_or(false) {
+                    self.panes.set_width_of(panel, pane.width);
+                    self.panes.set_height_of(panel, pane.height);
+                }
+            }
+        }
+    }
+
     /// Which panels are drawn at all, in [`dock::Panel::index`] order.
     ///
     /// The one place the four `visible` flags are gathered, so `regions`, `zones` and every command
     /// that asks where a panel is are looking at the same four booleans.
-    pub fn panels_showing(&self) -> [bool; 4] {
-        let mut showing = [false; 4];
+    pub fn panels_showing(&self) -> [bool; dock::SLOTS] {
+        let mut showing = [false; dock::SLOTS];
         showing[dock::Panel::Explorer.index()] = self.explorer_visible;
         showing[dock::Panel::Terminal.index()] = self.terminal.visible;
         showing[dock::Panel::Run.index()] = self.run.visible;
         showing[dock::Panel::Debug.index()] = self.debug_panel.visible;
+        // And whichever panes the plugins that are switched on are showing. A slot with no plugin in it
+        // is never showing, so it takes no room and gets `Rect::ZERO`.
+        for (slot, visible) in self.plugin_ui.visible().into_iter().enumerate() {
+            showing[dock::Panel::Plugin(slot as u8).index()] = visible;
+        }
         showing
     }
 
     /// Whether a panel is showing.
     pub fn panel_is_showing(&self, panel: dock::Panel) -> bool {
         self.panels_showing()[panel.index()]
+    }
+
+    /// Whether any panel at all is showing, which is what makes hiding the editing area safe.
+    ///
+    /// `task-28`: hiding the editing area with nothing else on the screen would leave a window holding the rail
+    /// and a status bar. `Action::ToggleEditor` and `Action::ToggleExplorer` both read this.
+    pub fn anything_is_showing_in_the_panes(&self) -> bool {
+        self.panels_showing().iter().any(|showing| *showing)
     }
 
     /// Put away the other tiles **that share this one's side**.
@@ -3081,17 +3638,42 @@ impl QuillApp {
     /// explorer is a list rather than a grid and never competes with anything.
     fn put_the_other_tiles_away(&mut self, showing: dock::Panel) {
         let side = self.panes.dock.side_of(showing);
+        // Which contributed panes are tiles is what their manifests said, so the question is asked with the
+        // surfaces to hand. A plugin pane in the bottom group is a tile like the other three, which means it
+        // puts them away **and** they put it away: the rule is about a strip rather than about three panels.
+        let tiles = self.plugin_panes_that_are_tiles();
         for panel in self.panes.dock.panels_on(side) {
-            if panel == showing || !panel.is_a_tile() {
+            if panel == showing || !panel.is_a_tile_given(&tiles) {
                 continue;
             }
             match panel {
                 dock::Panel::Terminal => self.terminal.visible = false,
                 dock::Panel::Run => self.run.visible = false,
                 dock::Panel::Debug => self.debug_panel.visible = false,
+                dock::Panel::Plugin(slot) => {
+                    if let Some(key) = self.plugin_ui.pane_key(slot as usize) {
+                        self.show_the_plugin_pane(&key, false);
+                    }
+                }
+                // The explorer is a list and never competes with anything.
                 dock::Panel::Explorer => {}
             }
         }
+    }
+
+    /// Which contributed panes their manifests put in the rail's bottom group, in slot order.
+    ///
+    /// The bottom group is what the rail calls the things with a character grid in them, and a pane in a strip
+    /// with a grid in it is a tile: two of those stacked are two half sized grids, which is the rule that
+    /// exists about a strip rather than about three particular panels.
+    pub(crate) fn plugin_panes_that_are_tiles(&self) -> Vec<bool> {
+        (0..self.plugin_ui.pane_count())
+            .map(|slot| {
+                self.plugin_ui
+                    .pane(slot)
+                    .is_some_and(|pane| pane.group == crate::services::plugins::RailGroup::Bottom)
+            })
+            .collect()
     }
 
     /// Show the terminal tile, or put it away, opening a shell if there is not one already.
@@ -4618,6 +5200,16 @@ impl QuillApp {
             self.message = Some("A picture cannot be edited, so there is nothing to save.".to_owned());
             return;
         }
+        // A tab a plugin draws holds an empty document with no path, so saving it would write an empty
+        // `untitled.md` into the project. There is nothing in it to save: what a plugin holds, the plugin
+        // keeps — the board is a database file of its own.
+        if let Some(plugin) = self.files.active().plugin.clone() {
+            self.message = Some(format!(
+                "{} is not a file, so there is nothing to save. It keeps what it holds itself.",
+                plugin.label
+            ));
+            return;
+        }
         if self.document().path().is_none() {
             // With no file to save to, write into the folder the explorer is showing rather than silently
             // doing nothing.
@@ -4642,7 +5234,9 @@ impl QuillApp {
     /// Write the settings and the pane sizes, if there is anywhere to write them.
     fn write_settings(&mut self) {
         if let Some(store) = &self.store {
-            settings::save(store, &self.settings, &self.panes);
+            // With the names of the contributed panes, so where one was dragged and how wide it was left
+            // are written against its own name rather than being lost when Quill closes.
+            settings::save_with(store, &self.settings, &self.panes, &self.plugin_ui.pane_keys());
         }
         self.unsaved_settings = false;
     }
@@ -4944,6 +5538,41 @@ impl QuillApp {
             file.cached.preview_diagrams.clear();
         }
         self.mermaid_scenes.forget();
+        // And what the plugins contribute, because a plugin switched off contributes nothing: its rail
+        // button, its pane, its tab, its menu and its Settings page all go in this frame, and its
+        // provider is closed so it drops what it held. That is the rule `Plugins::renders` already keeps
+        // for a Mermaid diagram, made once more for everything a plugin adds to the window.
+        // The surfaces first and the tabs after: what a plugin contributes is what decides whether its tab
+        // is still offered, so checking the tabs before the rebuild would check them against the old answer.
+        self.refresh_the_plugins();
+        self.close_any_plugin_tabs_that_have_gone();
+    }
+
+    /// Close a plugin's tab when its plugin has gone, which is what switching one off does.
+    ///
+    /// A tab whose plugin is not there would draw nothing and could not be told what it was, so it is
+    /// closed rather than left as an empty tab with a name on it.
+    fn close_any_plugin_tabs_that_have_gone(&mut self) {
+        let contributed: Vec<String> = self
+            .plugin_ui
+            .surfaces()
+            .tabs
+            .iter()
+            .map(|surface| surface.key(&surface.what.id))
+            .collect();
+        let going: Vec<usize> = (0..self.files.len())
+            .filter(|index| {
+                self.files
+                    .at(*index)
+                    .plugin
+                    .as_ref()
+                    .is_some_and(|tab| !contributed.contains(&tab.key))
+            })
+            .collect();
+        // Backwards, because closing a tab renumbers the ones after it.
+        for index in going.into_iter().rev() {
+            self.close_tab(index);
+        }
     }
 
     /// How many diagrams have been laid out and kept, for a test.
@@ -5058,6 +5687,12 @@ impl QuillApp {
         hold_the_keyboard(ui);
         // Always ask to be woken again. See `HEARTBEAT`.
         ui.ctx().request_repaint_after(HEARTBEAT);
+        // Every open plugin gets a turn, twice over. Once a frame it is asked to catch up with whatever it
+        // owns that is not drawing — for Agent-Tasks that is reading its terminals and sending a queued
+        // handoff, which must not wait for somebody to look at the board. And once every `PLUGIN_TICK` it
+        // gets the clock, which is the watchdog.
+        self.let_the_plugins_catch_up(ui.ctx());
+        self.tick_the_plugins();
         let full = ui.max_rect();
 
         // The window is one painted surface with rounded corners, because it has no operating system
@@ -5103,7 +5738,8 @@ impl QuillApp {
         // gives exactly the arithmetic that used to be spelled out in this spot, and there is a test
         // that says so.
         let showing = self.panels_showing();
-        let placed = dock::regions(panes, &self.panes.dock, showing, &self.panes);
+        let placed =
+            dock::regions_with(panes, &self.panes.dock, showing, &self.panes, self.editor_visible);
         self.panes_area = panes;
         self.panel_rects = placed;
         let explorer_rect = placed.of(dock::Panel::Explorer);
@@ -5199,6 +5835,7 @@ impl QuillApp {
         {
             let state = activity_bar::RailState {
                 explorer_visible: self.explorer_visible,
+                editor_visible: self.editor_visible,
                 git_open: self.git.as_ref().is_some_and(|git| git.panel.open),
                 in_repository: self.repository_controls_apply(),
                 terminal_visible: self.terminal.visible,
@@ -5206,9 +5843,26 @@ impl QuillApp {
                 debug_visible: self.debug_panel.visible,
             };
             let opacity = self.settings.opacity;
+            // One button per pane the plugins that are switched on contributed, in the group each
+            // manifest named. Built here rather than inside the rail, because what is contributed is the
+            // window's knowledge and the rail draws what it is given.
+            let plugin_buttons: Vec<activity_bar::PluginButton> = (0..self.plugin_ui.pane_count())
+                .filter(|slot| self.plugin_ui.applies(*slot))
+                .filter_map(|slot| {
+                    let pane = self.plugin_ui.pane(slot)?;
+                    Some(activity_bar::PluginButton {
+                        label: pane.label.clone(),
+                        icon: pane.icon.clone(),
+                        on: self.plugin_ui.is_visible(slot),
+                        bottom: pane.group == crate::services::plugins::RailGroup::Bottom,
+                        key: self.plugin_ui.pane_key(slot)?,
+                        slot,
+                    })
+                })
+                .collect();
             let rail = {
                 let mut rail_ui = ui.new_child(egui::UiBuilder::new().max_rect(rail_rect));
-                activity_bar::show(&mut rail_ui, rail_rect, state, opacity)
+                activity_bar::show_with(&mut rail_ui, rail_rect, state, opacity, &plugin_buttons)
             };
             if let Some(chosen) = rail.chosen {
                 action = Some(chosen);
@@ -5389,10 +6043,15 @@ impl QuillApp {
         // A close can remove a pane and renumber the ones after it, so it is done once the loop has
         // finished rather than underneath itself.
         let mut close: Option<usize> = None;
-        for (pane, rect) in pane_rects.iter().copied().enumerate() {
-            self.files.focus_pane(pane);
-            if self.show_pane(ui, pane, pane == had_the_keyboard, rect, &mut close) {
-                keyboard = pane;
+        // **Nothing is drawn when the editing area is hidden.** `task-28`. Drawing it into `Rect::ZERO` would
+        // still register a tab strip, a gutter and an editing surface per pane in the widget tree, all of them
+        // nowhere, and one of them would still be taking the keyboard.
+        if self.editor_visible {
+            for (pane, rect) in pane_rects.iter().copied().enumerate() {
+                self.files.focus_pane(pane);
+                if self.show_pane(ui, pane, pane == had_the_keyboard, rect, &mut close) {
+                    keyboard = pane;
+                }
             }
         }
         self.files.focus_pane(keyboard);
@@ -5422,6 +6081,9 @@ impl QuillApp {
         // `components::splitter` records: the editing area takes drags over the whole of its
         // rectangle, so a divider added earlier sits underneath one and never sees the pointer.
         for pane in 0..pane_rects.len().saturating_sub(1) {
+            if !self.editor_visible {
+                break;
+            }
             let edge = Rect::from_min_size(
                 Pos2::new(pane_rects[pane].right(), pane_rects[pane].top()),
                 Vec2::new(1.0, pane_rects[pane].height()),
@@ -5519,6 +6181,25 @@ impl QuillApp {
                 self.text_menu = None;
             }
         }
+
+        // The panes the plugins contributed, each in the rectangle `dock::regions` gave its slot.
+        //
+        // Drawn before the terminal for no reason but order on the page; they are laid out by the same
+        // arithmetic as every other panel and cannot overlap one. A provider that failed to open draws
+        // the reason rather than nothing, which is what every honest miss in Quill does.
+        for (plugin, request) in self.show_the_plugin_panes(ui) {
+            self.act_on_a_plugin_request(&plugin, request);
+        }
+        if std::mem::take(&mut self.plugin_wants_a_repaint) {
+            ui.ctx().request_repaint();
+        }
+        if let Some(text) = self.plugin_wants_copied.take() {
+            ui.ctx().copy_text(text);
+        }
+        // Whatever modal a plugin has open, drawn after the panes and from the context, which is where every
+        // other modal in Quill is drawn: `components::modal` places it, drags it and resizes it, and it has to
+        // be above the panes including the plugin's own.
+        self.show_the_plugin_modals(ui);
 
         // The terminal.
         if self.terminal.visible {
@@ -5868,6 +6549,20 @@ impl QuillApp {
                 .as_ref()
                 .is_some_and(|folder| folder.join("plugins").join(id).join("plugin.conf").is_file())
         };
+        // What each plugin that contributed a page calls it, in slot order, from its manifest.
+        let page_names: Vec<String> = self
+            .plugin_ui
+            .surfaces()
+            .pages
+            .iter()
+            .map(|surface| surface.what.name.clone())
+            .collect();
+        // Taken apart before the call so the closure below can borrow `plugin_ui` while the dialog holds
+        // `settings` and `settings_window`. Two disjoint fields of one value, which the compiler allows
+        // only when they are named separately.
+        let page_look = crate::services::plugin_ui::Look::of(&self.settings, &self.renderer);
+        let plugins_ui = &mut self.plugin_ui;
+        let mut page_asked: Vec<(String, crate::services::plugin_ui::Request)> = Vec::new();
         let settings_outcome = settings_dialog::show(
             ui.ctx(),
             &mut self.settings_window,
@@ -5881,7 +6576,36 @@ impl QuillApp {
             &quill_cli::mcp::install::quill_cli_program(),
             &on_disk,
             &icon_for,
+            &page_names,
+            &mut |page_ui, slot, area| {
+                // The contributed page, drawn inside the modal. `plugin_ui` and `settings` are separate
+                // fields, so this can borrow one while the dialog holds the other.
+                let plugin = plugins_ui
+                    .surfaces()
+                    .pages
+                    .get(slot)
+                    .map(|surface| (surface.plugin.clone(), surface.provider.clone()));
+                let Some((plugin, provider)) = plugin else {
+                    return;
+                };
+                match plugins_ui.opened(&plugin, &provider) {
+                    Ok(_) => {
+                        let mut inner = page_ui.new_child(egui::UiBuilder::new().max_rect(area));
+                        inner.set_clip_rect(area);
+                        if let Some(opened) = plugins_ui.provider(&plugin) {
+                            let wanted = opened.settings(&mut inner, &page_look);
+                            page_asked
+                                .extend(wanted.into_iter().map(|request| (plugin.clone(), request)));
+                        }
+                    }
+                    Err(problem) => page_asked
+                        .push((plugin.clone(), crate::services::plugin_ui::Request::Message(problem))),
+                }
+            },
         );
+        for (plugin, request) in std::mem::take(&mut page_asked) {
+            self.act_on_a_plugin_request(&plugin, request);
+        }
         if let Some(id) = settings_outcome.plugins.install {
             self.install_plugin(&id);
         }
@@ -6587,6 +7311,15 @@ impl QuillApp {
     /// draggable divider between them. Split out of [`Self::ui`] because it is the one place the four
     /// answers are chosen between, and `ui` has enough to do laying the window out.
     fn show_editing_area(&mut self, ui: &mut egui::Ui, area: Rect, focused: bool) -> bool {
+        // A tab a plugin draws, which is the fourth answer and the newest. It is asked before the
+        // picture for no reason but that a plugin tab has no path and the questions below all start by
+        // reading one.
+        if let Some(tab) = self.files.active().plugin.clone() {
+            if focused {
+                self.editor_area = area;
+            }
+            return self.show_plugin_tab(ui, area, &tab);
+        }
         if self.files.active().is_picture() {
             if focused {
                 self.editor_area = area;
@@ -6704,6 +7437,40 @@ impl QuillApp {
     }
 
     /// Draw the picture the open tab holds, and take the gestures that move and zoom it.
+    /// Draw the tab a plugin contributed, and act on what it asked for.
+    ///
+    /// A whole editing area, which is why `UiProvider::tab` exists beside `pane`: Agent-Tasks draws the
+    /// lanes and the open ticket side by side here, where a 420 point column can only show one of them.
+    fn show_plugin_tab(&mut self, ui: &mut egui::Ui, area: Rect, tab: &files::PluginTab) -> bool {
+        let look = crate::services::plugin_ui::Look::of(&self.settings, &self.renderer)
+            .holding_the_keyboard(matches!(self.focus, Focus::Plugin));
+        ui.painter().rect_filled(area, 0, look.ground(look.palette.editor));
+        let asked = match self.plugin_ui.problem_with(&tab.plugin) {
+            Some(problem) => {
+                let galley = ui.painter().layout(
+                    format!("{} could not be opened.\n\n{problem}", tab.label),
+                    egui::FontId::proportional(look.font_size),
+                    look.palette.text_dim,
+                    area.width() - 48.0,
+                );
+                ui.painter().galley(area.min + egui::Vec2::splat(24.0), galley, look.palette.text_dim);
+                Vec::new()
+            }
+            None => {
+                let mut tab_ui = ui.new_child(egui::UiBuilder::new().max_rect(area));
+                tab_ui.set_clip_rect(area);
+                match self.plugin_ui.provider(&tab.plugin) {
+                    Some(provider) => provider.tab(&mut tab_ui, &look),
+                    None => Vec::new(),
+                }
+            }
+        };
+        for request in asked {
+            self.act_on_a_plugin_request(&tab.plugin, request);
+        }
+        false
+    }
+
     fn show_picture(&mut self, ui: &mut egui::Ui, area: Rect) -> bool {
         let name = self.files.active().name();
         let Some(picture) = self.files.active_mut().picture.as_mut() else {

@@ -1,5 +1,8 @@
 //! Everything the window needs that is not drawing.
 
+// The Agent-Tasks plugin: the first plugin that draws. `agent_tasks::AgentTasks` is the
+// `plugin_ui::UiProvider` the manifest names, and everything under it is testable with no window.
+pub mod agent_tasks;
 pub mod breakpoint_store;
 pub mod control;
 pub mod crash_log;
@@ -18,6 +21,7 @@ pub mod mcp;
 pub mod mermaid_scene;
 pub mod native_menu;
 pub mod picture;
+pub mod plugin_ui;
 pub mod plugins;
 pub mod preview_images;
 pub mod project_state;

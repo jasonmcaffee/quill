@@ -25,6 +25,12 @@ impl Action {
     /// The name the command line calls this action.
     pub fn name(&self) -> String {
         match self {
+            // A plugin's own actions name themselves, because their names come from a manifest rather
+            // than from this list. `quill-cli action list` therefore offers them the day the manifest is
+            // written, with no change here, which is what the machinery is for.
+            Action::PluginPane { pane } => format!("plugin-pane:{pane}"),
+            Action::PluginTab { tab } => format!("plugin-tab:{tab}"),
+            Action::PluginCommand { plugin, command } => format!("plugin-run:{plugin}:{command}"),
             Action::NewWindow => "new-window".to_owned(),
             Action::OpenFolder => "open-folder".to_owned(),
             Action::OpenFile => "open-file".to_owned(),
@@ -52,6 +58,7 @@ impl Action {
             Action::SetViewMode(ViewMode::SideBySide) => "view-side".to_owned(),
             Action::SetViewMode(ViewMode::Preview) => "view-preview".to_owned(),
             Action::ToggleExplorer => "toggle-explorer".to_owned(),
+            Action::ToggleEditor => "toggle-editor".to_owned(),
             Action::ToggleLineNumbers => "toggle-line-numbers".to_owned(),
             Action::ChangeFontSize { larger: true } => "increase-font-size".to_owned(),
             Action::ChangeFontSize { larger: false } => "decrease-font-size".to_owned(),
@@ -177,6 +184,7 @@ impl Action {
             "view-side" => Action::SetViewMode(ViewMode::SideBySide),
             "view-preview" => Action::SetViewMode(ViewMode::Preview),
             "toggle-explorer" => Action::ToggleExplorer,
+            "toggle-editor" => Action::ToggleEditor,
             "toggle-line-numbers" => Action::ToggleLineNumbers,
             "increase-font-size" => Action::ChangeFontSize { larger: true },
             "decrease-font-size" => Action::ChangeFontSize { larger: false },

@@ -28,5 +28,5 @@ pub use keys::{encode, KeyPress, Mode};
 pub use mouse::MouseMode;
 pub use palette::{Palette, Rgb};
 pub use screen::{Cursor, CursorShape, Screen, ScreenCell};
-pub use session::{Session, SessionSettings, SCROLLBACK};
+pub use session::{Session, SessionSettings, Size, Waker, SCROLLBACK};
 pub use tabs::Tabs;

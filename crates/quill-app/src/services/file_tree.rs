@@ -14,7 +14,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::services::file_kind::{self, Refusal};
+use crate::services::file_kind::{self, Kind, Refusal};
 
 /// Whether Quill can open this file.
 pub fn is_openable(path: &Path) -> bool {
@@ -37,13 +37,24 @@ pub struct Entry {
 }
 
 impl Entry {
-    fn new(path: PathBuf, is_directory: bool) -> Self {
+    /// One entry, from what the directory read already knows about it.
+    ///
+    /// `kind` and `size` come from the one `metadata` call [`read_directory`] makes per child, and nothing
+    /// here asks the file system anything. `task-28`: this used to call `file_kind::openable`, which does
+    /// its own `metadata` call and then, for a name with an unknown extension, **opens the file and reads
+    /// it**. That is what froze the window on a large folder and hung on `/dev`, where a read from a FIFO
+    /// never returns.
+    fn new(path: PathBuf, kind: Kind, size: Option<u64>) -> Self {
         let name = path
             .file_name()
             .and_then(|name| name.to_str())
             .map(str::to_owned)
             .unwrap_or_else(|| path.display().to_string());
-        let refusal = if is_directory { None } else { file_kind::openable(&path).err() };
+        let is_directory = kind == Kind::Directory;
+        let refusal = match is_directory {
+            true => None,
+            false => file_kind::openable_in_a_listing(&path, kind, size).err(),
+        };
         let openable = !is_directory && refusal.is_none();
         Self { path, name, is_directory, openable, refusal, expanded: false, children: None }
     }
@@ -339,7 +350,9 @@ fn walk_files(root: &Path, depth: usize) -> Vec<PathBuf> {
                     continue;
                 }
                 walk(&entry.path, remaining - 1, out);
-            } else {
+            } else if entry.refusal != Some(Refusal::NotAFile) {
+                // Regular files only. A device, a pipe or a socket is drawn in the explorer because the
+                // panel is a picture of the folder, and it is not a file anybody searches for by name.
                 out.push(entry.path);
             }
         }
@@ -367,6 +380,23 @@ fn is_build_output(name: &str) -> bool {
 ///
 /// Folders before files, because a reader scanning for somewhere to go looks for folders. Hidden
 /// entries are left out, so a folder under version control does not show its `.git` directory.
+///
+/// ## One `metadata` call per child, and no file is ever opened
+///
+/// `task-28`. This is the function that froze the window, and the arithmetic is worth writing down. It
+/// used to cost, per child: `file_type`, then a `metadata` inside `file_kind::openable`, then for a name
+/// with an unknown extension an `open` and a `read` of four kilobytes. A folder of twenty thousand
+/// extensionless files was forty thousand syscalls and twenty thousand file reads before one row was
+/// drawn, and in `/dev` the children are character devices and FIFOs, where the read blocks and never
+/// returns and the only way out is force quitting.
+///
+/// It now costs one `metadata` per child, which answers both what the child is and how big it is, and
+/// nothing else. A child that is neither a directory nor a regular file — a device, a pipe, a socket — is
+/// **listed and not openable**, because the explorer is a picture of the folder and hiding most of one is
+/// what this file's own opening comment refuses to do.
+///
+/// `DirEntry::metadata` does not follow symlinks, which is exactly what `DirEntry::file_type` did not do
+/// either, so a link to a folder is drawn as an entry rather than opened out, as it always was.
 fn read_directory(path: &Path) -> std::io::Result<Vec<Entry>> {
     let mut directories = Vec::new();
     let mut files = Vec::new();
@@ -377,11 +407,17 @@ fn read_directory(path: &Path) -> std::io::Result<Vec<Entry>> {
         if name.starts_with('.') {
             continue;
         }
-        let is_directory = entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false);
-        if is_directory {
-            directories.push(Entry::new(path, true));
-        } else {
-            files.push(Entry::new(path, false));
+        // A child whose metadata cannot be read at all is listed as something that is not a file, which is
+        // the honest answer: something is there and Quill cannot say what.
+        let (kind, size) = match entry.metadata() {
+            Ok(data) if data.is_dir() => (Kind::Directory, None),
+            Ok(data) if data.is_file() => (Kind::File, Some(data.len())),
+            Ok(_) => (Kind::Other, None),
+            Err(_) => (Kind::Other, None),
+        };
+        match kind {
+            Kind::Directory => directories.push(Entry::new(path, kind, size)),
+            _ => files.push(Entry::new(path, kind, size)),
         }
     }
     let by_name = |a: &Entry, b: &Entry| a.name.to_lowercase().cmp(&b.name.to_lowercase());
@@ -389,6 +425,83 @@ fn read_directory(path: &Path) -> std::io::Result<Vec<Entry>> {
     files.sort_by(by_name);
     directories.extend(files);
     Ok(directories)
+}
+
+#[cfg(test)]
+mod tests_task_28 {
+    use super::*;
+
+    /// `task-28`: expanding a folder froze Quill and it had to be force quit.
+    ///
+    /// **This is the test that would have hung.** A FIFO with no writer blocks a `read` for ever, and
+    /// reading one is what `Entry::new` used to do for any name with an extension it did not recognise. So
+    /// the assertion is almost beside the point: the test returning at all is the result.
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_holding_a_pipe_is_read_without_opening_it() {
+        let root = std::env::temp_dir().join(format!("quill-tree-fifo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("make the folder");
+        std::fs::write(root.join("ordinary.txt"), "text").expect("write ordinary.txt");
+        let pipe = root.join("a-pipe");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&pipe)
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !made {
+            eprintln!("mkfifo is not available here, so there is nothing to read");
+            let _ = std::fs::remove_dir_all(&root);
+            return;
+        }
+
+        let tree = FileTree::new(&root);
+        let rows = tree.rows();
+        let entry = rows
+            .iter()
+            .find(|row| row.entry.name == "a-pipe")
+            .expect("the pipe is listed, because the explorer is a picture of the folder");
+        assert!(!entry.entry.openable, "a pipe is not something Quill opens");
+        assert_eq!(
+            entry.entry.refusal,
+            Some(Refusal::NotAFile),
+            "and the row says which of the reasons it is"
+        );
+        // It is not in the list the filter and `Go to File` search either.
+        assert!(
+            !tree.all_files().iter().any(|path| path == &pipe),
+            "a pipe is not a file anybody looks for by name"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// And the slow half of the same fault: a folder of files with no extension used to cost one `open` and
+    /// one four kilobyte `read` each before a row was drawn.
+    ///
+    /// A test cannot see a syscall, so what is asserted is elapsed time against a ceiling three orders of
+    /// magnitude above what the read costs and well below what two thousand file reads cost. The point is
+    /// the order of magnitude, not the number.
+    #[test]
+    fn a_folder_of_two_thousand_extensionless_files_is_read_quickly() {
+        let root = std::env::temp_dir().join(format!("quill-tree-many-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("make the folder");
+        for index in 0..2000 {
+            std::fs::write(root.join(format!("entry{index}")), "some text in it").expect("write a file");
+        }
+        let started = std::time::Instant::now();
+        let tree = FileTree::new(&root);
+        let took = started.elapsed();
+        assert_eq!(tree.rows().len(), 2000, "every file is listed");
+        assert!(
+            took < std::time::Duration::from_secs(2),
+            "reading a folder must not read the files in it: took {took:?}"
+        );
+        // A name with no extension is **offered**, and whether it really holds text is decided when the tab
+        // is opened. That is the bargain that makes the read cheap.
+        assert!(tree.rows()[0].entry.openable, "an unknown name is offered rather than refused");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
 
 #[cfg(test)]

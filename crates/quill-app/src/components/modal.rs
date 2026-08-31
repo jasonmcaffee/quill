@@ -349,11 +349,26 @@ pub fn header(ui: &mut egui::Ui, area: Rect, title: &str) -> bool {
     painter.rect_filled(bar, CornerRadius { nw: 10, ne: 10, sw: 0, se: 0 }, color::TITLE_BAR);
     let galley =
         painter.layout_no_wrap(title.to_owned(), egui::FontId::proportional(13.0), color::TEXT_STRONG);
+    let width = galley.size().x;
     painter.galley(
         Pos2::new(area.left() + 20.0, bar.center().y - galley.size().y / 2.0),
         galley,
         color::TEXT_STRONG,
     );
+    // The title is **named** as well as drawn, so a test and assistive technology can say which modal is open.
+    // Every control in Quill has a plain name and a test finds one by it; a modal's title is what says which of
+    // the ten it is, and painted text alone is invisible to both. The drag handle is added after this and takes
+    // the presses, so naming it costs the header nothing.
+    let named = ui.interact(
+        Rect::from_min_size(
+            Pos2::new(area.left() + 20.0, bar.center().y - 8.0),
+            Vec2::new(width, 16.0),
+        ),
+        ui.id().with(("modal-title", title)),
+        Sense::hover(),
+    );
+    let name = title.to_owned();
+    named.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, name.clone()));
     painter.line_segment(
         [Pos2::new(bar.left(), bar.bottom()), Pos2::new(bar.right(), bar.bottom())],
         Stroke::new(1.0, color::DIVIDER),
