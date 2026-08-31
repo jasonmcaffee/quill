@@ -117,12 +117,25 @@ Write-Host "Quill $version"
 
 if (-not $SkipBuild) {
     Write-Step 'Building quill.exe and quill-cli.exe'
-    & cargo build --release --manifest-path (Join-Path $Repo 'Cargo.toml') -p quill-app --bin quill
-    if ($LASTEXITCODE -ne 0) { throw 'cargo build failed.' }
-    # The command line ships beside the editor, and `quill-cli` looks for `quill` next to itself, so
-    # the two have to be installed into one folder.
-    & cargo build --release --manifest-path (Join-Path $Repo 'Cargo.toml') -p quill-cli --bin quill-cli
-    if ($LASTEXITCODE -ne 0) { throw 'cargo build failed for quill-cli.' }
+    # `CC` naming cl.exe by its full path, with no `INCLUDE` beside it, is worse than `CC` not being
+    # set at all: `cc-rs` takes it as the compiler to use and then skips the work it would otherwise
+    # do to find the Visual Studio environment, so `cl.exe` runs with no include path and the first
+    # C dependency stops at `fatal error C1034: stdarg.h: no include path set`. Some shells here
+    # export it -- an agent terminal does -- and a release must not depend on which shell it was
+    # started from, so they are put aside for the build and put back afterwards.
+    $keptCc = $env:CC; $keptCxx = $env:CXX
+    if ($env:CC -and -not $env:INCLUDE) { $env:CC = $null; $env:CXX = $null }
+    try {
+        & cargo build --release --manifest-path (Join-Path $Repo 'Cargo.toml') -p quill-app --bin quill
+        if ($LASTEXITCODE -ne 0) { throw 'cargo build failed.' }
+        # The command line ships beside the editor, and `quill-cli` looks for `quill` next to itself,
+        # so the two have to be installed into one folder.
+        & cargo build --release --manifest-path (Join-Path $Repo 'Cargo.toml') -p quill-cli --bin quill-cli
+        if ($LASTEXITCODE -ne 0) { throw 'cargo build failed for quill-cli.' }
+    } finally {
+        $env:CC = $keptCc
+        $env:CXX = $keptCxx
+    }
 }
 
 $exe = Join-Path $BinaryDir 'quill.exe'
