@@ -120,12 +120,20 @@ pub fn handle_input(
                     // rather than a type. The modifiers are read off the frame's input state, because
                     // a `Text` event carries none of its own, and the check is what keeps
                     // `Ctrl+Space` — the completion's key — from indenting.
-                    let indent = text == " "
+                    let indenting = text == " "
                         && !document.selection().is_empty()
                         && !ui.input(|input| input.modifiers.command)
                         && !ui.input(|input| input.modifiers.ctrl);
-                    if indent {
-                        outcome.changed |= document.apply(Command::Indent { unit: IndentUnit::Space });
+                    if indenting {
+                        // Shift dedents by one space instead of indenting by one, the reverse half
+                        // `Shift+Space` asks for beside `Space`'s own.
+                        let unit = IndentUnit::Space;
+                        let command = if ui.input(|input| input.modifiers.shift) {
+                            Command::Dedent { unit }
+                        } else {
+                            Command::Indent { unit }
+                        };
+                        outcome.changed |= document.apply(command);
                     } else {
                         outcome.changed |= document.apply(Command::Insert(text));
                     }
@@ -205,11 +213,13 @@ pub fn handle_input(
                         // A selection makes the key an indent rather than a type: every line the
                         // selection touches gets one tab at its start, and the selection stays over
                         // the text it covered. With no selection the tab is typed where the caret
-                        // is, inside the run of typing. `Shift+Tab` takes this same arm — outdent is
-                        // not here, see `tasks/task-1747-selection-indent-tdd.md` section 2 — and
-                        // indents rather than throwing the selection away.
+                        // is, inside the run of typing. `Shift+Tab` dedents instead — the reverse
+                        // half of the same key, removing one tab from each touched line rather than
+                        // adding one.
                         if document.selection().is_empty() {
                             document.apply(Command::Insert("\t".to_owned()))
+                        } else if shift {
+                            document.apply(Command::Dedent { unit: IndentUnit::Tab })
                         } else {
                             document.apply(Command::Indent { unit: IndentUnit::Tab })
                         }

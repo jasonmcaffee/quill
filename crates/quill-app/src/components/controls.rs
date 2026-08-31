@@ -138,7 +138,11 @@ pub fn dropdown<T>(
     });
 
     // `Popup::from_toggle_button_response` opens and closes on clicks of this button and holds the state
-    // itself. The memory functions that would do it by hand are private in egui 0.36.
+    // itself, under `Popup::default_response_id(&response)` — the button's own id with `"popup"` joined
+    // on, not the button's id alone. Closing with the bare id closed a popup nothing was tracked under,
+    // so the real one stayed open: a value chosen from `Model` stayed on screen, floating over whatever
+    // was drawn underneath it, and ate the next field's click as "outside" instead of opening it.
+    let popup_id = egui::Popup::default_response_id(&response);
     let chosen = egui::Popup::from_toggle_button_response(&response)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .frame(
@@ -150,7 +154,7 @@ pub fn dropdown<T>(
         .show(contents)
         .and_then(|inner| inner.inner);
     if chosen.is_some() {
-        egui::Popup::close_id(ui.ctx(), id);
+        egui::Popup::close_id(ui.ctx(), popup_id);
     }
     chosen
 }

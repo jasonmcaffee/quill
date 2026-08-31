@@ -885,6 +885,21 @@ quill-cli editor indent
 quill-cli editor indent --space
 ```
 
+### editor dedent
+
+```
+quill-cli editor dedent [--space]
+```
+
+Remove one indent from each line the selection touches, or the caret's line when nothing is selected — one tab, or one space with --space. This is what Shift+Tab and Shift+Space do over a selection. A line with none, or indented with the other unit, is left alone.
+
+- `--space` — Remove a space rather than a tab, which is what Shift+Space does.
+
+```sh
+quill-cli editor dedent
+quill-cli editor dedent --space
+```
+
 ### editor undo
 
 ```
@@ -2528,6 +2543,7 @@ quill-cli plugins pane <pane> [--show] [--hide] [--side <side>]
 Show, hide or move a pane a plugin contributed: what its rail button and a drag on its header do.
 
 - `pane` — The pane, as `<plugin id>/<pane id>` — `agent-tasks/board`.
+
 - `--show` — Show it, building the plugin's own state the first time.
 - `--hide` — Put it away.
 - `--side <side>` — Dock it to left, right, top or bottom.
@@ -2546,6 +2562,7 @@ quill-cli plugins tab <tab> [--open] [--close]
 Open or close a plugin's own tab in the editing area: a tab with no file behind it.
 
 - `tab` — The tab, as `<plugin id>/<tab id>` — `agent-tasks/board`.
+
 - `--open` — Open it, or show it if it is already open.
 - `--close` — Close it.
 
@@ -2563,7 +2580,7 @@ Run one of a plugin's own commands, down the same path its menu entry and its bu
 
 - `id` — The plugin's id.
 - `command` — The command, as `plugins show` lists it.
-- `arguments` — The rest of the line, handed to the command as it stands.
+- `arguments` (optional) — The rest of the line, handed to the command as it stands. Everything after it on the line belongs to it.
 
 ```sh
 quill-cli plugins run agent-tasks board --json

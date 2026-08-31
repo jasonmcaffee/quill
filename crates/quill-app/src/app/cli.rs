@@ -2313,6 +2313,7 @@ impl QuillApp {
             "caret" => self.cli_editor_caret(request),
             "select" => self.cli_editor_select(request),
             "indent" => self.cli_editor_indent(request),
+            "dedent" => self.cli_editor_dedent(request),
             "undo" => self.cli_editor_history(request, true),
             "redo" => self.cli_editor_history(request, false),
             "view" => self.cli_editor_view(request, ctx),
@@ -2636,6 +2637,55 @@ impl QuillApp {
         ok(
             request,
             format!("Indented {lines} line{} with {what}", if lines == 1 { "" } else { "s" }),
+            json!({
+                "lines": lines,
+                "unit": if unit == quill_core::IndentUnit::Space { "space" } else { "tab" },
+                "start": selection.start(),
+                "end": selection.end(),
+            }),
+        )
+    }
+
+    /// `quill-cli editor dedent` — the agent's half of what `Shift+Tab` and `Shift+Space` do over a
+    /// selection, through the same command the keys do, so a dedent done by an agent and the same
+    /// thing done by hand are the same thing.
+    fn cli_editor_dedent(&mut self, request: &Request) -> Outcome {
+        if let Some(refusal) = self.not_a_document(request) {
+            return refusal;
+        }
+        if self.files.active().is_picture() {
+            return no(request, code::NOT_APPLICABLE, "This tab holds a picture rather than text.");
+        }
+        let unit = if request.switch("space") {
+            quill_core::IndentUnit::Space
+        } else {
+            quill_core::IndentUnit::Tab
+        };
+        let selection = self.document().selection();
+        let text = self.document().text();
+        let lines = if selection.is_empty() {
+            1
+        } else {
+            text.byte_to_line(selection.end() - 1) - text.byte_to_line(selection.start()) + 1
+        };
+        let what = if unit == quill_core::IndentUnit::Space { "a space" } else { "a tab" };
+        let changed = self.document_mut().apply(quill_core::Command::Dedent { unit });
+        if !changed {
+            return ok(
+                request,
+                format!("Nothing to remove: no touched line starts with {what}"),
+                json!({
+                    "lines": 0,
+                    "unit": if unit == quill_core::IndentUnit::Space { "space" } else { "tab" },
+                }),
+            );
+        }
+        self.forget_layout();
+        self.reveal_caret = true;
+        let selection = self.document().selection();
+        ok(
+            request,
+            format!("Removed {what} from the start of the touched lines that had one"),
             json!({
                 "lines": lines,
                 "unit": if unit == quill_core::IndentUnit::Space { "space" } else { "tab" },

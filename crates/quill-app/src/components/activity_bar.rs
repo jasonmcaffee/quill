@@ -147,13 +147,13 @@ pub fn show_with(
             Some(crate::app::dock::Panel::Explorer),
         ),
         (
-            // **Under the folder icon**, which is where `task-28` asks for it. Named `Editor` rather than
-            // `Files`: the `View` menu's entries call it that, `panel list` calls the panels beside it by their
-            // own names, and no two controls in one window may share a name — `Project` above is the explorer.
+            // **Under the folder icon**, which is where `task-28` asks for it. Named `Editing Area` rather
+            // than `Editor` or `Files`: `Editor` is the Settings window's own page for the same reason
+            // `Project` above is the explorer, and no two controls in one window may share a name.
             //
             // It is not a `Panel`, so a right click on it opens no menu: the editing area is what is left when
             // the panels have taken their room, and there is no edge to move it to.
-            "Editor",
+            "Editing Area",
             icon::editing_area,
             state.editor_visible,
             true,

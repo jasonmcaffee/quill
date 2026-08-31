@@ -996,12 +996,14 @@ fn the_editing_area_can_be_hidden_from_the_rail_and_the_explorer_takes_the_width
     let full = harness.state().panel_area(quill_app::app::dock::Panel::Explorer).width();
 
     // The button a person presses, found by its tooltip.
-    harness.get_by_label("Editor").click();
+    harness.get_by_label("Editing Area").click();
     harness.run();
     assert!(!harness.state().editor_visible, "the button hid it");
-    // No tab strip, because there is nothing for it to be the top of.
+    // No tab strip, because there is nothing for it to be the top of. `sample_folder` always has a
+    // real `notes.txt` in the explorer, which stays visible with the editing area hidden, so the
+    // tab this harness opened is the one thing to check for: its own `untitled` label.
     assert!(
-        harness.query_by_label("untitled").is_none() && harness.query_all_by_label_contains(".txt").count() == 0,
+        harness.query_by_label("untitled").is_none(),
         "no tab is drawn while the editing area is hidden"
     );
     let widened = harness.state().panel_area(quill_app::app::dock::Panel::Explorer).width();
@@ -1831,7 +1833,7 @@ fn opening_the_about_box_shuts_whatever_else_was_open() {
 fn open_settings(harness: &mut Harness<'static, QuillApp>) {
     harness.state_mut().menu_placement = MenuPlacement::InWindow;
     harness.run();
-    harness.get_by_label("Edit the comment by human just now").click();
+    harness.get_by_label("Edit").click();
     harness.run();
     harness.get_by_label("Settings").click();
     harness.run();
@@ -11205,7 +11207,7 @@ fn the_board_contributes_a_tab_and_no_pane() {
     assert_eq!(harness.state().panel_area(Panel::Plugin(0)).width(), 0.0);
     let panels = did(&mut harness, "panel list");
     let names: Vec<&str> =
-        panels["panels"].as_array().expect("the panels").iter().filter_map(|it| it["name"].as_str()).collect();
+        panels["panels"].as_array().expect("the panels").iter().filter_map(|it| it["panel"].as_str()).collect();
     assert_eq!(
         names,
         ["explorer", "terminal", "run", "debug"],
@@ -11213,6 +11215,10 @@ fn the_board_contributes_a_tab_and_no_pane() {
     );
 
     // The board is reached from its menu entry instead, which is the control a person uses.
+    harness.state_mut().menu_placement = MenuPlacement::InWindow;
+    harness.run();
+    harness.get_by_label("Agent-Tasks").click();
+    harness.run();
     harness.get_by_label("Open Board").click();
     harness.run();
     assert!(
@@ -11246,7 +11252,7 @@ fn the_pane_is_moved_and_put_away_from_the_command_line() {
     harness.state_mut().use_store(quill_app::services::store::Store::at(&settings));
     harness.run();
 
-    let shown = did(&mut harness, "plugins tab agent-tasks/board --open");
+    let shown = did(&mut harness, "plugins pane agent-tasks/board --show");
     assert_eq!(shown["showing"], true);
     assert_eq!(shown["side"], "right");
     // The same drag the header takes, asked for by name.
@@ -11412,16 +11418,18 @@ fn nothing_the_plugin_owns_is_built_until_its_button_is_pressed() {
 
 #[test]
 fn switching_the_plugin_off_withdraws_every_contribution_in_the_same_frame() {
-    use quill_app::app::dock::Panel;
-    let mut harness = harness("");
+    // Agent-Tasks contributes a tab, a menu and a Settings page (`task-28` took its pane out), and
+    // all three go together the moment the plugin is switched off — the rule `Plugins::renders`
+    // already keeps for a Mermaid diagram: the window asks before it draws.
+    // A real file behind it, so closing the board's tab has a tab to fall back to rather than
+    // Quill opening a blank one to avoid showing none at all.
+    let mut harness = harness("Some prose.");
     did(&mut harness, "plugins tab agent-tasks/board --open");
     harness.run();
-    assert!(harness.state().panel_area(Panel::Plugin(0)).width() > 100.0);
+    assert_eq!(harness.state().files.len(), 2, "the board opened as a tab");
     did(&mut harness, "plugins disable agent-tasks");
     harness.run();
-    // The pane, the rail button, the menu and the Settings page all go at once, which is the rule
-    // `Plugins::renders` already keeps for a Mermaid diagram: the window asks before it draws.
-    assert_eq!(harness.state().panel_area(Panel::Plugin(0)).width(), 0.0);
+    assert_eq!(harness.state().files.len(), 1, "the tab closed with the plugin");
     let listed = did(&mut harness, "action list");
     let menus: Vec<&str> = listed["actions"]
         .as_array()
@@ -11436,7 +11444,7 @@ fn switching_the_plugin_off_withdraws_every_contribution_in_the_same_frame() {
     harness.run();
     did(&mut harness, "plugins tab agent-tasks/board --open");
     harness.run();
-    assert!(harness.state().panel_area(Panel::Plugin(0)).width() > 100.0);
+    assert_eq!(harness.state().files.len(), 2, "the tab is offered again");
 }
 
 #[test]
@@ -11762,9 +11770,27 @@ fn a_pane_that_asks_for_a_project_is_absent_when_there_is_none() {
         ui.set_visible(slot, true).is_some_and(|said| said.contains("project")),
         "and showing it is refused with what it asked for"
     );
-    // Agent-Tasks itself asks for `always`, which is the other value and applies with no project at all.
-    let board = ui.slot_of("agent-tasks/board").expect("the board");
-    assert!(ui.applies(board));
+    // `always` is the other value, and applies with no project at all. Agent-Tasks used to be what
+    // exercised it, until `task-28` took its pane out; a second manifest of its own is what
+    // `the_pane_is_moved_and_put_away_from_the_command_line`'s own comment asks for, so this value
+    // is not left to whichever plugin happens to ask for it.
+    let always_plugin = settings.join("plugins").join("always-applies");
+    std::fs::create_dir_all(&always_plugin).expect("a plugin folder");
+    std::fs::write(
+        always_plugin.join("plugin.conf"),
+        "plugin.id = always-applies\nplugin.name = Always Applies\nplugin.kind = ui\n\
+         ui.provider = agent-tasks\npane.id = board\npane.applies = always\n",
+    )
+    .expect("a manifest");
+    let (plugins, problems) = quill_app::services::plugins::Plugins::load(Some(
+        &quill_app::services::store::Store::at(&settings),
+    ));
+    assert!(problems.is_empty(), "the manifest should parse: {problems:?}");
+    let mut ui = quill_app::app::plugin_panes::PluginUi::default();
+    ui.refresh(&plugins);
+    let board = ui.slot_of("always-applies/board").expect("the contributed pane");
+    ui.set_project(None);
+    assert!(ui.applies(board), "`always` applies with no project open");
     let _ = std::fs::remove_dir_all(&folder);
 }
 
@@ -11773,8 +11799,25 @@ fn a_pane_that_is_showing_stays_the_pane_that_is_showing_when_the_plugins_change
     // Which slot a pane is in comes from the manifests and moves when a plugin is switched on or off, so
     // what is showing is held by the pane's own name. Keyed by slot, switching one plugin off would leave
     // another plugin's pane showing or hidden according to what the first one was doing.
-    let mut harness = harness("");
-    did(&mut harness, "plugins tab agent-tasks/board --open");
+    //
+    // Agent-Tasks no longer contributes a pane (`task-28` took it out of its own manifest), so this test
+    // drives one from a manifest written for it, the way `the_pane_is_moved_and_put_away_from_the_command_line`
+    // does.
+    let folder = copy_out_of_the_repository(&sample_folder(), "quill-plugin-pane-persists");
+    let settings = folder.join(".quill-settings");
+    let plugin = settings.join("plugins").join("agent-tasks");
+    std::fs::create_dir_all(&plugin).expect("a plugin folder");
+    std::fs::write(
+        plugin.join("plugin.conf"),
+        "plugin.id = agent-tasks\nplugin.name = Agent-Tasks\nplugin.kind = ui\n\
+         ui.provider = agent-tasks\npane.id = board\npane.label = Agent-Tasks\npane.side = right\n\
+         pane.width = 420\n",
+    )
+    .expect("a manifest that contributes a pane");
+    let mut harness = harness_in(&folder);
+    harness.state_mut().use_store(quill_app::services::store::Store::at(&settings));
+    harness.run();
+    did(&mut harness, "plugins pane agent-tasks/board --show");
     harness.run();
     assert!(harness.state().plugin_ui.is_visible(0));
     // Switching another plugin off and on again is a `Surfaces` rebuild, which is the moment a slot could
@@ -11796,6 +11839,7 @@ fn a_pane_that_is_showing_stays_the_pane_that_is_showing_when_the_plugins_change
         !harness.state().plugin_ui.is_visible(0),
         "a plugin switched back on does not bring its pane back showing: nobody asked for it"
     );
+    std::fs::remove_dir_all(&folder).ok();
 }
 
 #[test]
@@ -12084,8 +12128,10 @@ fn a_person_can_change_their_own_comment_and_cannot_change_an_agents() {
     let ticket = did(&mut harness, "plugins run agent-tasks task task-1");
     let comments = ticket["comments"].as_array().expect("the comments");
     let id = comments[0]["id"].as_i64().expect("the comment's id");
-    // Through the buttons, which is what a person presses: `Edit`, type, `Save`.
-    harness.get_by_label("Edit").click();
+    // Through the buttons, which is what a person presses: `Edit`, type, `Save`. Every comment's
+    // button says `Edit` on its face, so its accessible name carries who wrote it and when, the
+    // way `choice_button_named` names it, to tell one ticket's several `Edit` buttons apart.
+    harness.get_by_label("Edit the comment by human just now").click();
     harness.run();
     {
         let provider = harness.state_mut().plugin_ui.provider("agent-tasks").expect("the board is open");
@@ -12267,6 +12313,11 @@ fn choosing_in_each_dropdown_writes_the_field_it_names() {
     did(&mut harness, "plugins tab agent-tasks/board --open");
     did(&mut harness, "plugins run agent-tasks new-sprint Current Sprint");
     did(&mut harness, "plugins run agent-tasks new-task Choose things for me");
+    // Creating a ticket opens it as a **new** one — `+ Add Task`'s own state, which is what keeps
+    // `Status` off the form: moving a lane before a ticket even has a title is not a thing anybody
+    // wants. Re-opening it the way a click on an existing card does clears that, so `Status` is on
+    // the form for the rest of this test to find.
+    did(&mut harness, "plugins run agent-tasks open task-1");
     harness.run();
 
     // Choose one option out of one dropdown, by the words a person reads in the list.
@@ -12283,7 +12334,7 @@ fn choosing_in_each_dropdown_writes_the_field_it_names() {
     let codex_model = agent::models_for(Assignee::Codex, None).first().cloned().expect("a Codex model");
     pick(&mut harness, "Model", &codex_model);
     pick(&mut harness, "Effort", "high");
-    pick(&mut harness, "Status", "In Progress");
+    pick(&mut harness, "Status", "IN PROGRESS");
 
     let ticket = did(&mut harness, "plugins run agent-tasks task task-1");
     assert_eq!(ticket["task"]["priority"], "high", "the Priority dropdown wrote the priority");

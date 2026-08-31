@@ -734,6 +734,15 @@ pub const COMMANDS: &[Command] = &[
     },
     Command {
         area: "editor",
+        verb: "dedent",
+        summary: "Remove one indent from each line the selection touches, or the caret's line when nothing is selected — one tab, or one space with --space. This is what Shift+Tab and Shift+Space do over a selection. A line with none, or indented with the other unit, is left alone.",
+        arguments: NO_ARGUMENTS,
+        flags: &[switch("space", "Remove a space rather than a tab, which is what Shift+Space does.")],
+        examples: &["quill-cli editor dedent", "quill-cli editor dedent --space"],
+        local: false,
+    },
+    Command {
+        area: "editor",
         verb: "undo",
         summary: "Undo the last edit in the tab that is showing.",
         arguments: NO_ARGUMENTS,

@@ -53,6 +53,13 @@ pub enum Command {
     /// command line can ask it about a document that has neither. The selection follows the text it
     /// covered, so pressing the key again indents the same lines again. `task-1747`.
     Indent { unit: IndentUnit },
+    /// Remove one indent from each line the selection touches, the reverse of `Indent`.
+    ///
+    /// This is what `Shift+Tab` and `Shift+Space` do over a selection. A line only loses a
+    /// character when it starts with exactly the unit's own character; a line with no indentation,
+    /// or one indented with the other unit, is left alone, because there is no tab width to fall
+    /// back on and guessing at a mismatched indent would be wrong more often than right.
+    Dedent { unit: IndentUnit },
     /// Apply character formatting to the selection, or to the next text typed if nothing is selected.
     ApplyStyle(StyleChange),
     /// Turn bold on for the selection, or off if all of it is already bold.
@@ -669,6 +676,7 @@ impl Document {
             }
             Command::ReplaceMany(edits) => self.replace_many(edits),
             Command::Indent { unit } => self.indent(unit),
+            Command::Dedent { unit } => self.dedent(unit),
             Command::ApplyStyle(change) => self.apply_style(change),
             Command::ToggleBold => {
                 let on = !self.active_style().bold;
@@ -991,6 +999,60 @@ impl Document {
         let selection = self.selection;
         self.selection.anchor += shift(selection.anchor);
         self.selection.head += shift(selection.head);
+        self.desired_x = None;
+        self.mark_changed();
+        self.last_edit = EditKind::Other;
+    }
+
+    /// Remove one indent from each line the selection touches, the reverse of `indent`.
+    ///
+    /// Only a line whose first byte is exactly the unit's character loses one; every other touched
+    /// line — flush against the margin, or indented with the other unit — is left untouched, so a
+    /// selection spanning a mix of lines dedents only the ones that actually can be. A press that
+    /// finds nothing to remove anywhere in the selection does not push an undo step, because there
+    /// would be nothing in it to undo.
+    ///
+    /// The removal mirrors `indent`'s insertion byte for byte: found back to front so an earlier
+    /// line's start is not moved by a later line's edit, taken out of the text, the character
+    /// formatting and the marked passages together, with the folds and the breakpoints shifted in
+    /// the same two places. The selection follows the text the same way `indent`'s does: each end
+    /// moves back past the removals at or before it, so pressing the key again removes another level
+    /// from whatever is still indented.
+    fn dedent(&mut self, unit: IndentUnit) {
+        let range = self.selection.range();
+        let (first, last) = if range.is_empty() {
+            let line = self.text.byte_to_line(range.start);
+            (line, line)
+        } else {
+            (
+                self.text.byte_to_line(range.start),
+                self.text.byte_to_line(range.end - 1),
+            )
+        };
+        let unit = unit.text();
+        let starts: Vec<usize> = (first..=last)
+            .map(|line| self.text.line_to_byte(line))
+            .filter(|&at| {
+                at + unit.len() <= self.text.len_bytes() && self.text.byte_slice(at..at + unit.len()) == unit
+            })
+            .collect();
+        if starts.is_empty() {
+            return;
+        }
+        self.push_undo(EditKind::Other);
+        for at in starts.iter().rev() {
+            let at = *at;
+            let removed = at..at + unit.len();
+            self.text.remove(removed.clone());
+            self.chars.remove(removed.clone());
+            self.highlights.remove(removed.clone());
+            self.folds.remove(removed.clone());
+            self.breakpoints.remove(removed.clone());
+        }
+        let shift = |offset: usize| starts.iter().filter(|start| **start < offset).count() * unit.len();
+        let selection = self.selection;
+        self.selection.anchor = selection.anchor.saturating_sub(shift(selection.anchor));
+        self.selection.head = selection.head.saturating_sub(shift(selection.head));
         self.desired_x = None;
         self.mark_changed();
         self.last_edit = EditKind::Other;
@@ -1557,6 +1619,8 @@ the fourth line");
             Command::ReplaceMany(Vec::new()),
             Command::Indent { unit: IndentUnit::Tab },
             Command::Indent { unit: IndentUnit::Space },
+            Command::Dedent { unit: IndentUnit::Tab },
+            Command::Dedent { unit: IndentUnit::Space },
             Command::SelectAll,
             Command::ApplyStyle(StyleChange::size(28.0)),
             Command::ToggleBold,
@@ -2406,5 +2470,132 @@ mod indent_tests {
         let text = document.text().to_string();
         let mark = document.highlights().iter().next().expect("the mark").range.clone();
         assert_eq!(&text[mark.clone()], "two", "the mark is over the line's new letters");
+    }
+}
+
+#[cfg(test)]
+mod dedent_tests {
+    use super::*;
+
+    /// Select `from` to `to` in the document, the way the keys would leave it.
+    fn selected(document: &mut Document, from: usize, to: usize) {
+        document.apply(Command::PlaceCaret { offset: from, extend: false });
+        document.apply(Command::PlaceCaret { offset: to, extend: true });
+    }
+
+    /// The whole of the ask: an indented block, `Shift+Tab`, and every line loses its tab.
+    #[test]
+    fn shift_tab_over_a_selection_removes_the_indent_from_every_line() {
+        let mut document = Document::from_text("\tone\n\ttwo\n\tthree\n\tfour");
+        selected(&mut document, 0, 22);
+        assert!(document.apply(Command::Dedent { unit: IndentUnit::Tab }));
+        assert_eq!(document.text().to_string(), "one\ntwo\nthree\nfour");
+    }
+
+    /// A line with nothing at its start to remove is left exactly as it was.
+    #[test]
+    fn a_line_with_no_indentation_is_left_alone() {
+        let mut document = Document::from_text("\tone\ntwo\n\tthree");
+        selected(&mut document, 0, 15);
+        assert!(document.apply(Command::Dedent { unit: IndentUnit::Tab }));
+        assert_eq!(
+            document.text().to_string(),
+            "one\ntwo\nthree",
+            "the middle line had nothing to remove, so it is unchanged"
+        );
+    }
+
+    /// A tab-dedent does not touch a line indented with a space, and a space-dedent does not touch
+    /// one indented with a tab: there is no tab width to fall back on, so a mismatched indent is
+    /// left rather than guessed at.
+    #[test]
+    fn a_line_indented_with_the_other_unit_is_left_alone() {
+        let mut document = Document::from_text(" one\n two");
+        selected(&mut document, 0, 9);
+        assert!(!document.apply(Command::Dedent { unit: IndentUnit::Tab }), "neither line starts with a tab");
+        assert_eq!(document.text().to_string(), " one\n two");
+    }
+
+    /// A press that finds nothing to remove anywhere in the selection makes no change at all, and
+    /// pushes no undo step for there to be nothing to undo.
+    #[test]
+    fn a_press_that_finds_nothing_to_remove_does_not_push_an_undo_step() {
+        let mut document = Document::from_text("one\ntwo");
+        selected(&mut document, 0, 7);
+        let undo = document.can_undo();
+        assert!(!document.apply(Command::Dedent { unit: IndentUnit::Tab }));
+        assert_eq!(document.can_undo(), undo, "nothing was removed, so nothing was pushed");
+    }
+
+    /// The command answers for a bare caret too: the caret's line loses its indent and the caret
+    /// moves back with the letters that shifted under it.
+    #[test]
+    fn a_bare_caret_dedents_its_own_line_and_moves_back_with_it() {
+        let mut document = Document::from_text("one\n\ttwo\nthree");
+        document.apply(Command::PlaceCaret { offset: 6, extend: false }); // between "t" and "wo" in "\ttwo"
+        assert!(document.apply(Command::Dedent { unit: IndentUnit::Tab }));
+        assert_eq!(document.text().to_string(), "one\ntwo\nthree");
+        let caret = document.selection().head;
+        assert_eq!(&document.text().to_string()[caret - 1..caret + 2], "two", "still between the same letters");
+    }
+
+    /// Each end of the selection moves back past the removals at or before it: the highlight stays
+    /// over the words it covered, and a second press removes another level from a doubly indented
+    /// block.
+    #[test]
+    fn the_selection_follows_the_text_it_covered() {
+        let mut document = Document::from_text("\t\tone\n\t\ttwo\n\t\tthree\n\t\tfour");
+        selected(&mut document, 2, 26);
+        document.apply(Command::Dedent { unit: IndentUnit::Tab });
+        assert_eq!(
+            document.text().to_string(),
+            "\tone\n\ttwo\n\tthree\n\tfour",
+            "one level removed from each line"
+        );
+        assert_eq!(document.selection().range(), 1..22, "the same bytes, shifted back by the four removals");
+        document.apply(Command::Dedent { unit: IndentUnit::Tab });
+        assert_eq!(document.text().to_string(), "one\ntwo\nthree\nfour", "the second level is gone too");
+        assert_eq!(document.selection().range(), 0..18);
+    }
+
+    /// One key press is one snapshot, whatever the selection spans: one undo puts every line's
+    /// indent back, and the selection comes back with it.
+    #[test]
+    fn one_press_is_one_undo_step() {
+        let mut document = Document::from_text("\tone\n\ttwo\n\tthree\n\tfour");
+        selected(&mut document, 0, 22);
+        document.apply(Command::Dedent { unit: IndentUnit::Tab });
+        document.apply(Command::Undo);
+        assert_eq!(
+            document.text().to_string(),
+            "\tone\n\ttwo\n\tthree\n\tfour",
+            "one step put every line's tab back"
+        );
+        assert_eq!(document.selection().range(), 0..22, "the selection comes back with it");
+    }
+
+    /// The two units differ only in the character they look for and remove.
+    #[test]
+    fn the_units_differ_only_in_the_character() {
+        let mut tabbed = Document::from_text("\tone\n\ttwo");
+        selected(&mut tabbed, 0, 9);
+        tabbed.apply(Command::Dedent { unit: IndentUnit::Tab });
+        let mut spaced = Document::from_text(" one\n two");
+        selected(&mut spaced, 0, 9);
+        spaced.apply(Command::Dedent { unit: IndentUnit::Space });
+        assert_eq!(tabbed.text().to_string(), "one\ntwo");
+        assert_eq!(spaced.text().to_string(), "one\ntwo");
+    }
+
+    /// Dedent is indent's own inverse: indenting a block and dedenting it again leaves the text and
+    /// the selection exactly as they started.
+    #[test]
+    fn dedent_undoes_what_indent_did() {
+        let mut document = Document::from_text("one\ntwo\nthree");
+        selected(&mut document, 0, 13);
+        document.apply(Command::Indent { unit: IndentUnit::Space });
+        document.apply(Command::Dedent { unit: IndentUnit::Space });
+        assert_eq!(document.text().to_string(), "one\ntwo\nthree");
+        assert_eq!(document.selection().range(), 0..13);
     }
 }
