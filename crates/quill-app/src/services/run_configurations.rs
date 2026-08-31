@@ -112,10 +112,11 @@ impl Configuration {
 /// Whether the program this command names can be found, without starting anything.
 ///
 /// `task-1691` reported a configuration of `node primes.js` that `run add` accepted without comment
-/// and `run start` then failed on, because a window launched from Finder has no version manager's
-/// directory on its `PATH`. An agent writes `node`, `python` or `cargo`, and those are exactly the
-/// programs a version manager keeps off a desktop-launched application's `PATH` — so the answer is
-/// worth having at the moment the configuration is written down rather than only when it is run.
+/// and `run start` then failed on. Half of that was a `PATH` fault and `services::login_shell` is what
+/// answers it: a window launched from the Finder had none of a version manager's folders on its
+/// `PATH`, and now it has the ones the person's shell has. The other half stands whatever the `PATH`
+/// is — an agent writes `node`, `python` or `cargo` for a machine that may not have it — so the
+/// answer is still wanted at the moment the configuration is written down rather than when it is run.
 ///
 /// It is a **question**, not a refusal. A configuration may name a program that will exist by the
 /// time it is run, and a `run add` that refused one would be a `run add` nobody could use to write
@@ -136,9 +137,11 @@ pub fn found_on_path(program: &str, directory: &Path) -> bool {
         };
         return with_extensions(&against).any(|candidate| candidate.is_file());
     }
-    let Some(path) = std::env::var_os("PATH") else {
-        return false;
-    };
+    // `services::login_shell::search_path` rather than this process's own `PATH`, so the answer is
+    // about the `PATH` the program will really be started on. The paragraph above says a Finder
+    // launch has no version manager's folder on it; that module is what puts them back, and the two
+    // have to agree or `run add` would report a program as missing that `run start` then finds.
+    let path = crate::services::login_shell::search_path();
     std::env::split_paths(&path)
         .filter(|folder| !folder.as_os_str().is_empty())
         .any(|folder| with_extensions(&folder.join(program)).any(|candidate| candidate.is_file()))

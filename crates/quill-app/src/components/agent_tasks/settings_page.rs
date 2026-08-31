@@ -174,6 +174,38 @@ fn rows(board: &mut AgentTasks, ui: &mut egui::Ui, look: &Look<'_>) -> Vec<Reque
         changed.effort = Some(picked).filter(|value: &String| !value.trim().is_empty());
     }
 
+    heading(ui, look, area, &mut pen, "How an agent is launched");
+
+    // **A whole command rather than an extra-flags field**, so the program itself can be named: a
+    // wrapper script, a particular version under a version manager, or `claude` by its full path.
+    // Split the way a run configuration is split, so **no shell runs it** and what is typed is what
+    // runs. Empty means the command Quill builds itself, which is what these hints say.
+    let claude = configuration.claude_command.clone().unwrap_or_default();
+    let typed = field(ui, look, area, &mut pen, Field {
+        name: "Claude command",
+        value: &claude,
+        hint: "claude --dangerously-skip-permissions",
+        explanation: "The program and the flags in front of it, for a ticket assigned to Claude. The ticket's own \
+                      model and effort and the session flag are added after it, because those come from the row \
+                      and the board has to be able to resume the conversation it named. No shell runs this, so \
+                      nothing expands and a path with spaces in it goes in \"quotes\".",
+    });
+    if let Some(typed) = typed {
+        changed.claude_command = Some(typed).filter(|value: &String| !value.trim().is_empty());
+    }
+
+    let codex = configuration.codex_command.clone().unwrap_or_default();
+    let typed = field(ui, look, area, &mut pen, Field {
+        name: "Codex command",
+        value: &codex,
+        hint: "codex",
+        explanation: "The same for a ticket assigned to Codex. `resume <id>` stays the first thing after the \
+                      program, because it is a subcommand rather than a flag.",
+    });
+    if let Some(typed) = typed {
+        changed.codex_command = Some(typed).filter(|value: &String| !value.trim().is_empty());
+    }
+
     heading(ui, look, area, &mut pen, "Where the agent connects");
 
     // **Two settings, not four.** `task-28`: this asked for a Base URL, a Key name naming a keychain entry, a
@@ -208,9 +240,9 @@ fn rows(board: &mut AgentTasks, ui: &mut egui::Ui, look: &Look<'_>) -> Vec<Reque
     // changed nothing.
     let key_state = match (found, has_a_keychain) {
         (Some(source), _) => format!("set, from {source}"),
-        (None, true) => "not set: type it here, or export ANTHROPIC_API_KEY before starting Quill".to_owned(),
+        (None, true) => "not set: type it here, or export ANTHROPIC_API_KEY in your shell profile".to_owned(),
         (None, false) => format!(
-            "not set, and Quill has no keychain on {}: export ANTHROPIC_API_KEY before starting Quill",
+            "not set, and Quill has no keychain on {}: export ANTHROPIC_API_KEY in your shell profile",
             std::env::consts::OS
         ),
     };
@@ -280,12 +312,14 @@ fn rows(board: &mut AgentTasks, ui: &mut egui::Ui, look: &Look<'_>) -> Vec<Reque
             true =>
                 "Typed once and never shown again. It goes to this machine's keychain under `iliad`, not to a \
                  file, and Quill reads it at the moment an agent is launched and hands it over as \
-                 ANTHROPIC_API_KEY, OPENAI_API_KEY and ILIAD_API_KEY. Quill launched from a terminal already has \
-                 the key `~/.zshrc` exports and nothing needs typing here. The agent's own environment is where \
-                 it ends up, which any program running as you can read, so treat it as a key that machine holds.",
+                 ANTHROPIC_API_KEY, OPENAI_API_KEY and ILIAD_API_KEY. Nothing needs typing here when your shell \
+                 profile already exports ANTHROPIC_API_KEY: Quill reads that profile whether it was started from \
+                 a terminal or from the Dock, so an agent gets what a command typed in the terminal tile gets. \
+                 The agent's own environment is where it ends up, which any program running as you can read, so \
+                 treat it as a key that machine holds.",
             false =>
                 "There is no keychain here for Quill to write to, so nothing can be typed. Export \
-                 ANTHROPIC_API_KEY in the environment Quill itself is launched from and the agent inherits it.",
+                 ANTHROPIC_API_KEY in your shell profile and the agent is given it.",
         },
     );
 

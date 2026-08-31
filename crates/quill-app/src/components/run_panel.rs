@@ -264,7 +264,18 @@ impl RunPanel {
             shell: Some(program.clone()),
             args,
             working_directory: Some(configuration.working_directory(root)),
-            env: configuration.environment(),
+            // **What the person's shell would have given the command**, and the configuration's own
+            // variables after it so one that names the same variable still wins. A Quill started from
+            // the Finder has about a dozen variables from launchd and a `PATH` of four folders, so
+            // `node` and `cargo` under a version manager could not be found at all — the fault
+            // `run_configurations::found_on_path` already describes and could only report — and a
+            // program that reads a token or a certificate bundle out of the environment got neither.
+            // `services::login_shell` is that profile, read once.
+            env: {
+                let mut environment = crate::services::login_shell::for_a_child();
+                environment.extend(configuration.environment());
+                environment
+            },
         };
         let session = Session::spawn(&settings, size, waker)
             .map_err(|problem| format!("Quill could not start {program}: {problem}"))?;

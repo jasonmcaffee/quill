@@ -714,42 +714,14 @@ fn version_key(version: &str) -> Vec<u64> {
         .collect()
 }
 
-/// Where `program` is on `PATH`, if it is there.
+/// Where `program` is on the `PATH` Quill searches, if it is there.
 ///
-/// `PATH` is walked here rather than a `where`/`which` being run, because starting a process to find
-/// out whether a process can be started is a round trip that the window would wait for and because
-/// `where.exe` is not on every Windows.
+/// The walking is `services::login_shell::find`, so the adapter search and the Agent-Tasks board look
+/// on one `PATH` rather than two that agree today. That module is also why the `PATH` it walks is not
+/// simply this process's own: a Quill started from the Finder has four folders on it and none of them
+/// is one anybody installs a program into.
 pub fn on_path(program: &str) -> Option<PathBuf> {
-    // A path with a separator in it was meant as a path rather than as a name to look up, which is
-    // what a settings key holding a full path relies on.
-    let named = Path::new(program);
-    if named.components().count() > 1 {
-        return named.is_file().then(|| named.to_path_buf());
-    }
-    let path = std::env::var_os("PATH")?;
-    let extensions: Vec<String> = match cfg!(windows) {
-        true => std::env::var("PATHEXT")
-            .unwrap_or_else(|_| ".EXE;.CMD;.BAT;.COM".to_owned())
-            .split(';')
-            .map(|extension| extension.trim().to_lowercase())
-            .filter(|extension| !extension.is_empty())
-            .collect(),
-        // On Unix the name is the whole of it.
-        false => Vec::new(),
-    };
-    for folder in std::env::split_paths(&path) {
-        let plain = folder.join(program);
-        if plain.is_file() {
-            return Some(plain);
-        }
-        for extension in &extensions {
-            let with = folder.join(format!("{program}{extension}"));
-            if with.is_file() {
-                return Some(with);
-            }
-        }
-    }
-    None
+    crate::services::login_shell::find(program)
 }
 
 /// The build tools that must not be handed to a native debugger, and what they are called.

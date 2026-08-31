@@ -18,6 +18,7 @@ pub mod icons;
 pub mod imports;
 pub mod launcher;
 pub mod locators;
+pub mod login_shell;
 pub mod mcp;
 pub mod mermaid_scene;
 pub mod native_menu;

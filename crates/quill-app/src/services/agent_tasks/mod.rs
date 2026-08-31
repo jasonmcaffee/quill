@@ -113,6 +113,22 @@ pub struct Configuration {
     /// OpenAI's for Codex — which is what leaving both environment variables unset already does, and which
     /// is the ticket's "default url for that model".
     pub base_url: Option<String>,
+    /// The command a Claude ticket is launched with, when Quill's own is not what is wanted.
+    ///
+    /// The program and the flags in front of it — `claude --dangerously-skip-permissions
+    /// --add-dir /tmp` — and Quill still puts the ticket's `--model`, `--effort` and the session flag
+    /// after it, because those come from the row rather than from a setting and the board cannot
+    /// resume a conversation it did not name. Empty means [`agent::launch`]'s own command line.
+    ///
+    /// **A whole command rather than an extra-arguments field**, so the program itself can be named:
+    /// a wrapper script, a particular version under a version manager, or `claude` by full path on a
+    /// machine where it is not on any `PATH`. It is split by `run_configurations::split_command`, the
+    /// same splitter a run configuration uses, so **no shell runs it** — nothing expands, nothing
+    /// globs, and `&&` is one program with a strange argument.
+    pub claude_command: Option<String>,
+    /// The same for a Codex ticket. `codex resume <id>` puts its subcommand first, which Quill goes on
+    /// doing, so what is written here is the program and the flags that follow the subcommand.
+    pub codex_command: Option<String>,
 }
 
 /// The gateway this machine's agents talk to, which a configuration that has never been written starts at.
@@ -147,6 +163,8 @@ impl Default for Configuration {
             model: None,
             effort: None,
             base_url: Some(ILIAD_URL.to_owned()),
+            claude_command: None,
+            codex_command: None,
         }
     }
 }
@@ -199,6 +217,8 @@ impl Configuration {
                 Some(url) => Some(url.trim().to_owned()).filter(|url| !url.is_empty()),
                 None => Some(ILIAD_URL.to_owned()),
             },
+            claude_command: said("claude-command"),
+            codex_command: said("codex-command"),
         }
     }
 
@@ -216,6 +236,8 @@ impl Configuration {
         set("project", self.project.clone().map(|path| path.display().to_string()));
         set("model", self.model.clone());
         set("effort", self.effort.clone());
+        set("claude-command", self.claude_command.clone());
+        set("codex-command", self.codex_command.clone());
         // Always written, even when it is empty, so that a person who cleared it gets the agent's own
         // endpoint rather than Iliad's URL back again. See `read`.
         values.set("base-url", self.base_url.clone().unwrap_or_default());
@@ -228,7 +250,10 @@ impl Configuration {
             values.to_text_headed(
                 "The Agent-Tasks board. No secret is in here: the agent's authentication key lives in this \
                  machine's keychain under `iliad`, and `base-url` is the gateway it is used against. An empty \
-                 `base-url` means whichever endpoint the agent itself is configured for.",
+                 `base-url` means whichever endpoint the agent itself is configured for. `claude-command` and \
+                 `codex-command` are the program and the flags in front of it a ticket's agent is launched with, \
+                 and the ticket's own model, effort and session flag are added after them; empty means the \
+                 command Quill builds itself.",
             ),
         )
         .map_err(|problem| format!("the settings could not be written: {problem}"))
@@ -283,6 +308,19 @@ impl Configuration {
             environment.push(("OPENAI_BASE_URL".to_owned(), url.clone()));
         }
         environment
+    }
+
+    /// The launch command written down for one agent, if there is one.
+    ///
+    /// One function rather than the caller choosing between two fields, so `Start` and `Resume session`
+    /// cannot disagree about which command a ticket's agent runs. A person is not launched, so they
+    /// name nothing.
+    pub fn command_for(&self, agent: Assignee) -> Option<String> {
+        match agent {
+            Assignee::Claude => self.claude_command.clone(),
+            Assignee::Codex => self.codex_command.clone(),
+            Assignee::Human => None,
+        }
     }
 
     /// Where the board file is, whether or not one was configured.
@@ -340,30 +378,54 @@ impl AgentTasks {
     }
 }
 
-/// The agent's authentication key: the keychain first, then this process's own environment.
+/// A program that ships beside the running one, by its full path.
 ///
-/// `task-28` asked for "the iliad key from zshrc", and both halves of that are needed because it depends on
-/// how Quill was started. Quill launched from a terminal inherits `ANTHROPIC_API_KEY` from `~/.zshrc` and
-/// there is nothing for anybody to type; Quill launched from the Dock inherits nothing, and the keychain is
-/// where the key it uses has to have been put.
+/// `quill-cli` is not on anybody's `PATH`: on macOS it is inside the application bundle next to `quill`
+/// and on Windows it sits in the installation folder. So an agent told to run `quill-cli` would answer
+/// that there is no such command, which is what the handoff line's [`agent::ENV_CLI`] exists to prevent.
+/// The name as given is the fallback, so a build with no discoverable executable path still produces a
+/// line somebody can fix by hand rather than one holding nothing.
+pub fn beside_this_program(name: &str) -> String {
+    let spelled = match cfg!(windows) {
+        true => format!("{name}.exe"),
+        false => name.to_owned(),
+    };
+    std::env::current_exe()
+        .ok()
+        .and_then(|program| program.parent().map(|folder| folder.join(&spelled)))
+        .filter(|beside| beside.is_file())
+        .map(|beside| beside.display().to_string())
+        .unwrap_or(spelled)
+}
+
+/// The agent's authentication key: the keychain first, then what the person's shell sets.
+///
+/// `task-28` asked for "the iliad key from zshrc", and the second half of that only worked when Quill had
+/// been started from a terminal, because that is the only way `ANTHROPIC_API_KEY` was in this process at
+/// all. `services::login_shell::variable` reads the profile itself, so a Quill started from the Dock has the
+/// same key a Quill started from a terminal has — which is what the Settings page has claimed since it was
+/// written, and what makes the keychain the place to put a key that is *not* in the profile rather than the
+/// only place a key can come from.
 ///
 /// The keychain wins when both have one, because it is the value somebody chose here.
 pub fn the_key() -> Option<String> {
     keychain::read(KEY_NAME).or_else(|| {
-        std::env::var("ANTHROPIC_API_KEY").ok().map(|value| value.trim().to_owned()).filter(|value| !value.is_empty())
+        crate::services::login_shell::variable("ANTHROPIC_API_KEY")
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
     })
 }
 
 /// Which of the two the key came from, for the Settings page to say. `None` when there is no key at all.
 ///
 /// A page that said `set` without saying where from would leave somebody wondering why clearing the keychain
-/// changed nothing, which is exactly what happens when the environment is the one answering.
+/// changed nothing, which is exactly what happens when the shell's own value is the one answering.
 pub fn where_the_key_came_from() -> Option<&'static str> {
     if keychain::read(KEY_NAME).is_some() {
         return Some("this machine's keychain");
     }
-    match std::env::var("ANTHROPIC_API_KEY") {
-        Ok(value) if !value.trim().is_empty() => Some("ANTHROPIC_API_KEY in Quill's own environment"),
+    match crate::services::login_shell::variable("ANTHROPIC_API_KEY") {
+        Some(value) if !value.trim().is_empty() => Some("ANTHROPIC_API_KEY set by your shell profile"),
         _ => None,
     }
 }
@@ -525,19 +587,49 @@ pub struct TicketTerminal {
     /// Set while it has been paused, because a frozen process cannot answer and its silence means
     /// nothing.
     pub paused: bool,
-    /// The lines waiting for the agent's prompt, oldest first, and the instant they may be typed.
+    /// The lines waiting for the agent's prompt, oldest first.
     ///
     /// A fresh agent has not drawn its prompt yet, and characters typed before it does go nowhere, so the
     /// handoff waits rather than being sent with the spawn — and anything asked for while it waits waits
     /// behind it, in order, which is what keeps a comment from arriving before the line that says which
-    /// ticket it is about. `Session` has no timer of its own, so the deadline is held here and
+    /// ticket it is about. `Session` has no timer of its own, so the waiting is held here and
     /// [`TicketTerminal::pump`] is what checks it: one place rather than a thread per ticket.
     pending: Vec<String>,
+    /// The earliest the queue may be typed, which is [`agent::ready_after`].
+    ///
+    /// **A floor, not the signal.** It used to be the whole of it, at 1800 ms for Claude, and that lost the
+    /// handoff every time: measured on a real window, `claude` took about ten seconds to print its banner,
+    /// so the line was typed into a program that had not drawn a prompt and vanished. The agent then sat at
+    /// its banner for ever while the ticket said `in_progress`, and a line sent by hand afterwards worked —
+    /// which is what proved the terminal was fine and the timing was not.
     ready_at: std::time::Instant,
+    /// The latest the queue may wait, whatever the session is doing.
+    ///
+    /// An agent whose prompt animates — a cycling tip, a spinner — never goes quiet, so a rule that waited
+    /// only for quiet would wait for ever. See [`TicketTerminal::the_prompt_is_ready`].
+    give_up_at: std::time::Instant,
     /// How much the session had written the last time it was looked at, so "it printed something" is a
     /// comparison rather than a reading of the screen.
     written: usize,
+    /// True once the session has printed anything at all. A session that has printed nothing has not
+    /// started, and its silence is not the quiet of a prompt waiting for input.
+    has_printed: bool,
+    /// When the session last stopped changing, or `None` while it is still printing.
+    quiet_since: Option<std::time::Instant>,
 }
+
+/// How long a started agent has to be quiet before its prompt is taken to be ready.
+///
+/// The signal is "it printed its banner and then stopped", which is what a program waiting for input looks
+/// like from outside. Reading the screen for a prompt marker was the other candidate and is still refused
+/// for the reason `agent::ready_after` gives: a marker in a character grid is a marker a colour scheme or a
+/// narrow terminal can move, and every agent spells its prompt differently.
+const PROMPT_SETTLES_AFTER: std::time::Duration = std::time::Duration::from_millis(800);
+
+/// How long the queue waits for quiet before giving up and typing anyway.
+///
+/// Generous, because the cost of waiting is a slow handoff and the cost of not waiting is a lost one.
+const PROMPT_CEILING: std::time::Duration = std::time::Duration::from_secs(45);
 
 impl std::fmt::Debug for TicketTerminal {
     /// Written by hand because `quill_terminal::Session` holds a channel and a thread and has no
@@ -571,14 +663,39 @@ impl TicketTerminal {
         if printed {
             self.written = written;
             self.last_output_at = now.to_owned();
+            self.has_printed = true;
+            self.quiet_since = None;
+        } else if self.quiet_since.is_none() {
+            self.quiet_since = Some(std::time::Instant::now());
         }
         let waiting = !self.pending.is_empty();
-        if waiting && std::time::Instant::now() >= self.ready_at {
+        if waiting && self.the_prompt_is_ready() {
             for line in std::mem::take(&mut self.pending) {
                 self.type_line(&line);
             }
         }
         printed || waiting
+    }
+
+    /// Whether the agent is at a prompt that will take what is typed into it.
+    ///
+    /// Three parts, and each answers a way this was wrong before. The **floor** is
+    /// [`agent::ready_after`], because a session that has printed nothing yet is not quiet, it has not
+    /// started. Then it has to have **printed something and gone quiet** for [`PROMPT_SETTLES_AFTER`],
+    /// which is what a program waiting for input looks like from outside and is the part that was missing:
+    /// with a fixed delay alone, a `claude` that took ten seconds to draw its banner was typed into after
+    /// 1800 milliseconds and the line was lost. And the **ceiling** is [`PROMPT_CEILING`], so an agent whose
+    /// prompt never stops animating still gets its handoff.
+    fn the_prompt_is_ready(&self) -> bool {
+        let now = std::time::Instant::now();
+        if now < self.ready_at {
+            return false;
+        }
+        if now >= self.give_up_at {
+            return true;
+        }
+        self.has_printed
+            && self.quiet_since.is_some_and(|since| now.duration_since(since) >= PROMPT_SETTLES_AFTER)
     }
 
     /// Type a line and press return, now.
@@ -865,6 +982,7 @@ impl AgentTasks {
             model: task.model.clone(),
             effort: task.effort.clone(),
             resuming,
+            command: self.configuration.command_for(agent),
         };
         let launch = agent::launch(&plan)?;
         let now = clock::now();
@@ -943,6 +1061,7 @@ impl AgentTasks {
             model: task.model.clone(),
             effort: task.effort.clone(),
             resuming: true,
+            command: self.configuration.command_for(agent),
         })?;
         // The task protocol requires a resumed run to re-read the ticket and take its newest human comments
         // as the specification, so that is what it is told. An empty handoff was a resumed agent that had
@@ -1000,8 +1119,19 @@ impl AgentTasks {
             "codex" => Assignee::Codex,
             _ => Assignee::Claude,
         };
+        // **The agent is started by its full path, not by its name.** `claude` installs itself into
+        // `~/.local/bin` and `codex` into a package manager's folder, and neither is on the `PATH` a
+        // Quill started from the Finder or the Dock has — launchd gives it `/usr/bin:/bin:/usr/sbin:
+        // /sbin` and nothing else, so `claude` was spawned and failed with `No such file or
+        // directory` while typing `claude` in the terminal tile beside it worked, because the tile
+        // starts the person's shell and the shell reads their profile.
+        //
+        // `services::login_shell` reads that same profile, so what is looked on here is the `PATH`
+        // the person really has, and `required` is what says which program is missing and where it
+        // was looked for rather than leaving `No such file or directory` as the whole answer.
+        let program = crate::services::login_shell::required(&launch.program)?;
         let settings = quill_terminal::SessionSettings {
-            shell: Some(launch.program.clone()),
+            shell: Some(program.display().to_string()),
             args: launch.arguments.clone(),
             working_directory: Some(folder.to_path_buf()),
             // The board passes the two variables an agent needs to reach it. They are not secrets: the
@@ -1011,10 +1141,25 @@ impl AgentTasks {
             // configuration says about where the agent connects and what key it uses. The key is read from the
             // keychain here and handed straight to the child: it is in this process for as long as that takes.
             env: {
-                let mut environment = vec![(
+                // **Everything the person's shell would have given the command**, underneath the
+                // board's own values. An agent started with launchd's dozen variables found no
+                // `claude` on its `PATH` and, once that was mended, said it was not logged in: the
+                // gateway, the key, the custom header the gateway wants and the certificate bundle
+                // are all set by `~/.zshrc` and none of them reached the child. `services::login_shell`
+                // is that profile read once, so a ticket's agent runs with what a command typed in
+                // the terminal tile runs with.
+                let mut environment = crate::services::login_shell::for_a_child();
+                environment.push((
                     "QUILL_AGENT_TASKS".to_owned(),
                     self.configuration.database_path().display().to_string(),
-                )];
+                ));
+                // The two the handoff line names. Without them the line would have to hold an absolute
+                // path and a process id, which is a line nobody could read and nobody could retype.
+                environment.push((agent::ENV_CLI.to_owned(), beside_this_program("quill-cli")));
+                environment.push((agent::ENV_INSTANCE.to_owned(), std::process::id().to_string()));
+                // Last, so the board's gateway and key beat the profile's. They are what the Settings
+                // page shows and what somebody edits there, and a page whose value was quietly
+                // overruled by a shell profile would be a page that lies.
                 environment.extend(self.configuration.environment());
                 environment
             },
@@ -1039,7 +1184,10 @@ impl AgentTasks {
             paused: false,
             pending,
             ready_at: std::time::Instant::now() + agent::ready_after(agent_kind),
+            give_up_at: std::time::Instant::now() + PROMPT_CEILING,
             written: 0,
+            has_printed: false,
+            quiet_since: None,
         });
         Ok(())
     }
@@ -2213,13 +2361,23 @@ impl UiProvider for AgentTasks {
             }
             "comment" => {
                 let task = self.by_key(argument(0))?;
-                let body = rest(1);
+                // **Who is commenting, when the caller is not a person.** A comment carries an author and
+                // the command line cannot tell who ran it, so it said `human` for everything — including a
+                // comment an agent posted about its own work, which is the one case where the author is the
+                // whole point of the column. `--as claude` is how the handoff line tells it. Only in first
+                // position and only when it names a real author, so `comment task-1 --as we understood it`
+                // is still a comment about understanding rather than a refusal.
+                let named = (argument(1) == "--as").then(|| Author::parse(argument(2))).flatten();
+                let (author, body) = match named {
+                    Some(author) => (author, rest(3)),
+                    None => (Author::Human, rest(1)),
+                };
                 if body.trim().is_empty() {
                     return Err("a comment with no body says nothing".to_owned());
                 }
-                self.store()?.add_comment(task.id, Author::Human, &body, &now)?;
+                self.store()?.add_comment(task.id, author, &body, &now)?;
                 self.refresh()?;
-                Ok(Answer::said(format!("commented on {}", task.key)))
+                Ok(Answer::said(format!("commented on {} as {}", task.key, author.name())))
             }
             "jira-key" => {
                 let task = self.by_key(argument(0))?;

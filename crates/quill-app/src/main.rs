@@ -170,6 +170,14 @@ fn main() -> eframe::Result {
     }
     quill_app::services::crash_log::install(quill_app::services::store::folder_for_this_person());
 
+    // Started here, and by nothing else, because it runs the person's shell profile: a Quill started
+    // from the Finder or the Dock has `PATH=/usr/bin:/bin:/usr/sbin:/sbin` and cannot find a program
+    // installed under the home folder, which is where `claude` and `codex` install themselves. It runs
+    // on a thread and takes about a second and a half, so it is asked for as early as there is
+    // anything to ask, long before a person can press a button that starts one.
+    // `services::login_shell` says what is read and why the profile rather than a list of folders.
+    quill_app::services::login_shell::start_reading();
+
     // Proving the crash log works has to be possible on the machine it matters on, from the installed
     // application, where there is no terminal and no test harness. `QUILL_PANIC_TEST=1 quill` panics
     // here on purpose, and what it writes to crash.log is what a real crash writes.
