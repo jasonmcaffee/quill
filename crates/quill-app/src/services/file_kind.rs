@@ -181,6 +181,13 @@ pub fn is_image(path: &Path) -> bool {
     matches!(extension(path).as_deref(), Some(found) if IMAGE_EXTENSIONS.contains(&found))
 }
 
+/// Whether a path names an HTML document that Quill can render in a browser tab.
+pub fn is_html(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| matches!(extension.to_ascii_lowercase().as_str(), "html" | "htm"))
+}
+
 /// Whether Quill can open this file.
 pub fn is_openable(path: &Path) -> bool {
     openable(path).is_ok()

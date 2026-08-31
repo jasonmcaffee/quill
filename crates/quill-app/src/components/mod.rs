@@ -9,6 +9,7 @@
 pub mod agent_tasks;
 pub mod about_dialog;
 pub mod activity_bar;
+pub mod browser_view;
 pub mod color_wheel;
 pub mod completion;
 pub mod context_menu;

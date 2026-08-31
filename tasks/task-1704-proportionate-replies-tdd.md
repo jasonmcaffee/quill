@@ -149,3 +149,40 @@ already one object per setting with the three fields named, so this is the text 
 4. The study harness, `tools/agent-study/`, re-run on the four scenarios this is about — s04, s05,
    s19 and s20 — against the rebuilt window, with the reply sizes read out of the session files and
    compared with the table in §1.
+
+## 6. Live verification, with the numbers
+
+Driven against a rebuilt window (`target/release/quill-cli.exe` → the window on
+`_agent_output/agent-study/scratch-project`), the four replies answer proportionately when asked to,
+and answer exactly as before when not:
+
+| Reply | Full (flag left out) | Proportionate |
+|---|---|---|
+| `status` | 7,704 B | 507 B `--section panes` · 283 B `--section project` |
+| `fold collapse --all` | 1,406 B (with `--regions`) | 143 B summary, the study's agent paid 1,162 for the default |
+| `action list` | 27,751 B | 4,813 B `--menu view` (the 19 rows the study's agent wanted) |
+| `settings list` | — | a 76-char `debug.lldb` path now sits two columns clear of its help |
+
+The refusals answer the way the rule says: `status --section purple` → "`purple` is not a section of
+`status`. It is one of: editor, tabs, panes, …"; `action list --menu purple` → "There is no menu
+called `purple`. The menus are: Quill, File, …". Several sections and case are honoured:
+`--section editor,git` carries exactly those two.
+
+`quill-cli mcp tools --count`: the tool count is unchanged (22 grouped / 148 every); the new flags
+cost 61,516 → 62,090 B grouped and 145,735 → 147,416 B every — the flags are on the tools, and the
+default of each is the old full reply.
+
+## 7. Study-harness status: blocked by the model, not the change
+
+The harness was re-run on s04, s05, s19 and s20 against the rebuilt window, and every scenario came
+back with **zero tool calls**: the local model answered every turn with a 500 —
+`the current context does not logits computation. skipping`. That is the model server, not Quill:
+port 8087 (the port `qwen38-study/qwen38-27b` is configured for) is serving the **nomic embeddings**
+model, which cannot do logits, and the chat model on 8080 is not answering new requests. Re-running
+the four scenarios needs the study model (`Qwen3.8-27B-IQ4_XS.gguf`, 15.7 GB) loaded on 8087, which
+the machine's two 5090s cannot take with the current models resident (8–10 GB free each).
+
+One cost to note: the re-run wrote over the task-1695 session files in
+`_agent_output/agent-study/sessions/` (s04, s05, s19, s20) with the empty zero-tool-call versions,
+because it used the default output folder rather than a fresh `STUDY_OUT`. The §1 byte figures were
+read out of those files before the overwrite and are unchanged here.

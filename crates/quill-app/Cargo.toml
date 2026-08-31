@@ -24,6 +24,9 @@ quill-terminal.workspace = true
 # two cannot come to disagree about what a command is called. It brings no window with it.
 quill-cli.workspace = true
 serde_json.workspace = true
+url.workspace = true
+percent-encoding.workspace = true
+mime_guess.workspace = true
 egui.workspace = true
 eframe.workspace = true
 fontdb.workspace = true
@@ -43,6 +46,7 @@ libc.workspace = true
 # with a lower case q. Nothing else here needs Objective C.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-foundation.workspace = true
+wry.workspace = true
 # Posting a block to the main dispatch queue, which is how a run loop that has stopped answering
 # repaint requests is woken. See `services/wake.rs`.
 dispatch2.workspace = true
@@ -51,6 +55,7 @@ dispatch2.workspace = true
 # See `services/windows_transparency.rs`.
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
+wry.workspace = true
 
 # The icon and the version block inside `quill.exe`, put there by `build.rs`. Windows takes a
 # program's icon, its taskbar name and its Add or Remove Programs version from a resource compiled

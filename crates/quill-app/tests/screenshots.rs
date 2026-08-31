@@ -2804,6 +2804,7 @@ fn the_explorer_can_make_a_folder() {
     let mut prompt = harness.state().prompt.clone().expect("the prompt");
     prompt.value = "services".to_owned();
     harness.state_mut().run_prompt_for_test(prompt);
+    harness.state_mut().prompt = None;
     harness.run();
     assert!(folder.join("services").is_dir(), "the folder was made");
     assert_eq!(harness.state().selected, Some(folder.join("services")));
@@ -2989,6 +2990,7 @@ fn a_terminal_tab_is_renamed_from_its_own_menu() {
     }
     let prompt = harness.state_mut().prompt.take().expect("a prompt");
     harness.state_mut().run_prompt_for_test(prompt);
+    harness.state_mut().prompt = None;
     harness.run();
     assert_eq!(harness.state().terminal.tabs.names(), vec!["detached", "the build"]);
 
@@ -3845,6 +3847,7 @@ fn making_a_file_from_the_explorers_menu_opens_it() {
     }
     let prompt = harness.state_mut().prompt.take().expect("a prompt");
     harness.state_mut().run_prompt_for_test(prompt);
+    harness.state_mut().prompt = None;
     harness.run();
     assert!(folder.join("example.json").is_file(), "the file is made");
     assert_eq!(harness.state().files.active().name(), "example.json", "and opened");
@@ -3867,6 +3870,7 @@ fn renaming_a_file_moves_it_and_the_tab_follows() {
     }
     let prompt = harness.state_mut().prompt.take().expect("a prompt");
     harness.state_mut().run_prompt_for_test(prompt);
+    harness.state_mut().prompt = None;
     harness.run();
     assert!(!folder.join("before.md").exists());
     assert!(folder.join("after.md").is_file());
@@ -4293,6 +4297,7 @@ fn every_git_operation_can_be_driven_from_the_window() {
     let mut prompt = harness.state_mut().prompt.take().expect("a prompt for the name");
     prompt.value = "from-quill".to_owned();
     harness.state_mut().run_prompt_for_test(prompt);
+    harness.state_mut().prompt = None;
     settle(&mut harness, "the branch", |app| {
         app.git.as_ref().is_some_and(|git| git.snapshot.status.branch.as_deref() == Some("from-quill"))
     });
@@ -4305,6 +4310,7 @@ fn every_git_operation_can_be_driven_from_the_window() {
     let mut prompt = harness.state_mut().prompt.take().expect("a prompt for the message");
     prompt.value = "half done".to_owned();
     harness.state_mut().run_prompt_for_test(prompt);
+    harness.state_mut().prompt = None;
     settle(&mut harness, "the stash", |app| {
         app.git.as_ref().is_some_and(|git| !git.snapshot.stashes.is_empty())
     });
@@ -6684,6 +6690,82 @@ fn every_command_in_the_catalogue_is_one_the_window_knows() {
         }
         harness.run();
     }
+}
+
+/// `task-1756`: the agent command and explorer action both create ordinary rendered tabs.
+#[test]
+fn browser_tabs_open_through_the_shared_cli_and_action_paths() {
+    let folder = std::env::temp_dir().join(format!("quill-browser-paths-{}", std::process::id()));
+    std::fs::create_dir_all(&folder).expect("make the browser project");
+    let first = folder.join("index.html");
+    let second = folder.join("other.htm");
+    std::fs::write(&first, "<title>First</title>").expect("write first page");
+    std::fs::write(&second, "<title>Second</title>").expect("write second page");
+    let mut harness = harness_in(&folder);
+    let opened = over_the_wire(&mut harness, "browser.open", serde_json::json!({ "address": "index.html" }));
+    assert!(opened.ok, "the command opens local HTML: {:?}", opened.error);
+    let first = first.canonicalize().expect("canonical first page");
+    assert_eq!(harness.state().files.active().browser.as_ref().and_then(|tab| tab.location.source_path()), Some(first.as_path()));
+    let ctx = harness.ctx.clone();
+    harness.state_mut().run_action(Action::OpenInBrowser(second.clone()), &ctx);
+    let second = second.canonicalize().expect("canonical second page");
+    assert_eq!(harness.state().files.active().browser.as_ref().and_then(|tab| tab.location.source_path()), Some(second.as_path()));
+    let status = over_the_wire(&mut harness, "browser.status", serde_json::json!({}));
+    assert_eq!(status.result["url"].as_str().map(|url| url.ends_with("/other.htm")), Some(true));
+
+    // `File -> Open Web Address...` asks, and what is typed lands in a rendered tab through the same
+    // path the command line and the explorer entry use.
+    let ctx = harness.ctx.clone();
+    harness.state_mut().run_action(Action::OpenWebAddress, &ctx);
+    let mut prompt = harness.state().prompt.clone().expect("the Open Web Address prompt");
+    assert_eq!(prompt.title, "Open Web Address");
+    prompt.value = "example.com/typed".to_owned();
+    harness.state_mut().run_prompt_for_test(prompt);
+    harness.state_mut().prompt = None;
+    assert_eq!(
+        harness.state().files.active().browser.as_ref().map(|tab| tab.current_url().to_owned()),
+        Some("https://example.com/typed".to_owned()),
+        "an address with no scheme typed into the prompt is read as an address"
+    );
+    let closed = over_the_wire(&mut harness, "tab.close", serde_json::json!({}));
+    assert!(closed.ok, "the typed tab closes again: {:?}", closed.error);
+
+    // The document commands refuse rather than answering about the empty document a rendered tab
+    // holds behind its native view, and they say which command does answer.
+    for (command, arguments) in [
+        ("editor.text", serde_json::json!({})),
+        ("editor.insert", serde_json::json!({ "text": "typed" })),
+        ("editor.scroll", serde_json::json!({})),
+        ("tab.save", serde_json::json!({})),
+        ("tab.reload", serde_json::json!({})),
+    ] {
+        let reply = over_the_wire(&mut harness, command, arguments);
+        assert!(!reply.ok, "{command} answers about a web page");
+        assert!(reply.error.as_ref().is_some_and(|problem| problem.message.contains("browser")), "{command}: {:?}", reply.error);
+    }
+    let editor = over_the_wire(&mut harness, "editor.status", serde_json::json!({}));
+    assert_eq!(editor.result["browser"], serde_json::json!(true));
+    let tabs = over_the_wire(&mut harness, "tab.list", serde_json::json!({}));
+    assert_eq!(tabs.result["tabs"].as_array().map(|tabs| tabs.iter().filter(|tab| tab["browser"] == serde_json::json!(true)).count()), Some(2));
+
+    // One window renders one page at a time, so `browser back` on a tab the view is not pointed at
+    // is refused rather than driving somebody else's page.
+    let elsewhere = over_the_wire(&mut harness, "browser.status", serde_json::json!({}));
+    assert_eq!(elsewhere.result["showing"], serde_json::json!(false), "no native view exists in a test window");
+
+    // The toolbar reaches the same host the command line does: with no native view behind it in a
+    // test window, `Reload` comes back as the host's own refusal rather than doing nothing.
+    harness.run();
+    harness.state_mut().message = None;
+    harness.get_by_label("Reload").click();
+    harness.run();
+    assert!(harness.state().message.is_some(), "the toolbar button reached the browser host");
+
+    // Closing a rendered tab is an ordinary tab close: it neither asks to save nor leaves its root
+    // registered, and the tab that is showing goes back to being a document.
+    let closed = over_the_wire(&mut harness, "tab.close", serde_json::json!({}));
+    assert!(closed.ok, "a rendered tab closes: {:?}", closed.error);
+    assert!(!harness.state().files.active().is_browser() || harness.state().files.active().browser.as_ref().map(|tab| tab.id) != Some(2));
 }
 
 // Highlighting a passage (`task-1663`).

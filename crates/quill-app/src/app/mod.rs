@@ -57,6 +57,7 @@ use quill_core::{layout, relayout, Command, Document, Highlights, Layout, Rgba};
 
 use crate::components::about_dialog::{self, About};
 use crate::components::activity_bar;
+use crate::components::browser_view;
 use crate::components::context_menu;
 use crate::components::debug_dialogs::{self, BreakpointDialog, EvaluateDialog};
 use crate::components::debug_panel::{self, DebugPanel};
@@ -86,6 +87,7 @@ use crate::components::text_tools;
 use crate::components::title_bar::{self, MenuPlacement};
 use crate::app::debug::{Built, DebugState, PendingBuild};
 use crate::services::breakpoint_store::BreakpointStore;
+use crate::services::browser::{BrowserCommand, BrowserEvent, BrowserHost, BrowserLocation, BrowserPlacement, BrowserTab};
 use crate::services::debuggers;
 use crate::services::file_kind;
 use crate::services::file_marks::FileMarks;
@@ -519,6 +521,10 @@ pub struct QuillApp {
     /// One value rather than a provider held per contribution, so the rail, the dock, the tab strip, the
     /// menus and the Settings window all ask the same thing what is contributed.
     pub plugin_ui: plugin_panes::PluginUi,
+    /// Native browser views and the shared WebView2 or WKWebView environment behind rendered tabs.
+    pub browser: BrowserHost,
+    /// Browser child rectangles reported by the panes in this frame.
+    browser_placements: Vec<BrowserPlacement>,
     pub tree: FileTree,
     pub renderer: TextRenderer,
     /// The font and the background, as chosen in `Edit -> Settings`.
@@ -877,6 +883,8 @@ impl QuillApp {
             plugins_ticked_at: None,
             plugin_ui: plugin_panes::PluginUi::default(),
             files: OpenFiles::new(document),
+            browser: BrowserHost::new(),
+            browser_placements: Vec::new(),
             tree: FileTree::new(&folder),
             renderer,
             settings,
@@ -1045,6 +1053,7 @@ impl QuillApp {
 
     /// The same, against a named folder, which is what a test that wants to check the settings uses.
     pub fn use_store(&mut self, store: Store) {
+        self.browser.set_profile(store.folder().join("browser"));
         let (settings, panes) = settings::load(&store);
         // A settings file written before this system had the family in it, or with no family at all, falls
         // back to one this system has.
@@ -1570,6 +1579,18 @@ impl QuillApp {
                     self.open_path(&file);
                 }
             }
+            Action::OpenWebAddress => {
+                self.prompt = Some(Prompt::new(
+                    "Open Web Address",
+                    "An HTTP address or an HTML file in this project.",
+                    "https://",
+                    "Open",
+                    Purpose::OpenWebAddress,
+                ));
+            }
+            Action::OpenInBrowser(path) => {
+                if let Err(problem) = self.open_browser(&path.to_string_lossy()) { self.message = Some(problem); }
+            }
             Action::GoToFile => {
                 // The folder is read again first, so a file made since the window opened is in the
                 // list. It is one walk of the project, on a key press rather than on every frame,
@@ -1615,6 +1636,9 @@ impl QuillApp {
             Action::CompleteWord => {}
             Action::NavigateBack => self.navigate(true),
             Action::NavigateForward => self.navigate(false),
+            Action::Save | Action::SaveAs if self.files.active().is_browser() => {
+                self.message = Some("A rendered page has no editable source to save.".to_owned());
+            }
             Action::Save => self.save(),
             Action::SaveAs if self.files.active().is_picture() => {
                 self.message =
@@ -5008,6 +5032,9 @@ impl QuillApp {
             return;
         }
         match prompt.purpose {
+            Purpose::OpenWebAddress => {
+                if let Err(problem) = self.open_browser(&name) { self.message = Some(problem); }
+            }
             Purpose::NewFile(folder) => {
                 let target = crate::services::file_clipboard::free_name(&folder, &name);
                 match std::fs::write(&target, "") {
@@ -5126,6 +5153,9 @@ impl QuillApp {
     /// This is the one place a tab is closed — the cross on the tab, `Ctrl+W`, the tab's own menu
     /// and `quill-cli tab close` all reach it — so it is one change in one function.
     pub fn close_tab(&mut self, index: usize) {
+        if let Some(id) = self.files.get(index).and_then(|file| file.browser.as_ref()).map(|tab| tab.id) {
+            self.browser.close_tab(id);
+        }
         self.save_before_closing(index);
         self.files.close(index);
         self.forget_layout();
@@ -5142,7 +5172,7 @@ impl QuillApp {
         let Some(file) = self.files.get(index) else {
             return;
         };
-        if file.is_picture() || !file.document.is_modified() {
+        if file.is_picture() || file.is_browser() || !file.document.is_modified() {
             return;
         }
         let Some(path) = file.path().map(Path::to_path_buf) else {
@@ -5170,6 +5200,9 @@ impl QuillApp {
     /// Close a tab without writing it, which is what deleting its file means and what
     /// `quill-cli tab close --discard` asks for.
     pub fn close_tab_without_saving(&mut self, index: usize) {
+        if let Some(id) = self.files.get(index).and_then(|file| file.browser.as_ref()).map(|tab| tab.id) {
+            self.browser.close_tab(id);
+        }
         self.files.close(index);
         self.forget_layout();
     }
@@ -5643,6 +5676,11 @@ impl QuillApp {
     /// Draw the whole window. Split out from the `eframe::App` implementation so the screenshot tests can
     /// drive it without a real window.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
+        self.receive_browser_events();
+        self.browser_placements.clear();
+        if self.files.iter().any(|file| file.browser.as_ref().and_then(|tab| tab.location.source_path()).is_some()) {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
+        }
         if !self.themed {
             // Only the palette and spacing. The fonts are installed in `prepare`, before the first frame.
             theme::apply(ui.ctx());
@@ -7320,6 +7358,12 @@ impl QuillApp {
             }
             return self.show_plugin_tab(ui, area, &tab);
         }
+        if self.files.active().is_browser() {
+            if focused {
+                self.editor_area = area;
+            }
+            return self.show_browser(ui, area, focused);
+        }
         if self.files.active().is_picture() {
             if focused {
                 self.editor_area = area;
@@ -7365,6 +7409,100 @@ impl QuillApp {
             }
         }
         false
+    }
+
+    /// Draw Quill's browser toolbar and reserve the rest of the pane for its native child view.
+    fn show_browser(&mut self, ui: &mut egui::Ui, area: Rect, focused: bool) -> bool {
+        let Some(tab) = self.files.active().browser.clone() else { return false };
+        let showing = self.browser.showing().is_none_or(|id| id == tab.id);
+        let (outcome, placement) = browser_view::show(ui, area, &tab, focused, showing);
+        self.browser_placements.push(placement);
+        if let Some(command) = outcome.command {
+            self.run_browser_command(tab.id, command);
+        }
+        if outcome.took_focus { self.focus = Focus::Editor; }
+        outcome.took_focus
+    }
+
+    /// Open a validated address or local HTML file through the same path used by menus and CLI.
+    pub fn open_browser(&mut self, value: &str) -> Result<u64, String> {
+        if !crate::services::browser::SUPPORTED {
+            return Err("Rendered web tabs are available on Windows and macOS.".to_owned());
+        }
+        let location = BrowserLocation::parse(value, self.tree.root())?;
+        let tab = self.browser.open_tab(location);
+        let id = tab.id;
+        self.files.open_file(files::OpenFile::browser(tab), true);
+        self.focus = Focus::Editor;
+        self.message = Some("Opened in a browser tab".to_owned());
+        Ok(id)
+    }
+
+    /// Run one browser command against the tab that asked for it.
+    ///
+    /// `Back` and `Forward` are answered from the tab's own history rather than from the shared
+    /// view's, so a tab never steps into a page another tab visited. See [`BrowserTab::step`].
+    pub fn run_browser_command(&mut self, id: u64, command: BrowserCommand) {
+        let step = match command {
+            BrowserCommand::Reload => {
+                if let Err(problem) = self.browser.reload(id) { self.message = Some(problem); }
+                return;
+            }
+            BrowserCommand::Back => self.browser_tab(id).and_then(|tab| tab.step(true)),
+            BrowserCommand::Forward => self.browser_tab(id).and_then(|tab| tab.step(false)),
+        };
+        let Some((position, url)) = step else {
+            self.message = Some("There is nowhere for this tab to go that way.".to_owned());
+            return;
+        };
+        match self.browser.navigate(id, &url) {
+            Ok(()) => self.change_browser_tab(id, |tab| tab.heading_for(position)),
+            Err(problem) => self.message = Some(problem),
+        }
+    }
+
+    /// The rendered tab with this id, wherever it is open.
+    fn browser_tab(&self, id: u64) -> Option<&BrowserTab> {
+        self.files.iter().filter_map(|file| file.browser.as_ref()).find(|tab| tab.id == id)
+    }
+
+    /// Apply browser callbacks to ordinary tab state and open requested popup URLs as Quill tabs.
+    fn receive_browser_events(&mut self) {
+        for id in self.browser.reload_changed_local_tabs() {
+            let _ = self.browser.reload(id);
+        }
+        for event in self.browser.take_events() {
+            match event {
+                BrowserEvent::OpenRequested { url, .. } => { let _ = self.open_browser(&url); }
+                BrowserEvent::Title { id, title } => self.change_browser_tab(id, |tab| tab.title = title),
+                BrowserEvent::LoadStarted { id, .. } => self.change_browser_tab(id, |tab| tab.loading = true),
+                BrowserEvent::LoadFinished { id, url } => self.change_browser_tab(id, |tab| tab.arrived_at(url)),
+            }
+        }
+    }
+
+    /// Change one browser tab without exposing native state to the file collection.
+    fn change_browser_tab(&mut self, id: u64, change: impl FnOnce(&mut BrowserTab)) {
+        if let Some(tab) = self.files.iter_mut().filter_map(|file| file.browser.as_mut()).find(|tab| tab.id == id) {
+            change(tab);
+        }
+    }
+
+    /// Whether an egui surface must sit above every native child view in this frame.
+    fn browser_is_occluded(&self, ctx: &egui::Context) -> bool {
+        // A native child view is a window, not a painted rectangle, so nothing egui draws can be on
+        // top of one. `Popup::is_any_open` is what covers the menu bar, every dropdown and every
+        // flyout in one answer; the fields after it are the surfaces Quill owns itself.
+        a_modal_has_the_keyboard(ctx)
+            || egui::Popup::is_any_open(ctx)
+            || self.explorer_menu.is_some()
+            || self.panel_menu.is_some()
+            || self.tab_menu.is_some()
+            || self.terminal_menu.is_some()
+            || self.gutter_menu.is_some()
+            || self.text_menu.is_some()
+            || self.completion.is_some()
+            || self.value_tooltip.is_some()
     }
 
     /// How far each half of the side by side view is scrolled, taken before either is drawn.
@@ -8529,10 +8667,37 @@ impl eframe::App for QuillApp {
         egui::Rgba::TRANSPARENT.to_array()
     }
 
+    /// Settle the native child views, before the egui pass rather than inside it.
+    ///
+    /// Creating a WebView2 controller blocks in a nested Windows message pump, and a nested pump run
+    /// from inside the pass never came back: the first browser tab worked, the second one hung the
+    /// window for good — no frame was ever drawn again, though the thread was still dispatching
+    /// messages. This hook runs before the pass begins, so there is no pass for a dispatched message
+    /// to re-enter. It uses the placements the last frame drew, which is where the views already are,
+    /// and a frame that changes them draws before the next one is reconciled.
+    fn raw_input_hook(&mut self, ctx: &egui::Context, _raw_input: &mut egui::RawInput) {
+        if self.files.iter().all(|file| file.browser.is_none()) && !self.browser.has_views() {
+            return;
+        }
+        let tabs: Vec<BrowserTab> = self.files.iter().filter_map(|file| file.browser.clone()).collect();
+        let occluded = self.browser_is_occluded(ctx);
+        let placements = self.browser_placements.clone();
+        let settled = self.browser.reconcile(&tabs, &placements, occluded, ctx.clone());
+        if let Some(id) = settled.pointed_at {
+            self.change_browser_tab(id, |tab| tab.pointed_at());
+        }
+        for (id, problem) in settled.problems {
+            self.change_browser_tab(id, |tab| tab.problem = Some(problem.clone()));
+            self.message = Some(problem);
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         // Nothing on macOS: the compositor there takes the surface's alpha on its own.
         #[cfg(windows)]
         crate::services::windows_transparency::keep_transparent(_frame);
+        // The one thing reconciling needs from the frame, taken while there is a frame to ask.
+        self.browser.remember_window(_frame);
         QuillApp::ui(self, ui);
     }
 

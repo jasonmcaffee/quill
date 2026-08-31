@@ -4,6 +4,7 @@
 // `plugin_ui::UiProvider` the manifest names, and everything under it is testable with no window.
 pub mod agent_tasks;
 pub mod breakpoint_store;
+pub mod browser;
 pub mod control;
 pub mod crash_log;
 pub mod debuggers;
