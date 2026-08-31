@@ -2309,6 +2309,47 @@ Tests must not read or write the settings of the person running them. `QuillApp:
 released binary calls `load_settings` and a test that wants a store calls `use_store` with a folder of its
 own.
 
+### Driving the real window must never leave a key held down
+
+Layer 4 is the one that reaches outside the process. A script that drives the real window presses a
+key by sending a key-down and releases it by sending a key-up, and Windows believes that key is held
+until the up arrives — for the rest of the session, if it never does. Nothing on the screen says so,
+and the physical keyboard cannot clear it, because the physical key was never down: its own key-up
+has already been and gone. `task-1762` was measured with the **left Windows key** in that state, on
+which every letter becomes a shortcut and pressing `D` minimises whatever is in front.
+
+Every capture and reproduction script written before it had the fault in the same shape — press the
+modifier, do the work, release it on the line after, with a `throw` between the two for the window
+that never came to the front, the client area that measured zero, the picture that could not be
+written. A run that stops there has pressed a modifier and will never release it, and so has one a
+person interrupts and one a timeout kills.
+
+So **`tools/windows-input.ps1` is the one way a script sends keyboard or mouse input**, and it is
+built so that it cannot leave anything held:
+
+- A key is held only for the length of a block, `Invoke-WithKeysHeld`, and the release is in a
+  `finally` — however the block ends, the key goes up.
+- Everything is released when the shell exits, through `PowerShell.Exiting`, which is the way out a
+  `throw` nobody caught takes.
+- Everything is released when the file is **loaded**, so a run can never inherit a key an earlier one
+  left down, and dot-sourcing it is itself a repair.
+
+`tools/unstick-keyboard.ps1` is that repair as a command a person runs — `-Check` says what is held
+and changes nothing — and `tools/release.ps1` runs it before it does anything else, because that is
+the line a Quill task ends on and a person about to type into their own machine again should not have
+to know any of the above. `tools/test-windows-input.ps1` is the proof: it strands a key on purpose,
+in each of the ways a script can, and asks Windows through `GetAsyncKeyState` whether it came back.
+
+**The Windows key is not Quill's to strand, and that is worth knowing before hunting for it here.**
+This machine runs a macOS-style Command key hook, `ai-service/scripts/macos-command-key.ahk`, which
+swallows *every* Windows key press — injected as well as physical, since a low level keyboard hook
+sees both — and sends Control instead. Measured: a `keybd_event` of `LWin` from a script comes back
+as `Left Ctrl`. So no script here can put a real Windows key down, and the only thing that can is
+that hook's own `Send "{LWin}"`, which AutoHotkey exempts from its own hook. Its up is what went
+missing. It now repairs the state rather than only avoiding the fault: on every Command key press it
+compares the logical state against the physical one and releases a Windows key that is down without
+being pressed, so a stranded key is gone by the next keystroke.
+
 ## Writing
 
 Plain sentences. Say what the code does and why a decision was made, once. Every module has a comment at

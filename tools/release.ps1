@@ -207,9 +207,40 @@ function Get-GitHubToken {
     return $line.Substring('password='.Length)
 }
 
+<#
+.SYNOPSIS
+  Puts the keyboard back before anything else happens.
+
+.DESCRIPTION
+  `task-1762` reported a machine on which pressing D minimised the window in front, because a script
+  that drives the real window had pressed the Windows key and stopped before releasing it. Windows
+  believes a synthesised key is held until its key-up arrives, and the physical keyboard cannot clear
+  it, because the physical key was never down.
+
+  Releasing it is one line, and the reason it is here is that this is the line a Quill task ends on.
+  Anything that drove the real window has finished by now, so nothing legitimate is holding a
+  modifier, and a person about to type into their own machine again should not have to know any of
+  the above. It only reports under -WhatIf, which changes nothing by contract.
+#>
+function Restore-Keyboard {
+    $unstick = Join-Path $PSScriptRoot 'unstick-keyboard.ps1'
+    if (-not (Test-Path $unstick)) { return }
+    if ($WhatIf) {
+        & pwsh -NoProfile -File $unstick -Check | ForEach-Object { Write-Host "  $_" }
+        return
+    }
+    $held = & pwsh -NoProfile -File $unstick -Check
+    if ($LASTEXITCODE -eq 0) { return }
+    Write-Step 'Putting the keyboard back'
+    Write-Host "  $held"
+    & pwsh -NoProfile -File $unstick | ForEach-Object { Write-Host "  $_" }
+}
+
 # ---------------------------------------------------------------------------------------------
 
 Set-Location $Repo
+
+Restore-Keyboard
 
 $current = Get-CurrentVersion
 $next = if ($Version) { $Version } else { Get-NextVersion $current $Part }
