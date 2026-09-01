@@ -155,16 +155,17 @@ fn beside_the_rail(
 ) -> (Rect, Option<View>) {
     let scale = look.scale();
     let width = RAIL * scale;
-    // A pane too narrow for a rail and a lane draws no rail: a control that cannot apply is absent, and a
-    // rail that took a fifth of a 300 point column would be a rail with nothing beside it. The views are
-    // still reachable, from the menu and from the command line.
-    if area.width() < width + RAIL_INSET + AFTER_RAIL * scale + 240.0 {
+    // A pane too small for a rail and a lane draws no rail: a control that cannot apply is absent, and a
+    // rail that took a fifth of a 300 point column would be a rail with nothing beside it. **Both
+    // measurements**, because a pane can be short as well as narrow — a rail asked for more height than
+    // there is would be a rectangle whose bottom is above its top, which draws nothing and answers clicks
+    // at positions nobody can see. The views are still reachable, from the menu and from the command line.
+    let tall = rail_height(look);
+    if area.width() < width + RAIL_INSET + AFTER_RAIL * scale + 240.0 || area.height() < tall + PAD * 2.0 {
         return (area.shrink2(Vec2::new(PAD, 0.0)), None);
     }
-    let rail_area = Rect::from_min_size(
-        Pos2::new(area.min.x + RAIL_INSET, area.min.y + PAD),
-        Vec2::new(width, rail_height(look).min(area.height() - PAD * 2.0)),
-    );
+    let rail_area =
+        Rect::from_min_size(Pos2::new(area.min.x + RAIL_INSET, area.min.y + PAD), Vec2::new(width, tall));
     let chosen = rail(board, ui, look, rail_area);
     let page = Rect::from_min_max(
         Pos2::new(rail_area.max.x + AFTER_RAIL * scale, area.min.y),
