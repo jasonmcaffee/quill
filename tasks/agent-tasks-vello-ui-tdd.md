@@ -307,35 +307,52 @@ pub struct Canvas {
     resources: vello_cpu::Resources,
     pixmap: vello_cpu::Pixmap,
     texture: Option<egui::TextureHandle>,
-    /// What was drawn last time, so a frame in which nothing moved costs one hash comparison.
-    fingerprint: u64,
-    size: (u16, u16),
+    /// Everything the texture in hand was made from, kept so it can be compared.
+    drawn: Option<Drawn>,
+    /// The frame this canvas was last asked for, which is how the store knows it is still wanted.
+    last_used: u64,
+}
+
+struct Drawn {
+    items: Vec<Decor>,
+    rect: Rect,
+    scale: f32,
+    width: u16,
+    height: u16,
 }
 ```
 
 A frame goes:
 
-1. The pane paints its own ground, and **then** reserves a slot in the painter — `let slot =
-   ui.painter().add(egui::Shape::Noop)` — because the chrome has to be behind the widgets and in front
-   of the ground, and egui hands a painter's shapes to the tessellator in the order they were added. A
-   ground painted *after* the slot covers the very thing the slot is reserved for, which is what the
-   first version did: the board came up with no lanes and no cards at all.
+1. The **window** paints the pane's ground — `look.palette.editor` with the opacity applied — and
+   **then** reserves a slot in the painter: `let slot = ui.painter().add(egui::Shape::Noop)`. The
+   chrome has to be behind the widgets and in front of the ground, and egui hands a painter's shapes
+   to the tessellator in the order they were added. A ground painted *after* the slot covers the very
+   thing the slot is reserved for, which is what the first version did — and it was invisible rather
+   than obviously broken, because the ground carries the window's opacity and let some of the
+   decoration through. A provider must not paint one of its own, and `UiProvider::pane` says so.
 2. Everything draws as it does now, and each part also tells `Chrome` what surface it is.
-3. After the pane, `Canvas::paint(ui, slot, chrome)`:
-   - take the decoration's own bounding box, intersected with the pane — §9.1, and it is `task-1666`'s
+3. After the pane, `Canvas::texture_for`:
+   - take the decoration's own bounding box, intersected with the pane — §9.3, and it is `task-1666`'s
      rule that a frame costs what is on the screen rather than what is in the file;
-   - hash the recorded `Decor` list;
-   - if the hash and the size are unchanged, reuse last frame's texture;
-   - otherwise replay the list into the `RenderContext`, `render` into the `Pixmap`, upload, and
-     keep the hash;
-   - `ui.painter().set(slot, Shape::image(id, rect, uv, WHITE))`.
+   - compare the recorded list, that rectangle and the capped scale against what the texture in hand
+     was made from, **without allocating**;
+   - if they match, reuse last frame's texture;
+   - otherwise replay the list into the `RenderContext`, `render` into the `Pixmap`, upload, and keep
+     the list;
+   - `ui.painter().set(slot, Shape::image(id, drawn, uv, WHITE))`.
 
-**Nothing that runs once a frame may allocate**, which is `task-1666`'s rule, and it is the reason
-the fingerprint exists rather than "just render it, it is fast enough": a board nobody is touching
-must cost the same as a board that is not there, because the window redraws on a heartbeat.
+**The list is kept and compared rather than hashed**, and the rectangle and the scale are part of it.
+A 64-bit hash makes the comparison cheaper and makes it *wrong* on a collision, which serves stale
+pixels; comparing a few hundred `Copy` values costs less than the rasterisation it is deciding to
+skip. And two fractional pixel densities can round to the same pixel dimensions and still need
+different transforms, while the same shapes in a pane that moved are a different picture — so both are
+in the key. `a_board_that_did_not_change_is_not_rasterised_again` drives all four cases through the
+real entry point and counts.
 
-Recording the list every frame is what *is* paid: a few hundred small `Copy` values into a `Vec`
-that keeps its capacity between frames. Rasterising is what is skipped.
+**Nothing that runs once a frame may allocate**, which is `task-1666`'s rule. Recording the list is
+what *is* paid: a few hundred small `Copy` values into a `Vec`, measured at 0.005 ms. The list is
+copied only on the frame it is drawn from.
 
 **The canvas is per pane, keyed on the `egui::Id`** the pane was drawn with, because the board can
 be showing in a docked pane and in a tab at once and the two are different widths — which is
@@ -738,11 +755,11 @@ function of the state.
 
 Four layers, as everything in Quill is.
 
-**`Decor` and `Chrome`, with no window.** `raised` emits three items in the right order with the
-stylesheet's offsets; `sunken` emits two inset shadows; a `Lift` maps to the numbers it should; the
-pale tone is a lift of the surface and the dark tone is black at an alpha, so no elevation ever
-introduces a hue; the same board twice gives the same list; a `Chrome::detached()` records and
-rasterises nothing.
+**`Decor` and `Chrome`, with no window.** `raised` emits five items in the right order — a band, the two
+shadows, the unclip and the surface — with the stylesheet's offsets; `sunken` emits its two inset shadows
+clipped to its own shape; the pale tone is a lift of the surface and the dark tone is black at an alpha,
+so no elevation ever introduces a hue; the same drawing twice gives the same list; and a `Chrome::off()`
+records nothing however much is drawn into it.
 
 **`Canvas`, with no window.** A `Decor` list rasterises into a `Pixmap` of the expected size, and
 `a_board_that_did_not_change_is_not_rasterised_again` drives the real entry point and counts: ten calls
@@ -754,9 +771,12 @@ that cannot fail is worse than no cache test. `PremulRgba8` and `Color32` are th
 asserted rather than assumed; an inset shadow really darkens the inside of its shape and nothing
 outside it; a canvas whose surface was not drawn this frame is dropped.
 
-**The provider.** `draws_chrome` is true for Agent-Tasks and false for a provider that has not asked;
-a manifest naming `ui.chrome = something-else` is refused with a message; `plugins.chrome` off
-records nothing.
+**The provider and the manifest.** `draws_chrome` is true for Agent-Tasks and false for a provider that
+has not asked; `Surfaces::chrome_for` answers with the renderer's **name** for the board and nothing for a
+language plugin; a manifest naming `ui.chrome = crayons` is refused with the list of what this version
+does have; a manifest naming a renderer on a plugin that is not a `ui` plugin is refused too, because a
+renderer with no pane to draw is a line that would do nothing silently; and `plugins.chrome` off records
+nothing.
 
 **Screenshots.** `agent_tasks_tab` and its siblings are re-accepted after somebody has opened them and
 compared them against `reference-board.png`. Three of them are about this design rather than about the
