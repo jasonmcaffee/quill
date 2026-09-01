@@ -136,10 +136,12 @@ fn pill(parts: &Parts<'_>, ui: &mut egui::Ui, look: &Look<'_>, area: Rect) -> Ve
         );
     }
     let mut centre = Pos2::new(pill.left() + (4.0 + TOOL / 2.0) * scale, pill.center().y);
-    // Three, and each is a state rather than a command: whether the model may drive the window,
-    // whether the answer arrives a token at a time, and a picture waiting to go up with the next
-    // message. Anything that is not a state is elsewhere — new and history are in the header, and
-    // stop is the send button.
+    // Three, and each is a **state** rather than a command: whether the model may drive the window, a
+    // picture waiting to go up with the next message, and whether the answer arrives a token at a
+    // time. That is `ChatTool`'s own design — a pill of states reads at a glance where a pill of
+    // buttons does not. Anything that is not a state is elsewhere: new and the history are in the
+    // header, and stop is the send button. The history had a second button here and it was taken
+    // away, because two controls doing one thing in one pane is one too many.
     let tools: [(&str, fn(&egui::Painter, Pos2, Color32), bool, Color32, Act); 3] = [
         (
             "Quill tools",
@@ -156,11 +158,11 @@ fn pill(parts: &Parts<'_>, ui: &mut egui::Ui, look: &Look<'_>, area: Rect) -> Ve
             Act::Attach,
         ),
         (
-            "Conversations",
-            icon::clock,
-            parts.state.history_open,
+            "Stream",
+            icon::run,
+            parts.configuration.stream,
             look.palette.attached,
-            Act::ShowHistory(!parts.state.history_open),
+            Act::ToggleStream,
         ),
     ];
     for (name, drawing, on, accent, act) in tools {

@@ -429,6 +429,16 @@ own composer has a robot button whose title is *"UI controls (let the agent oper
 off unless pressed. Here it is the same button in the same place, plus `chat.tools` in the Settings
 page, and the two agree because the button writes the setting.
 
+**And the set is the whole catalogue, including the commands that change things.** A model with the
+tools on can open and close tabs, edit text, move a file, start a run and quit the window. That is
+deliberate and it is the same set `tools::offered` already hands an MCP client: cutting it down would
+mean a second list of what an agent may do, which is exactly what generating from the catalogue
+exists to prevent, and `task-1695` measured what happens when a command is out of reach — the agent
+does it with its own tools instead, worse. What makes it safe to offer is that it is off unless
+somebody switches it on, that every call is drawn in the conversation as it happens, and that an edit
+through `editor rename` or `explorer move` is one undo step by construction.
+`plugin.limitations` says so on the Plugins page, so it is not a surprise.
+
 ### 7.3 How a provider runs one without becoming a second window
 
 A provider cannot reach `QuillApp`. It draws, and it returns `Request`s that the window acts on once

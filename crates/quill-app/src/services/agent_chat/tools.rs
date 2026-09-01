@@ -83,9 +83,9 @@ pub fn resolve(name: &str, arguments: &Value) -> Result<Resolved, String> {
         }
     };
     let call = tools::resolve(SHAPE, name, &given).map_err(|problem| problem.0)?;
-    if waits(call.command) {
+    if let Some(flag) = asks_to_wait(&call.arguments) {
         return Err(format!(
-            "`{}` waits for something to happen, and a tool call cannot wait. Ask for something that answers at once.",
+            "`{}` was asked to wait with `--{flag}`, and a tool call cannot wait: it is one turn of a              conversation rather than a script. Ask for it without waiting.",
             call.command.wire()
         ));
     }
@@ -95,16 +95,24 @@ pub fn resolve(name: &str, arguments: &Value) -> Result<Resolved, String> {
     })
 }
 
-/// Whether this command holds the window rather than answering at once.
+/// The waiting flag this call asked for, if it asked for one.
 ///
-/// Read from the catalogue's own flags rather than from a list kept here, so a command that gains a
-/// waiting flag later is refused the day it does — the rule the documentation test keeps for the
-/// usage lines.
-fn waits(command: &quill_cli::catalogue::Command) -> bool {
-    command
-        .flags
+/// **The call rather than the command**, which is the difference between refusing `terminal read
+/// --wait-for '$'` and refusing `terminal read` altogether. An earlier version refused any command
+/// that *has* a waiting flag, which took `terminal read`, `run output` and `debug start` away from a
+/// model that only wanted to read something — the opposite of `task-1695`'s own finding, that a
+/// command an agent cannot reach is a command it works round with its own tools.
+///
+/// A command that holds the window for a reason of its own — a screenshot waiting for the window to
+/// settle, a git action waiting for the worker — is caught by `QuillApp::run_cli_for_a_plugin`
+/// instead, which refuses an `Outcome::Hold` with the same kind of sentence. This is the gate and
+/// that is the backstop.
+fn asks_to_wait(arguments: &Map<String, Value>) -> Option<&str> {
+    arguments
         .iter()
-        .any(|flag| flag.name == "wait" || flag.name.starts_with("wait-") || flag.name == "no-wait")
+        .filter(|(_, value)| !matches!(value, Value::Bool(false) | Value::Null))
+        .map(|(name, _)| name.as_str())
+        .find(|name| *name == "wait" || name.starts_with("wait-"))
 }
 
 #[cfg(test)]
@@ -162,15 +170,27 @@ mod tests {
     }
 
     #[test]
-    fn a_command_that_waits_is_refused_with_a_sentence_naming_it() {
+    fn a_call_that_asks_to_wait_is_refused_and_the_same_command_without_it_is_not() {
         // A tool call that never returned would wedge the conversation with nothing on the screen to
-        // say why, so the refusal goes back up as the result and the model picks something else.
+        // say why, so the refusal goes back up as the result and the model picks something else. But
+        // the refusal is about the **call**: reading a terminal without waiting is a thing a model
+        // should be able to do, and refusing the whole command is what makes an agent reach for its
+        // own tools instead — `task-1695`'s own finding.
         let problem = resolve(
             "quill_terminal",
             &serde_json::json!({ "command": "read", "arguments": { "wait-for": "$" } }),
         )
         .expect_err("a refusal");
-        assert!(problem.contains("waits"), "{problem}");
+        assert!(problem.contains("wait-for"), "{problem}");
+        let allowed = resolve("quill_terminal", &serde_json::json!({ "command": "read" }))
+            .expect("reading without waiting is allowed");
+        assert_eq!(allowed.command.wire(), "terminal.read");
+        // A switch given as `false` is not asking to wait either.
+        assert!(resolve(
+            "quill_run",
+            &serde_json::json!({ "command": "output", "arguments": { "wait-for": false } })
+        )
+        .is_ok());
     }
 
     #[test]

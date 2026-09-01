@@ -57,6 +57,7 @@ pub enum Act {
     Remove(String),
     Choose(String),
     ToggleTools,
+    ToggleStream,
     /// Ask for a picture, which opens the platform's own file picker.
     Attach,
     /// A picture dropped on the pane.
@@ -656,6 +657,17 @@ fn apply(chat: &mut AgentChat, acts: Vec<Act>) -> Vec<Request> {
                     requests.push(Request::Message(problem));
                 }
                 chat.ui.providers_open = false;
+            }
+            Act::ToggleStream => {
+                let now = !chat.configuration().stream;
+                chat.configuration_mut().stream = now;
+                if let Err(problem) = chat.save_the_configuration() {
+                    requests.push(Request::Message(problem));
+                }
+                requests.push(Request::Message(match now {
+                    true => "The answer arrives a word at a time.".to_owned(),
+                    false => "The answer arrives whole.".to_owned(),
+                }));
             }
             Act::ToggleTools => {
                 let now = !chat.configuration().tools;

@@ -323,6 +323,12 @@ pub struct Decoder {
     thinking: Vec<usize>,
     /// Whether `Finished` has been emitted, so a `[DONE]` after a `finish_reason` does not emit two.
     finished: bool,
+    /// Whether `Started` has been emitted.
+    ///
+    /// **Real OpenAI puts `model` in every chunk**, so without this the answer began once a token. It
+    /// is harmless downstream and it is still wrong: a `Reply` stream that repeats its own opening is
+    /// one nothing else can be written against.
+    started: bool,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -339,6 +345,7 @@ impl Decoder {
             building: Vec::new(),
             thinking: Vec::new(),
             finished: false,
+            started: false,
         }
     }
 
@@ -410,7 +417,8 @@ impl Decoder {
         }
         let mut replies = Vec::new();
         if let Some(model) = value["model"].as_str() {
-            if !self.finished && self.building.is_empty() {
+            if !self.started {
+                self.started = true;
                 replies.push(Reply::Started {
                     model: model.to_owned(),
                 });
@@ -474,6 +482,7 @@ impl Decoder {
         let index = value["index"].as_u64().unwrap_or(0) as usize;
         match event.name.as_str() {
             "message_start" => {
+                self.started = true;
                 let mut replies = vec![Reply::Started {
                     model: value["message"]["model"].as_str().unwrap_or_default().to_owned(),
                 }];
@@ -889,6 +898,18 @@ data: [DONE]\n\n";
         // `[DONE]` after a `finish_reason` must not produce a second finish, or the session would
         // end a turn twice.
         assert_eq!(replies.len(), 5, "{replies:?}");
+    }
+
+    #[test]
+    fn a_stream_that_names_its_model_in_every_chunk_begins_once() {
+        // Real OpenAI puts `model` in every chunk, so without the flag the answer began once a token.
+        let stream = b"data: {\"model\":\"gpt-5\",\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n\n\
+data: {\"model\":\"gpt-5\",\"choices\":[{\"delta\":{\"content\":\"b\"}}]}\n\n\
+data: {\"model\":\"gpt-5\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
+        let replies = decode(Wire::OpenAi, stream);
+        let began = replies.iter().filter(|reply| matches!(reply, Reply::Started { .. })).count();
+        assert_eq!(began, 1, "{replies:?}");
+        assert_eq!(replies[0], Reply::Started { model: "gpt-5".to_owned() });
     }
 
     #[test]
