@@ -13,7 +13,9 @@
 //!
 //! [`Chrome`] is what a component talks to. It says *what kind of surface* it is drawing — `raised`,
 //! `sunken`, `glow` — and the elevation recipe lives here, once, so no component holds a shadow offset.
-//! That is the rule that a component cannot name a colour, applied to depth.
+//! That is the rule that a plugin **manifest** cannot name a colour, applied to depth: there is no way for
+//! a folder on disk to reach any of this, and inside the binary it is a convention a review keeps, exactly
+//! as it is for every other component in `components/`.
 //!
 //! [`Decor`] is what that records: five kinds of shape and a clip, in points, and nothing else. It is the
 //! same seam `quill_core::mermaid::Scene` is — a value a test can assert on with no window, no graphics
