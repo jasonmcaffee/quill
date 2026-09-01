@@ -33,7 +33,14 @@
 //! ## A provider cannot read a setting it was not given
 //!
 //! [`Look`] is handed over rather than reached for. It carries the palette, the fonts, the row heights
-//! and the opacity, all of them the window's own, and there is no way for a provider to name a colour.
+//! and the opacity, all of them the window's own.
+//!
+//! **The claim that is actually true is about the manifest**, and it is worth stating exactly, because the
+//! stronger version is false: a provider is ordinary Rust compiled into Quill and can of course write
+//! `Color32::from_rgb`. What a **plugin folder** cannot do is name a colour — there is no manifest key that
+//! sets one, and there never will be, which is what stops somebody's `plugin.conf` deciding what the window
+//! looks like. Inside the binary the rule is a convention that a review keeps, exactly as it is for every
+//! other component in `components/`.
 //! That is the rule the syntax themes already keep — Dracula's own background is deliberately unused,
 //! because a scheme that repainted the editing area would take the transparency away — and the rule a
 //! Mermaid diagram's own `style` directive already meets, which is read and ignored.
@@ -192,8 +199,10 @@ impl<'a> Look<'a> {
 /// The colours a provider draws with.
 ///
 /// `theme::color` passed through as a value, so a plugin's rows, fields, buttons and chosen row are
-/// the ones every list in Quill draws. There is deliberately no way to add one: a manifest key that
-/// set a colour would undo the reason the palette is closed.
+/// the ones every list in Quill draws. There is deliberately no way for a **manifest** to add one: a
+/// manifest key that set a colour would undo the reason the palette is closed. A provider is Rust and
+/// can reach `theme::color` directly — Agent-Tasks does, for the one red the design already has — and
+/// what stops that being a second palette is the same thing that stops it in every other component.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Palette {
     pub editor: Color32,

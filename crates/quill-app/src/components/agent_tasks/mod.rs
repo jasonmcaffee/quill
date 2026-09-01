@@ -31,7 +31,7 @@ use crate::services::plugin_ui::{Look, Request};
 /// name and a row that dropped the ones that did not fit left three views nobody could choose.
 /// How tall the board's own header is at the default font size, read through `header_height` so a window set to
 /// large text gets a header that can hold it. See `Look::scale`.
-const HEADER_AT_DEFAULT: f32 = 80.0;
+const HEADER_AT_DEFAULT: f32 = 62.0;
 
 /// How tall the board's own header is in this window.
 fn header_height(look: &Look<'_>) -> f32 {
@@ -128,9 +128,10 @@ pub fn pane(board: &mut AgentTasks, ui: &mut egui::Ui, look: &Look<'_>) -> Vec<R
     // meant every terminal was read twice a frame, and reading one means rebuilding a screenful of its scrollback
     // and hashing it — so a board with three agents on it did six of those per frame, and the board drawn as both
     // a pane and a tab did more.
-    let header = Rect::from_min_size(area.min, Vec2::new(area.width(), header_height(look)));
+    let (page, chosen) = beside_the_rail(board, ui, look, area);
+    let header = Rect::from_min_size(page.min, Vec2::new(page.width(), header_height(look)));
     requests.extend(view_switch(board, ui, look, header));
-    let body = Rect::from_min_max(Pos2::new(area.min.x, header.max.y), area.max);
+    let body = Rect::from_min_max(Pos2::new(page.min.x, header.max.y), page.max);
     // The lanes when the modal is open, because the modal **is** the ticket: drawing it here as well was one
     // ticket in two places, and pressing Start in one of them left the other showing a state it did not have.
     // The pane's own in-place detail is what a window too narrow for a modal falls back to.
@@ -138,7 +139,46 @@ pub fn pane(board: &mut AgentTasks, ui: &mut egui::Ui, look: &Look<'_>) -> Vec<R
         true => requests.extend(detail::show(board, ui, look, body, false)),
         false => requests.extend(body_for(board, ui, look, body)),
     }
+    take_the_chosen_view(board, chosen);
     requests
+}
+
+/// Draw the rail and answer the page beside it, and whichever view was pressed.
+///
+/// One function rather than two copies, because the pane and the tab lay the same two things out and a
+/// board drawn one way and the same board drawn the other must not disagree about where its views are.
+fn beside_the_rail(
+    board: &mut AgentTasks,
+    ui: &mut egui::Ui,
+    look: &Look<'_>,
+    area: Rect,
+) -> (Rect, Option<View>) {
+    let scale = look.scale();
+    let width = RAIL * scale;
+    // A pane too narrow for a rail and a lane draws no rail: a control that cannot apply is absent, and a
+    // rail that took a fifth of a 300 point column would be a rail with nothing beside it. The views are
+    // still reachable, from the menu and from the command line.
+    if area.width() < width + RAIL_INSET + AFTER_RAIL * scale + 240.0 {
+        return (area.shrink2(Vec2::new(PAD, 0.0)), None);
+    }
+    let rail_area = Rect::from_min_size(
+        Pos2::new(area.min.x + RAIL_INSET, area.min.y + PAD),
+        Vec2::new(width, rail_height(look).min(area.height() - PAD * 2.0)),
+    );
+    let chosen = rail(board, ui, look, rail_area);
+    let page = Rect::from_min_max(
+        Pos2::new(rail_area.max.x + AFTER_RAIL * scale, area.min.y),
+        Pos2::new(area.max.x - PAD, area.max.y),
+    );
+    (page, chosen)
+}
+
+/// Act on a press in the rail, once the drawing that read the board is over.
+fn take_the_chosen_view(board: &mut AgentTasks, chosen: Option<View>) {
+    if let Some(view) = chosen {
+        board.set_view(view);
+        board.close_detail();
+    }
 }
 
 /// The tab in the editing area: the lanes on the left and the open ticket on the right.
@@ -156,15 +196,17 @@ pub fn tab(board: &mut AgentTasks, ui: &mut egui::Ui, look: &Look<'_>) -> Vec<Re
     // meant every terminal was read twice a frame, and reading one means rebuilding a screenful of its scrollback
     // and hashing it — so a board with three agents on it did six of those per frame, and the board drawn as both
     // a pane and a tab did more.
-    let header = Rect::from_min_size(area.min, Vec2::new(area.width(), header_height(look)));
+    let (page, chosen) = beside_the_rail(board, ui, look, area);
+    let header = Rect::from_min_size(page.min, Vec2::new(page.width(), header_height(look)));
     requests.extend(view_switch(board, ui, look, header));
-    let body = Rect::from_min_max(Pos2::new(area.min.x, header.max.y), area.max);
+    let body = Rect::from_min_max(Pos2::new(page.min.x, header.max.y), page.max);
     let showing_a_ticket = board.detail().task.is_some() && !board.modal_open;
     if !showing_a_ticket || body.width() < 900.0 {
         requests.extend(match showing_a_ticket {
             true => detail::show(board, ui, look, body, false),
             false => body_for(board, ui, look, body),
         });
+        take_the_chosen_view(board, chosen);
         return requests;
     }
     // Wide enough for both: the lanes take what they need and the ticket takes the rest, with a divider
@@ -179,6 +221,7 @@ pub fn tab(board: &mut AgentTasks, ui: &mut egui::Ui, look: &Look<'_>) -> Vec<Re
     );
     requests.extend(body_for(board, ui, look, lanes_area));
     requests.extend(detail::show(board, ui, look, detail_area, true));
+    take_the_chosen_view(board, chosen);
     requests
 }
 
@@ -197,12 +240,123 @@ fn body_for(board: &mut AgentTasks, ui: &mut egui::Ui, look: &Look<'_>, area: Re
     }
 }
 
-/// The strip across the top: the sprint's name, `+ Add Task`, the search box, and the five views.
+/// How wide the rail down the left of the board is, how round it is, and how big a button in it is.
 ///
-/// **Two rows, always.** The first holds the sprint's name on the left and `+ Add Task` on the right with the
-/// search box beside it; the second holds the views across the whole width. One row could not hold all of it at a
-/// pane's width, and a single row that dropped what did not fit left three of the five views unreachable by a
-/// person — which is what it was doing.
+/// Measured off `_agent_output/task-1765-vello-board/reference-board.png`: the rail there is 52 across
+/// with a 26 point radius, eight points in from the edge of the pane, and the first lane starts 45 points
+/// after it. That gap is not slack — it is the room a lane's own shadow needs, which reaches about 24
+/// points, and without a rail there the first lane's shadow was cut off by the edge of the pane.
+const RAIL: f32 = 52.0;
+const RAIL_BUTTON: f32 = 36.0;
+const RAIL_GAP: f32 = 10.0;
+const RAIL_PAD: f32 = 12.0;
+/// Between the rail and everything else.
+const AFTER_RAIL: f32 = 24.0;
+/// Between the rail and the edge of the pane.
+///
+/// Sixteen rather than the eight everything else is inset by, because a raised surface's shadow reaches
+/// about 24 points and the canvas is cut to the pane: at eight, the rail's own left shadow was clipped
+/// against the edge of the board and it read as a strip stuck to the side rather than as a floating rail.
+const RAIL_INSET: f32 = 16.0;
+
+/// How tall the rail is: as tall as the buttons in it, which is what the reference draws.
+fn rail_height(look: &Look<'_>) -> f32 {
+    let button = RAIL_BUTTON * look.scale();
+    RAIL_PAD * 2.0 + button * View::ALL.len() as f32 + RAIL_GAP * (View::ALL.len() - 1) as f32
+}
+
+/// The rail down the left of the board: one icon button a view, the chosen one lit.
+///
+/// **This is the board's own rail and not Quill's.** `components::activity_bar` is the thin strip on the
+/// window's left edge that puts panels away, and it belongs to the window: a plugin adding entries to it
+/// would be a plugin deciding what the window's furniture is. The reference has a rail *inside* its own
+/// page, which is a different thing — it is how the board switches between its four views — and that is
+/// what this is.
+fn rail(board: &mut AgentTasks, ui: &mut egui::Ui, look: &Look<'_>, area: Rect) -> Option<View> {
+    let scale = look.scale();
+    if look.chrome.is_recording() {
+        look.chrome.raised(
+            area,
+            RAIL / 2.0 * scale,
+            crate::services::vello_canvas::Fill::Solid(look.ground(look.palette.board_lane)),
+            crate::services::vello_canvas::Lift::Medium,
+        );
+    } else {
+        ui.painter().rect_filled(
+            area,
+            egui::CornerRadius::same((RAIL / 2.0 * scale) as u8),
+            look.ground(look.palette.board_lane),
+        );
+    }
+    let button = RAIL_BUTTON * scale;
+    let mut chosen = None;
+    for (index, view) in View::ALL.into_iter().enumerate() {
+        let at = Rect::from_center_size(
+            Pos2::new(
+                area.center().x,
+                area.min.y + RAIL_PAD * scale + button / 2.0 + index as f32 * (button + RAIL_GAP * scale),
+            ),
+            Vec2::splat(button),
+        );
+        let response =
+            ui.interact(at, ui.id().with(("agent-tasks-view", view.label())), egui::Sense::click());
+        let here = board.current_view() == view;
+        let radius = 12.0 * scale;
+        if look.chrome.is_recording() {
+            if here {
+                look.chrome.glow(at, radius, look.palette.accent.gamma_multiply(0.45), 8.0);
+                look.chrome.rect(
+                    at,
+                    radius,
+                    crate::services::vello_canvas::Fill::diagonal(
+                        at,
+                        lighten(look.palette.accent, 0.14),
+                        darken(look.palette.accent, 0.22),
+                    ),
+                );
+            }
+            if response.hovered() && !here {
+                ui.painter().rect_filled(
+                    at,
+                    egui::CornerRadius::same(radius as u8),
+                    egui::Color32::from_white_alpha(16),
+                );
+            }
+        } else if here {
+            ui.painter().rect_filled(at, egui::CornerRadius::same(radius as u8), look.palette.accent);
+        } else if response.hovered() {
+            ui.painter().rect_filled(at, egui::CornerRadius::same(radius as u8), look.palette.control);
+        }
+        let tint = match here {
+            true => look.palette.text_strong,
+            false => look.palette.text_dim,
+        };
+        view_icon(view)(ui.painter(), at.center(), tint);
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), here, view.label())
+        });
+        if response.clicked() {
+            chosen = Some(view);
+        }
+    }
+    chosen
+}
+
+/// The drawn mark for each view. Drawn rather than lettered, which is `design/style-guide.md`'s rule.
+fn view_icon(view: View) -> fn(&egui::Painter, Pos2, egui::Color32) {
+    match view {
+        View::Board => crate::theme::icon::board,
+        View::Backlog => crate::theme::icon::stack,
+        View::Completed => crate::theme::icon::tick,
+        View::Epics => crate::theme::icon::diamond,
+    }
+}
+
+/// The strip across the top: the sprint's name, the search box and `+ Add Task`.
+///
+/// **One row.** It was two, because the four views were in it and one row could not hold all of that at a
+/// pane's width — and the reference has one row, with its views down a rail instead. `task-1765` moved
+/// them there, so what is left fits: a heading, a field that takes whatever is spare, and one button.
 fn view_switch(
     board: &mut AgentTasks,
     ui: &mut egui::Ui,
@@ -211,71 +365,75 @@ fn view_switch(
 ) -> Vec<Request> {
     let mut requests = Vec::new();
     let painter = ui.painter().clone();
-    let first = Rect::from_min_max(area.min, Pos2::new(area.max.x, area.min.y + 42.0));
-    let second = Rect::from_min_max(Pos2::new(area.min.x, first.max.y), area.max);
+    let scale = look.scale();
 
     // The sprint's name and how many tickets are on the board, which is the explorer's footer's own idea.
     let title = match board.board().sprint.as_ref() {
         Some(sprint) => sprint.name.clone(),
         None => "No active sprint".to_owned(),
     };
-    // Set in the bold face at half again the editor's size, which is the weight and the proportion the
-    // picture gives it: `Current Sprint` is the one thing on the board that is meant to be read first.
+    // Set in the bold face at 1.7 times the editor's size, which is the weight and the proportion the
+    // picture gives it: `Current Sprint` is the one thing on the board meant to be read first.
     let heading = painter.layout_no_wrap(
         title,
         egui::FontId::new(
-            look.font_size * 1.55,
+            look.font_size * 1.7,
             egui::FontFamily::Name(crate::theme::BOLD_FAMILY.into()),
         ),
         look.palette.text_strong,
     );
     painter.galley(
-        Pos2::new(first.min.x + PAD, first.center().y - heading.size().y / 2.0),
+        Pos2::new(area.min.x, area.center().y - heading.size().y / 2.0),
         heading.clone(),
         look.palette.text_strong,
     );
-    let mut pen = first.min.x + PAD + heading.size().x + 8.0;
+    let mut pen = area.min.x + heading.size().x + 10.0;
     let count = painter.layout_no_wrap(
         format!("\u{b7} {}", card::plural(board.board().total() as i64, "task")),
         egui::FontId::proportional(look.font_size - 1.0),
         look.palette.text_dim,
     );
     painter.galley(
-        Pos2::new(pen, first.center().y - count.size().y / 2.0),
+        Pos2::new(pen, area.center().y - count.size().y / 2.0),
         count.clone(),
         look.palette.text_dim,
     );
-    pen += count.size().x + 12.0;
+    pen += count.size().x + 16.0;
 
-    // `+ Add Task` at the end of the row, which is where the reference capture puts it, and the search box beside
-    // it when there is room for one.
+    // `+ Add Task` at the end of the row, at the size the reference draws it: 127 by 44.
+    let add_size = Vec2::new(127.0, 44.0) * scale;
     let add = Rect::from_min_size(
-        Pos2::new(first.max.x - PAD - 108.0, first.center().y - 15.0),
-        Vec2::new(108.0, 30.0),
+        Pos2::new(area.max.x - add_size.x, area.center().y - add_size.y / 2.0),
+        add_size,
     );
     let mut adding = false;
     if add.min.x > pen {
         adding = primary_button(ui, look, add, "+ Add Task");
     }
+    // **The search box takes whatever is spare**, between the heading and the button, up to the width the
+    // reference gives it. It was a fixed 200 points, which on a wide board left a broad empty band where
+    // the reference has its search.
+    let most = 460.0 * scale;
+    let room = (add.min.x - 12.0) - pen;
+    let width = room.min(most);
     let search = Rect::from_min_size(
-        Pos2::new(add.min.x - 10.0 - 200.0, first.center().y - 15.0),
-        Vec2::new(200.0, 30.0),
+        Pos2::new(add.min.x - 12.0 - width, area.center().y - add_size.y / 2.0),
+        Vec2::new(width, add_size.y),
     );
-    // The search box is a field, so it is pressed into the page: the picture draws it as a well with a
-    // magnifier in it, which is `--e-pressed-sm` and is the shape with no `epaint` equivalent at all.
-    if look.chrome.is_recording() && search.min.x > pen {
+    let room_for_search = width > 120.0 * scale;
+    if room_for_search && look.chrome.is_recording() {
         look.chrome.sunken(
             search,
-            15.0,
+            add_size.y / 2.0,
             look.ground(look.palette.board_well),
             crate::services::vello_canvas::Lift::Small,
         );
     }
-    // The field the lanes already filter by. Everything behind it was built and tested and only the control that
-    // sets it was missing — so the only way to search was the command line, and **an agent that searched left the
-    // board filtered with nothing on screen saying so and no way to clear it.**
+    // With the decoration off, `search_field_over` draws its own frame — see the `ground` argument below.
+    // The field the lanes already filter by. Everything behind it was built and tested and only the control
+    // that sets it was missing — so the only way to search was the command line, and **an agent that
+    // searched left the board filtered with nothing on screen saying so and no way to clear it.**
     let mut searched: Option<String> = None;
-    let room_for_search = search.min.x > pen;
     if room_for_search {
         let mut query = board.query().to_owned();
         let response = crate::components::controls::search_field_over(
@@ -289,75 +447,26 @@ fn view_switch(
         if response.changed() {
             searched = Some(query);
         }
-        // **Enter typed into this field is taken out of the frame.** egui's single-line editor gives up focus on
-        // Enter and leaves the press in the input, so by the time the lanes are drawn no text box holds the
+        // **Enter typed into this field is taken out of the frame.** egui's single-line editor gives up focus
+        // on Enter and leaves the press in the input, so by the time the lanes are drawn no text box holds the
         // keyboard any more and the board took the same Enter as "open the ticket the ring is on". Somebody
         // searching for a ticket found a different one opened on top of the board.
         enter_was_used(ui, &response);
     }
 
-    // The five views, across the whole of the second row, wrapping rather than being dropped.
-    let button = Vec2::new(78.0, 26.0);
-    let mut chosen = None;
-    let mut pen = second.min.x + PAD;
-    let mut row = second.min.y + 4.0;
-    // The group the buttons sit in, pressed into the page, with the chosen one pressed again inside it —
-    // which is what the picture's three-button view switch is and is why the chosen one reads as *held down*
-    // rather than as merely coloured.
-    for view in View::ALL {
-        if pen + button.x > second.max.x - PAD && pen > second.min.x + PAD {
-            pen = second.min.x + PAD;
-            row += 30.0;
-        }
-        let at = Rect::from_min_size(Pos2::new(pen, row), button);
-        if look.chrome.is_recording() {
-            match board.current_view() == view {
-                true => look.chrome.sunken(
-                    at,
-                    10.0,
-                    look.ground(look.palette.board_well),
-                    crate::services::vello_canvas::Lift::Small,
-                ),
-                false => look.chrome.raised(
-                    at,
-                    10.0,
-                    crate::services::vello_canvas::Fill::Solid(look.ground(look.palette.board_lane)),
-                    crate::services::vello_canvas::Lift::Small,
-                ),
-            }
-        }
-        if crate::components::controls::choice_button_over(
-            ui,
-            at,
-            view.label(),
-            view.label(),
-            board.current_view() == view,
-            !look.chrome.is_recording(),
-        ) {
-            chosen = Some(view);
-        }
-        pen += button.x + 6.0;
-    }
-    // What the board last said, at the end of the second row when the first has no room for it.
+    // What the board last said, under the heading, where there is always room for it.
     if !board.message().is_empty() {
         let said = painter.layout_no_wrap(
             board.message().to_owned(),
             egui::FontId::proportional(look.font_size - 1.5),
             look.palette.text_dim,
         );
-        let at = match room_for_search {
-            true => Pos2::new(second.max.x - PAD - said.size().x, row + 4.0),
-            false => Pos2::new(first.max.x - PAD - said.size().x, first.center().y - said.size().y / 2.0),
-        };
-        if at.x > pen {
+        let at = Pos2::new(area.min.x, area.max.y - said.size().y);
+        if at.x + said.size().x < search.min.x {
             painter.galley(at, said, look.palette.text_dim);
         }
     }
 
-    if let Some(view) = chosen {
-        board.set_view(view);
-        board.close_detail();
-    }
     if let Some(query) = searched {
         if let Err(problem) = board.search(&query) {
             requests.push(Request::Message(problem));
@@ -368,11 +477,6 @@ fn view_switch(
             requests.push(Request::Message(problem));
         }
     }
-    ui.painter().rect_filled(
-        Rect::from_min_max(Pos2::new(area.min.x, area.max.y - 1.0), area.max),
-        0,
-        look.palette.divider,
-    );
     requests
 }
 
@@ -436,6 +540,61 @@ pub(crate) fn primary_button(
     ui.painter().galley(area.center() - galley.size() / 2.0, galley, look.palette.text_strong);
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
+    });
+    response.clicked()
+}
+
+/// A field that names one of a short list and takes the next one when pressed.
+///
+/// The agent chooser under the New lane. It is drawn as the reference draws it — the name at the left of
+/// its well and a chevron at the right — rather than as a centred word, because the shape of a control is
+/// what says what it does: a centred word in a box reads as a label. Pressing it takes the next agent
+/// rather than opening a list, which is what `components::controls::choice_button` already did and is
+/// right for a choice between two: egui keeps one popup open at a time, and a dropdown here would shut
+/// whatever else was open.
+pub(crate) fn chooser_button(
+    ui: &mut egui::Ui,
+    look: &Look<'_>,
+    area: egui::Rect,
+    label: &str,
+    announced: &str,
+) -> bool {
+    let response =
+        ui.interact(area, ui.id().with(("agent-tasks-chooser", announced)), egui::Sense::click());
+    if look.chrome.is_recording() {
+        if response.hovered() {
+            ui.painter().rect_filled(
+                area,
+                egui::CornerRadius::same((area.height() / 2.0) as u8),
+                egui::Color32::from_white_alpha(14),
+            );
+        }
+    } else {
+        ui.painter().rect(
+            area,
+            egui::CornerRadius::same((area.height() / 2.0) as u8),
+            look.palette.field,
+            egui::Stroke::new(1.0, look.palette.control_border),
+            egui::StrokeKind::Inside,
+        );
+    }
+    let galley = ui.painter().layout_no_wrap(
+        label.to_owned(),
+        egui::FontId::proportional(look.font_size - 2.0),
+        look.palette.text_control,
+    );
+    ui.painter().galley(
+        Pos2::new(area.min.x + 14.0, area.center().y - galley.size().y / 2.0),
+        galley,
+        look.palette.text_control,
+    );
+    crate::theme::icon::chevron_down(
+        ui.painter(),
+        Pos2::new(area.max.x - 14.0, area.center().y),
+        look.palette.text_dim,
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), announced)
     });
     response.clicked()
 }

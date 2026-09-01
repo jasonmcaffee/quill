@@ -29,13 +29,13 @@ const LANE_INSET: f32 = 14.0;
 /// How tall the strip at the top of a lane holding its name and its count is.
 /// How tall a lane's heading is at the default font size, read through `lane_header` so a window set to large
 /// text gets a heading that can hold it. See `Look::scale`.
-const LANE_HEADER_AT_DEFAULT: f32 = 46.0;
+const LANE_HEADER_AT_DEFAULT: f32 = 57.0;
 /// How much of a lane's foot is kept clear of cards, which is what `+ Add task` sits in.
-const FOOT_AT_DEFAULT: f32 = 48.0;
+const FOOT_AT_DEFAULT: f32 = 56.0;
 /// How much of the New lane is kept clear under its heading, which is what the agent chooser and its play
 /// button sit in. Reserved whether or not New holds a card, so the cards under it do not jump when the last
 /// one is dragged out of the lane.
-const QUICK_LAUNCH_AT_DEFAULT: f32 = 34.0;
+const QUICK_LAUNCH_AT_DEFAULT: f32 = 42.0;
 
 /// How far below a lane's heading its cards start.
 ///
@@ -377,18 +377,19 @@ pub fn show(board: &mut AgentTasks, ui: &mut egui::Ui, look: &Look<'_>, area: Re
         // capture puts them: a quick launch that starts the **next** ticket in New with a chosen agent
         // without opening it.
         if status == Status::New {
+            let tall = 34.0 * look.scale();
             let strip = Rect::from_min_size(
-                Pos2::new(lane_area.min.x + LANE_INSET, lane_area.min.y + lane_header(look)),
-                Vec2::new(lane_area.width() - LANE_INSET * 2.0, 26.0),
+                Pos2::new(lane_area.min.x + LANE_INSET, lane_area.min.y + lane_header(look) + 4.0),
+                Vec2::new(lane_area.width() - LANE_INSET * 2.0, tall),
             );
-            let play = Rect::from_min_size(Pos2::new(strip.max.x - 26.0, strip.min.y), Vec2::splat(26.0));
+            let play = Rect::from_min_size(Pos2::new(strip.max.x - tall, strip.min.y), Vec2::splat(tall));
             let chooser = Rect::from_min_max(strip.min, Pos2::new(play.min.x - 8.0, strip.max.y));
             // The chooser is a field, so it is pressed into the lane rather than raised off it: the picture
             // draws it as a well with the agent's name in it, which is what `sunken` is.
             if look.chrome.is_recording() {
                 look.chrome.sunken(
                     chooser,
-                    12.0,
+                    chooser.height() / 2.0,
                     look.ground(look.palette.board_well),
                     crate::services::vello_canvas::Lift::Small,
                 );
@@ -396,13 +397,12 @@ pub fn show(board: &mut AgentTasks, ui: &mut egui::Ui, look: &Look<'_>, area: Re
             let chosen = board.configuration().agent;
             // One button that cycles rather than a dropdown, because egui keeps one popup open at a time and
             // there are two agents to choose between. Pressing it names the other one.
-            if crate::components::controls::choice_button_over(
+            if super::chooser_button(
                 ui,
+                look,
                 chooser,
                 chosen.name(),
                 &format!("Agent for a new ticket: {}", chosen.name()),
-                false,
-                !look.chrome.is_recording(),
             ) {
                 next_agent = true;
             }
@@ -423,8 +423,8 @@ pub fn show(board: &mut AgentTasks, ui: &mut egui::Ui, look: &Look<'_>, area: Re
         // `+ Add task` at the foot of the New lane, which is where the design image puts it.
         if status == Status::New {
             let at = Rect::from_min_size(
-                Pos2::new(lane_area.min.x + LANE_INSET, lane_area.max.y - 40.0),
-                Vec2::new(lane_area.width() - LANE_INSET * 2.0, 32.0),
+                Pos2::new(lane_area.min.x + LANE_INSET, lane_area.max.y - 42.0 * look.scale()),
+                Vec2::new(lane_area.width() - LANE_INSET * 2.0, 42.0 * look.scale()),
             );
             // A well rather than a button, which is what the picture shows: the row where a card would go if
             // there were one, pressed into the lane.
@@ -436,6 +436,8 @@ pub fn show(board: &mut AgentTasks, ui: &mut egui::Ui, look: &Look<'_>, area: Re
                     crate::services::vello_canvas::Lift::Small,
                 );
             }
+            // With the decoration off, `choice_button_over` draws its own frame — see the `ground` argument
+            // below — so there is nothing to add here.
             // Acted on after the loop, because the board is being read while it is drawn and creating a
             // ticket changes it. That is the rule every component here follows: report, then act.
             if crate::components::controls::choice_button_over(
@@ -462,13 +464,24 @@ pub fn show(board: &mut AgentTasks, ui: &mut egui::Ui, look: &Look<'_>, area: Re
                 Pos2::new(cards_area.max.x - LANE_INSET, (cards_area.min.y + EMPTY_WELL).min(cards_area.max.y)),
             );
             if empty.height() > 24.0 {
-                if look.chrome.is_recording() {
-                    look.chrome.sunken(
+                match look.chrome.is_recording() {
+                    true => look.chrome.sunken(
                         empty,
                         card::RADIUS,
                         look.ground(look.palette.board_well),
                         crate::services::vello_canvas::Lift::Medium,
-                    );
+                    ),
+                    // The flat form, which is what a board with the decoration switched off draws. Every
+                    // well on the board has one: a well drawn as nothing at all is a hole in the lane.
+                    false => {
+                        ui.painter().rect(
+                            empty,
+                            CornerRadius::same(card::RADIUS as u8),
+                            look.ground(look.palette.board_well),
+                            egui::Stroke::new(1.0, look.palette.divider),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
                 }
                 let said = ui.painter().layout_no_wrap(
                     "Nothing here".to_owned(),
@@ -513,9 +526,12 @@ pub fn show(board: &mut AgentTasks, ui: &mut egui::Ui, look: &Look<'_>, area: Re
     // How far there is left to scroll, drawn as a thin bar along the bottom when there is any, which is
     // the only thing that says the lanes go on past the edge.
     if content > room {
+        // Five points, not two. It is the only thing on the board that says the lanes go on past the edge —
+        // a fourth lane cut off by the pane with a two-point hairline under it reads as clipped rather than
+        // as reachable — and it is the same bar `components::scrollbar` draws down the editing area.
         let track = Rect::from_min_max(
-            Pos2::new(area.min.x + PAD, area.max.y - 3.0),
-            Pos2::new(area.max.x - PAD, area.max.y - 1.0),
+            Pos2::new(area.min.x + PAD, area.max.y - 7.0),
+            Pos2::new(area.max.x - PAD, area.max.y - 2.0),
         );
         let share = (room / content).clamp(0.1, 1.0);
         let at = match content > room {
@@ -526,8 +542,8 @@ pub fn show(board: &mut AgentTasks, ui: &mut egui::Ui, look: &Look<'_>, area: Re
             Pos2::new(track.min.x + (track.width() - track.width() * share) * at, track.min.y),
             Vec2::new(track.width() * share, track.height()),
         );
-        ui.painter().rect_filled(track, 0, look.palette.divider);
-        ui.painter().rect_filled(thumb, 0, look.palette.text_faint);
+        ui.painter().rect_filled(track, CornerRadius::same(2), look.palette.divider);
+        ui.painter().rect_filled(thumb, CornerRadius::same(2), look.palette.text_dim);
     }
     if let Some((status, position)) = dropped {
         let moved = board.dragging.take();
@@ -584,7 +600,9 @@ fn header(ui: &mut egui::Ui, look: &Look<'_>, lane: Rect, status: Status, count:
     // The halo round the dot, which is the whole of what makes it read as lit rather than printed. `epaint`
     // has no blur that is not a rectangle, so with the decoration off it is simply the dot.
     if look.chrome.is_recording() {
-        look.chrome.glow(Rect::from_center_size(centre, Vec2::splat(9.0)), 4.5, dot.gamma_multiply(0.75), 3.5);
+        // Five points of halo, which is what the reference measures, and at nearly the dot's own strength:
+        // at 3.5 and 75% it read as a speck rather than as something lit.
+        look.chrome.glow(Rect::from_center_size(centre, Vec2::splat(9.0)), 4.5, dot.gamma_multiply(0.9), 5.0);
         look.chrome.disc(centre, 4.5, crate::services::vello_canvas::Fill::Solid(dot));
     } else {
         painter.circle_filled(centre, 4.5, dot);
@@ -609,16 +627,25 @@ fn header(ui: &mut egui::Ui, look: &Look<'_>, lane: Rect, status: Status, count:
     // picture that was measured pixel by pixel: six points of dark ramp inside its top left edge and six of
     // pale inside its bottom right.
     let chip = Rect::from_min_size(
-        Pos2::new(lane.max.x - LANE_INSET - 36.0, middle - 10.0),
-        Vec2::new(36.0, 20.0),
+        Pos2::new(lane.max.x - LANE_INSET - 40.0, middle - 11.0),
+        Vec2::new(40.0, 22.0),
     );
-    if look.chrome.is_recording() {
-        look.chrome.sunken(
+    match look.chrome.is_recording() {
+        true => look.chrome.sunken(
             chip,
             10.0,
             look.ground(look.palette.board_well),
             crate::services::vello_canvas::Lift::Small,
-        );
+        ),
+        false => {
+            painter.rect(
+                chip,
+                CornerRadius::same(10),
+                look.ground(look.palette.board_well),
+                egui::Stroke::new(1.0, look.palette.divider),
+                egui::StrokeKind::Inside,
+            );
+        }
     }
     painter.galley(
         Pos2::new(chip.center().x - said.size().x / 2.0, middle - said.size().y / 2.0),

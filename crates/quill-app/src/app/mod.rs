@@ -3307,7 +3307,7 @@ impl QuillApp {
             // opacity and let some of the decoration through.
             {
                 let ground = crate::services::plugin_ui::Look::of(&self.settings, &self.renderer);
-                pane_ui.painter().rect_filled(body, 0, ground.ground(ground.palette.board_page));
+                pane_ui.painter().rect_filled(body, 0, ground.ground(ground.palette.editor));
             }
             // Filled in by `paint_the_chrome` after the loop, which is the earliest moment `self` is not
             // borrowed by the `Look` the providers are drawing with.
@@ -3351,8 +3351,7 @@ impl QuillApp {
             if items.is_empty() {
                 continue;
             }
-            let name = format!("{id:?}-chrome");
-            if let Some((texture, drawn)) = self.canvases.texture_for(ui.ctx(), *id, &name, *body, &items) {
+            if let Some((texture, drawn)) = self.canvases.texture_for(ui.ctx(), *id, *body, &items) {
                 let uv = Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0));
                 painter.set(*shape, egui::Shape::image(texture, drawn, uv, egui::Color32::WHITE));
             }
@@ -7649,7 +7648,10 @@ impl QuillApp {
         // the slot would paint over the very thing the slot is reserved for — which is what it did, and the
         // board came out with no lanes and no cards at all.
         let ground = crate::services::plugin_ui::Look::of(&self.settings, &self.renderer);
-        ui.painter().rect_filled(area, 0, ground.ground(ground.palette.board_page));
+        // The **editor's** ground, not the board's: `board_page` in the generic host would be one plugin's
+        // idea of a colour leaking into the seam every plugin uses. They are the same constant, and this is
+        // the one that says why it is that colour.
+        ui.painter().rect_filled(area, 0, ground.ground(ground.palette.editor));
         drop(ground);
         // `Painter::set` fills the slot in once the drawing is over — see `paint_the_chrome`.
         let slot = ui.painter().add(egui::Shape::Noop);
@@ -7693,7 +7695,9 @@ impl QuillApp {
     /// `plugins.chrome` off. Otherwise it is `Chrome::off`, which records nothing and costs nothing, and
     /// the board draws its flat form.
     fn chrome_for(&mut self, plugin: &str) -> crate::services::vello_canvas::Chrome {
-        let asked = self.plugin_ui.surfaces().draws_chrome(plugin);
+        // The renderer the manifest named, matched rather than merely counted: there is one today, and the
+        // day there are two this is where the second one is chosen.
+        let asked = matches!(self.plugin_ui.surfaces().chrome_for(plugin), Some("vello"));
         let draws =
             self.plugin_ui.provider(plugin).map(|provider| provider.draws_chrome()).unwrap_or(false);
         match self.settings.plugin_chrome && asked && draws {
@@ -7719,8 +7723,7 @@ impl QuillApp {
         if items.is_empty() {
             return;
         }
-        let name = format!("{id:?}-chrome");
-        if let Some((texture, drawn)) = self.canvases.texture_for(ui.ctx(), id, &name, area, &items) {
+        if let Some((texture, drawn)) = self.canvases.texture_for(ui.ctx(), id, area, &items) {
             let uv = Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0));
             ui.painter().set(slot, egui::Shape::image(texture, drawn, uv, egui::Color32::WHITE));
         }

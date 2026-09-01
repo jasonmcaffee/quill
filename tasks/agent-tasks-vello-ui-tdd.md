@@ -388,6 +388,13 @@ highlight colours record beside themselves: what is added is named from what is 
 | `board_card` | `CODE_PANEL` | `#20252E` against `#232933`, and `CODE_PANEL`'s own comment says it is "a step up from `EDITOR` … so the block reads as a panel on the page", which is what a card is. |
 | `board_well` | `FIELD` | `#1B2026` against `#1D212A`. |
 
+**The accent stays Quill's, and that is the one deliberate mismatch worth naming.** The reference's
+primary blue is a periwinkle around `#4C6EF5` and Quill's `ACCENT` is an azure `#489FF8`. A board with a
+blue of its own would be a board whose buttons disagreed with every other button in the window, and the
+whole point of the plugin design is that a plugin looks like the rest of it. `nearly identical` is read
+here as *the same construction*, not *the same hue* — and the hue is the one thing a person can change
+about Quill's look by changing the theme, where a shadow recipe is not.
+
 Two colours in the picture have no name in Quill at all and are added with an argument, exactly as
 `BREAKPOINT` was:
 
@@ -395,6 +402,17 @@ Two colours in the picture have no name in Quill at all and are added with an ar
 |---|---|---|
 | `AGENT` | `#9B7CF6` | The violet a card's agent badge is, and the dot on the `AGENT DONE` lane. Quill's palette has a red, an amber, a green, two blues and a pink; it has no violet, and the four lanes have to be four colours a person can tell apart at nine points across. |
 | `ATTACHED` | `GIT_ADDED` | The mint ring round a badge whose terminal is running. It is the green Quill already has for "there is something here that was not here before", which is what an attached terminal is. |
+
+### 7.2b Only a pane and a tab get a canvas
+
+`QuillApp::chrome_for` is called from the two places a provider fills a surface of its own — its docked
+pane and its tab in the editing area. A provider's **Settings page** and its **modal** are handed a
+`Look` with `Chrome::off()`, so they draw flat.
+
+That is deliberate rather than an omission. Both of those live inside furniture that is Quill's:
+`components::modal` is the frame every one of the ten modals in the window shares, and the Settings
+window is one size with one look for every page. A plugin's page with soft shadows on it would be the
+one page in that window that had them, which is the fault `design/style-guide.md` exists to prevent.
 
 ### 7.3 A pane says whether it wants a canvas
 
@@ -447,14 +465,19 @@ through wherever the board draws nothing.
 
 ### 8.2 The header
 
+**One row**, which is what the reference has. It was two, because the four views were in it and one row
+could not hold all of that at a pane's width; §8.5's rail is where they went.
+
 | Part | How it is drawn |
 |---|---|
-| `Current Sprint` | Text, `TEXT_STRONG`, at `font_size * 1.7`, bold. |
-| `· 27 tasks` | Text, `TEXT_DIM`, at `font_size - 3`. |
-| The three view buttons | One `sunken` group at radius 12 holding three squares; the chosen one is `sunken` again at radius 8 so it reads as pressed into the group, which is what the reference shows. |
-| The search box | `sunken`, radius 14, `board_well`. |
-| `Sync JIRA` | `raised(Lift::Small)`, radius 14, `board_lane`. |
-| `+ Add Task` | `raised(Lift::Medium)` with a `Linear` fill from the accent lightened by 8% to the accent darkened by 12%, along the box's own diagonal, and a `glow` of the accent at 40% under it. |
+| `Current Sprint` | Text, `TEXT_STRONG`, in the bold face at `font_size * 1.7`. |
+| `· 27 tasks` | Text, `TEXT_DIM`, at `font_size - 1`. |
+| The search box | `sunken` at a pill radius, `board_well`, 44 points tall, taking **whatever is spare** between the heading and the button up to 460 points. A fixed width left a broad empty band where the reference has its search. |
+| `+ Add Task` | 127 by 44, `raised(Lift::Small)` with a `Linear` fill from the accent lightened by 14% to the accent darkened by 22% along the box's own diagonal, and a `glow` of the accent at 42% under it. |
+
+**`Sync JIRA` is absent**, and that is Quill's rule rather than an omission: JIRA is not implemented on
+this board — the plugin's own `plugin.limitations` says so — and a control that can never apply is not
+drawn. It is the same decision as the `F` button not appearing for a `.rs` file.
 
 ### 8.3 A lane
 
@@ -471,8 +494,10 @@ the lane's colour with a `glow` of the same colour at 5 points of spread, the la
 `TEXT_DIM` at `font_size - 4` with letter spacing, and a count in a `sunken` chip 40 points wide at
 radius 999.
 
-The four lane colours are `TEXT_DIM`, `CLOSE`, `ACCENT` and `AGENT`, which are grey, red, blue and
-violet — the reference's `#8B95A4`, `#E5484D`, `#5B83FF`, `#9B7CF6`.
+The four lane colours are `TEXT_DIM`, `CLOSE`, `ACCENT` and `AGENT` — grey, red, blue and violet,
+against the reference's `#8B95A4`, `#E5484D`, `#5B83FF` and `#9B7CF6`. Only the first is an exact match:
+`TEXT_DIM` is `#8B93A3`. `CLOSE` is Quill's own `#FF5F57` and `ACCENT` its own `#489FF8`, both a shade
+off the reference's, and that is the palette's rule doing what it is for — see §7.2 on the accent.
 
 An empty lane draws `Nothing here` inside a `sunken` well at radius 14, which is the reference's own
 answer and is better than an empty box because it says the lane is empty rather than that the board
@@ -486,8 +511,12 @@ clip cannot do at all.
 ### 8.4 A card
 
 300 wide by 101 tall at the default size, radius 14, `board_card`, `raised(Lift::Small)`, 24 points
-between two. Under the pointer it is `raised(Lift::Medium)` and its fill lifts to `SELECTED_ROW` —
-which is the pill every list in Quill draws for the row it is on, so a card behaves like a row.
+between two.
+
+**Under the pointer the decoration does not change**, and that is a performance rule rather than a taste
+one — §9. What changes is a wash of `SELECTED_ROW` painted over it by `egui`, which is the pill every
+list in Quill draws for the row it is on, so a card still behaves like a row and the pointer crossing a
+board costs nothing.
 
 Inside it, in the order the reference puts them:
 
@@ -497,106 +526,148 @@ Inside it, in the order the reference puts them:
 | Priority | One chevron in `UNSAVED` for high, `TEXT_DIM` for medium, nothing for low. |
 | Epic chip | The epic's own colour, which is the one colour on the board that comes from the data. |
 | Footer | The key in the code font in `TEXT_DIM`, a tick and `3/7`, a speech mark and a count. |
-| Buttons | `K` — a `sunken` disc 28 across; play — a `Disc` 30 across with a diagonal `Linear` from the accent, and a `glow` under it; the agent badge — a `Disc` 28 across with a diagonal `Linear` in `AGENT`, inside a `Ring` at radius 17.5 and 2 points wide in `ATTACHED` while a terminal is running. |
+| Buttons | Play — a `Disc` **30** across with a diagonal `Linear` from the accent and a `glow` under it; the agent badge — a `Disc` **28** across with a diagonal `Linear` in `AGENT`, inside a `Ring` at radius 17.5 and 2 points wide in `ATTACHED` while a terminal is running. Two sizes and not one, because the reference has two: the button you press is the larger of the pair. |
+
+The reference's third round button is its JIRA link, and it is **absent** here for the reason
+`Sync JIRA` is: there is no JIRA on this board, and Quill draws no control that cannot apply.
+
+The priority chevron points **up** for high and medium and down for low. It pointed the other way, so
+every card on the board wore a downward mark and the one ticket that mattered least wore the upward
+one.
 
 The epic's colour stays a 3-point edge down the left of the card, drawn as a `Rect` with the card's
 radius on its left corners and none on its right, which is what it already is.
 
 ### 8.5 The rail
 
-The board's own rail is `raised(Lift::Medium)` at radius 26, and the chosen entry is a `Rect` at
-radius 12 filled with the accent gradient and carrying a `glow`. Quill's `components::activity_bar`
-is a different rail on the window's own edge and is not touched: the board has one inside its own
-pane in the reference, and putting board entries on Quill's rail would be a plugin deciding what the
-window's furniture is.
+52 points wide at radius 26, `raised(Lift::Medium)` in `board_lane`, as tall as the four buttons in it,
+16 points in from the edge of the pane and 24 points clear of the first lane. One icon button a view —
+`board`, `stack`, `tick`, `diamond`, all drawn rather than lettered — and the chosen one is a rounded
+square filled with the accent gradient and carrying a `glow`, which is what the reference lights its
+chosen entry with.
 
-## 9. What it costs, measured
+**It is 16 points in and not 8**, and that is not slack: a raised surface's shadow reaches about 24
+points and the canvas is cut to the pane, so at 8 the rail's own left shadow was clipped against the
+edge of the board and it read as a strip stuck to the side rather than as a floating rail. The 24
+points on its other side are the same measurement for the first lane, which had the same fault.
 
-`crates/quill-app/examples/vello_cost.rs`, in the shape of `frame_cost.rs`, `symbol_cost.rs`,
-`completion_cost.rs` and `folding_cost.rs`: it records a board of a stated number of lanes and cards,
-rasterises it, and prints what each part cost. It is not a test and nothing fails it, for the reason
-`frame_cost.rs` records — a threshold in milliseconds is a different number on every machine. What
-*is* a test is the work itself: how many `Decor` items a board produces, that the same board twice
-gives an identical list, and that a frame in which nothing moved rasterises nothing.
+**This is the board's rail and not Quill's.** `components::activity_bar` is the strip on the window's
+own edge that puts panels away, and it belongs to the window: a plugin adding entries to it would be a
+plugin deciding what the window's furniture is. The reference has a rail *inside* its own page, which
+is a different thing — it is how the board switches between its four views — and that is what this is.
 
-On this machine, a board of four lanes holding six cards each over 1400 by 900 points:
+**A pane too narrow for a rail and a lane draws no rail**, which is the absent-control rule again, and
+the four views stay reachable from the `Agent-Tasks` menu and from `quill-cli`.
 
-| | |
-|---|---|
-| Recording the `Decor` list, which **every** frame pays | **0.005 ms** |
-| Rasterising, on a frame where the board's drawing changed | **16 ms** at one pixel a point |
-| A frame where nothing moved | **0.02 ms** |
+## 9. What it costs, measured — and it misses its own budget
 
-**The second number is the one to read, and the first and third are why it is affordable.** A frame
-pays it only when the drawing itself changed — a drag, a lane scrolled, a letter typed into the search
-box, a ticket moved. It is deliberately **not** paid on a hover: §8.4's card keeps the same elevation
-under the pointer and the pointer's answer is a wash `egui` paints on top, because moving the pointer
-across a board is the commonest thing anybody does on one and re-rasterising for it would have been the
-whole cost, all the time.
+`crates/quill-app/examples/vello_cost.rs` records a board of a stated shape, pushes it through the same
+`Canvas` the window uses, and prints what each part cost. The raw output of a run, with the machine and
+the toolchain, is at `_agent_output/task-1765-vello-board/vello-cost.txt` so the numbers below can be
+checked rather than taken.
 
-### 9.1 Four things were measured and kept
+It is not a test and nothing fails it, for the reason `frame_cost.rs` records — a threshold in
+milliseconds is a different number on every machine. What *is* a test is the work itself: how many
+`Decor` items a board produces, that the same board twice gives an identical list, and that a frame in
+which nothing moved rasterises nothing.
 
-Each of these was a real number, not a guess, and the code carries the reason:
+### 9.1 The numbers, and what is not in them
 
-- **A raised surface's shadows are cut to the band around it.** The surface is opaque and is painted
-  over its own shadows, so every pixel of Gaussian inside it is computed and thrown away. Unclipped, a
-  lane 328 by 812 cost **3.3 ms on its own**. `Decor::Clip { outside: true }` and `push_clip_path` with
-  an even-odd frame took the whole board from **43 ms to 20**.
+| A board of | Recording, every frame | Rasterising, on a **changed** frame | Asking, on a **still** frame |
+|---|---|---|---|
+| 4 lanes, 24 cards, 1400 x 900 points | 0.005 ms | **20.7 ms** at 1 pixel a point | 0.001 ms |
+| the same, on a display asking for 2 | — | **39.5 ms** at the capped 1.5 | 0.001 ms |
+| 4 lanes, 8 cards, 1000 x 700 points | 0.003 ms | **7.9 ms** | 0.000 ms |
+| the header and the rail alone | 0.001 ms | 2.0 ms | 0.000 ms |
+
+**The budget was a third of a frame at sixty a second, about 5 ms, and a busy board is four times that.**
+That is the honest headline and it should not be softened: a full board being dragged or scrolled on a
+1400-point pane spends about one whole frame in the rasteriser, so the window drops to something like
+40 frames a second for as long as the gesture lasts. A board with a handful of cards on it — which is
+what most boards are — is 8 ms and does not.
+
+Three real costs are **outside** those numbers, and the example says so in its own output:
+
+- **The GPU upload.** `TextureHandle::set` queues a texture delta and eframe uploads it later in the
+  frame. Nothing here measures that.
+- **The rest of the board's frame** — laying the lanes out, filtering the tickets, every galley of text,
+  and egui's own tessellation. The *still* figure is the cost of asking for the decoration on a frame
+  where nothing changed, not the cost of that frame.
+- **The `ColorImage` the raster is copied into**, one allocation of width x height x 4 bytes on every
+  changed frame. It is inside the changed-frame figure rather than broken out of it.
+
+### 9.2 What that buys, and when it is paid
+
+It is paid on a frame where the **drawing** changed: a card dragged, a lane scrolled, a letter typed into
+the search box, a ticket moved between lanes. It is **not** paid on a hover, which is the commonest thing
+anybody does on a board — §8.4's card keeps its elevation and the pointer's answer is a wash `egui`
+paints over it. And it is not paid at all on a still frame, which is what a window redrawing on a
+heartbeat spends nearly all of its time doing: 0.001 ms, a comparison of two lists.
+
+**And there is an off switch.** `plugins.chrome` in `Settings -> Appearance` turns the decoration off and
+the board draws flat, at no cost at all. That is the honest bottom of this section: the depth is worth
+the milliseconds or it is not, and the person decides.
+
+### 9.3 Four things were measured and kept
+
+Each was a real number rather than a guess, and the code carries the reason:
+
+- **A raised surface's shadows are cut to the band around it.** The surface is opaque and is painted over
+  its own shadows, so every pixel of Gaussian inside it is computed and thrown away. Unclipped, a lane
+  328 by 812 cost **3.3 ms on its own**. `Decor::Clip { outside: true }` with an even-odd frame took the
+  whole board from **43 ms to 20**.
 - **`push_clip_path`, not `push_clip_layer`.** A clip *layer* renders its contents into a layer and
   composites them; a clip *path* is intersected while the strips are generated, so a tile outside it
   costs nothing.
 - **The canvas is the decoration's own bounding box, not the pane's.** Rasterising has a floor of about
-  two nanoseconds a pixel whether anything is drawn there or not: an empty canvas over a 1400 by 900
-  pane costs 2.4 ms before a single shape. Lanes that are as tall as their contents leave most of a tall
+  two nanoseconds a pixel whether anything is drawn there or not, so an empty canvas over a 1400 by 900
+  pane costs 2 ms before a single shape. Lanes that are as tall as their contents leave most of a tall
   pane empty, and that emptiness is now free.
-- **The context is resized, never rebuilt.** `RenderContext::new_with` allocates the whole dispatcher.
-  Because the canvas is a bounding box it moves by a point whenever a lane grows, so rebuilding on a
-  size change meant rebuilding on nearly every changed frame: **15.3 ms became 20.2**.
-  `reset_and_resize` clears the buffers it already has.
+- **The context is resized, never rebuilt.** `RenderContext::new_with` allocates the whole dispatcher, and
+  the canvas moves by a point whenever a lane grows, so rebuilding on a size change meant rebuilding on
+  nearly every changed frame: **15.3 ms became 20.2**.
 
 Two more were measured and **rejected**, which is worth writing down because both look obviously right:
 
-- **A band each for the two shadows** rather than one shared band, so the pale highlight is evaluated
-  over fewer pixels. It cost more, not less: **15.3 ms became 18.9**, because a clip is not free and
-  doubling their number outweighed the pixels saved.
-- **Clipping only the large surfaces**, on the theory that a card is small enough not to be worth a
-  clip. **28.6 ms.** The cards are where the pixels are.
+- **A band each for the two shadows** rather than one shared band, so the pale highlight is evaluated over
+  fewer pixels. It cost more, not less: **15.3 ms became 18.9**, because a clip is not free and doubling
+  their number outweighed the pixels saved.
+- **Clipping only the large surfaces**, on the theory that a card is small enough not to be worth a clip.
+  **28.6 ms.** The cards are where the pixels are.
 
-### 9.2 The lever that cannot be pulled, and it is the big one
+### 9.4 The lever that cannot be pulled, and it is the big one
 
 `vello_cpu` has a `multithreading` feature. Rasterising is per pixel and embarrassingly parallel, and
-turning it on took the board from **20.1 ms to 5.5**.
+turning it on took the board from **20.1 ms to 5.5** — inside the budget, in one line.
 
-**It cannot be used.** Cargo features are additive across the whole dependency graph, and `epaint`
-shares this crate — so enabling it changes `RenderSettings::default()` for epaint too. epaint's glyph
-rasteriser builds its context with the default settings and never calls `flush()`, which the
-multithreaded dispatcher requires, so **every screenshot test panicked inside `vello_cpu` with
-"attempted to rasterize before flushing" — from egui's own text**, before a single board was drawn.
+**It cannot be used.** Cargo features are additive across the whole dependency graph, and `epaint` shares
+this crate — so enabling it changes `RenderSettings::default()` for epaint too. epaint's glyph rasteriser
+builds its context with the default settings and never calls `flush()`, which the multithreaded
+dispatcher requires, so **every screenshot test panicked inside `vello_cpu` with "attempted to rasterize
+before flushing" — from egui's own text**, before a single board was drawn.
 
 It comes back the day epaint calls `flush()`, or the day this renderer stops sharing a crate with it.
-That is one line in `Cargo.toml` and a third of the cost.
+That is one line in `Cargo.toml` and three quarters of the cost.
 
-### 9.3 The two levers that could be pulled, and why they are not now
+### 9.5 The two levers that could be pulled, and why they are not now
 
 - **A sprite cache.** Every card's decoration is identical apart from where it is, so a board of
-  twenty-four cards rasterises the same 332 by 132 picture twenty-four times. Rasterising it once and
-  drawing it as twenty-four textured quads would make *dragging* free, since a drag moves shapes without
-  changing any of them. It is a different design — an atlas and one image shape a card instead of one
-  texture a pane — and it should be measured against this one rather than assumed better.
-- **Rasterising on a thread**, arranged as `services::text_search` and `services::symbol_index` are.
-  It was weighed and refused for a reason that showed up on paper: the card's *surface* is in the
-  decoration and its *title* is drawn by egui, so a decoration one frame behind is a card whose ground
-  visibly separates from its own words while it is dragged. That is worse than a slower frame.
+  twenty-four cards rasterises the same 332 by 132 picture twenty-four times — and §9.1's own table says
+  the cards are nearly the whole cost, since the same board without them is 2 ms. Rasterising one card
+  once and drawing it as twenty-four textured quads would make *dragging* free, since a drag moves shapes
+  without changing any of them. It is a different design — an atlas and one image shape a card instead of
+  one texture a pane — and it should be measured against this one rather than assumed better.
+- **Rasterising on a thread**, arranged as `services::text_search` and `services::symbol_index` are. It
+  was weighed and refused for a reason that shows up on paper: the card's *surface* is in the decoration
+  and its *title* is drawn by egui, so a decoration one frame behind is a card whose ground visibly
+  separates from its own words while it is dragged. That is worse than a slower frame.
 
-**And there is an off switch**, which is the honest bottom of all of this: `plugins.chrome` in
-`Settings -> Appearance` turns the decoration off and the board draws flat, at no cost at all.
+### 9.6 The resolution is capped, and that is a stated trade
 
-### 9.4 The resolution is capped, and that is a stated trade
-
-`MAX_SCALE` is 1.5. A display at two pixels a point is four times the work, and the same board went
-from 16 ms to 37. The decoration's highest-frequency feature is the edge of a rounded rectangle;
-everything else in it is a Gaussian or a gradient, which is exactly the content that survives being
-drawn a little coarser and filtered up. The **text is not affected at all**, because egui draws the
+`MAX_SCALE` is 1.5. A display at two pixels a point is four times the work, and the same board went from
+20 ms to 39 rather than to 80. The decoration's highest-frequency feature is the edge of a rounded
+rectangle; everything else in it is a Gaussian or a gradient, which is exactly the content that survives
+being drawn a little coarser and filtered up. The **text is not affected at all**, because egui draws the
 text at the display's own resolution.
 
 ## 10. Determinism, and the screenshot tests
@@ -625,9 +696,9 @@ machine of that target and is therefore the thing to pin.
 Quill already keeps a separate accepted set per platform, so a difference that survives that is
 caught rather than papered over.
 
-`the_same_board_laid_out_twice_gives_an_identical_decor_list` is the unit test underneath all of it,
-and it is `mermaid::check`'s fifth property restated: the images can only rest on the drawing being
-a pure function of the state.
+`the_same_drawing_twice_gives_an_identical_list` is the unit test underneath all of it, and it is
+`mermaid::check`'s fifth property restated: the images can only rest on the drawing being a pure
+function of the state.
 
 ## 11. Testing
 
@@ -639,10 +710,15 @@ pale tone is a lift of the surface and the dark tone is black at an alpha, so no
 introduces a hue; the same board twice gives the same list; a `Chrome::detached()` records and
 rasterises nothing.
 
-**`Canvas`, with no window.** A `Decor` list rasterises into a `Pixmap` of the expected size; a
-second call with the same list does not rasterise again (a counter says so); a changed list does; a
-resized pane rebuilds the pixmap; `PremulRgba8` and `Color32` are the same four bytes, asserted
-rather than assumed.
+**`Canvas`, with no window.** A `Decor` list rasterises into a `Pixmap` of the expected size, and
+`a_board_that_did_not_change_is_not_rasterised_again` drives the real entry point and counts: ten calls
+with the same drawing rasterise once, a changed drawing rasterises, **two pixel densities that round to
+the same pixel size** rasterise separately, and so does the same drawing in a pane that moved. An
+earlier version of that test rasterised once, wrote a fingerprint into the field by hand, and asserted
+the field equalled itself — it passed and proved nothing, which is worth recording because a cache test
+that cannot fail is worse than no cache test. `PremulRgba8` and `Color32` are the same four bytes,
+asserted rather than assumed; an inset shadow really darkens the inside of its shape and nothing
+outside it; a canvas whose surface was not drawn this frame is dropped.
 
 **The provider.** `draws_chrome` is true for Agent-Tasks and false for a provider that has not asked;
 a manifest naming `ui.chrome = something-else` is refused with a message; `plugins.chrome` off
@@ -661,4 +737,6 @@ them and compared them against `reference-board.png`, which is what §12 of this
 | **`multithreading`.** | §9's second lever. |
 | **Animation.** | The reference is a still. A shadow that eased on hover would mean asking for a repaint every frame while the pointer is over a card, which is the opposite of the rule that an idle window draws nothing. |
 | **A gradient a manifest could name.** | The palette is closed and `ui.chrome` names a renderer, not a colour. |
+| **Depth on a plugin's Settings page or its modal.** | §7.2b. Both live inside furniture that is Quill's, and one page with shadows in a window where no other page has them is the fault the style guide exists to prevent. |
+| **A card that lifts under the pointer.** | §9. It would re-rasterise the whole pane every time the pointer crossed a card, which is the commonest thing anybody does on a board. The pointer's answer is a wash `egui` paints over the same decoration. |
 | **`vello_svg`.** | The board has no SVG in it. The plugin icons are PNGs already. |

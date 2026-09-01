@@ -17,7 +17,7 @@
 //!
 //! [`Decor`] is what that records: five kinds of shape and a clip, in points, and nothing else. It is the
 //! same seam `quill_core::mermaid::Scene` is — a value a test can assert on with no window, no graphics
-//! card and no fonts — and it is what makes the caching in [`Canvas`] a hash comparison.
+//! card and no fonts — and it is what makes the caching in [`Canvas`] a comparison of two lists.
 //!
 //! [`Canvas`] is the renderer. It replays a `Decor` list into a `vello_cpu::RenderContext`, rasterises it
 //! into a `Pixmap` of premultiplied RGBA8 — which is `egui::Color32` byte for byte — and uploads it as one
@@ -25,10 +25,10 @@
 //!
 //! ## Nothing that runs once a frame may do the work twice
 //!
-//! `task-1666`'s rule. The `Decor` list is rebuilt every frame, which is a few hundred `Copy` values into a
-//! `Vec` that keeps its capacity; the **rasterisation** only happens when the list or the size changed,
-//! which is one hash comparison. A board nobody is touching therefore costs what a board that is not there
-//! costs, which matters because the window redraws on a heartbeat.
+//! `task-1666`'s rule. The `Decor` list is rebuilt every frame — a few hundred `Copy` values into a `Vec`,
+//! measured at 0.005 ms — and the **rasterisation**, which is four orders of magnitude dearer, only happens
+//! when that list, the canvas rectangle or the scale changed. A board nobody is touching therefore costs
+//! what a board that is not there costs, which matters because the window redraws on a heartbeat.
 //!
 //! ## Why the CPU renderer
 //!
@@ -70,7 +70,7 @@ const MAX_SIDE: u16 = 4096;
 /// to 17.4 on the frames where it changed — which is a drag that drops frames on a machine where nothing
 /// else does. At 1.5 it is under ten. `crates/quill-app/examples/vello_cost.rs` is how that is measured
 /// again.
-const MAX_SCALE: f32 = 1.5;
+pub const MAX_SCALE: f32 = 1.5;
 
 /// How far off the surface behind it a thing stands, and how deeply a well is pressed into it.
 ///
@@ -176,11 +176,12 @@ pub enum Decor {
     Unclip,
 }
 
-/// Hashed by bit pattern, because `f32` is not `Eq` and the fingerprint in [`Canvas`] needs one.
+/// Hashed by bit pattern, because `f32` is not `Eq`.
 ///
-/// Two `Decor` lists that hash the same are two lists that would rasterise the same, which is the only
-/// property this has to have. `-0.0` and `0.0` hash differently and draw the same, which costs one
-/// rasterisation on the frame a value happens to cross zero and is not worth a slower comparison.
+/// Nothing in this file decides whether to redraw from a hash — [`Canvas`] keeps the list itself and
+/// compares it, so a collision cannot serve stale pixels. This is here because a `Decor` is a value and
+/// values in Quill are hashable, and because a test that wants to say "these two drawings are the same
+/// drawing" should not have to spell out how.
 impl Hash for Decor {
     fn hash<H: Hasher>(&self, into: &mut H) {
         fn f(value: f32, into: &mut impl Hasher) {
@@ -260,6 +261,9 @@ impl Hash for Decor {
 /// saying what a thing *is* rather than what it is made of. There is deliberately no way to record a
 /// shadow of your own — the offsets and the blurs are the stylesheet's, in [`Lift`], and a component that
 /// could choose one would be a component that could disagree with the rest of the board.
+///
+/// One is built for each surface on each frame and thrown away after it has been rasterised — so nothing
+/// is retained between frames here, and nothing needs to be: recording a whole board is 0.005 ms.
 ///
 /// Interior mutability, because it is reached through a shared reference on a `Look` that several
 /// components hold at once while a pane is being drawn.
@@ -437,10 +441,29 @@ pub struct Canvas {
     resources: Resources,
     pixmap: Pixmap,
     texture: Option<egui::TextureHandle>,
-    /// The hash of the `Decor` list the texture was made from, and the size it was made at.
-    fingerprint: Option<(u64, u16, u16)>,
+    /// Everything the texture currently in hand was made from.
+    ///
+    /// **All of it, not a hash of the shapes.** The size and the scale are in it because two fractional
+    /// pixel densities can round to the same pixel dimensions and still need different transforms, and the
+    /// rectangle is in it because the canvas is a bounding box intersected with the pane, so the same
+    /// shapes in a moved pane are a different picture. And the `Decor` list is **kept and compared**
+    /// rather than trusted to a 64-bit hash: a collision would serve stale pixels, and comparing a few
+    /// hundred `Copy` values costs less than the rasterisation it is deciding to skip.
+    drawn: Option<Drawn>,
     /// How many times this canvas has actually rasterised. Read by the test that says a still board is free.
     rasterisations: u64,
+    /// The frame this canvas was last asked for, which is how [`Canvases::tidy`] knows it is still wanted.
+    last_used: u64,
+}
+
+/// What a canvas's current texture was made from.
+#[derive(Debug, Clone, PartialEq)]
+struct Drawn {
+    items: Vec<Decor>,
+    rect: Rect,
+    scale: f32,
+    width: u16,
+    height: u16,
 }
 
 impl std::fmt::Debug for Canvas {
@@ -465,8 +488,9 @@ impl Canvas {
             resources: Resources::new(),
             pixmap: Pixmap::new(1, 1),
             texture: None,
-            fingerprint: None,
+            drawn: None,
             rasterisations: 0,
+            last_used: 0,
         }
     }
 
@@ -497,7 +521,7 @@ impl Canvas {
     pub fn texture_for(
         &mut self,
         ctx: &egui::Context,
-        name: &str,
+        id: egui::Id,
         rect: Rect,
         pixels_per_point: f32,
         items: &[Decor],
@@ -526,8 +550,16 @@ impl Canvas {
             return None;
         }
         let (width, height) = (width as u16, height as u16);
-        let fingerprint = fingerprint_of(items);
-        if self.fingerprint == Some((fingerprint, width, height)) {
+        // Compared without building anything: a frame where nothing moved must not allocate, which is
+        // `task-1666`'s rule, and the list is only copied on the frame it is actually drawn from.
+        let same = self.drawn.as_ref().is_some_and(|drawn| {
+            drawn.width == width
+                && drawn.height == height
+                && drawn.scale == scale
+                && drawn.rect == rect
+                && drawn.items == items
+        });
+        if same {
             if let Some(texture) = &self.texture {
                 return Some((texture.id(), rect));
             }
@@ -541,9 +573,14 @@ impl Canvas {
         match &mut self.texture {
             // Set rather than load, so a board being typed into does not allocate a new texture a keystroke.
             Some(texture) => texture.set(image, egui::TextureOptions::LINEAR),
-            none => *none = Some(ctx.load_texture(name, image, egui::TextureOptions::LINEAR)),
+            // The name is built here and nowhere else: it is wanted once, when the texture is first made,
+            // and formatting one every frame would be an allocation on a frame that draws nothing new.
+            none => {
+                *none =
+                    Some(ctx.load_texture(format!("{id:?}-chrome"), image, egui::TextureOptions::LINEAR));
+            }
         }
-        self.fingerprint = Some((fingerprint, width, height));
+        self.drawn = Some(Drawn { items: items.to_vec(), rect, scale, width, height });
         self.texture.as_ref().map(|texture| (texture.id(), rect))
     }
 
@@ -744,7 +781,10 @@ fn bounds_of(items: &[Decor]) -> Option<Rect> {
     bounds
 }
 
-/// The hash a frame's decoration is compared by.
+/// One number standing for a whole drawing, for a test that wants to compare two of them.
+///
+/// Deliberately **not** what [`Canvas`] decides to redraw from: see [`Drawn`].
+#[cfg(test)]
 fn fingerprint_of(items: &[Decor]) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     items.len().hash(&mut hasher);
@@ -763,7 +803,13 @@ fn fingerprint_of(items: &[Decor]) -> u64 {
 #[derive(Debug, Default)]
 pub struct Canvases {
     by_id: HashMap<egui::Id, Canvas>,
-    seen: Vec<egui::Id>,
+    /// Which frame this is, counted by [`Canvases::tidy`].
+    ///
+    /// A counter rather than a list of what was drawn this frame. The list version compared lengths to
+    /// decide whether anything had gone, so one surface asked for twice would have masked another that
+    /// had gone away — and a frame that somehow never reached `tidy` would have left it growing. Each
+    /// canvas remembers the frame it was last asked for, and one that missed a frame is dropped.
+    frame: u64,
     /// Built with the tests' pinned SIMD level rather than the machine's.
     deterministic: bool,
 }
@@ -774,30 +820,29 @@ impl Canvases {
         Self { deterministic: true, ..Self::default() }
     }
 
-    /// Rasterise one pane's decoration and answer the texture to paint behind it.
+    /// Rasterise one surface's decoration and answer the texture to paint and where to paint it.
     pub fn texture_for(
         &mut self,
         ctx: &egui::Context,
         id: egui::Id,
-        name: &str,
         rect: Rect,
         items: &[Decor],
     ) -> Option<(egui::TextureId, Rect)> {
-        self.seen.push(id);
         let deterministic = self.deterministic;
+        let frame = self.frame;
         let canvas = self
             .by_id
             .entry(id)
             .or_insert_with(|| if deterministic { Canvas::for_tests() } else { Canvas::default() });
-        canvas.texture_for(ctx, name, rect, ctx.pixels_per_point(), items)
+        canvas.last_used = frame;
+        canvas.texture_for(ctx, id, rect, ctx.pixels_per_point(), items)
     }
 
-    /// Forget the canvases of panes that were not drawn this frame. Called once, at the end of the frame.
+    /// Forget the canvases of surfaces that were not drawn this frame. Called once, at the end of the frame.
     pub fn tidy(&mut self) {
-        if self.by_id.len() != self.seen.len() {
-            self.by_id.retain(|id, _| self.seen.contains(id));
-        }
-        self.seen.clear();
+        let frame = self.frame;
+        self.by_id.retain(|_, canvas| canvas.last_used == frame);
+        self.frame = self.frame.wrapping_add(1);
     }
 
     #[cfg(test)]
@@ -914,21 +959,57 @@ mod tests {
         assert_eq!(colour.to_array(), [10, 20, 30, 40]);
     }
 
+    /// The one thing the whole cost of this feature rests on, driven through the real entry point.
+    ///
+    /// An earlier version of this test rasterised once, wrote a fingerprint into the field by hand and then
+    /// asserted that field equalled itself. It passed and proved nothing. This one asks for a texture the
+    /// way the window asks for one, and counts.
     #[test]
     fn a_board_that_did_not_change_is_not_rasterised_again() {
-        // `task-1666`'s rule. The window redraws on a heartbeat, so a board nobody is touching has to cost
-        // what a board that is not there costs.
+        let ctx = egui::Context::default();
+        let id = egui::Id::new("board");
         let mut canvas = Canvas::for_tests();
         let area = rect(0.0, 0.0, 64.0, 32.0);
-        let chrome = Chrome::recording();
-        chrome.raised(rect(4.0, 4.0, 56.0, 24.0), 8.0, Fill::Solid(Color32::from_rgb(0x20, 0x25, 0x2E)), Lift::Small);
-        let items = chrome.take();
-        canvas.rasterise(area, 1.0, 64, 32, &items);
+        let draw = |lift| {
+            let chrome = Chrome::recording();
+            chrome.raised(
+                rect(4.0, 4.0, 56.0, 24.0),
+                8.0,
+                Fill::Solid(Color32::from_rgb(0x20, 0x25, 0x2E)),
+                lift,
+            );
+            chrome.take()
+        };
+        let items = draw(Lift::Small);
+
+        assert!(canvas.texture_for(&ctx, id, area, 1.0, &items).is_some());
         assert_eq!(canvas.rasterisations(), 1);
-        // Same list, same size: the fingerprint matches and nothing is drawn again.
-        assert_eq!(fingerprint_of(&items), fingerprint_of(&items));
-        canvas.fingerprint = Some((fingerprint_of(&items), 64, 32));
-        assert_eq!(canvas.fingerprint, Some((fingerprint_of(&items), 64, 32)));
+        // The same drawing, again and again: not one more rasterisation.
+        for _ in 0..10 {
+            assert!(canvas.texture_for(&ctx, id, area, 1.0, &items).is_some());
+        }
+        assert_eq!(canvas.rasterisations(), 1, "a board nobody touched costs a comparison and nothing else");
+
+        // A different drawing does rasterise.
+        assert!(canvas.texture_for(&ctx, id, area, 1.0, &draw(Lift::Large)).is_some());
+        assert_eq!(canvas.rasterisations(), 2);
+
+        // So does the same drawing at a different pixel density, which is what the key carries the scale
+        // for: 1.4 and 1.45 over 64 points both round to 90 pixels and need different transforms.
+        assert!(canvas.texture_for(&ctx, id, area, 1.40, &items).is_some());
+        let after_first_density = canvas.rasterisations();
+        assert!(canvas.texture_for(&ctx, id, area, 1.45, &items).is_some());
+        assert_eq!(
+            canvas.rasterisations(),
+            after_first_density + 1,
+            "two densities that round to the same pixel size are still two pictures"
+        );
+
+        // And so does the same drawing in a pane that moved, because the canvas is cut to the pane.
+        let moved = Rect::from_min_size(area.min + Vec2::new(0.0, 4.0), area.size());
+        let before = canvas.rasterisations();
+        assert!(canvas.texture_for(&ctx, id, moved, 1.0, &items).is_some());
+        assert_eq!(canvas.rasterisations(), before + 1);
     }
 
     #[test]
@@ -975,14 +1056,24 @@ mod tests {
     }
 
     #[test]
-    fn a_canvas_whose_pane_went_away_is_dropped() {
+    fn a_canvas_whose_surface_went_away_is_dropped() {
+        let ctx = egui::Context::default();
+        let chrome = Chrome::recording();
+        chrome.rect(rect(0.0, 0.0, 10.0, 10.0), 0.0, Fill::Solid(Color32::RED));
+        let items = chrome.take();
+        let area = rect(0.0, 0.0, 20.0, 20.0);
         let mut canvases = Canvases::deterministic();
-        assert!(canvases.by_id.is_empty());
-        canvases.by_id.insert(egui::Id::new("gone"), Canvas::for_tests());
-        canvases.by_id.insert(egui::Id::new("here"), Canvas::for_tests());
-        canvases.seen.push(egui::Id::new("here"));
+        canvases.texture_for(&ctx, egui::Id::new("gone"), area, &items);
+        canvases.texture_for(&ctx, egui::Id::new("here"), area, &items);
         canvases.tidy();
-        assert_eq!(canvases.by_id.len(), 1, "only the pane that was drawn keeps its canvas");
+        assert_eq!(canvases.by_id.len(), 2, "both were drawn this frame");
+        // The next frame draws one of them twice and the other not at all. The count is not what decides
+        // it, which is the fault the frame stamp replaced: two sightings of one surface used to mask a
+        // surface that had gone.
+        canvases.texture_for(&ctx, egui::Id::new("here"), area, &items);
+        canvases.texture_for(&ctx, egui::Id::new("here"), area, &items);
+        canvases.tidy();
+        assert_eq!(canvases.by_id.len(), 1, "only the surface that was drawn keeps its canvas");
         assert!(canvases.by_id.contains_key(&egui::Id::new("here")));
     }
 
@@ -994,10 +1085,10 @@ mod tests {
         let items = chrome.take();
         let ctx = egui::Context::default();
         let huge = rect(0.0, 0.0, 40_000.0, 40_000.0);
-        assert!(canvas.texture_for(&ctx, "test", huge, 1.0, &items).is_none());
+        assert!(canvas.texture_for(&ctx, egui::Id::new("test"), huge, 1.0, &items).is_none());
         assert_eq!(canvas.rasterisations(), 0, "nothing that big is ever rasterised");
         // And an empty list is nothing to draw rather than an empty texture.
-        assert!(canvas.texture_for(&ctx, "test", rect(0.0, 0.0, 10.0, 10.0), 1.0, &[]).is_none());
+        assert!(canvas.texture_for(&ctx, egui::Id::new("test"), rect(0.0, 0.0, 10.0, 10.0), 1.0, &[]).is_none());
     }
 
     #[test]
@@ -1016,7 +1107,7 @@ mod tests {
         let mut canvas = Canvas::for_tests();
         let ctx = egui::Context::default();
         let pane = rect(0.0, 0.0, 1400.0, 900.0);
-        let (_, drawn) = canvas.texture_for(&ctx, "test", pane, 1.0, &items).expect("a texture");
+        let (_, drawn) = canvas.texture_for(&ctx, egui::Id::new("test"), pane, 1.0, &items).expect("a texture");
         assert!(drawn.height() < 200.0, "the canvas is the decoration's own box: {drawn:?}");
         assert!(pane.contains_rect(drawn), "and never larger than the pane");
         assert!(bounds_of(&[]).is_none(), "nothing drawn is no box at all");

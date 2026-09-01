@@ -18,14 +18,20 @@ use crate::theme::icon;
 /// Read through [`height`] rather than directly, so that a window set to 48 point text gets cards that can hold
 /// 48 point text. See `Look::scale`.
 const HEIGHT_AT_DEFAULT: f32 = 100.0;
-pub const GAP: f32 = 14.0;
+pub const GAP: f32 = 24.0;
 
-/// How round a card's corners are, and how big the three round buttons along its footer are.
+/// How round a card's corners are, and how big the round buttons along its footer are.
 ///
 /// Measured off `_agent_output/task-1765-vello-board/reference-board.png`: a card there is 300 by 101 with a
-/// 14 point radius, and its play button is 30 across against the agent badge's 28.
+/// 14 point radius and 24 points between two, its play button is 30 across and its agent badge 28, and the
+/// ring round an attached badge is 2 points wide at radius 17.5. Two sizes rather than one, because the
+/// reference has two: the button you press is the larger of the pair.
 pub const RADIUS: f32 = 14.0;
-const BUTTON: f32 = 26.0;
+const PLAY: f32 = 30.0;
+const BADGE: f32 = 28.0;
+/// How far outside the badge the attached ring is drawn, and how thick it is.
+const RING: f32 = 17.5;
+const RING_WIDTH: f32 = 2.0;
 
 /// How tall a card is in this window.
 pub fn height(look: &Look<'_>) -> f32 {
@@ -176,8 +182,9 @@ pub fn show(
     // badge was there, so the comment count and the agent badge were drawn on top of each other — two sets of
     // glyphs in one place, which is what the tab screenshot recorded in the Agent Done lane.
     let footer = area.max.y - 26.0;
-    let button = BUTTON * look.scale().min(1.6);
-    let badge = Vec2::splat(button);
+    let scale = look.scale().min(1.6);
+    let badge = Vec2::splat(BADGE * scale);
+    let play = Vec2::splat(PLAY * scale);
     let badge_at = Rect::from_min_size(Pos2::new(right - badge.x, footer - 4.0), badge);
     agent_badge(&painter, badge_at, task, look, live);
     // The start button only when starting would do something. **Absent rather than dimmed**, which is the rule
@@ -185,8 +192,10 @@ pub fn show(
     // has nothing for Start to do, and drawing it would be drawing a control that reports a refusal.
     let mut controls = badge_at.min.x;
     if live.can_start {
-        let start_at =
-            Rect::from_min_size(Pos2::new(badge_at.min.x - button - 6.0, footer - 4.0), badge);
+        let start_at = Rect::from_min_size(
+            Pos2::new(badge_at.min.x - play.x - 8.0, badge_at.center().y - play.y / 2.0),
+            play,
+        );
         if super::round_button(ui, look, start_at, &format!("Start {}", task.key), icon::run) {
             pressed.start = true;
         }
@@ -223,7 +232,13 @@ pub fn show(
             pen += 12.0;
         }
     }
-    room_for(&painter, &mut pen, &task.comment_count.to_string(), look.palette.text_dim);
+    // The comment count with the mark the reference draws beside it. It was a bare number, which read as
+    // a second half of the todo count rather than as a count of something else.
+    if pen + 16.0 < stop {
+        icon::comment(&painter, Pos2::new(pen + 6.0, footer + 7.0), look.palette.text_dim);
+        pen += 16.0;
+        room_for(&painter, &mut pen, &task.comment_count.to_string(), look.palette.text_dim);
+    }
     if response.clicked() {
         pressed.open = true;
     }
@@ -238,10 +253,13 @@ pub fn show(
 /// Three drawn marks rather than three words, because a card in a 300 point lane has no room for
 /// `High priority` and the mark is what the design image shows.
 fn priority(painter: &egui::Painter, at: Pos2, priority: Priority, look: &Look<'_>) {
+    // **Up for urgent and down for not**, which is the way round the reference draws it and the way round
+    // everything else does. It was inverted: `High` and `Medium` drew a `v` and `Low` drew a `^`, so every
+    // card on the board wore a downward chevron and the one ticket that mattered least wore the upward one.
     let (tint, direction) = match priority {
-        Priority::High => (look.palette.unsaved, -1.0),
-        Priority::Medium => (look.palette.text_control, -1.0),
-        Priority::Low => (look.palette.text_dim, 1.0),
+        Priority::High => (look.palette.unsaved, 1.0),
+        Priority::Medium => (look.palette.text_control, 1.0),
+        Priority::Low => (look.palette.text_dim, -1.0),
     };
     let width = 4.0;
     let height = 3.0 * direction;
@@ -286,6 +304,9 @@ fn agent_badge(painter: &egui::Painter, area: Rect, task: &Task, look: &Look<'_>
         true => ground,
         false => ground.gamma_multiply(0.72),
     };
+    // The ring's own measurements, in proportion to the badge: 17.5 outside a 28 point badge, 2 points wide.
+    let ring = area.width() * (RING / BADGE);
+    let width = area.width() * (RING_WIDTH / BADGE);
     if look.chrome.is_recording() {
         let radius = area.width() / 2.0;
         look.chrome.disc(
@@ -296,16 +317,12 @@ fn agent_badge(painter: &egui::Painter, area: Rect, task: &Task, look: &Look<'_>
         // The mint ring, and only while a terminal for this ticket is really running in this window. The gap
         // between the badge and the ring is the picture's: two points of dark, then two points of green.
         if live.attached {
-            look.chrome.ring(area.center(), radius + 3.5, 1.6, look.palette.attached);
+            look.chrome.ring(area.center(), ring, width, look.palette.attached);
         }
     } else {
         painter.circle_filled(area.center(), area.width() / 2.0, ground);
         if live.attached {
-            painter.circle_stroke(
-                area.center(),
-                area.width() / 2.0 + 3.5,
-                Stroke::new(1.6, look.palette.attached),
-            );
+            painter.circle_stroke(area.center(), ring, Stroke::new(width, look.palette.attached));
         }
     }
     let initials = match task.assignee {

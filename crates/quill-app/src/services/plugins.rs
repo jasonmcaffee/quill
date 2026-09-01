@@ -317,12 +317,18 @@ pub struct Surfaces {
     pub tabs: Vec<Surface<TabContribution>>,
     pub menus: Vec<Surface<MenuContribution>>,
     pub pages: Vec<Surface<PageContribution>>,
-    /// The plugins whose manifest asked for a renderer, by `plugin.id`.
+    /// The renderer each plugin asked for, as `(plugin.id, the name from `CHROME`)`.
+    ///
+    /// **The name is kept, not thrown away for a boolean.** There is one renderer today, so a `Vec<String>`
+    /// of ids would have worked and would have been a lie the moment a second name were added to
+    /// [`CHROME`]: every plugin would still have gone to `vello_canvas`, and the check would have been a
+    /// yes-or-no dressed up as a choice. `Surfaces::chrome_for` answers with the name, and the window
+    /// matches on it.
     ///
     /// Here rather than asked of the manifest at drawing time, for the reason the four lists above are
     /// here: switching a plugin off has to withdraw its decoration in the same frame it withdraws its
     /// pane, and one value everything reads is what makes that impossible to get wrong.
-    pub chrome: Vec<String>,
+    pub chrome: Vec<(String, String)>,
 }
 
 impl Surfaces {
@@ -342,9 +348,12 @@ impl Surfaces {
             && self.pages.is_empty()
     }
 
-    /// Whether this plugin asked for the decoration renderer and is switched on.
-    pub fn draws_chrome(&self, plugin: &str) -> bool {
-        self.chrome.iter().any(|id| id == plugin)
+    /// Which renderer this plugin asked for, if it asked and is switched on.
+    pub fn chrome_for(&self, plugin: &str) -> Option<&str> {
+        self.chrome
+            .iter()
+            .find(|(id, _)| id == plugin)
+            .map(|(_, renderer)| renderer.as_str())
     }
 
     /// The provider named by the plugin with this id, from whichever of its contributions names it.
@@ -529,8 +538,8 @@ impl Plugins {
             if let Some(page) = plugin.contributions.page.clone() {
                 surfaces.pages.push(made(plugin, &provider, page));
             }
-            if plugin.contributions.chrome.is_some() {
-                surfaces.chrome.push(plugin.id.clone());
+            if let Some(renderer) = plugin.contributions.chrome.clone() {
+                surfaces.chrome.push((plugin.id.clone(), renderer));
             }
         }
         surfaces
@@ -916,6 +925,15 @@ fn contributions(values: &Values, kind: Kind) -> Result<Contributions, String> {
         }
         None => None,
     };
+    // A renderer with nothing to draw with it. `ui.chrome` says *how* a plugin's own pane is decorated,
+    // and a language plugin has no pane — so this is a line that would do nothing, silently, which is what
+    // every refusal in this function exists to prevent.
+    if kind != Kind::Ui && chrome.is_some() {
+        return Err(
+            "ui.chrome is set on a plugin that is not a `ui` plugin, so there is no pane for it to draw"
+                .to_owned(),
+        );
+    }
     let found = Contributions {
         provider,
         chrome,
@@ -1685,9 +1703,10 @@ mod tests {
         let board = plugins.get("agent-tasks").expect("the agent-tasks plugin");
         assert_eq!(board.contributions.chrome.as_deref(), Some("vello"));
         // And it is in the one value everything reads, so switching the plugin off withdraws the decoration
-        // in the same frame it withdraws the tab.
-        assert!(plugins.surfaces().draws_chrome("agent-tasks"));
-        assert!(!plugins.surfaces().draws_chrome("mermaid"));
+        // in the same frame it withdraws the tab. The **name** is what comes back, not a yes: there is one
+        // renderer today and the day there are two this is where the second one is chosen.
+        assert_eq!(plugins.surfaces().chrome_for("agent-tasks"), Some("vello"));
+        assert_eq!(plugins.surfaces().chrome_for("mermaid"), None);
         for plugin in plugins.all().iter().filter(|plugin| plugin.kind == Kind::Language) {
             assert!(plugin.contributions.chrome.is_none(), "{} asks for a renderer", plugin.id);
         }
@@ -1703,6 +1722,16 @@ mod tests {
         let problem = parse(&Values::parse(manifest), false).expect_err("crayons is not a renderer");
         assert!(problem.contains("ui.chrome is `crayons`"), "{problem}");
         assert!(problem.contains("vello"), "and it names what this version does have: {problem}");
+
+        // And a renderer on a plugin with no pane to draw is refused too, rather than parsing into a line
+        // that does nothing. A language plugin has no surface of its own.
+        let language = "plugin.id = a-language
+plugin.name = A Language
+language.extensions = .aa
+                        ui.chrome = vello
+";
+        let problem = parse(&Values::parse(language), false).expect_err("a language has no pane");
+        assert!(problem.contains("not a `ui` plugin"), "{problem}");
     }
 
     /// A manifest that asks for a pane still gets one, read out of the file the way every other key is.

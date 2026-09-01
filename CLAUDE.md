@@ -208,8 +208,10 @@ also makes it deterministic — which is what 411 screenshot comparisons rest on
 
 **Three types, and the middle one is the seam.** `Chrome` is what a component talks to: it says what kind
 of surface it is drawing — `raised`, `sunken`, `glow`, `ring`, `clip` — and the elevation recipe lives in
-one file, so no component holds a shadow offset. That is the rule that a component cannot name a colour,
-applied to depth. `Decor` is what that records: five kinds of shape and a clip, in points, a plain value a
+one file, so no component holds a shadow offset. That is the rule that a plugin **manifest** cannot name a
+colour, applied to depth. (The rule is about the manifest and it is worth stating exactly: a provider is
+ordinary Rust compiled into Quill and can of course write `Color32::from_rgb`. What a plugin *folder*
+cannot do is name a colour, because there is no manifest key that sets one.) `Decor` is what that records: five kinds of shape and a clip, in points, a plain value a
 test asserts on with no window — the same seam `quill_core::mermaid::Scene` is. `Canvas` replays the list
 into `vello_cpu`, rasterises into a premultiplied-RGBA8 `Pixmap` — which is `egui::Color32` byte for byte —
 and uploads it as one texture painted **behind** the pane's widgets, into a slot reserved with
@@ -228,8 +230,11 @@ itself.
 **Five things about the cost, and every one of them was measured.**
 `cargo run --release -p quill-app --example vello_cost` is how they are measured again.
 
-- **Nothing is rasterised on a frame where nothing changed** — one hash comparison over the `Decor` list,
-  0.02 ms. Recording the list, which every frame pays, is 0.005 ms.
+- **Nothing is rasterised on a frame where nothing changed** — a comparison of the kept `Decor` list, the
+  canvas rectangle and the scale, 0.001 ms and no allocation. It is the list and not a hash of it, because
+  a collision would serve stale pixels; and it carries the scale and the rectangle, because two fractional
+  pixel densities can round to the same pixel size and need different transforms. Recording the list, which
+  every frame pays, is 0.005 ms.
 - **A hover deliberately does not change the decoration.** A card keeps the same elevation under the
   pointer and the pointer's answer is a wash `egui` paints on top, because moving the pointer across a
   board is the commonest thing anybody does on one and re-rasterising for it would have been the whole
@@ -247,10 +252,16 @@ itself.
   `RenderSettings::default()` for epaint too, and epaint's glyph rasteriser never calls `flush()`. It comes
   back the day epaint does.
 
-A changed frame costs about 16 ms for a four-lane board of twenty-four cards over 1400 by 900 points, and
-`MAX_SCALE` caps the canvas at 1.5 pixels a point because the decoration is Gaussians and gradients where
-the text — which egui draws at the display's own resolution — is not. `Settings -> Appearance` has a tick
-box that turns the whole thing off, and then the board draws flat at no cost at all.
+**And it misses its own budget, which is said plainly rather than softened.** The budget was a third of a
+frame at sixty a second, about 5 ms. A four-lane board of **twenty-four** cards over 1400 by 900 points
+costs **20.7 ms** on a changed frame — a whole frame, so a drag on a full board runs at something like 40
+a second. The same board with **eight** cards over a 1000 by 700 pane is **7.9 ms**, and the header and the
+rail alone are 2.0: the cards are nearly the whole of it, which is what §9.5 of the design points a sprite
+cache at. `MAX_SCALE` caps the canvas at 1.5 pixels a point because the decoration is Gaussians and
+gradients where the text — which egui draws at the display's own resolution — is not. And
+`Settings -> Appearance` has a tick box that turns the whole thing off, at no cost at all, which is the
+honest bottom of it: the depth is worth the milliseconds or it is not, and the person decides.
+`_agent_output/task-1765-vello-board/vello-cost.txt` is the raw run those numbers come from.
 
 **An inset shadow is clipped to its own shape, and that is not tidiness.**
 `fill_blurred_rounded_rect`'s inverted form paints the *complement* of the blur — opaque outside the
@@ -266,7 +277,17 @@ which is compiled out on a target whose baseline is already above it.
 **A plugin asks for it in three places and any one of them says no**: `ui.chrome = vello` in the manifest,
 checked against `plugins::CHROME` — the fifth registry of that shape after the renderers, the project
 detectors, the debuggers and the UI providers — `UiProvider::draws_chrome`, and the `plugins.chrome`
-setting. A provider that draws only with `egui` costs no pixmap, no rasterisation and no texture.
+setting. A provider that draws only with `egui` costs no pixmap, no rasterisation and no texture. The
+**name** is what `Surfaces::chrome_for` answers with rather than a yes, so the day a second renderer is
+added to `CHROME` the choice is already a choice; and `ui.chrome` on a plugin that is not a `ui` plugin is
+refused, because a renderer with no pane to draw is a line that would do nothing silently.
+
+**The board's own furniture came out of the reference too**, and two pieces of it are worth knowing about.
+It has a **rail** of its own down the left — four icon buttons, one a view, the chosen one lit — which is
+not `components::activity_bar`: that rail is on the window's edge and belongs to the window, and a plugin
+adding entries to it would be a plugin deciding what the window's furniture is. And the rail is inset
+**16** points where everything else is inset 8, because a raised surface's shadow reaches about 24 and the
+canvas is cut to the pane: at 8 the rail's own shadow was clipped and it read as a strip stuck to the side.
 
 ## The look is written down, and a new control is measured against it
 

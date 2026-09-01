@@ -704,6 +704,48 @@ fn arrow_head(painter: &egui::Painter, tip: Pos2, direction: f32, color: Color32
     ));
 }
 
+/// A stack of rows of decreasing width: a list of things waiting, which is what a backlog is.
+pub fn stack(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    for (row, width) in [(-4.0_f32, 6.0_f32), (0.0, 5.0), (4.0, 3.5)] {
+        painter.line_segment(
+            [Pos2::new(centre.x - width, centre.y + row), Pos2::new(centre.x + width, centre.y + row)],
+            Stroke::new(1.6, color),
+        );
+    }
+}
+
+/// A diamond, which is what the reference board marks its epics with.
+///
+/// An outline rather than a filled shape, so it reads at the same weight as the tick and the stack beside
+/// it — a solid lozenge at this size is a blob.
+pub fn diamond(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    let reach = 5.5;
+    let points = [
+        Pos2::new(centre.x, centre.y - reach),
+        Pos2::new(centre.x + reach, centre.y),
+        Pos2::new(centre.x, centre.y + reach),
+        Pos2::new(centre.x - reach, centre.y),
+    ];
+    for pair in 0..4 {
+        painter.line_segment([points[pair], points[(pair + 1) % 4]], Stroke::new(1.6, color));
+    }
+}
+
+/// A speech mark: a small rounded box with a tail, which is what a comment count is drawn beside.
+pub fn comment(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    let box_rect = Rect::from_center_size(Pos2::new(centre.x, centre.y - 1.0), egui::Vec2::new(11.0, 8.0));
+    painter.rect_stroke(
+        box_rect,
+        CornerRadius::same(2),
+        Stroke::new(1.3, color),
+        egui::StrokeKind::Inside,
+    );
+    painter.line_segment(
+        [Pos2::new(centre.x - 2.0, box_rect.max.y), Pos2::new(centre.x - 3.5, box_rect.max.y + 3.0)],
+        Stroke::new(1.3, color),
+    );
+}
+
 /// The four columns of a task board, which is what `pane.icon = board` draws.
 ///
 /// Drawn rather than lettered, which is the rule `design/style-guide.md` sets for every icon here: a
