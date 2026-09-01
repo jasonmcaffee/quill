@@ -83,22 +83,39 @@ reachable in practice.
 
 ## Finishing a task means releasing it
 
-**When the work is done and verified, run `pwsh tools/release.ps1`.** Patch by default, `-Part minor`
-for a feature. It bumps the version in `Cargo.toml`, rebuilds — which is what moves the build date
-the About box shows — reinstalls Quill on this machine, tags `v<version>`, pushes, and publishes the
-GitHub release with the installer attached. Commit the task's own work first; the script refuses to
-run on a dirty checkout, and the version bump is a commit of its own so the history stays greppable
-by ticket.
+**When the work is done and verified, run the release. Do not ask first — run it.** On macOS and
+Linux that is `bash tools/release.sh`, and on Windows `pwsh tools/release.ps1`. Patch by default,
+`--part minor` (`-Part minor`) for a feature. It bumps the version in `Cargo.toml`, rebuilds — which
+is what moves the build date the About box shows — reinstalls Quill on this machine, tags
+`v<version>`, pushes, and publishes the GitHub release with the installer or the disk image attached.
+Commit the task's own work first; the script refuses to run on a dirty checkout, and the version bump
+is a commit of its own so the history stays greppable by ticket.
 
-This is not paperwork. `Quill -> About Quill` is how a person answers "is this the build with the fix
-in it", and it can only answer that if the build they are running is the build that was just made. A
-task whose change is still sitting in `target/release` is a task that was not finished: the editor on
-the desktop is the old one, and the version on the About box says a number that no longer means
-anything.
+**Asking whether to release is itself the mistake.** A change that is finished and not released leaves
+the editor on the desktop running the old code, so the next thing anybody does is test the previous
+build and report the bug again — which is what happened on `task-28`, three times in one sitting, each
+time against a binary that predated the fix. There is no version of "the work is done" that stops
+before the release. If something is genuinely unfinished, say that instead and do not release; but a
+finished change is released without a question being asked about it.
 
-`tools/release.ps1 -WhatIf` says what it would do and changes nothing. It installs `gh` with winget
-the first time, exactly as the Windows installer script installs Inno Setup, and takes the GitHub
-token from the credential helper git already uses, so there is no second credential to keep.
+This is not paperwork either. `Quill -> About Quill` is how a person answers "is this the build with
+the fix in it", and it can only answer that if the build they are running is the build that was just
+made. A task whose change is still sitting in `target/release` is a task that was not finished: the
+editor on the desktop is the old one, and the version on the About box says a number that no longer
+means anything.
+
+`--dry-run` (`-WhatIf`) says what it would do and changes nothing.
+
+**Two scripts, because one of them could never run on the other platform.** `release.ps1` calls
+`installer\windows\build.ps1`, which needs Inno Setup, and the Mac this is developed on has no `pwsh`
+at all — so for as long as there was only the PowerShell one, "finishing a task means releasing it"
+was an instruction nobody here could follow, and releasing was something asked about rather than done.
+`release.sh` runs `installer/macos/build.sh --install`, keeps the image in `releases/`, and publishes
+through two `curl` calls to `api.github.com` rather than through `gh`: `gh` is not on this machine and
+neither is homebrew, and the token `git credential fill` already holds for github.com is the one that
+makes `git push` work, so a machine that can push can release with nothing new installed and no second
+credential to keep. `GH_TOKEN` wins when it is set. The Windows script installs `gh` with winget the
+first time, exactly as the Windows installer script installs Inno Setup.
 
 ## What the crates are for
 
@@ -2598,7 +2615,9 @@ trade that away to be a shade nearer a screenshot.
   time, and the one-command release: why the date is not a hand-written number, not the executable's
   mtime and not a dates crate, and why the instruction is a script rather than a paragraph.
 - `installer/README.md` — how to build an installer, on either platform.
-- `tools/release.ps1` — the one command that releases: bump, build, install, tag, push, publish.
+- `tools/release.sh` and `tools/release.ps1` — the one command that releases, on macOS and Linux and on
+  Windows: bump, build, install, tag, push, publish. Run it whenever a change is finished, without
+  asking.
 - `tasks/improvements.md` — the ask that the settings window, the panes, the terminal and the menus came
   from.
 
