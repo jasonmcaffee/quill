@@ -72,6 +72,10 @@ fn rows(chat: &mut AgentChat, ui: &mut egui::Ui, look: &Look<'_>) -> Vec<Request
     );
     let mut requests = Vec::new();
     let mut pen = inner.top();
+    // **Asked once a frame at most, and cached for five seconds under that.** For a program row the
+    // answer is a walk of `PATH`; asked once a row once a frame it was a directory listing inside the
+    // draw. See `AgentChat::readiness`.
+    let refusals = chat.readiness();
     let mut configuration = chat.configuration().clone();
     let mut changed = false;
     let chosen = configuration
@@ -101,7 +105,9 @@ fn rows(chat: &mut AgentChat, ui: &mut egui::Ui, look: &Look<'_>) -> Vec<Request
                 .max_rect(area)
                 .id_salt(("agent-chat-endpoint", index)),
         );
-        let (height, act) = endpoint(&mut row, look, inner, pen, &mut configuration, index, &chosen);
+        let why_not = refusals.get(index).cloned().flatten();
+        let (height, act) =
+            endpoint(&mut row, look, inner, pen, &mut configuration, index, &chosen, why_not);
         pen += height;
         match act {
             Some(Act::Remove) => removing = Some(index),
@@ -253,6 +259,9 @@ fn rows(chat: &mut AgentChat, ui: &mut egui::Ui, look: &Look<'_>) -> Vec<Request
 
     if changed {
         *chat.configuration_mut() = configuration;
+        // A row that was just edited may name a different program, so the next frame asks again
+        // rather than repeating what it said about the one it used to name.
+        chat.readiness_may_have_changed();
         if let Err(problem) = chat.save_the_configuration() {
             requests.push(Request::Message(problem));
         }
@@ -292,15 +301,19 @@ fn permission_row(
         }
         left += 90.0;
     }
+    // **What each agent's answer to this really is**, because the two are not the same strength and
+    // one label over both would promise something `claude` does not enforce: `codex` is put in an
+    // operating system sandbox, and `claude` is told a policy about its own tools while its process,
+    // its hooks and its plugins are not limited at all.
     let said = match configuration.permission {
         quill_chat::Permission::Read => {
-            "Read the project and answer. It will not edit a file or run a command."
+            "Look and answer, changing nothing. `codex` runs in a read-only sandbox; `claude` refuses              any tool of its own that would change something."
         }
         quill_chat::Permission::Edit => {
-            "Read, and edit files in the project this window has open. Nothing outside it."
+            "Change files in the project this window has open. `codex` is sandboxed to it; `claude`              accepts its own edits without asking."
         }
         quill_chat::Permission::Full => {
-            "Anything, with no sandbox: edit any file and run any command, without asking."
+            "Anything at all: edit any file and run any command, with no sandbox and nothing to ask."
         }
     };
     crate::components::modal::note(ui, area, top + FIELD + 4.0, said)
@@ -325,6 +338,7 @@ fn endpoint(
     configuration: &mut crate::services::agent_chat::Configuration,
     index: usize,
     chosen: &str,
+    why_not: Option<String>,
 ) -> (f32, Option<Act>) {
     let mut act = None;
     let mut pen = top + 4.0;
@@ -444,7 +458,7 @@ fn endpoint(
     // Whether it can be reached, and never the key itself. `Provider::why_not` is the same sentence
     // the composer shows when a send is refused, so the page and the pane cannot disagree.
     let provider = &configuration.providers[index];
-    let (said, tint) = match provider.why_not() {
+    let (said, tint) = match why_not {
         Some(why) => (why, color::CLOSE),
         None => (
             match (provider.is_a_program(), provider.wants_a_key()) {

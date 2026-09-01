@@ -83,9 +83,10 @@ pub struct Running(Mutex<Option<Child>>);
 impl Running {
     /// Kill whatever is running, if anything is.
     ///
-    /// The pipes go with it, so a thread asleep in a read on the agent's output wakes at once with
-    /// the end of its input — which is the half that matters, and the reason this is not simply a
-    /// flag.
+    /// The `Child` and its pipe handles are kept rather than dropped, because the thread that started
+    /// the turn is the one that waits for it. What ends the blocked read is the **process**: a dead
+    /// child closes its own end of the pipe, so the reader gets the end of its input at once — which
+    /// is the half that matters, and the reason this is not simply a flag.
     pub fn stop(&self) {
         if let Ok(mut held) = self.0.lock() {
             if let Some(child) = held.as_mut() {
@@ -136,14 +137,22 @@ pub struct Ask {
 /// Three values rather than each agent's own vocabulary, because a person choosing between "read
 /// only" and "may edit" should not have to know that one of them calls it a sandbox and the other a
 /// permission mode.
+///
+/// **The two are not the same strength, and saying so is the honest part.** Codex takes an operating
+/// system sandbox: at `read` its process cannot write, whatever it decides to do. Claude Code takes
+/// a *permission mode*: at `read` it refuses any tool that would change something, which is its own
+/// policy rather than the machine's, and its hooks, plugins and MCP servers still start. So one is
+/// enforced underneath the agent and the other by it. The values mean the same intent in both, and
+/// `Settings -> Agent-Chat` says which kind of guarantee each row gets rather than implying they are
+/// one thing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Permission {
-    /// Read and think, change nothing. Both agents' own safest setting, and the default.
+    /// Look, and change nothing. Each agent's own safest setting, and the default.
     #[default]
     Read,
-    /// May edit files in the project it was started in.
+    /// May change files in the project it was started in.
     Edit,
-    /// May do anything, including run commands with no sandbox.
+    /// May do anything, including run commands with no sandbox at all.
     Full,
 }
 
@@ -329,32 +338,12 @@ pub fn run(
             return;
         }
     };
-    // Written and then **closed**, which is the half that matters: both agents read until the end
-    // of their input, so a pipe left open is an agent that waits for ever.
-    if let Some(mut input) = child.stdin.take() {
-        use std::io::Write;
-        let prompt = prompt_for(provider, ask);
-        if let Err(problem) = input.write_all(prompt.as_bytes()).and_then(|()| input.flush()) {
-            end(&mut child);
-            on_reply(Reply::Failed(format!(
-                "{} would not take the question: {problem}",
-                provider.command.trim()
-            )));
-            return;
-        }
-    }
     let Some(output) = child.stdout.take() else {
         let _ = child.kill();
         on_reply(Reply::Failed("the agent gave nothing to read.".to_owned()));
         return;
     };
-    // **Handed over before a byte is read**, so a stop that arrives while the first line is still
-    // coming has something to kill. `stopping` was already set by then, so a turn stopped in that
-    // instant is killed here as well rather than being started and left.
-    if stopping.load(Ordering::Relaxed) {
-        end(&mut child);
-        return;
-    }
+    let input = child.stdin.take();
     // **Read on a thread of its own**, because a program that says nothing on standard error must
     // not fill a pipe nobody is emptying and stop writing to the one that is being read. What it
     // says is kept for the refusal, which is `quill-git`'s rule about git's own stderr.
@@ -371,10 +360,45 @@ pub fn run(
         })
     });
 
-    let said = said;
+    // **Held before anything that can block**, which is the order the writing below depends on.
+    // The prompt is written to a pipe, and a child that has stopped reading — or that is filling a
+    // pipe nobody is draining — makes that write block; with the child held only afterwards,
+    // `Client::stop` found nothing to kill and the worker and the process both leaked. The stderr
+    // reader above is started first for the other half of the same reason.
+    //
+    // Standard output is deliberately **not** drained during the write, which would need a third
+    // thread. Both agents read their input to its end before they say anything, and a prompt is a
+    // few kilobytes against a pipe buffer measured in the same units — so the write does not block
+    // in practice, and if a future agent made it block, the child is held and stopping kills it.
+    running.hold(child);
+    if stopping.load(Ordering::Relaxed) {
+        running.stop();
+        let _ = running.take().map(|mut child| child.wait());
+        return;
+    }
+    // Written and then **closed**, which is the half that matters: both agents read until the end
+    // of their input, so a pipe left open is an agent that waits for ever.
+    if let Some(mut input) = input {
+        use std::io::Write;
+        let prompt = prompt_for(provider, ask);
+        if let Err(problem) = input.write_all(prompt.as_bytes()).and_then(|()| input.flush()) {
+            let killed = stopping.load(Ordering::Relaxed);
+            if let Some(mut child) = running.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            // A write that failed because somebody pressed stop is not something to report.
+            if !killed {
+                on_reply(Reply::Failed(format!(
+                    "{} would not take the question: {problem}",
+                    provider.command.trim()
+                )));
+            }
+            return;
+        }
+    }
     let mut decoder = Decoder::new(provider.wire);
     let mut carried_on = true;
-    running.hold(child);
     for line in BufReader::new(output).lines() {
         if stopping.load(Ordering::Relaxed) {
             carried_on = false;
@@ -409,12 +433,18 @@ pub fn run(
     // **A turn that ended cleanly has already said so**, through its own last event. What is left
     // here is a program that stopped without one, and the honest thing to report is what it said on
     // standard error — which is the only place `claude` and `codex` put a start-up failure at all.
+    //
+    // **One failure, not two.** `Decoder::finish` says the stream ended mid-answer and the block
+    // below says the program stopped without finishing; both fired, so a `codex` that exited with an
+    // error reported an interrupted stream *and* an exit code, one under the other.
+    let mut already_failed = false;
     for reply in decoder.finish() {
+        already_failed |= matches!(reply, Reply::Failed(_));
         if !on_reply(reply) {
             return;
         }
     }
-    if !decoder.ended {
+    if !decoder.ended && !already_failed {
         let ended = match status {
             Ok(status) if status.success() => "the agent stopped without finishing its answer.".to_owned(),
             Ok(status) => format!(
@@ -446,8 +476,12 @@ pub struct Decoder {
     wire: Wire,
     /// The Anthropic decoder, for the events `claude` nests inside its own envelope.
     inner: crate::wire::Decoder,
-    /// How much of each Codex item has been sent on, by item id.
-    sent: Vec<(String, usize)>,
+    /// What has already been sent on for each Codex item, by item id.
+    ///
+    /// The **text itself** rather than how many bytes of it there were: an item is a whole snapshot
+    /// each time, and a length alone assumes every snapshot starts with the last one. A revision that
+    /// rewrote its own beginning would then have its middle sent as if it were the end.
+    sent: Vec<(String, String)>,
     /// Whether a `result` or a `turn.completed` has been seen, so a child that stops without one is
     /// reported rather than looking like a clean end.
     pub ended: bool,
@@ -485,8 +519,13 @@ impl Decoder {
     }
 
     /// Whatever is still being built when the child has stopped.
+    ///
+    /// **Only Claude Code has an inner decoder to finish.** Codex's events are read here rather than
+    /// nested, so its inner one has seen nothing and finishing it reported an interrupted stream on
+    /// every turn that ended without a `turn.completed` — under the sentence saying the program
+    /// stopped, which is the one that is actually about what happened.
     pub fn finish(&mut self) -> Vec<Reply> {
-        match self.ended {
+        match self.ended || self.wire != Wire::ClaudeCli {
             true => Vec::new(),
             // The Anthropic decoder's own rule: a stream that stopped mid-answer keeps what arrived
             // and says the connection ended before the answer did.
@@ -524,10 +563,16 @@ impl Decoder {
                         out.push(Reply::Started { model: model.to_owned() });
                     }
                 }
-                out.extend(self.inner.event(&crate::sse::Event {
+                let inner = self.inner.event(&crate::sse::Event {
                     name: event["type"].as_str().unwrap_or_default().to_owned(),
                     data: event.to_string(),
-                }));
+                });
+                // **The usage of a nested message is thrown away**, because the envelope's own
+                // `result` reports the whole turn and one turn is what the pane shows. Kept, an
+                // ordinary one-message answer was banked twice — once from the `message_delta` in
+                // here and once from the `result` outside — and a tool-using turn banked every
+                // assistant message and then the sum of all of them again.
+                out.extend(inner.into_iter().filter(|reply| !matches!(reply, Reply::Usage { .. })));
             }
             // **The results of the tools the agent ran itself.** Quill did not run them and does not
             // need to: what it does with them is show them, so the block the pane already draws for
@@ -689,27 +734,29 @@ impl Decoder {
         }
     }
 
-    /// The part of `text` that has not been reported for this item yet, and nothing when it is all
+    /// The part of `text` that has not been reported for this item yet, and nothing when it has all
     /// been.
+    ///
+    /// The already-sent text is compared as a **prefix**, not as a length. When the snapshot grows on
+    /// the front of what was sent — a revision, a shorter value, a reused id — the two have nothing
+    /// to do with each other and the whole of the new one is sent rather than a slice out of its
+    /// middle. It cannot land inside a character either, because the split is at a prefix boundary.
     fn rest_of(&mut self, id: &str, text: &str) -> Option<String> {
         let already = self
             .sent
             .iter()
             .find(|(one, _)| one == id)
-            .map(|(_, at)| *at)
-            .unwrap_or(0);
-        // Shorter than what was already sent means a different item wearing the same id, which
-        // nothing observed does — but taking the whole of it is the answer that cannot panic on a
-        // byte index into the middle of a character.
-        if text.len() <= already {
-            return None;
-        }
-        let rest = match text.is_char_boundary(already) {
-            true => text[already..].to_owned(),
-            false => text.to_owned(),
+            .map(|(_, said)| said.clone())
+            .unwrap_or_default();
+        let rest = match text.strip_prefix(already.as_str()) {
+            Some(rest) => rest.to_owned(),
+            None => text.to_owned(),
         };
-        self.remember(id, text.len());
-        Some(rest)
+        self.remember(id, text.to_owned());
+        match rest.is_empty() {
+            true => None,
+            false => Some(rest),
+        }
     }
 
     /// Whether this item has not been seen before, remembering that it has now.
@@ -717,14 +764,14 @@ impl Decoder {
         if self.sent.iter().any(|(one, _)| one == id) {
             return false;
         }
-        self.remember(id, 0);
+        self.remember(id, String::new());
         true
     }
 
-    fn remember(&mut self, id: &str, at: usize) {
+    fn remember(&mut self, id: &str, said: String) {
         match self.sent.iter_mut().find(|(one, _)| one == id) {
-            Some(entry) => entry.1 = at,
-            None => self.sent.push((id.to_owned(), at)),
+            Some(entry) => entry.1 = said,
+            None => self.sent.push((id.to_owned(), said)),
         }
     }
 }
@@ -755,10 +802,20 @@ pub fn session_of(chat: &Conversation) -> String {
 /// Where a picture is written so an agent can be given its path.
 ///
 /// Both agents take an attachment as a file, and the pane holds one as bytes — so it is written to
-/// the temporary folder under a name that says what it is. Written once per turn and left there:
-/// deleting it while the agent is still reading it is a race, and the operating system clears its
-/// own temporary folder.
+/// the temporary folder under a name that says what it is. Left there once written: deleting it
+/// while the agent is still reading it is a race, and the operating system clears its own temporary
+/// folder.
+///
+/// **A fresh file every time, created rather than written over.** The name carries a counter as well
+/// as the process, because two attachments called `shot.png` are an ordinary thing and the first
+/// version gave them one path — so one overwrote the other, and a second turn overwrote a file the
+/// first agent might still be reading. `create_new` is the other half: a predictable path in a
+/// folder every account can write is a path something else can leave a symbolic link at, and
+/// `File::create` would follow it. Creating fails on anything already there, so the counter moves on.
 pub fn write_a_picture(folder: &Path, name: &str, bytes: &[u8]) -> Option<std::path::PathBuf> {
+    use std::io::Write;
+    use std::sync::atomic::AtomicU64;
+    static NEXT: AtomicU64 = AtomicU64::new(0);
     let safe: String = name
         .chars()
         .map(|one| match one.is_ascii_alphanumeric() || matches!(one, '.' | '-' | '_') {
@@ -766,9 +823,20 @@ pub fn write_a_picture(folder: &Path, name: &str, bytes: &[u8]) -> Option<std::p
             false => '-',
         })
         .collect();
-    let path = folder.join(format!("quill-chat-{}-{safe}", std::process::id()));
-    std::fs::write(&path, bytes).ok()?;
-    Some(path)
+    for _ in 0..64 {
+        let at = NEXT.fetch_add(1, Ordering::Relaxed);
+        let path = folder.join(format!("quill-chat-{}-{at}-{safe}", std::process::id()));
+        let made = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path);
+        if let Ok(mut file) = made {
+            file.write_all(bytes).ok()?;
+            file.flush().ok()?;
+            return Some(path);
+        }
+    }
+    None
 }
 
 #[cfg(test)]

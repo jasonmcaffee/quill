@@ -13,11 +13,16 @@
 //! arrangement and it is what makes "send, change your mind, send again" work with no timer
 //! anywhere.
 //!
-//! ## Stopping is dropping
+//! ## Stopping is dropping, or killing
 //!
-//! A flag is checked between reads; when it is set the thread stops reading, the body is dropped and
-//! the connection closes. There is no request to a server to cancel — HTTP has no such thing, and
-//! every one of these APIs treats a closed connection as a cancellation.
+//! For an address, a flag is checked between reads; when it is set the thread stops reading, the body
+//! is dropped and the connection closes. There is no request to a server to cancel — HTTP has no such
+//! thing, and every one of these APIs treats a closed connection as a cancellation.
+//!
+//! For a program the flag is not enough, because the thread reading one is asleep in a read with no
+//! timeout and will not look at it until the agent speaks again. So the child is **killed**, through
+//! the `agent::Running` handle this client holds; the read then ends because the pipe has closed.
+//! See `agent.rs`.
 //!
 //! ## The timeouts are two, not one
 //!
@@ -183,14 +188,14 @@ impl Client {
             .name(format!("quill-chat agent {generation}"))
             .spawn(move || {
                 let say = |reply: Reply| {
-                    // **A session id is kept even after the turn has been overtaken.** Everything
-                    // else a passed generation says is dropped where it is made, but the agent holds
-                    // that session whether or not Quill waited for the answer, and losing it would
-                    // start a new conversation in the agent on the next question.
-                    let keep = matches!(reply, Reply::Session(_));
-                    if !keep
-                        && (newest.load(Ordering::SeqCst) != generation
-                            || stopping.load(Ordering::SeqCst))
+                    // **A session id is dropped with everything else when the turn is overtaken.**
+                    // An earlier version kept it, on the grounds that the agent holds that session
+                    // whether or not this window waited — but `Session::reply` writes it into
+                    // *whichever conversation is current*, so an abandoned turn could attach its
+                    // agent session to a conversation that had nothing to do with it and the next
+                    // question would resume the wrong thread. The id arrives in the first few bytes
+                    // of a turn, before anything can have overtaken it, so nothing real is lost.
+                    if newest.load(Ordering::SeqCst) != generation || stopping.load(Ordering::SeqCst)
                     {
                         return false;
                     }
@@ -224,11 +229,7 @@ impl Client {
         let generation = self.generation();
         self.from
             .try_iter()
-            // A session id is kept whichever turn it came from, for the reason `ask` gives: the
-            // agent holds that session whether or not this window waited for the answer.
-            .filter(|arrived| {
-                arrived.generation == generation || matches!(arrived.reply, Reply::Session(_))
-            })
+            .filter(|arrived| arrived.generation == generation)
             .map(|arrived| arrived.reply)
             .collect()
     }

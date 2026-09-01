@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"01a05d36-e5d2-7ce3-97c5-f6af9f332bcd"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"hello from the cli."}}
+{"type":"turn.completed","usage":{"input_tokens":21429,"cached_input_tokens":11008,"cache_write_input_tokens":0,"output_tokens":9,"reasoning_output_tokens":0}}

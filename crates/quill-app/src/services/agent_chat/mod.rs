@@ -47,6 +47,12 @@ pub const DEFAULT_HISTORY: usize = 20;
 /// `ask_for_the_tools` sends — those parse as a `usize` and this does not.
 pub const CLIPBOARD: &str = "clipboard";
 
+/// How long an endpoint's readiness is believed for.
+///
+/// `services::debuggers::ADAPTER_SEARCH_TTL`'s number and its reason: the answer comes from reading
+/// directories, and the commonest thing to happen next is an install finishing.
+pub const READINESS: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// The plugin's own settings, in `plugins/agent-chat/settings.conf` beside its manifest.
 ///
 /// Read by the same `store::Values` the window's own settings are read by, in the same
@@ -430,6 +436,9 @@ pub struct AgentChat {
     pub ui: PaneState,
     /// Whether anything changed since the conversation was last written down.
     dirty: bool,
+    /// Why each endpoint cannot answer, and when that was last worked out. See [`AgentChat::readiness`].
+    readiness: Vec<Option<String>>,
+    readiness_taken: Option<std::time::Instant>,
 }
 
 impl std::fmt::Debug for AgentChat {
@@ -478,6 +487,8 @@ impl AgentChat {
                 ..PaneState::default()
             },
             dirty: false,
+            readiness: Vec::new(),
+            readiness_taken: None,
         }
     }
 
@@ -541,8 +552,40 @@ impl AgentChat {
         self.configuration.write(folder)
     }
 
+    /// Why each endpoint cannot answer, or `None` where it can — worked out at most every
+    /// [`READINESS`] rather than every frame.
+    ///
+    /// **Because for a program the question is a walk of `PATH`.** `Provider::why_not` reads
+    /// `PATHEXT`, builds a candidate name for each extension and asks the file system about each one
+    /// in each folder; the settings page asked it once a row once a frame, which is `task-1666`'s
+    /// rule about a frame costing what is on the screen broken by a directory listing.
+    pub fn readiness(&mut self) -> Vec<Option<String>> {
+        let stale = self
+            .readiness_taken
+            .is_none_or(|at| at.elapsed() >= READINESS);
+        if stale || self.readiness.len() != self.configuration.providers.len() {
+            self.readiness = self
+                .configuration
+                .providers
+                .iter()
+                .map(Provider::why_not)
+                .collect();
+            self.readiness_taken = Some(std::time::Instant::now());
+        }
+        self.readiness.clone()
+    }
+
+    /// Ask again on the next frame, because the answer may have changed.
+    ///
+    /// Called where a row is edited: a program name being typed would otherwise go on saying `Ready`
+    /// about the program it used to name for as long as five seconds.
+    pub fn readiness_may_have_changed(&mut self) {
+        self.readiness_taken = None;
+    }
+
     /// Start a new conversation, keeping the one that was open.
     pub fn new_conversation(&mut self) {
+        self.stop_before_switching();
         self.write_the_conversation();
         let provider = self.provider().map(|one| one.name.clone()).unwrap_or_default();
         let id = self.store.new_id();
@@ -558,6 +601,7 @@ impl AgentChat {
         let Some(chat) = self.store.read(id) else {
             return Err(format!("there is no conversation called `{id}`."));
         };
+        self.stop_before_switching();
         self.write_the_conversation();
         if !chat.provider.is_empty() {
             let _ = self.configuration.choose(&chat.provider);
@@ -795,6 +839,22 @@ impl AgentChat {
             lines.push(self.configuration.system.trim().to_owned());
         }
         lines.join("\n")
+    }
+
+    /// End the turn in flight before the conversation under it is replaced.
+    ///
+    /// **Without this every later word went into the wrong conversation.** The client's generation
+    /// was still current, so the text, the tool results, the usage, the failure and the session id of
+    /// the turn that was running were all applied to whichever conversation had just been opened —
+    /// and then written to disk over it. It is [`stop`](Self::stop) rather than a flag because the
+    /// answer belongs to the conversation being left: it is finished there, marked `stopped`, and
+    /// written down with what had arrived.
+    fn stop_before_switching(&mut self) {
+        if self.session.is_busy() {
+            self.stop();
+        }
+        self.outstanding.clear();
+        self.calls = 0;
     }
 
     /// Stop whatever is arriving, keeping it.

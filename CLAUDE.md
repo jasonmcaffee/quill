@@ -201,11 +201,15 @@ conversation, the turn state machine and the thread a turn runs on. Its tests ru
 **scripted server** — a `TcpListener` on `127.0.0.1:0` replaying fixed bytes in chunked writes — which
 is `quill-dap`'s scripted adapters with a socket instead of a pipe, and it is what makes "the whole
 client, end to end" a unit test. The framing is fed the same stream split at every byte boundary and
-has to produce the same events. The two command-line shapes are tested the same way, against recorded
-JSONL from real runs of both agents.
+has to produce the same events. The two command-line shapes are tested the same way, against the
+recorded JSONL of real runs of both agents in `crates/quill-chat/tests/streams/` — which is where the
+awkward parts are, because they are the parts nobody would think to write out by hand: two assistant
+messages in one tool-using turn, per-message usage under an aggregate `result`, and Codex items that
+arrive twice.
 
 **The two rows the ticket names run the agent already installed on this machine** —
-*"connection to Claude and codex etc through cli"* — and `services/agent.rs` is that transport. It is
+*"connection to Claude and codex etc through cli"* — and `quill-chat`'s `agent.rs` is that
+transport. It is
 the better half of the feature rather than a cheaper one, and the four reasons are worth keeping:
 
 - **Quill holds no key at all.** Nothing to put in a settings file, nothing to read out of an
@@ -226,7 +230,12 @@ the better half of the feature rather than a cheaper one, and the four reasons a
 `chat.permission` — `read`, `edit` or `full` — is what an agent may do, in one vocabulary rather than
 each agent's own: `--permission-mode manual/acceptEdits/bypassPermissions` against
 `--sandbox read-only/workspace-write` and `--dangerously-bypass-approvals-and-sandbox`. It is a
-setting rather than a prompt because an agent run with `--print` cannot stop and ask.
+setting rather than a prompt because an agent run with `--print` cannot stop and ask. **The two are
+not the same strength and the page says so**: Codex takes an operating system sandbox, so at `read`
+its process cannot write whatever it decides; Claude Code takes a permission *mode*, so at `read` it
+refuses any tool that would change something — its own policy rather than the machine's, with its
+hooks, plugins and MCP servers still starting. One value, two guarantees, and pretending otherwise
+would be the pane promising something it does not enforce.
 
 **Four things about running a program that were each measured on a real one.** The prompt goes down
 **standard input**, not on the command line: npm installs `codex` on Windows as `codex.cmd`, and
@@ -238,7 +247,12 @@ application"* on it. **`codex exec resume` has no `--sandbox`** though `codex ex
 sandbox is named there as `-c sandbox_mode="…"`. And **stopping kills the child through a shared
 handle**, because the thread reading an agent is asleep in a read with no timeout and will not look at
 a flag until the next line arrives — `stop` put the pane back to `finished` at once and left the agent
-running.
+running. The child is held *before* the prompt is written, because writing to a pipe can block too.
+
+**Switching conversation ends the turn under it**, which is not tidiness either: the client's
+generation was still current, so every word, tool result, usage figure and session id of the turn
+still running was applied to whichever conversation had just been opened, and then written to disk
+over it.
 
 **Five shapes, and `claude-cli` wraps a wire Quill already read.** Claude Code's
 `--output-format stream-json` nests **the Anthropic wire verbatim** inside a `stream_event` envelope —

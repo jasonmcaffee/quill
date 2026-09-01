@@ -149,12 +149,27 @@ impl Session {
             // of something nobody asked for.
             Reply::ToolAnswer { id, answer, failed } => {
                 self.state = State::Streaming;
-                for message in self.chat.messages.iter_mut().rev() {
-                    if let Some(call) = message.tools.iter_mut().find(|call| call.id == id) {
-                        call.answer = Some(answer);
-                        call.failed = failed;
-                        break;
-                    }
+                // **The newest call of that id that is still running**, not the first one with the
+                // name. An agent should not reuse an id and one does — `task-1767` records the same
+                // thing about a server two calls further down this file — and filling in the first
+                // match twice would leave the second running for ever, which is a turn that never
+                // ends. Backwards through the messages and backwards within one, so "newest" means
+                // the same thing at both levels.
+                let answered = self
+                    .chat
+                    .messages
+                    .iter_mut()
+                    .rev()
+                    .find_map(|message| {
+                        message
+                            .tools
+                            .iter_mut()
+                            .rev()
+                            .find(|call| call.id == id && call.is_running())
+                    });
+                if let Some(call) = answered {
+                    call.answer = Some(answer);
+                    call.failed = failed;
                 }
             }
             Reply::Usage { input, output } => {
@@ -222,9 +237,10 @@ impl Session {
 
     /// Stop where it is, keeping whatever had arrived.
     ///
-    /// There is no request to a server: HTTP has no cancellation and every one of these APIs treats
-    /// a closed connection as one. What this does is record that the answer is short because
-    /// somebody said so, rather than because the model had finished.
+    /// **This records; `Client::stop` does.** Nothing is sent: HTTP has no cancellation and every one
+    /// of these APIs treats a closed connection as one, and a command-line agent has no protocol
+    /// message for it either — there the child is killed. What this does is record that the answer is
+    /// short because somebody said so, rather than because the model had finished.
     pub fn stop(&mut self) {
         if let Some(message) = self.answering.and_then(|id| self.message_mut(id)) {
             message.finish = Some("stopped".to_owned());

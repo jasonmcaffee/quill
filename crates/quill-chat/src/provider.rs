@@ -41,7 +41,8 @@
 /// ticket names: *"connection to Claude and codex etc through cli"*. Claude Code's
 /// `--output-format stream-json` is the **Anthropic wire verbatim**, nested one level down inside a
 /// `stream_event` envelope, so the decoder that already reads `/v1/messages` reads it with a wrapper
-/// and nothing more — measured against a real run, recorded in `tests/streams/claude-cli.jsonl`.
+/// and nothing more — measured against real runs, recorded in `tests/streams/claude-cli.jsonl`
+/// and `claude-cli-tool.jsonl` and replayed by `tests/agent_streams.rs`.
 /// Codex's `--json` is a different model again: a thread of **items** that are started, updated and
 /// completed, where a shell command the agent ran is an item beside the words it said.
 ///
@@ -368,7 +369,7 @@ pub fn program(name: &str) -> Option<std::path::PathBuf> {
     let looks_like_a_path = name.contains('/') || name.contains(std::path::MAIN_SEPARATOR);
     if looks_like_a_path {
         let path = std::path::PathBuf::from(name);
-        return path.is_file().then_some(path);
+        return path.is_file().then(|| absolute(path));
     }
     let named_with_an_extension = std::path::Path::new(name).extension().is_some();
     let extensions: Vec<String> = match cfg!(windows) && !named_with_an_extension {
@@ -388,15 +389,34 @@ pub fn program(name: &str) -> Option<std::path::PathBuf> {
         for extension in &extensions {
             let with = folder.join(format!("{name}{extension}"));
             if with.is_file() {
-                return Some(with);
+                return Some(absolute(with));
             }
         }
         let bare = folder.join(name);
         if bare_is_a_program && bare.is_file() {
-            return Some(bare);
+            return Some(absolute(bare));
         }
     }
     None
+}
+
+/// `path` made absolute against the folder this process is in, if it is not already.
+///
+/// **Because the child is started somewhere else.** A relative program — one typed into the settings
+/// page as `.\agent.exe`, or found through a relative entry in `PATH` — is checked against Quill's
+/// own current directory and then handed to a `Command` whose working directory has been set to the
+/// project. It would resolve against the project instead, which is a different file, and on a folder
+/// somebody else can write is a different file somebody else chose. Not `canonicalize`, which on
+/// Windows answers with a verbatim `\\?\` path — the exact thing `quill_terminal::paths::plain`
+/// exists to strip back off again.
+fn absolute(path: std::path::PathBuf) -> std::path::PathBuf {
+    if path.is_absolute() {
+        return path;
+    }
+    match std::env::current_dir() {
+        Ok(here) => here.join(path),
+        Err(_) => path,
+    }
 }
 
 /// The keychain entry called `name`, on a platform that has a keychain.
