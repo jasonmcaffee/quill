@@ -247,10 +247,11 @@ pub fn show(
     pressed
 }
 
-/// The chevron that says how urgent a ticket is.
+/// The chevron that says how urgent a ticket is, when it is urgent at all.
 ///
-/// Three drawn marks rather than three words, because a card in a 300 point lane has no room for
-/// `High priority` and the mark is what the design image shows.
+/// A drawn mark rather than a word, because a card in a 300 point lane has no room for `High priority`
+/// and a mark is what the reference draws. Two of them: a doubled chevron for high and a single one for
+/// medium, both pointing up. Low draws nothing — see below.
 fn priority(painter: &egui::Painter, at: Pos2, priority: Priority, look: &Look<'_>) {
     // **Up for urgent, down for not, and low draws nothing at all.**
     //
