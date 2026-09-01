@@ -259,10 +259,15 @@ struct Outstanding {
 /// rule and this is where the little it has to remember lives.
 #[derive(Default)]
 pub struct PaneState {
-    /// How far down the conversation is scrolled.
-    pub scroll: f32,
-    /// Whether the view is following the answer, which stops the moment somebody scrolls up.
-    pub follow: bool,
+    /// Put the conversation at the bottom on the next frame, and then stop.
+    ///
+    /// **The scrolling itself is `egui`'s.** `ScrollArea::stick_to_bottom` follows an answer while the
+    /// view is already at the bottom and stops the moment somebody scrolls up, which is
+    /// `ChatPage.tsx`'s own `shouldAutoScroll` rule and is better than reimplementing it. What egui
+    /// will not do is go *back* to the bottom once somebody has scrolled away, so sending, opening a
+    /// conversation and starting a new one each ask for it once — the one-shot shape
+    /// `QuillApp::follow_the_open_file` already uses.
+    pub jump_to_bottom: bool,
     /// Whether the history list is open over the conversation.
     pub history_open: bool,
     /// Whether the endpoint list is open.
@@ -271,8 +276,6 @@ pub struct PaneState {
     pub opened_tools: Vec<String>,
     /// Which message's thinking has been opened.
     pub opened_thinking: Vec<u64>,
-    /// How tall the conversation came out last frame, so the scroll can be clamped.
-    pub content_height: f32,
     /// The markdown each message came to, kept between frames and keyed on the message.
     ///
     /// Rendering and laying out is the expensive half and the source of a finished message never
@@ -309,7 +312,7 @@ impl std::fmt::Debug for PaneState {
     /// screenful of glyph positions. What is printed is what a failing assertion wants to see.
     fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         out.debug_struct("PaneState")
-            .field("follow", &self.follow)
+            .field("jump_to_bottom", &self.jump_to_bottom)
             .field("history_open", &self.history_open)
             .field("providers_open", &self.providers_open)
             .field("opened_tools", &self.opened_tools)
@@ -387,7 +390,7 @@ impl AgentChat {
             history: Vec::new(),
             problem: None,
             ui: PaneState {
-                follow: true,
+                jump_to_bottom: true,
                 ..PaneState::default()
             },
             dirty: false,
@@ -462,8 +465,7 @@ impl AgentChat {
         self.session = Session::new(Conversation::new(id, provider));
         self.attachments.clear();
         self.problem = None;
-        self.ui.scroll = 0.0;
-        self.ui.follow = true;
+        self.ui.jump_to_bottom = true;
         self.refresh_the_history();
     }
 
@@ -478,8 +480,7 @@ impl AgentChat {
         }
         self.session = Session::new(chat);
         self.problem = None;
-        self.ui.scroll = f32::MAX;
-        self.ui.follow = true;
+        self.ui.jump_to_bottom = true;
         Ok(())
     }
 
@@ -559,7 +560,7 @@ impl AgentChat {
         self.session.chat.provider = provider.name.clone();
         let id = self.session.ask(message);
         self.problem = None;
-        self.ui.follow = true;
+        self.ui.jump_to_bottom = true;
         self.dirty = true;
         self.dispatch(&provider);
         Ok(id)
@@ -842,7 +843,7 @@ impl UiProvider for AgentChat {
                     let _ = self.configuration.choose(&chat.provider);
                 }
                 self.session = Session::new(chat);
-                self.ui.scroll = f32::MAX;
+                self.ui.jump_to_bottom = true;
             }
             None => {
                 let id = self.store.new_id();

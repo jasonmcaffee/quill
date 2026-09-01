@@ -232,7 +232,7 @@ pub fn show(
                         ),
                         Vec2::splat(18.0 * scale),
                     );
-                    if crate::components::controls::icon_button(ui, at, "Copy message", icon::comment) {
+                    if crate::components::controls::icon_button(ui, at, "Copy message", icon::copy) {
                         acts.push(Act::Copy(text));
                     }
                 }

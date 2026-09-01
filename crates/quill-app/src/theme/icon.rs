@@ -746,6 +746,24 @@ pub fn comment(painter: &egui::Painter, centre: Pos2, color: Color32) {
     );
 }
 
+/// Two overlapping sheets, which is what a copy button is drawn with.
+///
+/// Drawn rather than lettered, and drawn rather than borrowed: `icon::comment` was standing in for it
+/// and a speech mark does not mean copy — beside a message it means the message.
+pub fn copy(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    let sheet = egui::Vec2::new(7.5, 9.0);
+    // The one behind, offset up and left, drawn first so the front one covers its corner.
+    painter.rect_stroke(
+        Rect::from_center_size(Pos2::new(centre.x - 1.5, centre.y - 1.5), sheet),
+        CornerRadius::same(2),
+        Stroke::new(1.2, color),
+        egui::StrokeKind::Inside,
+    );
+    let front = Rect::from_center_size(Pos2::new(centre.x + 1.5, centre.y + 1.5), sheet);
+    painter.rect_filled(front, CornerRadius::same(2), color.gamma_multiply(0.0));
+    painter.rect_stroke(front, CornerRadius::same(2), Stroke::new(1.4, color), egui::StrokeKind::Inside);
+}
+
 /// A speech bubble with two lines in it, which is what `pane.icon = chat` draws.
 ///
 /// `comment` is the same idea at eleven points across, drawn beside a comment count on a card; this

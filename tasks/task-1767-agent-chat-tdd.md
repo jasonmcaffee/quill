@@ -572,14 +572,59 @@ Four layers, as everywhere else.
 
 ## 11. What was measured
 
-Filled in by the implementation; the numbers live here rather than in a comment so that a later
-change can be compared against them.
+The numbers live here rather than in a comment so a later change can be compared against them.
+`cargo run --release -p quill-app --example chat_cost -- [messages] [width] [height]` is how the
+frame ones are measured again, and it is an example rather than a test for the reason `frame_cost`
+and `vello_cost` are: a threshold in milliseconds would be a different number on every machine.
 
-- Dependency cost: `ureq` + `native-tls` against `ureq` + `rustls` + `platform-verifier`.
-- A frame with an answer arriving: recording the decoration, rendering the streaming message,
-  rasterising the pane.
-- A conversation of forty messages sitting still.
-- The whole round trip against the local endpoint and against a real API.
+### 11.1 The dependency
+
+| Route | Crates in the tree | Root store |
+|---|---|---|
+| `ureq` + `native-tls` | **31**, of which `schannel`, `windows-sys`, `serde_json`, `percent-encoding`, `http` and `base64` were already there | the machine's |
+| `ureq` + `rustls` + `platform-verifier` | 121 | its own, plus the platform verifier |
+
+### 11.2 A frame, on a 404 by 660 point pane
+
+| What | Cost |
+|---|---|
+| Rendering and laying out one 504 byte answer | 0.136 ms |
+| Asking for one that has not changed | 0.000 ms |
+| A whole frame of forty messages with the last one arriving | 0.031 ms |
+| Recording the decoration, which every frame pays | 0.001 ms |
+| Asking for the decoration on a frame where nothing moved | 0.009 ms |
+| Rasterising it on a frame where it changed, six bubbles showing | **8.7 ms** |
+| The same with one bubble showing | 4.0 ms |
+
+**The text is free and the decoration is not**, which is the opposite of what was expected. A
+conversation of forty messages costs 0.031 ms a frame because thirty-nine of them are cached and the
+fortieth is the only one rendered — `markdown_text::Cache`'s own rule, and the reason the cache is
+keyed on the message rather than on the pane.
+
+**The streaming case is the one that pays, and it is new.** `task-1765` measured a changed frame at
+20.7 ms on a full board and revised its budget on the grounds that a changed frame happens *while
+something is moving* — a drag, which lasts a second. Here the thing that moves is an answer arriving,
+which lasts a minute: the bubble grows, every row below it moves, and the whole pane is rasterised
+again. 8.7 ms is inside a 60 Hz frame and it is a lot of processor for a minute. What is done about
+it is what §9.4 of that design already established: only rows that intersect the clip rectangle
+record anything, `MAX_SCALE` caps the pixmap at 1.5 pixels a point, and
+`Settings -> Appearance` has a tick box that turns the whole thing off at no cost at all. The sprite
+cache §9.5 points at would help here more than it would on a board.
+
+### 11.3 The round trip
+
+Driven through the **released binary** against a real OpenAI-compatible server on loopback that
+writes out the body it was sent, with `quill-cli plugins run agent-chat` on the other end. The pane
+showed on the right, a chunked SSE answer streamed back a token at a time, `state` went
+`sending` → `finished`, and `last` read the answer. With the tools on, the model asked for
+`quill_tab list`, the window ran it through `run_cli`, the real answer came back into the
+conversation, and the turn stopped at the eight round limit with the sentence that says so.
+
+**It found three things, and all three were faults rather than surprises**: `ureq`'s default TLS
+provider is Rustls whether or not that feature is compiled in, so an `https` request *panicked inside
+the transport*; a failed turn came back on the wire as an empty assistant message; and a row scrolled
+out of the conversation painted over the pane's own header, because `Ui::set_clip_rect` sets rather
+than intersects and a `Chrome` records into a canvas that covers the whole pane.
 
 ---
 

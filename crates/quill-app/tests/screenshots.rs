@@ -13007,3 +13007,47 @@ fn sending_to_an_endpoint_with_no_key_is_refused_before_anything_is_sent() {
         Some(0)
     );
 }
+
+/// Enter sends what has been typed, and Shift+Enter does not.
+///
+/// Driven through the real field rather than by calling `send`, because what this is about is the key
+/// press: `consume_key` matches by `Modifiers::matches_logically` and would take `Shift+Enter` for a
+/// pattern of `NONE`, which is the trap `task-1678` and `task-1682` each recorded. The endpoint has no
+/// key, so the send is refused before a request goes out and **no test here reaches a network**.
+#[test]
+fn enter_in_the_composer_sends_and_shift_enter_does_not() {
+    let mut harness = harness("");
+    did(&mut harness, "plugins pane agent-chat/chat --show");
+    did(&mut harness, "plugins run agent-chat use claude");
+    with_the_chat(&mut harness, |chat| {
+        chat.configuration_mut().providers[0].key_env = "QUILL_A_VARIABLE_NOTHING_SETS".to_owned();
+    });
+    harness.get_by_label("Message").click();
+    harness.run();
+    harness.get_by_label("Message").type_text("Are you there?");
+    harness.run();
+    assert_eq!(
+        did(&mut harness, "plugins view agent-chat")["draft"], "Are you there?",
+        "what was typed reached the draft"
+    );
+
+    // Shift+Enter is a new line: nothing is sent and nothing is refused.
+    harness.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::Enter);
+    harness.run();
+    let after = did(&mut harness, "plugins view agent-chat");
+    assert!(after["problem"].is_null(), "shift+enter did not try to send: {after}");
+    assert_eq!(after["messages"], 0);
+
+    // Enter sends, which here is refused before a request goes out — and the refusal names the
+    // variable the key would have come from, which is what makes it a useful refusal.
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    let after = did(&mut harness, "plugins view agent-chat");
+    let problem = after["problem"].as_str().expect("the refusal reached the pane");
+    assert!(problem.contains("QUILL_A_VARIABLE_NOTHING_SETS"), "{problem}");
+    // And what was typed is still there, because a refusal must not eat somebody's question.
+    assert!(
+        after["draft"].as_str().expect("the draft").contains("Are you there?"),
+        "the refusal ate the draft: {after}"
+    );
+}

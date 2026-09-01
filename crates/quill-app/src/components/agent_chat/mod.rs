@@ -305,7 +305,9 @@ fn conversation(parts: &mut Parts<'_>, ui: &mut egui::Ui, look: &Look<'_>, area:
     // Copied out of the parts so the conversation can be read while the little the drawing remembers
     // is written into. Both are borrows of different fields, which is what makes this legal at all.
     let session: &quill_chat::Session = parts.session;
-    let follow = parts.state.follow;
+    // Asked for once and then cleared, which is what `reveal_caret` does: a jump that ran on every
+    // frame would make the conversation impossible to scroll at all.
+    let jump = std::mem::take(&mut parts.state.jump_to_bottom);
     if session.chat.messages.is_empty() {
         return empty(ui, look, area);
     }
@@ -318,13 +320,19 @@ fn conversation(parts: &mut Parts<'_>, ui: &mut egui::Ui, look: &Look<'_>, area:
     // rectangle cannot reach the canvas; `Decor::Clip` is the one thing that can. Measured on a real
     // window: a message scrolled off the top was drawn across the pane's own name.
     look.chrome.clip(area, 0.0);
-    egui::ScrollArea::vertical()
+    let mut scroller = egui::ScrollArea::vertical()
         .id_salt("agent-chat-conversation")
         // **Stuck to the bottom while an answer is arriving, and unstuck the moment somebody scrolls
         // up** — which is `ChatPage.tsx`'s own `shouldAutoScroll` rule. egui's own stickiness does
         // exactly that: it follows while the view is already at the bottom and stops when it is not.
-        .stick_to_bottom(follow)
-        .auto_shrink([false, false])
+        .stick_to_bottom(true)
+        .auto_shrink([false, false]);
+    if jump {
+        // What stickiness will not do is go *back* to the bottom once somebody has scrolled away, and
+        // sending, opening a conversation and starting a new one all have to.
+        scroller = scroller.vertical_scroll_offset(f32::MAX);
+    }
+    scroller
         .show(&mut body, |ui| {
             let width = area.width();
             for one in &session.chat.messages {

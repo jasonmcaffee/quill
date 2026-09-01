@@ -334,22 +334,27 @@ fn prompt(parts: Parts<'_>, ui: &mut egui::Ui, look: &Look<'_>, area: Rect) -> V
                 .font(egui::FontId::proportional(look.font_size * 0.9))
                 .text_color(look.palette.text),
         );
+        // Named, because every control in Quill has a plain name and a test finds one by it. Its hint
+        // text is not a name: it is what the field says when it is empty.
+        response
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Message"));
         // **Enter sends and Shift+Enter is a new line**, which is what the page this copies does and
-        // what everybody expects of a chat. The modifiers are compared for real rather than through
-        // `consume_key`, which matches by `Modifiers::matches_logically` and would take `Shift+Enter`
-        // for a pattern of `NONE` — the trap `task-1678` recorded and `task-1682` recorded again.
-        if response.has_focus() {
-            let pressed = ui.input_mut(|input| {
-                let plain = input.modifiers.shift_only() || input.modifiers.is_none();
-                let enter = input.key_pressed(egui::Key::Enter);
-                if enter && input.modifiers.is_none() {
-                    input
-                        .events
-                        .retain(|event| !matches!(event, egui::Event::Text(text) if text == "\n"));
-                }
-                enter && plain && input.modifiers.is_none()
-            });
-            if pressed && !busy {
+        // what everybody expects of a chat.
+        //
+        // The modifiers are compared **for real** rather than through `consume_key`, which matches by
+        // `Modifiers::matches_logically`: that only asks whether the modifiers the *pattern* names are
+        // held, so a pattern of `NONE` takes `Shift+Enter` too — the trap `task-1678` recorded and
+        // `task-1682` recorded again. And on Windows `Ctrl+Enter` arrives with **both** `ctrl` and
+        // `command` set, which `is_none` excludes and an equality test against `Modifiers::NONE` would
+        // not.
+        //
+        // The field has already put a new line in the draft by the time this runs, because `TextEdit`
+        // reads the frame's events first. That costs nothing: `AgentChat::send` trims the end of what
+        // it is given, so the line break the field added never reaches the message.
+        if response.has_focus() && !busy {
+            let send =
+                ui.input(|input| input.key_pressed(egui::Key::Enter) && input.modifiers.is_none());
+            if send {
                 acts.push(Act::Send);
             }
         }
