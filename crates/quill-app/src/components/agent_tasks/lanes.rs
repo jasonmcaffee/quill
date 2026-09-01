@@ -16,19 +16,26 @@ use crate::services::plugin_ui::{Look, Request};
 /// which holds one lane and a sliver, so below the point where four lanes fit they are narrowed as far as
 /// [`LANE_MIN`] and the board scrolls sideways after that. Narrowing further would leave a lane too thin
 /// for a card's title, which is worse than scrolling.
-const LANE: f32 = 300.0;
+const LANE: f32 = 328.0;
 const LANE_MIN: f32 = 240.0;
-const GAP: f32 = 12.0;
+const GAP: f32 = 22.0;
+/// How round a lane's corners are, and how far its cards are inset from its edges.
+///
+/// Measured off `_agent_output/task-1765-vello-board/reference-board.png`: a lane there is 328 wide with a
+/// 14 point inset either side, so its cards are 300, and its corner radius is 18 — which is the
+/// stylesheet's `--r-lg`.
+const LANE_RADIUS: f32 = 18.0;
+const LANE_INSET: f32 = 14.0;
 /// How tall the strip at the top of a lane holding its name and its count is.
 /// How tall a lane's heading is at the default font size, read through `lane_header` so a window set to large
 /// text gets a heading that can hold it. See `Look::scale`.
-const LANE_HEADER_AT_DEFAULT: f32 = 34.0;
+const LANE_HEADER_AT_DEFAULT: f32 = 46.0;
 /// How much of a lane's foot is kept clear of cards, which is what `+ Add task` sits in.
-const FOOT_AT_DEFAULT: f32 = 40.0;
+const FOOT_AT_DEFAULT: f32 = 48.0;
 /// How much of the New lane is kept clear under its heading, which is what the agent chooser and its play
 /// button sit in. Reserved whether or not New holds a card, so the cards under it do not jump when the last
 /// one is dragged out of the lane.
-const QUICK_LAUNCH_AT_DEFAULT: f32 = 30.0;
+const QUICK_LAUNCH_AT_DEFAULT: f32 = 34.0;
 
 /// How far below a lane's heading its cards start.
 ///
@@ -49,10 +56,31 @@ fn lane_header(look: &Look<'_>) -> f32 {
 }
 
 /// How much of a lane's foot is kept clear of cards in this window.
-fn foot(look: &Look<'_>) -> f32 {
-    FOOT_AT_DEFAULT * look.scale()
+///
+/// Only the New lane has anything down there — `+ Add task` — so every other lane's foot is the padding that
+/// stops the last card touching the lane's own curve. It used to be the full 40 points for all four, which
+/// with lanes that hug their contents left a band of empty lane under the last card of every one of them.
+fn foot(status: Status, look: &Look<'_>) -> f32 {
+    match status {
+        Status::New => FOOT_AT_DEFAULT * look.scale(),
+        _ => LANE_INSET * look.scale(),
+    }
 }
 const PAD: f32 = 8.0;
+/// How tall the well an empty lane draws is, which is also how much of an empty lane a card can be dropped on.
+const EMPTY_WELL: f32 = 84.0;
+
+/// How tall a run of cards is: one gap **between** each pair and none after the last.
+///
+/// One function rather than the arithmetic written out three times, because a lane is now as tall as its
+/// contents and the three places have to agree exactly — a trailing gap counted in one of them and not in
+/// the others put a scrollbar down a lane with nothing to scroll.
+fn cards_tall(held: usize, look: &Look<'_>) -> f32 {
+    match held {
+        0 => 0.0,
+        held => held as f32 * (card::height(look) + card::GAP) - card::GAP,
+    }
+}
 
 /// What the window knows about a ticket that its row does not: whether its agent is running here, and
 /// whether Start would do anything.
@@ -122,7 +150,8 @@ pub fn show(board: &mut AgentTasks, ui: &mut egui::Ui, look: &Look<'_>, area: Re
     // satisfy the borrow checker, which on a board of any size is the largest thing the frame does.
     //
     // First: where each lane is, and how many cards it holds.
-    let room_for_cards = |lane: Rect, status: Status| lane.height() - under_the_heading(status, look) - foot(look);
+    let room_for_cards =
+        |lane: Rect, status: Status| lane.height() - under_the_heading(status, look) - foot(status, look);
     let mut geometry: Vec<(Status, Rect, usize)> = Vec::new();
     for (index, status) in Status::ALL.into_iter().enumerate() {
         let left = area.min.x + PAD + index as f32 * (lane_width + GAP) - scroll;
@@ -135,22 +164,35 @@ pub fn show(board: &mut AgentTasks, ui: &mut egui::Ui, look: &Look<'_>, area: Re
         // the cards in the edge lane shrink and their text reflow as they went, instead of sliding behind the
         // edge the way a column of cards should. The clip rectangle each lane's cards are drawn into is what
         // stops the drawing escaping the pane.
-        let lane_area = Rect::from_min_max(
-            Pos2::new(left, area.min.y + PAD),
-            Pos2::new(left + lane_width, area.max.y - PAD),
-        );
         let held = board
             .board()
             .lane(status)
             .map(|lane| lane.tasks.iter().filter(|task| arithmetic::matches(task, &query)).count())
             .unwrap_or(0);
+        // **A lane is as tall as what is in it**, which is what the picture shows: an empty lane is a short
+        // box with a well in it and a full one runs to the bottom of the pane. A column of fixed height with
+        // three cards in it and six hundred points of nothing under them is the thing that made the board
+        // read as four empty troughs.
+        //
+        // Never shorter than its heading plus one card's worth of well, because that empty space is what a
+        // card is dropped onto: a lane that shrank to its heading would be a lane nothing could be moved to.
+        let cards_tall = match held {
+            0 => EMPTY_WELL,
+            held => cards_tall(held, look),
+        };
+        let wanted = under_the_heading(status, look) + cards_tall + foot(status, look);
+        let available = area.height() - PAD * 2.0;
+        let lane_area = Rect::from_min_size(
+            Pos2::new(left, area.min.y + PAD),
+            Vec2::new(lane_width, wanted.min(available).max(0.0)),
+        );
         geometry.push((status, lane_area, held));
     }
     // Second: how far each of them is scrolled, which is the only thing here that changes anything.
     let downs: Vec<f32> = geometry
         .iter()
         .map(|(status, lane_area, held)| {
-            let content = *held as f32 * (card::height(look) + card::GAP);
+            let content = cards_tall(*held, look);
             let most = (content - room_for_cards(*lane_area, *status)).max(0.0);
             // The visible part, because a lane keeps its full width even when it runs off the edge and a wheel
             // over the pane next door is not a wheel over this lane.
@@ -200,11 +242,24 @@ pub fn show(board: &mut AgentTasks, ui: &mut egui::Ui, look: &Look<'_>, area: Re
     let snapshot = board.board();
     for (index, (status, lane_area, _)) in geometry.iter().copied().enumerate() {
         lane_lefts.push((status, lane_area.min.x));
-        ui.painter().rect_filled(
-            lane_area,
-            CornerRadius::same(look.corner_radius as u8),
-            look.ground(look.palette.panel),
-        );
+        // A lane stands off the page rather than being a rectangle painted on it, and its cards are cut to
+        // its own curve — which is the one thing on the board `egui` cannot do at all, since its clip
+        // rectangle is square. The clip is closed after this lane's cards, below.
+        if look.chrome.is_recording() {
+            look.chrome.raised(
+                lane_area,
+                LANE_RADIUS,
+                crate::services::vello_canvas::Fill::Solid(look.ground(look.palette.board_lane)),
+                crate::services::vello_canvas::Lift::Medium,
+            );
+            look.chrome.clip(lane_area, LANE_RADIUS);
+        } else {
+            ui.painter().rect_filled(
+                lane_area,
+                CornerRadius::same(LANE_RADIUS as u8),
+                look.ground(look.palette.board_lane),
+            );
+        }
         let cards: Vec<&crate::services::agent_tasks::model::Task> = snapshot
             .lane(status)
             .map(|lane| lane.tasks.iter().filter(|task| arithmetic::matches(task, &query)).collect())
@@ -213,12 +268,12 @@ pub fn show(board: &mut AgentTasks, ui: &mut egui::Ui, look: &Look<'_>, area: Re
         // **A lane scrolls rather than stopping.** It used to draw as many cards as fit and then a `3 more`
         // that nothing could reach, so a card past the fold was a card nobody could open, tick or drag.
         let room = room_for_cards(lane_area, status);
-        let content = cards.len() as f32 * (card::height(look) + card::GAP);
+        let content = cards_tall(cards.len(), look);
         let down = downs.get(index).copied().unwrap_or(0.0);
         let mut tops = Vec::new();
         let cards_area = Rect::from_min_max(
             Pos2::new(lane_area.min.x, lane_area.min.y + under_the_heading(status, look)),
-            Pos2::new(lane_area.max.x, lane_area.max.y - foot(look)),
+            Pos2::new(lane_area.max.x, lane_area.max.y - foot(status, look)),
         );
         let mut lane_ui = ui.new_child(egui::UiBuilder::new().max_rect(cards_area));
         // Intersected with the board's own area, not replaced by the lane's. A lane now keeps its full width even
@@ -232,8 +287,8 @@ pub fn show(board: &mut AgentTasks, ui: &mut egui::Ui, look: &Look<'_>, area: Re
                 continue;
             }
             let at = Rect::from_min_size(
-                Pos2::new(lane_area.min.x + 6.0, top),
-                Vec2::new(lane_area.width() - 12.0, card::height(look)),
+                Pos2::new(lane_area.min.x + LANE_INSET, top),
+                Vec2::new(lane_area.width() - LANE_INSET * 2.0, card::height(look)),
             );
             let pressed = card::show(
                 &mut lane_ui,
@@ -307,8 +362,8 @@ pub fn show(board: &mut AgentTasks, ui: &mut egui::Ui, look: &Look<'_>, area: Re
                     - card::GAP / 2.0;
                 ui.painter().rect_filled(
                     Rect::from_min_size(
-                        Pos2::new(lane_area.min.x + 6.0, y),
-                        Vec2::new(lane_area.width() - 12.0, 2.0),
+                        Pos2::new(lane_area.min.x + LANE_INSET, y),
+                        Vec2::new(lane_area.width() - LANE_INSET * 2.0, 2.0),
                     ),
                     0,
                     look.palette.accent,
@@ -323,28 +378,40 @@ pub fn show(board: &mut AgentTasks, ui: &mut egui::Ui, look: &Look<'_>, area: Re
         // without opening it.
         if status == Status::New {
             let strip = Rect::from_min_size(
-                Pos2::new(lane_area.min.x + 6.0, lane_area.min.y + lane_header(look) + 2.0),
-                Vec2::new(lane_area.width() - 12.0, 24.0),
+                Pos2::new(lane_area.min.x + LANE_INSET, lane_area.min.y + lane_header(look)),
+                Vec2::new(lane_area.width() - LANE_INSET * 2.0, 26.0),
             );
-            let play = Rect::from_min_size(Pos2::new(strip.max.x - 24.0, strip.min.y), Vec2::splat(24.0));
-            let chooser = Rect::from_min_max(strip.min, Pos2::new(play.min.x - 6.0, strip.max.y));
+            let play = Rect::from_min_size(Pos2::new(strip.max.x - 26.0, strip.min.y), Vec2::splat(26.0));
+            let chooser = Rect::from_min_max(strip.min, Pos2::new(play.min.x - 8.0, strip.max.y));
+            // The chooser is a field, so it is pressed into the lane rather than raised off it: the picture
+            // draws it as a well with the agent's name in it, which is what `sunken` is.
+            if look.chrome.is_recording() {
+                look.chrome.sunken(
+                    chooser,
+                    12.0,
+                    look.ground(look.palette.board_well),
+                    crate::services::vello_canvas::Lift::Small,
+                );
+            }
             let chosen = board.configuration().agent;
             // One button that cycles rather than a dropdown, because egui keeps one popup open at a time and
             // there are two agents to choose between. Pressing it names the other one.
-            if crate::components::controls::choice_button_named(
+            if crate::components::controls::choice_button_over(
                 ui,
                 chooser,
                 chosen.name(),
                 &format!("Agent for a new ticket: {}", chosen.name()),
                 false,
+                !look.chrome.is_recording(),
             ) {
                 next_agent = true;
             }
             // Nothing to start when New is empty, so the button is not drawn — but its room is still
             // reserved, so the cards do not move when the lane empties.
             if !cards.is_empty()
-                && crate::components::controls::icon_button(
+                && super::round_button(
                     ui,
+                    look,
                     play,
                     &format!("Start the next ticket with {}", chosen.name()),
                     crate::theme::icon::run,
@@ -356,14 +423,64 @@ pub fn show(board: &mut AgentTasks, ui: &mut egui::Ui, look: &Look<'_>, area: Re
         // `+ Add task` at the foot of the New lane, which is where the design image puts it.
         if status == Status::New {
             let at = Rect::from_min_size(
-                Pos2::new(lane_area.min.x + 6.0, lane_area.max.y - 34.0),
-                Vec2::new(lane_area.width() - 12.0, 28.0),
+                Pos2::new(lane_area.min.x + LANE_INSET, lane_area.max.y - 40.0),
+                Vec2::new(lane_area.width() - LANE_INSET * 2.0, 32.0),
             );
+            // A well rather than a button, which is what the picture shows: the row where a card would go if
+            // there were one, pressed into the lane.
+            if look.chrome.is_recording() {
+                look.chrome.sunken(
+                    at,
+                    card::RADIUS,
+                    look.ground(look.palette.board_well),
+                    crate::services::vello_canvas::Lift::Small,
+                );
+            }
             // Acted on after the loop, because the board is being read while it is drawn and creating a
             // ticket changes it. That is the rule every component here follows: report, then act.
-            if crate::components::controls::choice_button(ui, at, "+ Add task", false) {
+            if crate::components::controls::choice_button_over(
+                ui,
+                at,
+                "+ Add task",
+                "+ Add task",
+                false,
+                !look.chrome.is_recording(),
+            ) {
                 add_a_task = true;
             }
+        }
+        // A lane with nothing in it says so, in a well the size of the space a card would take — which is
+        // what the picture shows and is better than an empty box, because an empty box reads as a board that
+        // failed to draw rather than as a lane nobody has filled.
+        if cards.is_empty() && status != Status::New {
+            let empty = Rect::from_min_max(
+                Pos2::new(cards_area.min.x + LANE_INSET, cards_area.min.y),
+                Pos2::new(cards_area.max.x - LANE_INSET, (cards_area.min.y + EMPTY_WELL).min(cards_area.max.y)),
+            );
+            if empty.height() > 24.0 {
+                if look.chrome.is_recording() {
+                    look.chrome.sunken(
+                        empty,
+                        card::RADIUS,
+                        look.ground(look.palette.board_well),
+                        crate::services::vello_canvas::Lift::Medium,
+                    );
+                }
+                let said = ui.painter().layout_no_wrap(
+                    "Nothing here".to_owned(),
+                    egui::FontId::proportional(look.font_size - 1.0),
+                    look.palette.text_faint,
+                );
+                ui.painter().galley(
+                    empty.center() - said.size() / 2.0,
+                    said,
+                    look.palette.text_faint,
+                );
+            }
+        }
+        // The lane's own curve stops cutting here, which is the matching `unclip` for the `clip` above.
+        if look.chrome.is_recording() {
+            look.chrome.unclip();
         }
     }
     if next_agent {
@@ -449,28 +566,58 @@ pub fn show(board: &mut AgentTasks, ui: &mut egui::Ui, look: &Look<'_>, area: Re
 /// the added colour. All four come from `theme::color`.
 fn header(ui: &mut egui::Ui, look: &Look<'_>, lane: Rect, status: Status, count: usize) {
     let painter = ui.painter().clone();
+    // Four colours a person can tell apart at nine points across, which is what the picture uses: grey for
+    // untouched, red for failed, blue for running and the agent's violet for done. Three of the four are
+    // already Quill's; the violet is `color::AGENT`, and the reason it was added is written down beside it.
     let dot = match status {
         Status::New => look.palette.text_dim,
-        Status::QaFailed => look.palette.unsaved,
-        Status::InProgress => look.palette.modified,
-        Status::AgentDone => look.palette.added,
+        Status::QaFailed => crate::theme::color::CLOSE,
+        Status::InProgress => look.palette.accent,
+        Status::AgentDone => look.palette.agent,
     };
-    let centre = Pos2::new(lane.min.x + 16.0, lane.min.y + lane_header(look) / 2.0);
-    painter.circle_filled(centre, 4.0, dot);
+    let middle = lane.min.y + lane_header(look) / 2.0;
+    let centre = Pos2::new(lane.min.x + LANE_INSET + 5.0, middle);
+    // The halo round the dot, which is the whole of what makes it read as lit rather than printed. `epaint`
+    // has no blur that is not a rectangle, so with the decoration off it is simply the dot.
+    if look.chrome.is_recording() {
+        look.chrome.glow(Rect::from_center_size(centre, Vec2::splat(9.0)), 4.5, dot.gamma_multiply(0.75), 3.5);
+        look.chrome.disc(centre, 4.5, crate::services::vello_canvas::Fill::Solid(dot));
+    } else {
+        painter.circle_filled(centre, 4.5, dot);
+    }
+    // The lane's name is set with the tracking the stylesheet gives its caption class, `0.14em`, because at
+    // this size a run of capitals set solid reads as one word. Spaced with a thin space by hand, since
+    // `egui` has no letter spacing of its own.
+    let spaced: String = status.label().chars().flat_map(|letter| [letter, '\u{2009}']).collect();
     text(
         &painter,
-        Pos2::new(lane.min.x + 28.0, lane.min.y + lane_header(look) / 2.0 - look.font_size / 2.0),
-        status.label(),
-        look.font_size - 1.5,
+        Pos2::new(centre.x + 12.0, middle - look.font_size / 2.0),
+        spaced.trim_end(),
+        look.font_size - 3.0,
         look.palette.text_dim,
     );
     let said = painter.layout_no_wrap(
         count.to_string(),
-        egui::FontId::proportional(look.font_size - 1.5),
+        egui::FontId::proportional(look.font_size - 2.5),
         look.palette.text_dim,
     );
+    // The count sits in a pill pressed into the lane, which is `--e-pressed-sm` and is the one part of the
+    // picture that was measured pixel by pixel: six points of dark ramp inside its top left edge and six of
+    // pale inside its bottom right.
+    let chip = Rect::from_min_size(
+        Pos2::new(lane.max.x - LANE_INSET - 36.0, middle - 10.0),
+        Vec2::new(36.0, 20.0),
+    );
+    if look.chrome.is_recording() {
+        look.chrome.sunken(
+            chip,
+            10.0,
+            look.ground(look.palette.board_well),
+            crate::services::vello_canvas::Lift::Small,
+        );
+    }
     painter.galley(
-        Pos2::new(lane.max.x - 12.0 - said.size().x, lane.min.y + lane_header(look) / 2.0 - said.size().y / 2.0),
+        Pos2::new(chip.center().x - said.size().x / 2.0, middle - said.size().y / 2.0),
         said,
         look.palette.text_dim,
     );

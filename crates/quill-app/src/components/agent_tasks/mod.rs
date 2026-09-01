@@ -31,7 +31,7 @@ use crate::services::plugin_ui::{Look, Request};
 /// name and a row that dropped the ones that did not fit left three views nobody could choose.
 /// How tall the board's own header is at the default font size, read through `header_height` so a window set to
 /// large text gets a header that can hold it. See `Look::scale`.
-const HEADER_AT_DEFAULT: f32 = 66.0;
+const HEADER_AT_DEFAULT: f32 = 80.0;
 
 /// How tall the board's own header is in this window.
 fn header_height(look: &Look<'_>) -> f32 {
@@ -207,7 +207,7 @@ fn view_switch(
 ) -> Vec<Request> {
     let mut requests = Vec::new();
     let painter = ui.painter().clone();
-    let first = Rect::from_min_max(area.min, Pos2::new(area.max.x, area.min.y + 34.0));
+    let first = Rect::from_min_max(area.min, Pos2::new(area.max.x, area.min.y + 42.0));
     let second = Rect::from_min_max(Pos2::new(area.min.x, first.max.y), area.max);
 
     // The sprint's name and how many tickets are on the board, which is the explorer's footer's own idea.
@@ -215,9 +215,14 @@ fn view_switch(
         Some(sprint) => sprint.name.clone(),
         None => "No active sprint".to_owned(),
     };
+    // Set in the bold face at half again the editor's size, which is the weight and the proportion the
+    // picture gives it: `Current Sprint` is the one thing on the board that is meant to be read first.
     let heading = painter.layout_no_wrap(
         title,
-        egui::FontId::proportional(look.font_size + 1.0),
+        egui::FontId::new(
+            look.font_size * 1.55,
+            egui::FontFamily::Name(crate::theme::BOLD_FAMILY.into()),
+        ),
         look.palette.text_strong,
     );
     painter.galley(
@@ -241,17 +246,27 @@ fn view_switch(
     // `+ Add Task` at the end of the row, which is where the reference capture puts it, and the search box beside
     // it when there is room for one.
     let add = Rect::from_min_size(
-        Pos2::new(first.max.x - PAD - 96.0, first.center().y - 12.0),
-        Vec2::new(96.0, 24.0),
+        Pos2::new(first.max.x - PAD - 108.0, first.center().y - 15.0),
+        Vec2::new(108.0, 30.0),
     );
     let mut adding = false;
     if add.min.x > pen {
-        adding = crate::components::controls::choice_button(ui, add, "+ Add Task", false);
+        adding = primary_button(ui, look, add, "+ Add Task");
     }
     let search = Rect::from_min_size(
-        Pos2::new(add.min.x - 8.0 - 180.0, first.center().y - 12.0),
-        Vec2::new(180.0, 24.0),
+        Pos2::new(add.min.x - 10.0 - 200.0, first.center().y - 15.0),
+        Vec2::new(200.0, 30.0),
     );
+    // The search box is a field, so it is pressed into the page: the picture draws it as a well with a
+    // magnifier in it, which is `--e-pressed-sm` and is the shape with no `epaint` equivalent at all.
+    if look.chrome.is_recording() && search.min.x > pen {
+        look.chrome.sunken(
+            search,
+            15.0,
+            look.ground(look.palette.board_well),
+            crate::services::vello_canvas::Lift::Small,
+        );
+    }
     // The field the lanes already filter by. Everything behind it was built and tested and only the control that
     // sets it was missing — so the only way to search was the command line, and **an agent that searched left the
     // board filtered with nothing on screen saying so and no way to clear it.**
@@ -259,12 +274,13 @@ fn view_switch(
     let room_for_search = search.min.x > pen;
     if room_for_search {
         let mut query = board.query().to_owned();
-        let response = crate::components::controls::search_field(
+        let response = crate::components::controls::search_field_over(
             ui,
             search,
             "Search tasks",
             "Search tasks",
             &mut query,
+            !look.chrome.is_recording(),
         );
         if response.changed() {
             searched = Some(query);
@@ -277,20 +293,46 @@ fn view_switch(
     }
 
     // The five views, across the whole of the second row, wrapping rather than being dropped.
-    let button = Vec2::new(74.0, 22.0);
+    let button = Vec2::new(78.0, 26.0);
     let mut chosen = None;
     let mut pen = second.min.x + PAD;
-    let mut row = second.min.y + 3.0;
+    let mut row = second.min.y + 4.0;
+    // The group the buttons sit in, pressed into the page, with the chosen one pressed again inside it —
+    // which is what the picture's three-button view switch is and is why the chosen one reads as *held down*
+    // rather than as merely coloured.
     for view in View::ALL {
         if pen + button.x > second.max.x - PAD && pen > second.min.x + PAD {
             pen = second.min.x + PAD;
-            row += 26.0;
+            row += 30.0;
         }
         let at = Rect::from_min_size(Pos2::new(pen, row), button);
-        if crate::components::controls::choice_button(ui, at, view.label(), board.current_view() == view) {
+        if look.chrome.is_recording() {
+            match board.current_view() == view {
+                true => look.chrome.sunken(
+                    at,
+                    10.0,
+                    look.ground(look.palette.board_well),
+                    crate::services::vello_canvas::Lift::Small,
+                ),
+                false => look.chrome.raised(
+                    at,
+                    10.0,
+                    crate::services::vello_canvas::Fill::Solid(look.ground(look.palette.board_lane)),
+                    crate::services::vello_canvas::Lift::Small,
+                ),
+            }
+        }
+        if crate::components::controls::choice_button_over(
+            ui,
+            at,
+            view.label(),
+            view.label(),
+            board.current_view() == view,
+            !look.chrome.is_recording(),
+        ) {
             chosen = Some(view);
         }
-        pen += button.x + 4.0;
+        pen += button.x + 6.0;
     }
     // What the board last said, at the end of the second row when the first has no room for it.
     if !board.message().is_empty() {
@@ -330,6 +372,112 @@ fn view_switch(
     requests
 }
 
+/// A colour moved towards white, and one moved towards black.
+///
+/// What a gradient's two ends are made of. The board never names a second colour for the light end of a
+/// button: it lightens and darkens the one it already has, so the palette stays closed and a gradient can
+/// never disagree with the flat colour it was derived from.
+pub(crate) fn lighten(colour: egui::Color32, amount: f32) -> egui::Color32 {
+    let mix = |channel: u8| {
+        let value = f32::from(channel);
+        (value + (255.0 - value) * amount.clamp(0.0, 1.0)).round().clamp(0.0, 255.0) as u8
+    };
+    egui::Color32::from_rgba_premultiplied(mix(colour.r()), mix(colour.g()), mix(colour.b()), colour.a())
+}
+
+pub(crate) fn darken(colour: egui::Color32, amount: f32) -> egui::Color32 {
+    let mix = |channel: u8| (f32::from(channel) * (1.0 - amount.clamp(0.0, 1.0))).round() as u8;
+    egui::Color32::from_rgba_premultiplied(mix(colour.r()), mix(colour.g()), mix(colour.b()), colour.a())
+}
+
+/// The one primary button on the board: `+ Add Task`.
+///
+/// A diagonal blue gradient with a blue glow under it and the word set bold in white, which is what the
+/// picture shows and is a shape `epaint` has no answer to — its gradient brush is axis-aligned and its blur
+/// is on a rectangle. With the decoration off it is the accent-filled button the board drew before.
+pub(crate) fn primary_button(
+    ui: &mut egui::Ui,
+    look: &Look<'_>,
+    area: egui::Rect,
+    label: &str,
+) -> bool {
+    let response = ui.interact(area, ui.id().with(("agent-tasks-primary", label)), egui::Sense::click());
+    let ground = look.palette.accent;
+    if look.chrome.is_recording() {
+        look.chrome.glow(area, 14.0, ground.gamma_multiply(0.42), 9.0);
+        look.chrome.raised(
+            area,
+            14.0,
+            crate::services::vello_canvas::Fill::diagonal(area, lighten(ground, 0.14), darken(ground, 0.22)),
+            crate::services::vello_canvas::Lift::Small,
+        );
+        if response.hovered() {
+            ui.painter().rect_filled(area, egui::CornerRadius::same(14), egui::Color32::from_white_alpha(22));
+        }
+    } else {
+        let flat = match response.hovered() {
+            true => lighten(ground, 0.12),
+            false => ground,
+        };
+        ui.painter().rect_filled(area, egui::CornerRadius::same(8), flat);
+    }
+    let galley = ui.painter().layout_no_wrap(
+        label.to_owned(),
+        egui::FontId::new(
+            look.font_size - 3.0,
+            egui::FontFamily::Name(crate::theme::BOLD_FAMILY.into()),
+        ),
+        look.palette.text_strong,
+    );
+    ui.painter().galley(area.center() - galley.size() / 2.0, galley, look.palette.text_strong);
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
+    });
+    response.clicked()
+}
+
+/// A round button with an icon in it: the play button on a card, and the ones beside it.
+///
+/// A disc filled with a gradient along its own diagonal, lit from the same corner every shadow on the board
+/// is, with a glow of its own colour under it — which is what the picture shows and what `epaint` has no
+/// gradient to draw. With the decoration off it is the flat circle the board drew before.
+pub(crate) fn round_button(
+    ui: &mut egui::Ui,
+    look: &Look<'_>,
+    area: egui::Rect,
+    name: &str,
+    draw: fn(&egui::Painter, egui::Pos2, egui::Color32),
+) -> bool {
+    let response = ui
+        .interact(area, ui.id().with(("agent-tasks-round", name)), egui::Sense::click())
+        .on_hover_text(name);
+    let ground = look.palette.accent;
+    let radius = area.width() / 2.0;
+    if look.chrome.is_recording() {
+        // Constant, and the hover is a wash on top: see `card::show` for why the decoration must not change
+        // when the pointer moves.
+        look.chrome.glow(area, radius, ground.gamma_multiply(0.45), 6.0);
+        look.chrome.disc(
+            area.center(),
+            radius,
+            crate::services::vello_canvas::Fill::diagonal(area, lighten(ground, 0.12), darken(ground, 0.18)),
+        );
+        if response.hovered() {
+            ui.painter().circle_filled(area.center(), radius, egui::Color32::from_white_alpha(24));
+        }
+    } else {
+        let flat = match response.hovered() {
+            true => lighten(ground, 0.14),
+            false => ground,
+        };
+        ui.painter().circle_filled(area.center(), radius, flat);
+    }
+    draw(ui.painter(), area.center(), look.palette.text_strong);
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), name)
+    });
+    response.clicked()
+}
 /// A label drawn at a position, which is what nearly every line on the board is.
 ///
 /// One function rather than the same four lines in twelve places, and it returns how wide it drew so a
@@ -496,7 +644,23 @@ pub(crate) fn clipped(
     width: f32,
     lines: usize,
 ) {
-    let font = egui::FontId::proportional(size);
+    clipped_in(painter, at, said, egui::FontId::proportional(size), tint, width, lines);
+}
+
+/// The same, in a face the caller names.
+///
+/// A card's title is set in the bold face, which is what the picture shows and is the one place on the board
+/// where the weight is doing work: it is the line a person reads to find the ticket they want.
+pub(crate) fn clipped_in(
+    painter: &egui::Painter,
+    at: Pos2,
+    said: &str,
+    font: egui::FontId,
+    tint: egui::Color32,
+    width: f32,
+    lines: usize,
+) {
+    let size = font.size;
     let most = (width / (size * 0.4)).max(1.0) as usize * lines.max(1) + 8;
     let short = match said.char_indices().nth(most) {
         Some((at, _)) => &said[..at],

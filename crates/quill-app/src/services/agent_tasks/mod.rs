@@ -2071,6 +2071,11 @@ impl UiProvider for AgentTasks {
         self.refresh()
     }
 
+    /// The board draws the decoration `egui` cannot: soft shadows, inset shadows, gradients and a rounded
+    /// clip. `task-1765` is why, and `tasks/agent-tasks-vello-ui-tdd.md` is the design.
+    fn draws_chrome(&self) -> bool {
+        true
+    }
     fn is_open(&self) -> bool {
         self.store.is_some()
     }

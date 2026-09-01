@@ -6,7 +6,8 @@
 
 use egui::{Color32, CornerRadius, Pos2, Rect, Sense, Stroke, Vec2};
 
-use super::{clipped, text};
+use super::{darken, lighten, text};
+use crate::services::vello_canvas::{Fill, Lift};
 use crate::services::agent_tasks::board;
 use crate::services::agent_tasks::model::{Board, Priority, Task};
 use crate::services::plugin_ui::Look;
@@ -16,8 +17,15 @@ use crate::theme::icon;
 ///
 /// Read through [`height`] rather than directly, so that a window set to 48 point text gets cards that can hold
 /// 48 point text. See `Look::scale`.
-const HEIGHT_AT_DEFAULT: f32 = 84.0;
-pub const GAP: f32 = 8.0;
+const HEIGHT_AT_DEFAULT: f32 = 100.0;
+pub const GAP: f32 = 14.0;
+
+/// How round a card's corners are, and how big the three round buttons along its footer are.
+///
+/// Measured off `_agent_output/task-1765-vello-board/reference-board.png`: a card there is 300 by 101 with a
+/// 14 point radius, and its play button is 30 across against the agent badge's 28.
+pub const RADIUS: f32 = 14.0;
+const BUTTON: f32 = 26.0;
 
 /// How tall a card is in this window.
 pub fn height(look: &Look<'_>) -> f32 {
@@ -69,15 +77,34 @@ pub fn show(
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), name.clone())
     });
-    let radius = CornerRadius::same(look.corner_radius as u8);
+    let radius = CornerRadius::same(RADIUS as u8);
     // A card under the pointer is the pill every list in Quill draws for its chosen row, rather than a
     // colour of its own.
     let ground = match response.hovered() || dragging {
         true => look.palette.selected_row,
-        false => look.palette.control,
+        false => look.palette.board_card,
     };
+    let _ = ground;
     let painter = ui.painter().clone();
-    painter.rect(area, radius, ground, Stroke::new(1.0, look.palette.control_border), egui::StrokeKind::Inside);
+    // **A card stands off its lane rather than being a rectangle drawn on it.** With the decoration on, that
+    // is a pair of soft shadows and the surface over them, and it lifts further under the pointer, which is
+    // what the picture the board is measured against shows. With it off — no manifest key, `plugins.chrome`
+    // switched off, or a `Look` built by a test — the flat form is drawn instead, which is what the board was
+    // before `task-1765`.
+    if look.chrome.is_recording() {
+        // **The elevation does not change under the pointer, and that is a performance rule rather than a
+        // taste one.** The decoration is one texture rasterised on the processor whenever the board's
+        // drawing changes; a card that lifted on hover would re-rasterise the whole pane every time the
+        // pointer crossed a card, which is the commonest thing anybody does on a board. So the depth is a
+        // property of the card and the pointer's answer is a wash painted over it in `egui`, which costs
+        // nothing — and it is the same pill every list in Quill draws for the row it is on.
+        look.chrome.raised(area, RADIUS, Fill::Solid(look.palette.board_card), Lift::Small);
+        if response.hovered() || dragging {
+            painter.rect_filled(area, radius, ground.gamma_multiply(0.5));
+        }
+    } else {
+        painter.rect(area, radius, ground, Stroke::new(1.0, look.palette.control_border), egui::StrokeKind::Inside);
+    }
     // The epic's colour down the left edge. The one colour on the board that comes from the data.
     if let Some(colour) = task.epic_id.and_then(|id| board.epic(id)).and_then(|epic| crate::services::plugins::colour(&epic.color)) {
         painter.rect_filled(
@@ -88,14 +115,17 @@ pub fn show(
     }
     let left = area.min.x + EDGE + 10.0;
     let right = area.max.x - 10.0;
-    clipped(
+    super::clipped_in(
         &painter,
-        Pos2::new(left, area.min.y + 8.0),
+        Pos2::new(left, area.min.y + 12.0),
         task.display_title(),
-        look.font_size,
+        egui::FontId::new(
+            look.font_size - 1.0,
+            egui::FontFamily::Name(crate::theme::BOLD_FAMILY.into()),
+        ),
         look.palette.text_strong,
         right - left,
-        // Two lines, which is what a card 84 points tall has room for above its own footer.
+        // Two lines, which is what a card 100 points tall has room for above its own footer.
         2,
     );
     // The priority mark on a line of its own under the title, which is where the design puts it, rather
@@ -145,17 +175,19 @@ pub fn show(
     // leaves a card about 200 points wide, and the counts used to march right from the key without knowing the
     // badge was there, so the comment count and the agent badge were drawn on top of each other — two sets of
     // glyphs in one place, which is what the tab screenshot recorded in the Agent Done lane.
-    let footer = area.max.y - 22.0;
-    let badge = Vec2::splat(20.0);
-    let badge_at = Rect::from_min_size(Pos2::new(right - badge.x, footer - 2.0), badge);
+    let footer = area.max.y - 26.0;
+    let button = BUTTON * look.scale().min(1.6);
+    let badge = Vec2::splat(button);
+    let badge_at = Rect::from_min_size(Pos2::new(right - badge.x, footer - 4.0), badge);
     agent_badge(&painter, badge_at, task, look, live);
     // The start button only when starting would do something. **Absent rather than dimmed**, which is the rule
     // the `F` button and the three code navigation entries already follow: a card whose agent is already running
     // has nothing for Start to do, and drawing it would be drawing a control that reports a refusal.
     let mut controls = badge_at.min.x;
     if live.can_start {
-        let start_at = Rect::from_min_size(Pos2::new(right - badge.x - 26.0, footer - 2.0), badge);
-        if crate::components::controls::icon_button(ui, start_at, &format!("Start {}", task.key), icon::run) {
+        let start_at =
+            Rect::from_min_size(Pos2::new(badge_at.min.x - button - 6.0, footer - 4.0), badge);
+        if super::round_button(ui, look, start_at, &format!("Start {}", task.key), icon::run) {
             pressed.start = true;
         }
         controls = start_at.min.x;
@@ -243,11 +275,39 @@ fn priority(painter: &egui::Painter, at: Pos2, priority: Priority, look: &Look<'
 /// ever, because that is what a resume names, so reading brightness off the row made every ticket that had
 /// ever been worked look as though its agent were still there.
 fn agent_badge(painter: &egui::Painter, area: Rect, task: &Task, look: &Look<'_>, live: Live) {
-    let ground = match live.attached {
-        true => look.palette.accent,
-        false => look.palette.control_border,
+    // The violet the picture shows, dimmed for a ticket nobody has: the badge says *who*, and the ring round
+    // it says *now*. Two marks rather than one brightness, which is what made an unattached ticket and an
+    // attached one nearly the same colour.
+    let ground = match task.assignee {
+        crate::services::agent_tasks::model::Assignee::Human => look.palette.control_border,
+        _ => look.palette.agent,
     };
-    painter.circle_filled(area.center(), area.width() / 2.0, ground);
+    let ground = match live.attached {
+        true => ground,
+        false => ground.gamma_multiply(0.72),
+    };
+    if look.chrome.is_recording() {
+        let radius = area.width() / 2.0;
+        look.chrome.disc(
+            area.center(),
+            radius,
+            Fill::diagonal(area, lighten(ground, 0.10), darken(ground, 0.16)),
+        );
+        // The mint ring, and only while a terminal for this ticket is really running in this window. The gap
+        // between the badge and the ring is the picture's: two points of dark, then two points of green.
+        if live.attached {
+            look.chrome.ring(area.center(), radius + 3.5, 1.6, look.palette.attached);
+        }
+    } else {
+        painter.circle_filled(area.center(), area.width() / 2.0, ground);
+        if live.attached {
+            painter.circle_stroke(
+                area.center(),
+                area.width() / 2.0 + 3.5,
+                Stroke::new(1.6, look.palette.attached),
+            );
+        }
+    }
     let initials = match task.assignee {
         crate::services::agent_tasks::model::Assignee::Claude => "C",
         crate::services::agent_tasks::model::Assignee::Codex => "X",

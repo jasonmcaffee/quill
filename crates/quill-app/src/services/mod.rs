@@ -33,6 +33,7 @@ pub mod store;
 pub mod symbol_index;
 pub mod text_renderer;
 pub mod text_search;
+pub mod vello_canvas;
 pub mod wake;
 
 // Letting the desktop show through the window needs a DirectComposition swapchain and a cleared

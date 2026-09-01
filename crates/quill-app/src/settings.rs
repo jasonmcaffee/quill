@@ -315,6 +315,13 @@ pub struct Settings {
     pub suggestions: Suggestions,
     /// Whether the debugger's value tooltip arrives when the pointer rests on a name.
     pub value_tooltip: ValueTooltip,
+    /// Whether a plugin that asked for the decoration renderer gets it.
+    ///
+    /// The soft shadows, inset shadows and gradients `services::vello_canvas` draws behind a plugin's pane.
+    /// Off, the board draws flat, which is what it did before `task-1765`. It is a setting for the reason
+    /// the opacity is one: it is the person's window, and drawing depth costs a rasterisation on the frame
+    /// a board changes.
+    pub plugin_chrome: bool,
     /// Whether this Quill hosts the MCP server over HTTP, so an agent can reach it at a URL.
     pub mcp_enabled: bool,
     /// The port it listens on when it does.
@@ -352,6 +359,8 @@ impl Settings {
             // feature is that the value is there when you look at the name, rather than being
             // something to remember to ask for.
             value_tooltip: ValueTooltip::Automatic,
+            // On. A board that draws flat is the board `task-1765` was filed about.
+            plugin_chrome: true,
             // Off, and the reason is worth writing down rather than being read off as timidity.
             // The MCP server an agent launches over its own pipes needs no port and no setting: it
             // lives as long as the conversation and nothing is listening when nobody is asking,
@@ -394,6 +403,9 @@ impl Settings {
         if let Some(chosen) = values.text("editor.suggestions").and_then(Suggestions::parse) {
             settings.suggestions = chosen;
         }
+        if let Some(on) = values.flag("plugins.chrome") {
+            settings.plugin_chrome = on;
+        }
         if let Some(on) = values.flag("mcp.enabled") {
             settings.mcp_enabled = on;
         }
@@ -430,6 +442,7 @@ impl Settings {
         values.set("editor.line_numbers", if self.line_numbers { "true" } else { "false" });
         values.set("editor.suggestions", self.suggestions.name());
         values.set("debug.value_tooltip", self.value_tooltip.name());
+        values.set("plugins.chrome", if self.plugin_chrome { "true" } else { "false" });
         values.set("mcp.enabled", if self.mcp_enabled { "true" } else { "false" });
         values.set("mcp.port", self.mcp_port.to_string());
         values.set("mcp.tools", self.mcp_tools.name());
@@ -821,6 +834,7 @@ mod tests {
             line_numbers: false,
             suggestions: Suggestions::Manual,
             value_tooltip: ValueTooltip::Manual,
+            plugin_chrome: false,
             mcp_enabled: true,
             mcp_port: 9001,
             mcp_tools: quill_cli::mcp::Shape::Every,

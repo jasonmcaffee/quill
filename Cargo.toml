@@ -34,6 +34,25 @@ url = "2.5"
 percent-encoding = "2.3"
 mime_guess = "2.0"
 wry = { version = "0.56.1", default-features = false, features = ["os-webview"] }
+# The board's decoration: soft shadows, inset shadows and gradients, which `epaint` cannot draw. The CPU
+# renderer of the three Vellos, because it is the only one that can go in a window on egui 0.36 at all:
+# `vello` and `vello_hybrid` both pin wgpu 29 and eframe pins wgpu 30, so their devices and textures are
+# different types. It renders into premultiplied RGBA8, which is `egui::Color32` byte for byte, and it is
+# deterministic, which is what the screenshot tests rest on. See `tasks/agent-tasks-vello-ui-tdd.md`.
+#
+# **The version is epaint's, and it has to be.** `epaint` 0.36 already depends on `vello_cpu` 0.1 — it
+# rasterises the glyphs in its font atlas with it — so this renderer is already inside Quill and asking
+# for 0.2 would put a second copy of it in the binary rather than adding a renderer. Follow epaint when
+# egui is next upgraded.
+#
+# **And `multithreading` must stay off, which was measured rather than assumed.** It is the one big lever
+# left — rasterising is per pixel and embarrassingly parallel, and turning it on took a board of four lanes
+# and thirty-two cards from 20.1 ms to 5.5. It cannot be used. Cargo features are additive across the whole
+# graph, so enabling it changes `RenderSettings::default()` for **epaint too** — and `epaint`'s glyph
+# rasteriser builds its context with the default settings and never calls `flush()`, which the multithreaded
+# dispatcher requires. Every screenshot test panicked inside `vello_cpu` with "attempted to rasterize before
+# flushing", from egui's own text. See `tasks/agent-tasks-vello-ui-tdd.md` §9.
+vello_cpu = { version = "0.1", default-features = false, features = ["std", "u8_pipeline"] }
 egui = "0.36"
 eframe = { version = "0.36", default-features = false, features = ["wgpu", "default_fonts"] }
 fontdb = "0.24"

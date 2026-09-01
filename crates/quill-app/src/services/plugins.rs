@@ -106,6 +106,19 @@ pub const DEBUGGERS: &[&str] = &["lldb", "node"];
 /// and nothing in a plugin is executed.
 pub const UI_PROVIDERS: &[&str] = &["agent-tasks"];
 
+/// The renderers a plugin's `ui.chrome` may name for the decoration `egui` cannot draw.
+///
+/// The fifth registry of this shape, checked the same way and for the same reason as the four above. A
+/// manifest saying `ui.chrome = vello` asks for the soft shadows, inset shadows, gradients and rounded
+/// clips of `services::vello_canvas`; a manifest naming anything else is refused with the list rather than
+/// loading as a plugin whose pane is quietly flat.
+///
+/// **It is off unless a manifest asks**, which is the rule `language.word_characters`, `language.types`,
+/// `language.markup` and every import key already keep, so no plugin that shipped before this changes by a
+/// pixel. Switching it off in the manifest really withdraws the decoration, in the same frame, which is
+/// the property `Plugins::renders` has for a Mermaid diagram.
+pub const CHROME: &[&str] = &["vello"];
+
 /// The icons a `pane.icon` may name, drawn by [`crate::theme::icon`].
 ///
 /// Checked for the same reason the three registries above are checked: a rail button drawn as nothing
@@ -254,6 +267,8 @@ pub struct PageContribution {
 pub struct Contributions {
     /// The name in [`UI_PROVIDERS`] of the code that fills the pane, the tab and the page.
     pub provider: Option<String>,
+    /// The name in [`CHROME`] of the renderer this plugin's decoration is drawn with, when it asks for one.
+    pub chrome: Option<String>,
     pub pane: Option<PaneContribution>,
     pub tab: Option<TabContribution>,
     pub menu: Option<MenuContribution>,
@@ -302,6 +317,12 @@ pub struct Surfaces {
     pub tabs: Vec<Surface<TabContribution>>,
     pub menus: Vec<Surface<MenuContribution>>,
     pub pages: Vec<Surface<PageContribution>>,
+    /// The plugins whose manifest asked for a renderer, by `plugin.id`.
+    ///
+    /// Here rather than asked of the manifest at drawing time, for the reason the four lists above are
+    /// here: switching a plugin off has to withdraw its decoration in the same frame it withdraws its
+    /// pane, and one value everything reads is what makes that impossible to get wrong.
+    pub chrome: Vec<String>,
 }
 
 impl Surfaces {
@@ -319,6 +340,11 @@ impl Surfaces {
             && self.tabs.is_empty()
             && self.menus.is_empty()
             && self.pages.is_empty()
+    }
+
+    /// Whether this plugin asked for the decoration renderer and is switched on.
+    pub fn draws_chrome(&self, plugin: &str) -> bool {
+        self.chrome.iter().any(|id| id == plugin)
     }
 
     /// The provider named by the plugin with this id, from whichever of its contributions names it.
@@ -502,6 +528,9 @@ impl Plugins {
             }
             if let Some(page) = plugin.contributions.page.clone() {
                 surfaces.pages.push(made(plugin, &provider, page));
+            }
+            if plugin.contributions.chrome.is_some() {
+                surfaces.chrome.push(plugin.id.clone());
             }
         }
         surfaces
@@ -877,8 +906,19 @@ fn contributions(values: &Values, kind: Kind) -> Result<Contributions, String> {
         }
         None => None,
     };
+    let chrome = match word(values, "ui.chrome") {
+        Some(named) if CHROME.contains(&named.as_str()) => Some(named),
+        Some(named) => {
+            return Err(format!(
+                "ui.chrome is `{named}`, and this version of Quill has {}",
+                CHROME.join(", ")
+            ))
+        }
+        None => None,
+    };
     let found = Contributions {
         provider,
+        chrome,
         pane: pane(values)?,
         tab: tab(values),
         menu: menu(values)?,
@@ -1635,6 +1675,34 @@ mod tests {
             "and it says the board has no pane, since that is a control somebody may look for: {}",
             board.limitations
         );
+    }
+
+    /// `task-1765`: the board asks for the decoration renderer, and the key is checked like every other one.
+    #[test]
+    fn the_agent_tasks_plugin_asks_for_the_decoration_renderer_and_a_language_plugin_does_not() {
+        let (plugins, problems) = Plugins::load(None);
+        assert!(problems.is_empty(), "{problems:?}");
+        let board = plugins.get("agent-tasks").expect("the agent-tasks plugin");
+        assert_eq!(board.contributions.chrome.as_deref(), Some("vello"));
+        // And it is in the one value everything reads, so switching the plugin off withdraws the decoration
+        // in the same frame it withdraws the tab.
+        assert!(plugins.surfaces().draws_chrome("agent-tasks"));
+        assert!(!plugins.surfaces().draws_chrome("mermaid"));
+        for plugin in plugins.all().iter().filter(|plugin| plugin.kind == Kind::Language) {
+            assert!(plugin.contributions.chrome.is_none(), "{} asks for a renderer", plugin.id);
+        }
+    }
+
+    #[test]
+    fn a_renderer_this_version_does_not_have_is_refused_with_the_list_of_the_ones_it_does() {
+        // The rule `plugin.kind`, `language.renders`, `run.project` and `debug.adapter` all keep: a manifest
+        // naming something Quill has not got says so plainly rather than loading as a plugin whose pane is
+        // quietly flat, which is the exact outcome a checked registry exists to prevent.
+        let manifest = "plugin.id = a-board\nplugin.name = A Board\nplugin.kind = ui\n\
+                        ui.provider = agent-tasks\nui.chrome = crayons\ntab.id = board\ntab.label = A Board\n";
+        let problem = parse(&Values::parse(manifest), false).expect_err("crayons is not a renderer");
+        assert!(problem.contains("ui.chrome is `crayons`"), "{problem}");
+        assert!(problem.contains("vello"), "and it names what this version does have: {problem}");
     }
 
     /// A manifest that asks for a pane still gets one, read out of the file the way every other key is.

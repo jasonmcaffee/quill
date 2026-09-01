@@ -128,6 +128,21 @@ pub mod color {
     pub const INLINE_VALUE: Color32 = TEXT_FAINT;
     pub const VALUE_CHANGED: Color32 = UNSAVED;
 
+    /// The colour an agent wears: the round badge on a card, and the dot on the `AGENT DONE` lane.
+    ///
+    /// The palette is closed and this does not open it, for the reason [`BREAKPOINT`] records beside
+    /// itself. Quill's palette has a red, an amber, a green, two blues and a pink, and the board needs the
+    /// four lanes to be four colours a person can tell apart at nine points across — grey, red, blue and
+    /// this. It is the violet of the picture the board is measured against,
+    /// `_agent_output/task-1765-vello-board/reference-board.png`, and it is used nowhere else.
+    pub const AGENT: Color32 = Color32::from_rgb(0x9B, 0x7C, 0xF6);
+
+    /// The ring round the badge of a ticket whose agent is running in this window.
+    ///
+    /// [`GIT_ADDED`] rather than a colour of its own: it is the green Quill already means "there is
+    /// something here that was not here before" by, which is what an attached terminal is.
+    pub const ATTACHED: Color32 = GIT_ADDED;
+
     /// The three window buttons.
     pub const CLOSE: Color32 = Color32::from_rgb(0xFF, 0x5F, 0x57);
     pub const MINIMISE: Color32 = Color32::from_rgb(0xFE, 0xBC, 0x2E);

@@ -49,14 +49,31 @@ pub fn search_field(
     hint: &str,
     value: &mut String,
 ) -> egui::Response {
+    search_field_over(ui, area, name, hint, value, true)
+}
+
+/// The same field with its own ground drawn or left alone, for a field on a decoration canvas.
+///
+/// See [`choice_button_over`]: the well the picture shows is drawn behind the whole pane, and a flat
+/// rectangle drawn here would fill it in.
+pub fn search_field_over(
+    ui: &mut egui::Ui,
+    area: Rect,
+    name: &str,
+    hint: &str,
+    value: &mut String,
+    ground: bool,
+) -> egui::Response {
     let painter = ui.painter().clone();
-    painter.rect(
-        area,
-        CornerRadius::same(size::CONTROL_CORNER),
-        color::FIELD,
-        Stroke::new(1.0, color::CONTROL_BORDER),
-        egui::StrokeKind::Inside,
-    );
+    if ground {
+        painter.rect(
+            area,
+            CornerRadius::same(size::CONTROL_CORNER),
+            color::FIELD,
+            Stroke::new(1.0, color::CONTROL_BORDER),
+            egui::StrokeKind::Inside,
+        );
+    }
     icon::magnifier(&painter, Pos2::new(area.left() + 15.0, area.center().y), color::TEXT_FAINT);
     let text_rect = field_text_rect(ui, area, 28.0);
     let mut field = ui.new_child(egui::UiBuilder::new().max_rect(text_rect));
@@ -287,9 +304,36 @@ pub fn choice_button_named(
     announced: &str,
     active: bool,
 ) -> bool {
+    choice_button_over(ui, area, label, announced, active, true)
+}
+
+/// The same button with its own ground drawn or left alone.
+///
+/// **`ground: false` is for a button whose surface something else has already drawn**, which is what a
+/// plugin's decoration canvas does: the gradient, the shadows and the pressed edge are painted into one
+/// texture behind the whole pane, and a flat rectangle drawn here would cover them. What is left is the word
+/// and the click, which is all this ever really was. See `services::vello_canvas`.
+pub fn choice_button_over(
+    ui: &mut egui::Ui,
+    area: Rect,
+    label: &str,
+    announced: &str,
+    active: bool,
+    ground: bool,
+) -> bool {
     let response = ui.interact(area, ui.id().with(("choice", announced)), Sense::click());
     let painter = ui.painter();
-    if active {
+    if !ground {
+        // A hover still has to answer, or a button on a canvas would be the one control in Quill that never
+        // says it was reached. A wash rather than a fill, so the gradient under it still shows.
+        if response.hovered() {
+            painter.rect_filled(
+                area,
+                CornerRadius::same(size::CONTROL_CORNER),
+                Color32::from_white_alpha(14),
+            );
+        }
+    } else if active {
         painter.rect_filled(area, CornerRadius::same(size::CONTROL_CORNER), color::ACCENT);
     } else if response.hovered() {
         painter.rect_filled(area, CornerRadius::same(size::CONTROL_CORNER), color::CONTROL);

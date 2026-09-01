@@ -178,6 +178,96 @@ WebView2's low-memory target, and closing the last rendered tab drops the view a
 entirely: 197 MB with none open, 527 MB with one, 531 MB with four. Toolbar navigation and
 `quill-cli browser` both go through `QuillApp::run_browser_command`.
 
+## A plugin's pane has depth, and `epaint` cannot draw any of it
+
+`task-1765` asks the Agent-Tasks board to look like the tasks page of `ai-service`, which is **dark
+neumorphism**: every surface is lit from the top left, so a raised thing carries a pale shadow above and
+left of it and a dark one below and right, and a recessed thing carries the same pair *inside* it. The
+buttons are diagonal gradients with coloured glows under them and the lane dots have haloes.
+`tasks/agent-tasks-vello-ui-tdd.md` is the design and
+`_agent_output/task-1765-vello-board/reference-measurements.md` is the picture read back one pixel at a
+time.
+
+**Four of those are things `epaint` cannot draw at all**, and they are the four that make the picture look
+like the picture: an **inset shadow** (it needs a rounded rectangle with a rounded hole, filled even-odd,
+and `PathShape` fills only convex paths reliably); a **diagonal gradient** (the texture brush's uv
+rectangle is axis-aligned); a **glow round a circle** (`blur_width` is on a rectangle); and **clipping to
+rounded corners** (`clip_rect` is an axis-aligned `Rect`). Writing those four by hand in `components/` is a
+2D renderer with a different name on it.
+
+**So `services/vello_canvas.rs` draws them, with `vello_cpu`** — and the version is `epaint`'s, because
+**epaint 0.36 already depends on `vello_cpu` 0.1** to rasterise the glyphs in its own font atlas. The
+renderer was already in the binary; this uses the copy that is there rather than adding a second one.
+Follow epaint when egui is next upgraded.
+
+**The GPU Vellos cannot be used and the reason is a version, not an opinion.** `vello` 0.10 and
+`vello_hybrid` 0.2 both pin **wgpu 29** and eframe pins **wgpu 30**, so cargo compiles both and their
+`Device` and `Texture` are unrelated types: no vello GPU renderer can write into a texture eframe can read,
+and `vello_hybrid` exposes no backend trait to escape it. `vello_cpu` has no GPU dependency at all, which
+also makes it deterministic — which is what 411 screenshot comparisons rest on.
+
+**Three types, and the middle one is the seam.** `Chrome` is what a component talks to: it says what kind
+of surface it is drawing — `raised`, `sunken`, `glow`, `ring`, `clip` — and the elevation recipe lives in
+one file, so no component holds a shadow offset. That is the rule that a component cannot name a colour,
+applied to depth. `Decor` is what that records: five kinds of shape and a clip, in points, a plain value a
+test asserts on with no window — the same seam `quill_core::mermaid::Scene` is. `Canvas` replays the list
+into `vello_cpu`, rasterises into a premultiplied-RGBA8 `Pixmap` — which is `egui::Color32` byte for byte —
+and uploads it as one texture painted **behind** the pane's widgets, into a slot reserved with
+`Painter::add(Shape::Noop)` before anything else is drawn. The pane's own ground goes in **before** the
+slot: after it, the ground covers the very thing the slot is for, and the board comes up with no lanes and
+no cards at all.
+
+**The elevation never introduces a hue.** The pale half is the surface *lifted* and the dark half is black
+at an alpha, which is what the dark-mode stylesheet says itself — "in dark neumorphism the 'light'
+highlight is a lifted gray (not white)" — so the palette stays closed while the board gains a whole
+dimension. `Palette` grew `board_page`, `board_lane`, `board_card` and `board_well`, and all four are
+colours Quill already had: `EDITOR`, `EXPLORER`, `CODE_PANEL` and `FIELD`, each within a few units a
+channel of the picture. Two colours are genuinely new, `AGENT` and `ATTACHED`, and each says why beside
+itself.
+
+**Five things about the cost, and every one of them was measured.**
+`cargo run --release -p quill-app --example vello_cost` is how they are measured again.
+
+- **Nothing is rasterised on a frame where nothing changed** — one hash comparison over the `Decor` list,
+  0.02 ms. Recording the list, which every frame pays, is 0.005 ms.
+- **A hover deliberately does not change the decoration.** A card keeps the same elevation under the
+  pointer and the pointer's answer is a wash `egui` paints on top, because moving the pointer across a
+  board is the commonest thing anybody does on one and re-rasterising for it would have been the whole
+  cost, all the time.
+- **A raised surface's shadows are cut to the band around it**, because the surface is opaque and is
+  painted over its own shadows: unclipped, one lane cost 3.3 ms of Gaussian that was then covered up. It is
+  `push_clip_path` with an even-odd frame, not `push_clip_layer` — a clip *layer* composites, a clip *path*
+  is intersected while the strips are generated. 43 ms to 20 for a whole board.
+- **The canvas is the decoration's own bounding box, not the pane's**, and the context is **resized rather
+  than rebuilt**. Rasterising has a floor of about two nanoseconds a pixel whether anything is drawn there
+  or not.
+- **`vello_cpu`'s `multithreading` feature is the big lever and it cannot be pulled.** It took the board
+  from 20.1 ms to 5.5 — and every screenshot test then panicked inside `vello_cpu` with "attempted to
+  rasterize before flushing", from **egui's own text**: cargo features are additive, so enabling it changes
+  `RenderSettings::default()` for epaint too, and epaint's glyph rasteriser never calls `flush()`. It comes
+  back the day epaint does.
+
+A changed frame costs about 16 ms for a four-lane board of twenty-four cards over 1400 by 900 points, and
+`MAX_SCALE` caps the canvas at 1.5 pixels a point because the decoration is Gaussians and gradients where
+the text — which egui draws at the display's own resolution — is not. `Settings -> Appearance` has a tick
+box that turns the whole thing off, and then the board draws flat at no cost at all.
+
+**An inset shadow is clipped to its own shape, and that is not tidiness.**
+`fill_blurred_rounded_rect`'s inverted form paints the *complement* of the blur — opaque outside the
+rectangle, fading to nothing inside it — so an unclipped well washes its colour across the whole pane. CSS
+clips an inset shadow to the border box for the same reason.
+
+**The screenshot tests pin the SIMD level.** `vello_cpu` picks the widest one the processor has and does
+not promise two levels are bit-identical, so `QuillApp::draw_deterministically` — called beside `prepare`
+in every place `tests/screenshots.rs` builds a window — asks for `Level::baseline()`, which is what the
+*target* guarantees and is therefore the same on every machine of that target. Not `Level::fallback()`,
+which is compiled out on a target whose baseline is already above it.
+
+**A plugin asks for it in three places and any one of them says no**: `ui.chrome = vello` in the manifest,
+checked against `plugins::CHROME` — the fifth registry of that shape after the renderers, the project
+detectors, the debuggers and the UI providers — `UiProvider::draws_chrome`, and the `plugins.chrome`
+setting. A provider that draws only with `egui` costs no pixmap, no rasterisation and no texture.
+
 ## The look is written down, and a new control is measured against it
 
 `design/style-guide.md` says what a control in Quill is built from: the palette is closed, a list row
@@ -2557,6 +2647,11 @@ trade that away to be a shade nearer a screenshot.
   can be changed with and the adapter that offers only one of them, and the two faults it found in
   work that had shipped — a caret that could not be moved while a program was paused, and inline
   values that were only being refreshed by accident.
+- `tasks/agent-tasks-vello-ui-tdd.md` — drawing the Agent-Tasks board with Vello: what the three Vellos
+  are and why only the CPU one can go in a window on egui 0.36, the wgpu 29 against wgpu 30 wall, the four
+  things `epaint` cannot draw of the picture, the `Decor`/`Chrome`/`Canvas` seam, the five plugin
+  architecture changes, and the cost — what was measured, what was kept, what was rejected, and the one
+  lever that cannot be pulled while epaint shares the crate.
 - `tasks/task-1697-panel-docking-tdd.md` — dragging a panel to an edge of the window: why the three
   Rust docking crates are the wrong shape for a window that is measured against an image, the two
   drop-target mechanics and why the edge band wins, why the highlight is the layout rather than a

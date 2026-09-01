@@ -494,6 +494,24 @@ fn appearance_page(
         pen,
         "Fades the window so the desktop shows through. Text stays fully solid at every setting.",
     );
+    pen += 44.0;
+
+    // Here rather than on the Plugins page, which is a list of what is installed and has no settings behind
+    // it. Depth is an appearance choice in exactly the way the opacity above it is.
+    pen = section(ui, area, pen, "Plugin panes");
+    let row = row_at(area, pen);
+    let mut decorated = settings.plugin_chrome;
+    if checkbox(ui, row, "Draw depth in plugin panes", &mut decorated) {
+        settings.plugin_chrome = decorated;
+        changed = true;
+    }
+    pen += 32.0;
+    note(
+        ui,
+        area,
+        pen,
+        "Soft shadows, gradients and pressed edges behind a plugin's own pane, drawn on the processor. Off, a plugin draws flat, which costs nothing at all.",
+    );
     changed
 }
 

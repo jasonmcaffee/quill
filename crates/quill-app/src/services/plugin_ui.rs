@@ -42,6 +42,7 @@ use std::path::PathBuf;
 
 use egui::Color32;
 
+use crate::services::vello_canvas::Chrome;
 use crate::settings::Settings;
 use crate::theme::{color, size};
 
@@ -81,6 +82,18 @@ pub struct Look<'a> {
     /// What a row in a menu is.
     pub menu_row_height: f32,
     pub corner_radius: f32,
+    /// Where a provider puts the decoration `egui` cannot draw.
+    ///
+    /// **Depth is handed over for the same reason colour is.** A provider says what kind of surface it is
+    /// drawing — `raised`, `sunken`, `glow` — and the elevation recipe is the window's, in
+    /// `services::vello_canvas::Lift`, so two panels cannot disagree about how far off the page a card
+    /// stands. There is no way to record a shadow of your own, which is the rule the closed palette keeps
+    /// for colour.
+    ///
+    /// [`Chrome::off`] unless the window put a canvas behind this pane, so a provider always has one to
+    /// draw into and a test that has no canvas draws into one that records nothing. A provider asks
+    /// `chrome.is_recording()` when it has a flat form to fall back to.
+    pub chrome: &'a Chrome,
     /// Whether this plugin holds the keyboard this frame.
     ///
     /// **What stops a plugin reading a key press meant for something else.** Quill has one value that says who
@@ -99,9 +112,17 @@ impl std::fmt::Debug for Look<'_> {
             .field("font_size", &self.font_size)
             .field("monospace_size", &self.monospace_size)
             .field("opacity", &self.opacity)
+            .field("chrome", &self.chrome.is_recording())
             .finish()
     }
 }
+
+/// The chrome a `Look` has when nothing put a canvas behind it.
+///
+/// A `static` rather than an argument, so that the hundred existing callers of [`Look::of`] — nearly all of
+/// them tests — go on building a `Look` with no canvas, no graphics card and no fonts behind it. It records
+/// nothing however much is drawn into it, so there is nothing to accumulate and nothing to reset.
+static NO_CHROME: Chrome = Chrome::off();
 
 impl<'a> Look<'a> {
     /// The look of this window, this frame.
@@ -116,6 +137,7 @@ impl<'a> Look<'a> {
             monospace_size: settings.terminal_font_size,
             opacity: settings.opacity,
             palette: Palette::QUILL,
+            chrome: &NO_CHROME,
             row_height: size::ROW,
             menu_row_height: MENU_ROW,
             corner_radius: f32::from(size::CONTROL_CORNER),
@@ -129,6 +151,17 @@ impl<'a> Look<'a> {
     pub fn holding_the_keyboard(mut self, holding: bool) -> Self {
         self.has_the_keyboard = holding;
         self
+    }
+
+    /// The same look, recording its decoration into this pane's canvas.
+    ///
+    /// The lifetime shrinks to the chrome's, which is what makes a chrome created for one pane inside the
+    /// pane loop usable by a `Look` built once outside it.
+    pub fn drawing_into<'b: 'c, 'c>(self, chrome: &'b Chrome) -> Look<'c>
+    where
+        'a: 'c,
+    {
+        Look { chrome, ..self }
     }
 
     /// How much bigger everything drawn at a fixed size has to be, from the font the editor is set in.
@@ -181,6 +214,20 @@ pub struct Palette {
     pub text_faint: Color32,
     pub added: Color32,
     pub modified: Color32,
+    /// The four surfaces a board is built from: the page behind it, a lane, a card, and a well.
+    ///
+    /// Named rather than new. The picture the board is measured against uses `#181D24`, `#1C222A`,
+    /// `#20252E` and `#1B2026`, and Quill's own `EDITOR`, `EXPLORER`, `CODE_PANEL` and `FIELD` are each
+    /// within five units a channel of one of them — `CODE_PANEL`'s own comment even says it is "a step up
+    /// from `EDITOR` … so the block reads as a panel on the page", which is what a card is. So the board
+    /// gains the ladder it needs and the palette gains no colour.
+    pub board_page: Color32,
+    pub board_lane: Color32,
+    pub board_card: Color32,
+    pub board_well: Color32,
+    /// The violet a card's agent badge is, and the green ring it wears while its terminal is running.
+    pub agent: Color32,
+    pub attached: Color32,
 }
 
 impl Palette {
@@ -204,6 +251,12 @@ impl Palette {
         text_faint: color::TEXT_FAINT,
         added: color::GIT_ADDED,
         modified: color::GIT_MODIFIED,
+        board_page: color::EDITOR,
+        board_lane: color::EXPLORER,
+        board_card: color::CODE_PANEL,
+        board_well: color::FIELD,
+        agent: color::AGENT,
+        attached: color::ATTACHED,
     };
 }
 
@@ -328,6 +381,16 @@ pub trait UiProvider: std::fmt::Debug {
     /// True once [`Self::open`] has succeeded, so the window can tell "not opened yet" from "opened".
     fn is_open(&self) -> bool;
 
+    /// Whether this provider draws decoration that needs a canvas behind it.
+    ///
+    /// False by default, so a provider that draws only with `egui` costs no pixmap, no rasterisation and no
+    /// texture — the rule that a control which cannot apply is absent, applied to a renderer. Agent-Tasks
+    /// answers true, and the window checks the manifest's `ui.chrome` and the `plugins.chrome` setting as
+    /// well, so there are three ways to say no and one to say yes.
+    fn draws_chrome(&self) -> bool {
+        false
+    }
+
     /// Draw the pane. Called once a frame while the pane is showing.
     fn pane(&mut self, ui: &mut egui::Ui, look: &Look<'_>) -> Vec<Request>;
 
@@ -437,6 +500,56 @@ mod tests {
             assert!(!built.commands().is_empty(), "{name} answers no commands");
         }
         assert!(provider("nothing-like-this").is_none());
+    }
+
+    #[test]
+    fn a_look_records_no_decoration_until_the_window_gives_it_a_canvas() {
+        // `task-1765`. Every existing caller of `Look::of` — nearly all of them tests — goes on building a
+        // look with no canvas behind it, and what it hands out records nothing however much is drawn into
+        // it. That is what stops a test with no window paying for a rasteriser.
+        let settings = Settings::new();
+        let renderer = crate::services::text_renderer::TextRenderer::new();
+        let look = Look::of(&settings, &renderer);
+        assert!(!look.chrome.is_recording(), "a look built with no canvas records nothing");
+        look.chrome.raised(
+            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(10.0)),
+            4.0,
+            crate::services::vello_canvas::Fill::Solid(Color32::RED),
+            crate::services::vello_canvas::Lift::Small,
+        );
+        assert!(look.chrome.take().is_empty());
+
+        // And the same look drawing into a real one records.
+        let chrome = crate::services::vello_canvas::Chrome::recording();
+        let drawing = Look::of(&settings, &renderer).drawing_into(&chrome);
+        assert!(drawing.chrome.is_recording());
+        drawing.chrome.raised(
+            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(10.0)),
+            4.0,
+            crate::services::vello_canvas::Fill::Solid(Color32::RED),
+            crate::services::vello_canvas::Lift::Small,
+        );
+        assert_eq!(chrome.take().len(), 3);
+    }
+
+    #[test]
+    fn the_boards_four_surfaces_are_colours_quill_already_had() {
+        // The palette is closed, and the board's ladder does not open it: the page, a lane, a card and a
+        // well are `EDITOR`, `EXPLORER`, `CODE_PANEL` and `FIELD`, each within a few units a channel of the
+        // picture the board is measured against. A test rather than a comment, because a later change that
+        // reached for a colour of its own would otherwise pass quietly.
+        let palette = Palette::QUILL;
+        assert_eq!(palette.board_page, color::EDITOR);
+        assert_eq!(palette.board_lane, color::EXPLORER);
+        assert_eq!(palette.board_card, color::CODE_PANEL);
+        assert_eq!(palette.board_well, color::FIELD);
+        assert_eq!(palette.attached, color::GIT_ADDED);
+        // And the ladder really is a ladder: each step is lighter than the one behind it, or a card drawn
+        // on a lane drawn on the page would be three rectangles nobody could tell apart.
+        let brightness = |colour: Color32| u32::from(colour.r()) + u32::from(colour.g()) + u32::from(colour.b());
+        assert!(brightness(palette.board_page) < brightness(palette.board_lane));
+        assert!(brightness(palette.board_lane) < brightness(palette.board_card));
+        assert!(brightness(palette.board_well) < brightness(palette.board_lane));
     }
 
     #[test]

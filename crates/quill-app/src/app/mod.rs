@@ -521,6 +521,12 @@ pub struct QuillApp {
     /// One value rather than a provider held per contribution, so the rail, the dock, the tab strip, the
     /// menus and the Settings window all ask the same thing what is contributed.
     pub plugin_ui: plugin_panes::PluginUi,
+    /// One canvas per plugin surface that draws decoration `egui` cannot.
+    ///
+    /// The soft shadows, inset shadows and gradients of `services::vello_canvas`, rasterised only on the
+    /// frame a board changes and painted as one texture behind the pane's own widgets. Empty until a
+    /// plugin asks for it, so a window with no such plugin carries no pixmap.
+    pub canvases: crate::services::vello_canvas::Canvases,
     /// Native browser views and the shared WebView2 or WKWebView environment behind rendered tabs.
     pub browser: BrowserHost,
     /// Browser child rectangles reported by the panes in this frame.
@@ -882,6 +888,7 @@ impl QuillApp {
             plugin_wants_copied: None,
             plugins_ticked_at: None,
             plugin_ui: plugin_panes::PluginUi::default(),
+            canvases: crate::services::vello_canvas::Canvases::default(),
             files: OpenFiles::new(document),
             browser: BrowserHost::new(),
             browser_placements: Vec::new(),
@@ -1018,6 +1025,15 @@ impl QuillApp {
         self.reconcile_mcp();
     }
 
+    /// Draw a plugin's decoration the same way on every machine.
+    ///
+    /// `vello_cpu` picks the widest SIMD the processor has, and whether two levels are bit-identical is not
+    /// something it promises — so a board screenshot accepted on the machine that took it could fail on a
+    /// machine with a different processor, for a reason that is not a fault in Quill. The screenshot tests
+    /// call this and the released binary does not, because in the window the fastest is what is wanted.
+    pub fn draw_deterministically(&mut self) {
+        self.canvases = crate::services::vello_canvas::Canvases::deterministic();
+    }
     /// Set the window's look up before the first frame is drawn.
     ///
     /// This has to happen before the first frame rather than during it, because `Context::set_fonts` takes
@@ -3228,9 +3244,18 @@ impl QuillApp {
         // What each header reported, acted on after the loop: `note_a_panel_grab` changes the window and the
         // loop is holding a borrow of the renderer for the whole of it.
         let mut grabs: Vec<(dock::Panel, crate::components::dock::Grab)> = Vec::new();
-        let look = crate::services::plugin_ui::Look::of(&self.settings, &self.renderer)
-            .holding_the_keyboard(matches!(self.focus, Focus::Plugin));
-        for slot in 0..self.plugin_ui.pane_count() {
+        // What each pane recorded, rasterised after the loop for the same reason the grabs are acted on
+        // after it: the canvases are `self`'s and a provider is drawing with a borrow of `self` until the
+        // iteration ends.
+        let mut chromes: Vec<(
+            egui::Id,
+            Rect,
+            egui::Painter,
+            egui::layers::ShapeIdx,
+            crate::services::vello_canvas::Chrome,
+        )> = Vec::new();
+        for slot_number in 0..self.plugin_ui.pane_count() {
+            let slot = slot_number;
             if !self.plugin_ui.is_visible(slot) {
                 continue;
             }
@@ -3275,6 +3300,14 @@ impl QuillApp {
             let body = Rect::from_min_max(egui::Pos2::new(rect.min.x, header.max.y), rect.max);
             let mut pane_ui = ui.new_child(egui::UiBuilder::new().max_rect(body));
             pane_ui.set_clip_rect(body);
+            // Reserved first, because the decoration goes behind the pane's own widgets. Filled in by
+            // `paint_the_chrome` after the loop, which is the earliest moment `self` is not borrowed by
+            // the `Look` the providers are drawing with.
+            let shape = pane_ui.painter().add(egui::Shape::Noop);
+            let chrome = self.chrome_for(&plugin);
+            let look = crate::services::plugin_ui::Look::of(&self.settings, &self.renderer)
+                .holding_the_keyboard(matches!(self.focus, Focus::Plugin))
+                .drawing_into(&chrome);
             let rect = body;
             match problem {
                 Some(problem) => {
@@ -3295,6 +3328,25 @@ impl QuillApp {
                         asked.extend(wanted.into_iter().map(|request| (plugin.clone(), request)));
                     }
                 }
+            }
+            drop(look);
+            chromes.push((
+                egui::Id::new(("plugin-pane", slot_number)),
+                body,
+                pane_ui.painter().clone(),
+                shape,
+                chrome,
+            ));
+        }
+        for (id, body, painter, shape, chrome) in &chromes {
+            let items = chrome.take();
+            if items.is_empty() {
+                continue;
+            }
+            let name = format!("{id:?}-chrome");
+            if let Some((texture, drawn)) = self.canvases.texture_for(ui.ctx(), *id, &name, *body, &items) {
+                let uv = Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0));
+                painter.set(*shape, egui::Shape::image(texture, drawn, uv, egui::Color32::WHITE));
             }
         }
         // After the loop, because closing a pane changes what the loop is walking and a grab changes the dock.
@@ -6354,6 +6406,10 @@ impl QuillApp {
         self.show_the_drop_zones(ui, panes);
         self.settle_the_panel_drag(ui.ctx(), panes);
 
+        // Every canvas whose surface was not drawn this frame gives its texture back. After every panel
+        // and before the menus, which is the last moment anything could have drawn decoration.
+        self.canvases.tidy();
+
         // A panel's own menu, drawn after every panel so it sits over them rather than under one.
         if let Some((at, panel)) = self.panel_menu {
             let entries = actions::panel_menu(&self.menu_state(), panel);
@@ -7580,33 +7636,86 @@ impl QuillApp {
     /// A whole editing area, which is why `UiProvider::tab` exists beside `pane`: Agent-Tasks draws the
     /// lanes and the open ticket side by side here, where a 420 point column can only show one of them.
     fn show_plugin_tab(&mut self, ui: &mut egui::Ui, area: Rect, tab: &files::PluginTab) -> bool {
-        let look = crate::services::plugin_ui::Look::of(&self.settings, &self.renderer)
-            .holding_the_keyboard(matches!(self.focus, Focus::Plugin));
-        ui.painter().rect_filled(area, 0, look.ground(look.palette.editor));
-        let asked = match self.plugin_ui.problem_with(&tab.plugin) {
-            Some(problem) => {
-                let galley = ui.painter().layout(
-                    format!("{} could not be opened.\n\n{problem}", tab.label),
-                    egui::FontId::proportional(look.font_size),
-                    look.palette.text_dim,
-                    area.width() - 48.0,
-                );
-                ui.painter().galley(area.min + egui::Vec2::splat(24.0), galley, look.palette.text_dim);
-                Vec::new()
-            }
-            None => {
-                let mut tab_ui = ui.new_child(egui::UiBuilder::new().max_rect(area));
-                tab_ui.set_clip_rect(area);
-                match self.plugin_ui.provider(&tab.plugin) {
-                    Some(provider) => provider.tab(&mut tab_ui, &look),
-                    None => Vec::new(),
+        // The page's own ground first, then the slot the decoration goes in, then the plugin's widgets.
+        // egui hands a layer's shapes to the tessellator in the order they arrive, so a ground drawn after
+        // the slot would paint over the very thing the slot is reserved for — which is what it did, and the
+        // board came out with no lanes and no cards at all.
+        let ground = crate::services::plugin_ui::Look::of(&self.settings, &self.renderer);
+        ui.painter().rect_filled(area, 0, ground.ground(ground.palette.board_page));
+        drop(ground);
+        // `Painter::set` fills the slot in once the drawing is over — see `paint_the_chrome`.
+        let slot = ui.painter().add(egui::Shape::Noop);
+        let chrome = self.chrome_for(&tab.plugin);
+        let asked = {
+            let look = crate::services::plugin_ui::Look::of(&self.settings, &self.renderer)
+                .holding_the_keyboard(matches!(self.focus, Focus::Plugin))
+                .drawing_into(&chrome);
+            match self.plugin_ui.problem_with(&tab.plugin) {
+                Some(problem) => {
+                    let galley = ui.painter().layout(
+                        format!("{} could not be opened.\n\n{problem}", tab.label),
+                        egui::FontId::proportional(look.font_size),
+                        look.palette.text_dim,
+                        area.width() - 48.0,
+                    );
+                    ui.painter().galley(area.min + egui::Vec2::splat(24.0), galley, look.palette.text_dim);
+                    Vec::new()
+                }
+                None => {
+                    let mut tab_ui = ui.new_child(egui::UiBuilder::new().max_rect(area));
+                    tab_ui.set_clip_rect(area);
+                    match self.plugin_ui.provider(&tab.plugin) {
+                        Some(provider) => provider.tab(&mut tab_ui, &look),
+                        None => Vec::new(),
+                    }
                 }
             }
         };
+        self.paint_the_chrome(ui, slot, egui::Id::new(("plugin-tab", &tab.plugin)), area, &chrome);
         for request in asked {
             self.act_on_a_plugin_request(&tab.plugin, request);
         }
         false
+    }
+
+    /// The chrome this plugin's surface records into this frame.
+    ///
+    /// Three things have to agree before there is one, and each says no on its own: the manifest asked for
+    /// a renderer with `ui.chrome`, the provider says it draws decoration, and the person has not switched
+    /// `plugins.chrome` off. Otherwise it is `Chrome::off`, which records nothing and costs nothing, and
+    /// the board draws its flat form.
+    fn chrome_for(&mut self, plugin: &str) -> crate::services::vello_canvas::Chrome {
+        let asked = self.plugin_ui.surfaces().draws_chrome(plugin);
+        let draws =
+            self.plugin_ui.provider(plugin).map(|provider| provider.draws_chrome()).unwrap_or(false);
+        match self.settings.plugin_chrome && asked && draws {
+            true => crate::services::vello_canvas::Chrome::recording(),
+            false => crate::services::vello_canvas::Chrome::off(),
+        }
+    }
+
+    /// Rasterise what a plugin recorded and fill in the slot reserved for it.
+    ///
+    /// The one place a `Decor` list becomes pixels, so the pane, the tab and the settings page cannot
+    /// disagree about when there is decoration. A list that is empty, or a surface too big to rasterise,
+    /// leaves the slot as the `Noop` it was — which draws nothing rather than a blank rectangle.
+    fn paint_the_chrome(
+        &mut self,
+        ui: &egui::Ui,
+        slot: egui::layers::ShapeIdx,
+        id: egui::Id,
+        area: Rect,
+        chrome: &crate::services::vello_canvas::Chrome,
+    ) {
+        let items = chrome.take();
+        if items.is_empty() {
+            return;
+        }
+        let name = format!("{id:?}-chrome");
+        if let Some((texture, drawn)) = self.canvases.texture_for(ui.ctx(), id, &name, area, &items) {
+            let uv = Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0));
+            ui.painter().set(slot, egui::Shape::image(texture, drawn, uv, egui::Color32::WHITE));
+        }
     }
 
     fn show_picture(&mut self, ui: &mut egui::Ui, area: Rect) -> bool {

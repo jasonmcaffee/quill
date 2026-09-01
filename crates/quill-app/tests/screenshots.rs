@@ -172,6 +172,10 @@ fn harness(text: &str) -> Harness<'static, QuillApp> {
             // The same setup the released binary does, and for the same reason: the fonts have to be
             // installed before the first frame.
             app.prepare(&cc.egui_ctx);
+            // A plugin's decoration is rasterised on the processor, and `vello_cpu` picks the widest SIMD it
+            // has. Pinned here so an accepted image is a property of the code rather than of the machine that
+            // took it — the same reason the terminal's screenshots feed fixed bytes to a session with no shell.
+            app.draw_deterministically();
             app
         });
     harness.run();
@@ -186,6 +190,10 @@ fn harness_in(folder: &std::path::Path) -> Harness<'static, QuillApp> {
         .build_eframe(move |cc| {
             let mut app = QuillApp::new(folder);
             app.prepare(&cc.egui_ctx);
+            // A plugin's decoration is rasterised on the processor, and `vello_cpu` picks the widest SIMD it
+            // has. Pinned here so an accepted image is a property of the code rather than of the machine that
+            // took it — the same reason the terminal's screenshots feed fixed bytes to a session with no shell.
+            app.draw_deterministically();
             app
         });
     harness.run();
@@ -1187,6 +1195,10 @@ fn the_window_matches_the_design() {
         .build_eframe(move |cc| {
             let mut app = QuillApp::new(folder);
             app.prepare(&cc.egui_ctx);
+            // A plugin's decoration is rasterised on the processor, and `vello_cpu` picks the widest SIMD it
+            // has. Pinned here so an accepted image is a property of the code rather than of the machine that
+            // took it — the same reason the terminal's screenshots feed fixed bytes to a session with no shell.
+            app.draw_deterministically();
             app
         });
     harness.run();
@@ -1721,6 +1733,10 @@ fn save_as_and_save_are_reachable_without_the_menu() {
         .build_eframe(move |cc| {
             let mut app = QuillApp::with_text(owned, text);
             app.prepare(&cc.egui_ctx);
+            // A plugin's decoration is rasterised on the processor, and `vello_cpu` picks the widest SIMD it
+            // has. Pinned here so an accepted image is a property of the code rather than of the machine that
+            // took it — the same reason the terminal's screenshots feed fixed bytes to a session with no shell.
+            app.draw_deterministically();
             app
         });
     harness.run();
@@ -3411,6 +3427,10 @@ fn the_rest_of_the_menu_still_works_while_a_text_box_has_the_keyboard() {
         .build_eframe(move |cc| {
             let mut app = QuillApp::with_text(owned, text);
             app.prepare(&cc.egui_ctx);
+            // A plugin's decoration is rasterised on the processor, and `vello_cpu` picks the widest SIMD it
+            // has. Pinned here so an accepted image is a property of the code rather than of the machine that
+            // took it — the same reason the terminal's screenshots feed fixed bytes to a session with no shell.
+            app.draw_deterministically();
             app
         });
     harness.run();

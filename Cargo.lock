@@ -3471,6 +3471,7 @@ dependencies = [
  "serde_json",
  "unicode-segmentation",
  "url",
+ "vello_cpu",
  "windows-sys 0.61.2",
  "winresource",
  "wry",
