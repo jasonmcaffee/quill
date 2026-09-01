@@ -152,7 +152,12 @@ pub fn show(
     scroll: f32,
 ) -> f32 {
     let mut clipped = ui.new_child(egui::UiBuilder::new().max_rect(area));
-    clipped.set_clip_rect(area);
+    // **Intersected with what the caller was already clipped to, rather than replacing it.**
+    // `Ui::set_clip_rect` sets outright, so a block whose rectangle reaches past the pane it is drawn
+    // in — a message scrolled half out of a chat, which is the ordinary case — painted its text over
+    // whatever was above the scrolling area. Measured on a real window in `task-1767`, where a message
+    // scrolled off the top was drawn across the pane's own header.
+    clipped.set_clip_rect(area.intersect(ui.clip_rect()));
     crate::components::editor_view::paint_text(
         &clipped,
         renderer,

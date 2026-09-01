@@ -521,6 +521,9 @@ pub struct QuillApp {
     /// One value rather than a provider held per contribution, so the rail, the dock, the tab strip, the
     /// menus and the Settings window all ask the same thing what is contributed.
     pub plugin_ui: plugin_panes::PluginUi,
+    /// The last project and open file every provider was told about, so it is told only when it
+    /// changes. See `tell_the_plugins_what_is_showing`.
+    told_the_plugins: Option<(Option<PathBuf>, Option<PathBuf>)>,
     /// One canvas per plugin surface that draws decoration `egui` cannot.
     ///
     /// The soft shadows, inset shadows and gradients of `services::vello_canvas`, rasterised only on the
@@ -888,6 +891,7 @@ impl QuillApp {
             plugin_wants_copied: None,
             plugins_ticked_at: None,
             plugin_ui: plugin_panes::PluginUi::default(),
+            told_the_plugins: None,
             canvases: crate::services::vello_canvas::Canvases::default(),
             files: OpenFiles::new(document),
             browser: BrowserHost::new(),
@@ -3381,7 +3385,7 @@ impl QuillApp {
             }
         }
         for (plugin, request) in asked {
-            self.act_on_a_plugin_request(&plugin, request);
+            self.act_on_a_plugin_request(&plugin, request, ui.ctx());
         }
     }
 
@@ -3397,10 +3401,21 @@ impl QuillApp {
         &mut self,
         plugin: &str,
         request: crate::services::plugin_ui::Request,
+        ctx: &egui::Context,
     ) {
         use crate::services::plugin_ui::Request;
         match request {
             Request::OpenFile(path) => self.open_path_in_tab(&path, true),
+            // **The one place a command becomes a change is `run_cli`**, and this is a plugin
+            // reaching it. The answer goes back to the provider that asked, by the id it asked with,
+            // because more than one may be outstanding and they do not finish in order.
+            Request::RunCommand { id, command, arguments } => {
+                let request = quill_cli::protocol::Request::new("", &command, arguments);
+                let answer = self.run_cli_for_a_plugin(&request, ctx);
+                if let Some(provider) = self.plugin_ui.provider(plugin) {
+                    provider.answered(&id, answer);
+                }
+            }
             Request::Message(said) => self.message = Some(said),
             Request::ShowTab => {
                 let key = self
@@ -3573,6 +3588,10 @@ impl QuillApp {
     /// from the command line has no pane showing and its handoff would sit in the queue until the next two
     /// minute tick. A plugin with nothing running does nothing here.
     fn let_the_plugins_catch_up(&mut self, ctx: &egui::Context) {
+        // What each provider decided while nobody was looking at it, acted on after the loop for the
+        // reason every other plugin request is: acting on one changes the window, and the loop is
+        // holding a borrow of the registry the whole time.
+        let mut asked: Vec<(String, crate::services::plugin_ui::Request)> = Vec::new();
         for plugin in self.plugin_ui.surfaces().plugins() {
             if !self.plugin_ui.is_open(&plugin) {
                 continue;
@@ -3583,6 +3602,36 @@ impl QuillApp {
                     // nobody is pointing at the window is the case this is for.
                     ctx.request_repaint_after(std::time::Duration::from_millis(120));
                 }
+                asked.extend(
+                    provider.asking().into_iter().map(|request| (plugin.clone(), request)),
+                );
+            }
+        }
+        for (plugin, request) in asked {
+            self.act_on_a_plugin_request(&plugin, request, ctx);
+        }
+        self.tell_the_plugins_what_is_showing();
+    }
+
+    /// Tell every open provider which project is open and which file is showing.
+    ///
+    /// **Only when it has changed**, which is two `Option<PathBuf>` comparisons a frame — `task-1666`'s
+    /// rule, that nothing which runs once a frame may do work it does not need to. The window owns
+    /// this the way it owns the keyboard, so it is the window that says so; a provider that read it
+    /// for itself would be a second thing deciding what a tab is.
+    fn tell_the_plugins_what_is_showing(&mut self) {
+        let showing = self.files.active().path().map(std::path::Path::to_path_buf);
+        let project = Some(self.tree.root().to_path_buf());
+        if self.told_the_plugins == Some((project.clone(), showing.clone())) {
+            return;
+        }
+        self.told_the_plugins = Some((project.clone(), showing.clone()));
+        for plugin in self.plugin_ui.surfaces().plugins() {
+            if !self.plugin_ui.is_open(&plugin) {
+                continue;
+            }
+            if let Some(provider) = self.plugin_ui.provider(&plugin) {
+                provider.showing(project.as_deref(), showing.as_deref());
             }
         }
     }
@@ -6285,7 +6334,7 @@ impl QuillApp {
         // arithmetic as every other panel and cannot overlap one. A provider that failed to open draws
         // the reason rather than nothing, which is what every honest miss in Quill does.
         for (plugin, request) in self.show_the_plugin_panes(ui) {
-            self.act_on_a_plugin_request(&plugin, request);
+            self.act_on_a_plugin_request(&plugin, request, ui.ctx());
         }
         if std::mem::take(&mut self.plugin_wants_a_repaint) {
             ui.ctx().request_repaint();
@@ -6705,7 +6754,7 @@ impl QuillApp {
             },
         );
         for (plugin, request) in std::mem::take(&mut page_asked) {
-            self.act_on_a_plugin_request(&plugin, request);
+            self.act_on_a_plugin_request(&plugin, request, ui.ctx());
         }
         if let Some(id) = settings_outcome.plugins.install {
             self.install_plugin(&id);
@@ -7683,7 +7732,7 @@ impl QuillApp {
         };
         self.paint_the_chrome(ui, slot, egui::Id::new(("plugin-tab", &tab.plugin)), area, &chrome);
         for request in asked {
-            self.act_on_a_plugin_request(&tab.plugin, request);
+            self.act_on_a_plugin_request(&tab.plugin, request, ui.ctx());
         }
         false
     }

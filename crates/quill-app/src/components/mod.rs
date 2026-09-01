@@ -6,6 +6,8 @@
 
 // The Agent-Tasks board, which is the first plugin that draws. Nothing in it decides anything: the
 // lanes, the drag and the search are `services::agent_tasks`.
+// The Agent-Chat pane: the panel, the conversation, the composer and its Settings page.
+pub mod agent_chat;
 pub mod agent_tasks;
 pub mod about_dialog;
 pub mod activity_bar;

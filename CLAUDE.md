@@ -178,6 +178,112 @@ WebView2's low-memory target, and closing the last rendered tab drops the view a
 entirely: 197 MB with none open, 527 MB with one, 531 MB with four. Toolbar navigation and
 `quill-cli browser` both go through `QuillApp::run_browser_command`.
 
+## The chat pane is the first thing in Quill that opens a socket, and the request is the feature
+
+`task-1767` asks for "an agent chat plugin that opens as a right panel (left side toggle icon), can be
+moved around like the other panels, and looks like our ai service LLM chat, supports streaming,
+images, has a config in settings to allow configure url for Claude, codex etc." — dark neumorphic
+like the board. `tasks/task-1767-agent-chat-tdd.md` is the design and
+`_agent_output/task-1767-agent-chat/reference-chat.png` is the picture it is measured against, which
+is the ai-service LLM chat page's own structure — read out of `components/llm/chat-page/*` and its
+module CSS rather than photographed, because that page is behind a login an agent has no key for —
+rebuilt in the dark token set the board is drawn in.
+
+**The whole of the first sentence is a manifest.** `pane.side = right`, `pane.group = top`,
+`pane.icon = chat`, and dragging its header to another edge, the four blue drop bands, `Move to` on
+its right click menu and `quill-cli plugins pane agent-chat/chat --side bottom` all work with no code
+in the plugin, because `task-1697` built them for every panel and `task-28` left the machinery in
+place when Agent-Tasks stopped asking for a pane. `theme::icon::chat` is the one new drawing.
+
+**Everything that talks to a server is `crates/quill-chat`**, which has no user interface dependency
+and is arranged as `quill-dap` is: the endpoints, the two wire shapes, the server-sent-event framing,
+the conversation, the turn state machine and the thread a request runs on. Its tests run against a
+**scripted server** — a `TcpListener` on `127.0.0.1:0` replaying fixed bytes in chunked writes — which
+is `quill-dap`'s scripted adapters with a socket instead of a pipe, and it is what makes "the whole
+client, end to end" a unit test. The framing is fed the same stream split at every byte boundary and
+has to produce the same events.
+
+**Two wire shapes and no third.** OpenAI's `/v1/chat/completions` is what llama.cpp, LM Studio,
+Ollama, every gateway on this machine and OpenAI itself speak; Anthropic's `/v1/messages` is a
+genuinely different protocol — named events, indexed content blocks, a system prompt that is a field
+rather than a message, tool results gathered into one `user` message because two in a row are refused.
+Both are read into the **same** `Reply` values, so `components::agent_chat` has never heard of a
+`content_block_delta`. A configuration naming a shape this version has not got is refused with the
+list, which is the rule `language.renders`, `run.project`, `debug.adapter` and `ui.chrome` all keep.
+
+**Nothing is fetched that was not asked for, and that rule is not weakened.** One request is made,
+when somebody presses send, to an address they typed into a Settings page. There is no discovery, no
+model list, no telemetry and nothing at startup — and a Markdown image inside an answer still shows
+its alt text rather than being fetched. `task-1692` drew this line already: a package manager somebody
+pressed a button for is not the editor reaching out, and neither is this.
+
+**The client is `ureq` with `native-tls`, and the provider has to be named.** `native-tls` is schannel
+on Windows and Security.framework on macOS, so the certificates Quill trusts are the certificates the
+machine trusts — `quill-git`'s argument for shelling out to the machine's real git, made about a
+certificate store instead of a credential helper. Measured: 31 crates against 121 for rustls with its
+own roots. And `ureq`'s default TLS provider is **Rustls whether or not that feature is on**, so an
+`https` request made without naming the provider **panics inside the transport**, on the worker
+thread, taking the whole answer with it. Every request to a hosted API went that way until a
+screenshot test drove a tool round and found it; `an_https_address_is_refused_rather_than_panicking_inside_the_transport`
+is what keeps it found.
+
+**A key is never written by Quill.** `services::agent_tasks::keychain` says a secret must not go in a
+settings file and says honestly that there is no Windows keychain here, so an endpoint names an
+**environment variable** — `ANTHROPIC_API_KEY`, the one `claude` itself reads — and it is read at the
+moment a request is sent and never held. What is written down is the name of the place the key is,
+which is the same thing Agent-Tasks writes down. The Settings page says `set` or `not set` and never
+the value, and a refusal names the variable rather than quoting a header.
+
+**The tools a model may call are Quill's own commands, generated from the catalogue.**
+`quill_cli::mcp::tools` already turns the catalogue into tools with their schemas, so
+`services::agent_chat::tools` is a translation between two envelopes and nothing else — never a
+second list. A call goes back through `QuillApp::run_cli`, **the one place a command turns into a
+change**, so a tool call and a person pressing the same menu entry are the same thing. It is **off**
+unless somebody says so, which is the precedent the page this pane copies already set with its own
+robot button, and `chat.tool_limit` bounds a turn at eight rounds because a model that decides to list
+every file should stop being funded by a pane nobody is watching. A command that *waits* is refused
+with a sentence: a tool call that never returned would leave the conversation stopped with nothing on
+the screen to say why.
+
+**Three additions to the plugin contract, each with a default so nothing that shipped changes.**
+`Request::RunCommand` is how a provider reaches `run_cli`; `UiProvider::asking` is what a provider
+decided while nobody was looking at it, drained once a frame beside `catch_up`, because a model's tool
+call arrives on a worker thread and a turn must not stall because a pane was put away; and
+`UiProvider::showing` is the window telling a provider which project is open and which file is
+showing — the shape `UiProvider::keyboard` already set. It is **which file, never the file's text**: a
+pane that quietly uploaded whatever was on the screen is a pane nobody could use on anything
+confidential. With the tools on the model can read it by asking, which is the right shape for an
+editor whose every command is already a tool.
+
+**`Look` gained a highlighter**, so a fenced block in an answer is coloured by the plugin that claims
+its language, exactly as the Markdown preview colours one. A message body is
+`components::markdown_text`, which is `quill_core::markdown::render` plus the ordinary layout — the
+same thing the editor's own preview is made of — so headings, lists, quotes, tables and code all work
+and none of it is a second renderer. A picture *attached* to a message is drawn; one written as
+`![](…)` inside the text shows its alt text, for the reason `components/markdown_text.rs` already
+gives.
+
+**Two things about the drawing that are rules rather than choices.** A row's shape is decided in one
+place, `message::pieces`, and both the measuring pass and the drawing pass read it — a row measured as
+one thing and drawn as another leaves gaps between bubbles or overlaps them. And **a bubble is as wide
+as its words while a tool block, a failure and the thinking are as wide as the row**: they are reports
+rather than speech, and sized to their own message a tool called from a two word answer came out two
+words wide with its own caret clipped off the end of it. Only rows that intersect the clip rectangle
+are drawn, which is `task-1666`'s rule and also what keeps the decoration's canvas the size of the
+pane rather than the size of the transcript.
+
+**There is no context meter**, and that is the absent-control rule rather than an omission. The page
+this is modelled on draws one because its own server knows the window the model was loaded with; a URL
+and a model name say nothing about a context length, so a bar here would be a fraction of a number
+nobody measured. What is drawn is what the server really reported: the tokens in and the tokens out.
+
+`quill-cli plugins run agent-chat …` is the agent's half — `new`, `send`, `stop`, `state`, `messages`,
+`last`, `attach`, `providers`, `use`, `history`, `open`, `remove`, `tools` — and `plugins view
+agent-chat` answers the whole pane as data. **`send` does not wait**, because `UiProvider::command`
+runs inside a frame and a command that blocked would stop the window drawing for the length of a
+model's answer, which is the sentence `quill_git::Worker` exists for; `state` says when it has
+finished, which is the shape `run start` and `run output` already have.
+
 ## A plugin's pane has depth, and `epaint` cannot draw any of it
 
 `task-1765` asks the Agent-Tasks board to look like the tasks page of `ai-service`, which is **dark
@@ -2685,6 +2791,12 @@ trade that away to be a shade nearer a screenshot.
   things `epaint` cannot draw of the picture, the `Decor`/`Chrome`/`Canvas` seam, the five plugin
   architecture changes, and the cost — what was measured, what was kept, what was rejected, and the one
   lever that cannot be pulled while epaint shares the crate.
+- `tasks/task-1767-agent-chat-tdd.md` — the chat pane: how the picture it is measured against was
+  rebuilt out of the ai-service LLM chat page's own CSS rather than photographed, why the streaming
+  client is a crate of its own with a scripted server behind its tests, the two wire shapes and the
+  third that was left out, why the client is `ureq` over the machine's own TLS and where a key lives
+  on a platform with no keychain, what a tool call is and why it is Quill's own catalogue, and the
+  eight things deliberately left out.
 - `tasks/task-1697-panel-docking-tdd.md` — dragging a panel to an edge of the window: why the three
   Rust docking crates are the wrong shape for a window that is measured against an image, the two
   drop-target mechanics and why the edge band wins, why the highlight is the layout rather than a

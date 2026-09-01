@@ -586,6 +586,38 @@ impl QuillApp {
         }
     }
 
+    /// Run one command on behalf of a plugin's tool call, and answer with what it said.
+    ///
+    /// **The same `run_cli` a `quill-cli` request goes down**, so a model calling a tool and a person
+    /// pressing the same menu entry are the same thing rather than two paths that agree today. That is
+    /// the whole reason `plugin_ui::Request::RunCommand` names a catalogue command rather than
+    /// carrying a closure.
+    ///
+    /// A command that **waits** answers `Outcome::Hold`, and here that is a refusal rather than a
+    /// wait: the caller is a chat turn, and a tool call that never returned would leave the
+    /// conversation stopped with nothing on the screen to say why. `agent_chat::tools::resolve`
+    /// refuses the waiting commands before they reach this, so this is the backstop rather than the
+    /// gate.
+    pub fn run_cli_for_a_plugin(
+        &mut self,
+        request: &Request,
+        ctx: &egui::Context,
+    ) -> Result<serde_json::Value, String> {
+        match self.run_cli(request, ctx) {
+            Outcome::Reply(reply) if reply.ok => Ok(match reply.result.is_null() {
+                // A command that changed something and returned no data still said a sentence, and the
+                // sentence is what a model needs to read.
+                true => serde_json::Value::String(reply.message),
+                false => reply.result,
+            }),
+            Outcome::Reply(reply) => Err(reply.message),
+            Outcome::Hold(_) => Err(format!(
+                "`{}` waits for something to happen, and a tool call cannot wait.",
+                request.command
+            )),
+        }
+    }
+
     /// Run one command. The single place a command line request turns into a change.
     fn run_cli(&mut self, request: &Request, ctx: &egui::Context) -> Outcome {
         if let Some(refusal) = unknown_argument_refusal(request) {

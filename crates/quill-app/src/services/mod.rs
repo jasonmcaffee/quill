@@ -1,5 +1,9 @@
 //! Everything the window needs that is not drawing.
 
+// The Agent-Chat plugin: a pane you talk to a model in. `quill-chat` is the half with no window in
+// it — the endpoints, the wire shapes, the framing and the thread — and this is the half that has
+// one. See `tasks/task-1767-agent-chat-tdd.md`.
+pub mod agent_chat;
 // The Agent-Tasks plugin: the first plugin that draws. `agent_tasks::AgentTasks` is the
 // `plugin_ui::UiProvider` the manifest names, and everything under it is testable with no window.
 pub mod agent_tasks;

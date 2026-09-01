@@ -263,6 +263,28 @@ fn shot(name: &str) -> String {
     }
 }
 
+/// What the contributed pane called `key` is called, from its own manifest.
+fn pane_label(harness: &Harness<'static, QuillApp>, key: &str) -> String {
+    let slot = harness
+        .state()
+        .plugin_ui
+        .slot_of(key)
+        .unwrap_or_else(|| panic!("there is no contributed pane called {key}"));
+    harness.state().plugin_ui.pane(slot).expect("the pane").label.clone()
+}
+
+/// Whether the contributed pane called `key` is showing.
+///
+/// **By name rather than by slot**, which is the rule `PluginUi` itself keeps: which slot a pane is in
+/// comes from the manifests and moves when a plugin is switched on or off.
+fn showing(harness: &Harness<'static, QuillApp>, key: &str) -> bool {
+    harness
+        .state()
+        .plugin_ui
+        .slot_of(key)
+        .is_some_and(|slot| harness.state().plugin_ui.is_visible(slot))
+}
+
 /// Report the snapshots taken by a test that builds more than one window.
 ///
 /// The harness requires every snapshot result in one test to be collected together, so that a run with
@@ -11223,16 +11245,21 @@ fn the_board_contributes_a_tab_and_no_pane() {
         board["contributes"].as_array().expect("what it adds").iter().filter_map(|it| it.as_str()).collect();
     assert_eq!(contributes, ["tab", "menu", "settings page"], "a tab, a menu and a page, and no pane");
 
-    // No slot is taken, so the rail has no contributed button and the dock has no plugin column.
-    assert!(harness.state().plugin_ui.pane(0).is_none(), "there is no contributed pane to be in slot 0");
-    assert_eq!(harness.state().panel_area(Panel::Plugin(0)).width(), 0.0);
+    // The board takes no dock slot. Agent-Chat's pane does — `task-1767` — so this is checked by name
+    // rather than by slot number: which number a pane is in comes from the manifests and moves when a
+    // plugin is switched on or off.
+    assert!(
+        harness.state().plugin_ui.slot_of("agent-tasks/board").is_none(),
+        "the board contributes no pane, so it is in no slot"
+    );
+    let _ = Panel::Plugin(0);
     let panels = did(&mut harness, "panel list");
     let names: Vec<&str> =
         panels["panels"].as_array().expect("the panels").iter().filter_map(|it| it["panel"].as_str()).collect();
     assert_eq!(
         names,
         ["explorer", "terminal", "run", "debug"],
-        "Quill\'s own four and nothing contributed: {names:?}"
+        "`panel list` is Quill\'s own four; a contributed pane is moved with `plugins pane`: {names:?}"
     );
 
     // The board is reached from its menu entry instead, which is the control a person uses.
@@ -11273,20 +11300,27 @@ fn the_pane_is_moved_and_put_away_from_the_command_line() {
     harness.state_mut().use_store(quill_app::services::store::Store::at(&settings));
     harness.run();
 
+    // By name rather than by slot number: Agent-Chat contributes a pane too since `task-1767`, and
+    // which slot each is in comes from the manifests.
+    let slot = harness
+        .state()
+        .plugin_ui
+        .slot_of("agent-tasks/board")
+        .expect("the manifest written for this test contributes a pane") as u8;
     let shown = did(&mut harness, "plugins pane agent-tasks/board --show");
     assert_eq!(shown["showing"], true);
     assert_eq!(shown["side"], "right");
     // The same drag the header takes, asked for by name.
     let moved = did(&mut harness, "plugins pane agent-tasks/board --side bottom");
     assert_eq!(moved["side"], "bottom");
-    assert_eq!(side_of(&harness, Panel::Plugin(0)), Side::Bottom);
+    assert_eq!(side_of(&harness, Panel::Plugin(slot)), Side::Bottom);
     let away = did(&mut harness, "plugins pane agent-tasks/board --hide");
     assert_eq!(away["showing"], false);
     harness.run();
     // A pane that is put away takes no room, which is what `Rect::ZERO` in `regions` means. Read off the
     // rectangles the frame actually used rather than off `panel_area`, which answers where a panel
     // *would* be so that a menu can offer to move one that is hidden.
-    assert_eq!(harness.state().panel_rect_for_tests(Panel::Plugin(0)).width(), 0.0);
+    assert_eq!(harness.state().panel_rect_for_tests(Panel::Plugin(slot)).width(), 0.0);
     let _ = Side::Right;
     std::fs::remove_dir_all(&folder).ok();
 }
@@ -11606,21 +11640,13 @@ fn a_manifest_changed_by_hand_takes_effect_on_a_reload_with_no_restart() {
         listed["plugins"].as_array().expect("the plugins").iter().any(|it| it["id"] == "agent-tasks"),
         "it is installed"
     );
-    assert_eq!(
-        harness.state().plugin_ui.pane(0).expect("the pane").label,
-        "The Board",
-        "the label came from the file"
-    );
+    assert_eq!(pane_label(&harness, "agent-tasks/board"), "The Board", "the label came from the file");
     // Change the file and reload. No restart, and the window is different in the same frame.
     std::fs::write(plugin.join("plugin.conf"), manifest("Tickets", "bottom")).expect("a changed manifest");
     let reloaded = did(&mut harness, "plugins reload");
     assert!(reloaded["refused"].as_array().expect("what was refused").is_empty());
     harness.run();
-    assert_eq!(
-        harness.state().plugin_ui.pane(0).expect("the pane").label,
-        "Tickets",
-        "the reload read the file again"
-    );
+    assert_eq!(pane_label(&harness, "agent-tasks/board"), "Tickets", "the reload read the file again");
     // And a manifest that will not parse is skipped with its reason rather than stopping Quill.
     std::fs::write(plugin.join("plugin.conf"), "plugin.id = agent-tasks\nplugin.kind = wasm\n")
         .expect("a manifest Quill refuses");
@@ -11924,24 +11950,26 @@ fn a_pane_that_is_showing_stays_the_pane_that_is_showing_when_the_plugins_change
     harness.run();
     did(&mut harness, "plugins pane agent-tasks/board --show");
     harness.run();
-    assert!(harness.state().plugin_ui.is_visible(0));
+    assert!(showing(&harness, "agent-tasks/board"));
     // Switching another plugin off and on again is a `Surfaces` rebuild, which is the moment a slot could
-    // move underneath the pane that is showing.
+    // move underneath the pane that is showing. There is a second contributed pane in the window now —
+    // Agent-Chat's, since `task-1767` — so the slots really do move, which is what this is about.
     did(&mut harness, "plugins disable rust");
     harness.run();
-    assert!(harness.state().plugin_ui.is_visible(0), "the board is still showing");
+    assert!(showing(&harness, "agent-tasks/board"), "the board is still showing");
+    assert!(!showing(&harness, "agent-chat/chat"), "and the pane nobody opened is still not");
     did(&mut harness, "plugins enable rust");
     harness.run();
-    assert!(harness.state().plugin_ui.is_visible(0));
+    assert!(showing(&harness, "agent-tasks/board"));
     // And switching the board itself off stops it showing rather than leaving a stale flag behind for
     // whatever pane lands in that slot next.
     did(&mut harness, "plugins disable agent-tasks");
     harness.run();
-    assert!(!harness.state().plugin_ui.is_visible(0));
+    assert!(!showing(&harness, "agent-tasks/board"));
     did(&mut harness, "plugins enable agent-tasks");
     harness.run();
     assert!(
-        !harness.state().plugin_ui.is_visible(0),
+        !showing(&harness, "agent-tasks/board"),
         "a plugin switched back on does not bring its pane back showing: nobody asked for it"
     );
     std::fs::remove_dir_all(&folder).ok();
@@ -12658,3 +12686,324 @@ fn the_boards_own_settings_page_with_its_agent_configuration() {
     harness.snapshot(shot("agent_tasks_settings").as_str());
 }
 
+// ---------------------------------------------------------------------------- the Agent-Chat plugin
+//
+// `task-1767`: a pane docked to the right, opened from a button in the rail, that streams an answer
+// from a model. `tasks/task-1767-agent-chat-tdd.md` is the design and
+// `_agent_output/task-1767-agent-chat/reference-chat.png` is the picture it is measured against.
+//
+// **No test here makes a network request.** A conversation is built out of the same `Reply` values the
+// wire would have produced, which is the terminal's own rule — its screenshot tests feed fixed bytes to
+// a session with no shell behind it, because when a real one answers is not something a test can know.
+// `quill-chat`'s own tests drive the whole client against a scripted server on loopback.
+
+/// Reach the chat plugin's own state, the way its buttons do.
+///
+/// `UiProvider::as_any_mut` exists for exactly two callers and this is one of them.
+fn with_the_chat(
+    harness: &mut Harness<'static, QuillApp>,
+    act: impl FnOnce(&mut quill_app::services::agent_chat::AgentChat),
+) {
+    let provider =
+        harness.state_mut().plugin_ui.opened("agent-chat", "agent-chat").expect("the chat provider");
+    let chat = provider
+        .as_any_mut()
+        .and_then(|any| any.downcast_mut::<quill_app::services::agent_chat::AgentChat>())
+        .expect("the chat provider as its own type");
+    act(chat);
+    // **Stepped rather than run.** A pane with an answer arriving asks to be drawn again, so
+    // `Harness::run` gives it four steps to go quiet and panics when it does not — which is right for
+    // a settled window and wrong for a streaming one. `did_while_waiting` is the same rule, and
+    // `task-1654` wrote it down for the loops that wait on git.
+    harness.step();
+    harness.step();
+}
+
+/// Show the pane with a conversation already in it.
+fn a_chat(said: &[(quill_chat::Role, &str)]) -> Harness<'static, QuillApp> {
+    let mut harness = harness("");
+    did(&mut harness, "plugins pane agent-chat/chat --show");
+    harness.run();
+    let said: Vec<(quill_chat::Role, String)> =
+        said.iter().map(|(role, text)| (*role, (*text).to_owned())).collect();
+    with_the_chat(&mut harness, move |chat| {
+        for (role, text) in said {
+            let id = chat.session_mut().chat.next_id();
+            chat.session_mut().chat.push(quill_chat::Message::said(id, role, text));
+        }
+    });
+    harness
+}
+
+/// The ticket's first sentence, as data: a right hand column with a button in the rail.
+#[test]
+fn the_chat_contributes_a_pane_on_the_right_with_a_button_in_the_rail() {
+    use quill_app::app::dock::{Panel, Side};
+    let mut harness = harness("");
+    let listed = did(&mut harness, "plugins list");
+    let plugins = listed["plugins"].as_array().expect("the plugins");
+    let chat =
+        plugins.iter().find(|plugin| plugin["id"] == "agent-chat").expect("the agent-chat plugin");
+    assert_eq!(chat["kind"], "ui");
+    assert_eq!(chat["provider"], "agent-chat");
+    let contributes: Vec<&str> = chat["contributes"]
+        .as_array()
+        .expect("what it adds")
+        .iter()
+        .filter_map(|it| it.as_str())
+        .collect();
+    assert_eq!(contributes, ["pane", "menu", "settings page"], "a pane, a menu and a page, and no tab");
+
+    // It is in a dock slot, so the rail has a button for it and the dock has a column for it.
+    let slot =
+        harness.state().plugin_ui.slot_of("agent-chat/chat").expect("the chat's pane is in a slot");
+    assert!(
+        harness.get_all_by_label("Agent-Chat").count() > 0,
+        "the rail draws a button for the contributed pane"
+    );
+
+    // Shown, moved to another edge and put away, which is what its header's drag and its rail button
+    // both do — none of it is code in this plugin, because `task-1697` built it for every panel.
+    let shown = did(&mut harness, "plugins pane agent-chat/chat --show");
+    assert_eq!(shown["showing"], true);
+    assert_eq!(shown["side"], "right", "the ticket asks for a right panel");
+    let moved = did(&mut harness, "plugins pane agent-chat/chat --side bottom");
+    assert_eq!(moved["side"], "bottom");
+    assert_eq!(side_of(&harness, Panel::Plugin(slot as u8)), Side::Bottom);
+    did(&mut harness, "plugins pane agent-chat/chat --side right");
+    let away = did(&mut harness, "plugins pane agent-chat/chat --hide");
+    assert_eq!(away["showing"], false);
+    harness.run();
+    assert_eq!(harness.state().panel_rect_for_tests(Panel::Plugin(slot as u8)).width(), 0.0);
+}
+
+/// Nothing said yet: the badge, the heading and the four starter chips.
+#[test]
+fn the_chat_pane_with_nothing_said_in_it() {
+    let mut harness = harness("");
+    did(&mut harness, "plugins pane agent-chat/chat --show");
+    harness.run();
+    harness.snapshot(shot("agent_chat_empty").as_str());
+}
+
+/// A question and an answer: the two bubbles, each with its own corner squared off.
+#[test]
+fn a_question_and_an_answer_are_two_bubbles_on_opposite_sides() {
+    let mut harness = a_chat(&[
+        (quill_chat::Role::User, "Why is `relayout` keeping a paragraph it should have thrown away?"),
+        (
+            quill_chat::Role::Assistant,
+            "Because the fingerprint does not carry the hidden flag.\n\n```rust\nlet fingerprint = (text, style, hidden);\n```\n\n| Case | Kept |\n|---|---|\n| edited | no |\n| folded | yes |\n",
+        ),
+    ]);
+    harness.snapshot(shot("agent_chat_conversation").as_str());
+}
+
+/// An answer arriving: what has come so far, with the state dot showing that it is still coming.
+#[test]
+fn an_answer_that_is_still_arriving_shows_what_has_come_so_far() {
+    let mut harness = harness("");
+    did(&mut harness, "plugins pane agent-chat/chat --show");
+    harness.run();
+    with_the_chat(&mut harness, |chat| {
+        chat.session_mut().ask(quill_chat::Message::said(0, quill_chat::Role::User, "Explain the fold."));
+        chat.session_mut().reply(quill_chat::Reply::Started { model: "claude-opus-5".to_owned() });
+        chat.session_mut()
+            .reply(quill_chat::Reply::Text("A hidden paragraph produces no lines and keeps".to_owned()));
+    });
+    assert_eq!(did_while_waiting(&mut harness, "plugins view agent-chat")["state"], "streaming");
+    harness.snapshot(shot("agent_chat_streaming").as_str());
+}
+
+/// A tool the model asked for is run by the window, through the same `run_cli` a menu entry runs.
+///
+/// **The whole loop, in a real window**: the provider resolves the call against the catalogue, hands
+/// the window a `Request::RunCommand`, the window runs it and hands the answer back through
+/// `UiProvider::answered`, and the result goes into the conversation as a `tool` message. The tool
+/// limit is one, so the round after it is refused rather than sent — no test here makes a request.
+#[test]
+fn a_tool_the_model_asked_for_is_run_by_the_window_and_its_answer_comes_back() {
+    let mut harness = harness("Some prose.");
+    did(&mut harness, "plugins pane agent-chat/chat --show");
+    did(&mut harness, "plugins run agent-chat tools on");
+    with_the_chat(&mut harness, |chat| {
+        chat.configuration_mut().tool_limit = 1;
+        chat.session_mut().ask(quill_chat::Message::said(0, quill_chat::Role::User, "What is open?"));
+        chat.session_mut().reply(quill_chat::Reply::ToolCall {
+            id: "t1".to_owned(),
+            name: "quill_tab".to_owned(),
+            arguments: "{\"command\":\"list\"}".to_owned(),
+        });
+        chat.session_mut().reply(quill_chat::Reply::Finished { reason: "tool_use".to_owned() });
+    });
+    // Two steps: one for `let_the_plugins_catch_up` to hand the call over and the window to run it,
+    // one for the answer to land in the conversation.
+    harness.step();
+    harness.step();
+    let view = did(&mut harness, "plugins view agent-chat");
+    let tools = view["conversation"]["messages"][1]["tools"].as_array().expect("the tool calls");
+    let answer = tools[0]["answer"].as_str().expect("the window answered the call");
+    assert!(
+        answer.contains("untitled") || answer.contains("tabs"),
+        "the answer is what `tab list` really said: {answer}"
+    );
+    assert_eq!(tools[0]["failed"], false);
+    // And the turn stops at the limit rather than asking the model again, which is what stops a loop
+    // nobody is watching from being funded.
+    assert_eq!(view["state"], "failed");
+    assert!(
+        view["conversation"]["messages"]
+            .as_array()
+            .expect("the messages")
+            .iter()
+            .any(|message| message["failure"].as_str().is_some_and(|said| said.contains("limit"))),
+        "the refusal says it was the limit: {view}"
+    );
+}
+
+/// A tool call while it is running, and the same call once it has been answered.
+///
+/// **Built rather than driven.** Answering the last outstanding tool is what sends the next request,
+/// and no screenshot test here makes one; the loop itself is
+/// `a_tool_the_model_asked_for_is_run_by_the_window_and_its_answer_comes_back` above.
+#[test]
+fn a_tool_call_is_shown_while_it_runs_and_when_it_has_finished() {
+    let mut harness = harness("");
+    did(&mut harness, "plugins pane agent-chat/chat --show");
+    did(&mut harness, "plugins run agent-chat tools on");
+    harness.run();
+    with_the_chat(&mut harness, |chat| {
+        let chat = chat.session_mut();
+        let id = chat.chat.next_id();
+        chat.chat.push(quill_chat::Message::said(id, quill_chat::Role::User, "What does git say?"));
+        let id = chat.chat.next_id();
+        let mut answering = quill_chat::Message::said(id, quill_chat::Role::Assistant, "Let me look.");
+        answering.tools.push(quill_chat::ToolCall::new("t1", "quill_git", "{\"command\":\"status\"}"));
+        chat.chat.push(answering);
+    });
+    harness.snapshot(shot("agent_chat_tool_running").as_str());
+
+    // Answered, so the block says how long it took and the model's next answer is under it.
+    with_the_chat(&mut harness, |chat| {
+        let chat = chat.session_mut();
+        let tool = &mut chat.chat.messages[1].tools[0];
+        tool.answer = Some("{\"branch\":\"main\",\"changed\":1}".to_owned());
+        tool.took = Some(84);
+        let id = chat.chat.next_id();
+        chat.chat.push(quill_chat::Message::said(
+            id,
+            quill_chat::Role::Assistant,
+            "The branch is `main`, with one change on it.",
+        ));
+    });
+    let view = did(&mut harness, "plugins view agent-chat");
+    let tools = view["conversation"]["messages"][1]["tools"].as_array().expect("the tool calls");
+    assert_eq!(tools[0]["name"], "quill_git");
+    assert!(tools[0]["answer"].as_str().expect("an answer").contains("main"));
+    harness.snapshot(shot("agent_chat_tool_answered").as_str());
+}
+
+/// A refusal is the server's own words, kept beside whatever had already arrived.
+#[test]
+fn a_refusal_is_drawn_in_the_servers_own_words() {
+    let mut harness = harness("");
+    did(&mut harness, "plugins pane agent-chat/chat --show");
+    harness.run();
+    with_the_chat(&mut harness, |chat| {
+        chat.session_mut().ask(quill_chat::Message::said(0, quill_chat::Role::User, "Hello?"));
+        chat.session_mut().reply(quill_chat::Reply::Text("Half an ans".to_owned()));
+        chat.session_mut()
+            .reply(quill_chat::Reply::Failed("HTTP 429: rate_limit_error: too many requests".to_owned()));
+    });
+    let view = did(&mut harness, "plugins view agent-chat");
+    assert_eq!(view["state"], "failed");
+    harness.snapshot(shot("agent_chat_failed").as_str());
+}
+
+/// The endpoints, each with its URL, its model and where its key comes from — and never a key.
+#[test]
+fn the_chats_settings_page_lists_the_endpoints() {
+    let mut harness = harness("");
+    did(&mut harness, "plugins pane agent-chat/chat --show");
+    did(&mut harness, "action run settings");
+    harness.run();
+    harness.get_all_by_label("Agent-Chat").last().expect("the Settings row").click();
+    harness.run();
+    harness.snapshot(shot("agent_chat_settings").as_str());
+}
+
+/// Everything a person can do here an agent can do too, through the same code.
+#[test]
+fn the_chat_answers_the_command_line() {
+    let mut harness = harness("");
+    let shown = did(&mut harness, "plugins pane agent-chat/chat --show");
+    assert_eq!(shown["showing"], true);
+
+    // Which endpoints there are, what each is, and whether it could be reached. Never a key.
+    let providers = did(&mut harness, "plugins run agent-chat providers");
+    let rows = providers["providers"].as_array().expect("the endpoints");
+    let names: Vec<&str> = rows.iter().filter_map(|one| one["name"].as_str()).collect();
+    assert_eq!(names, ["claude", "codex", "local"]);
+    assert_eq!(rows[0]["wire"], "anthropic");
+    assert_eq!(rows[1]["wire"], "openai");
+    assert_eq!(rows[2]["url"], "http://127.0.0.1:8080/v1/chat/completions");
+    let printed = serde_json::to_string(&providers).expect("json");
+    assert!(!printed.contains("sk-"), "no key is ever printed: {printed}");
+
+    // Choosing one, and one nobody has.
+    did(&mut harness, "plugins run agent-chat use local");
+    assert_eq!(did(&mut harness, "plugins view agent-chat")["provider"]["name"], "local");
+    let reply = run(&mut harness, "plugins run agent-chat use gemini");
+    assert!(!reply.ok);
+    assert!(reply.message.contains("claude"), "the refusal lists what there is: {}", reply.message);
+
+    // The tools switch, which is the same switch the composer's first button is.
+    assert_eq!(did(&mut harness, "plugins run agent-chat tools on")["tools"], true);
+    assert_eq!(did(&mut harness, "plugins view agent-chat")["tools"], true);
+    assert_eq!(did(&mut harness, "plugins run agent-chat tools off")["tools"], false);
+
+    // The conversation as data, which is what a screenshot cannot answer.
+    with_the_chat(&mut harness, |chat| {
+        chat.session_mut().ask(quill_chat::Message::said(0, quill_chat::Role::User, "Hello"));
+        chat.session_mut().reply(quill_chat::Reply::Text("Hello yourself.".to_owned()));
+        chat.session_mut().reply(quill_chat::Reply::Finished { reason: "stop".to_owned() });
+    });
+    let messages = did(&mut harness, "plugins run agent-chat messages");
+    assert_eq!(messages["messages"][0]["text"], "Hello");
+    assert_eq!(messages["messages"][1]["text"], "Hello yourself.");
+    assert_eq!(did(&mut harness, "plugins run agent-chat last")["text"], "Hello yourself.");
+    assert_eq!(did(&mut harness, "plugins run agent-chat state")["state"], "finished");
+
+    // A new conversation, and a command nobody has.
+    did(&mut harness, "plugins run agent-chat new");
+    assert_eq!(
+        did(&mut harness, "plugins run agent-chat messages")["messages"].as_array().map(Vec::len),
+        Some(0)
+    );
+    let reply = run(&mut harness, "plugins run agent-chat levitate");
+    assert!(!reply.ok);
+    assert!(reply.message.contains("levitate"), "{}", reply.message);
+}
+
+/// Sending to an endpoint with no key refuses before a request goes out, and says what to do about it.
+#[test]
+fn sending_to_an_endpoint_with_no_key_is_refused_before_anything_is_sent() {
+    let mut harness = harness("");
+    did(&mut harness, "plugins pane agent-chat/chat --show");
+    did(&mut harness, "plugins run agent-chat use claude");
+    with_the_chat(&mut harness, |chat| {
+        chat.configuration_mut().providers[0].key_env = "QUILL_A_VARIABLE_NOTHING_SETS".to_owned();
+    });
+    let reply = run(&mut harness, "plugins run agent-chat send Are you there?");
+    assert!(!reply.ok);
+    assert!(
+        reply.message.contains("QUILL_A_VARIABLE_NOTHING_SETS"),
+        "the refusal names the variable the key would have come from: {}",
+        reply.message
+    );
+    // Nothing went into the conversation, so the question is still there to be sent once a key is set.
+    assert_eq!(
+        did(&mut harness, "plugins run agent-chat messages")["messages"].as_array().map(Vec::len),
+        Some(0)
+    );
+}

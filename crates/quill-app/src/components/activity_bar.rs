@@ -289,6 +289,7 @@ pub fn pane_icon(name: &str) -> fn(&egui::Painter, Pos2, egui::Color32) {
         "tick" => icon::tick,
         "plus" => icon::plus,
         "image" => icon::image,
+        "chat" => icon::chat,
         _ => icon::board,
     }
 }

@@ -104,7 +104,7 @@ pub const DEBUGGERS: &[&str] = &["lldb", "node"];
 /// is a pane, where it docks, what its button looks like and what its menu holds; the drawing shipped
 /// with the binary. So the most a manifest can do is name a provider that is already here, visibly,
 /// and nothing in a plugin is executed.
-pub const UI_PROVIDERS: &[&str] = &["agent-tasks"];
+pub const UI_PROVIDERS: &[&str] = &["agent-tasks", "agent-chat"];
 
 /// The renderers a plugin's `ui.chrome` may name for the decoration `egui` cannot draw.
 ///
@@ -123,8 +123,9 @@ pub const CHROME: &[&str] = &["vello"];
 ///
 /// Checked for the same reason the three registries above are checked: a rail button drawn as nothing
 /// is worse than a manifest that was refused with the list of icons in the message.
-pub const PANE_ICONS: &[&str] =
-    &["board", "folder", "terminal", "run", "bug", "clock", "branch", "tick", "plus", "image"];
+pub const PANE_ICONS: &[&str] = &[
+    "board", "folder", "terminal", "run", "bug", "clock", "branch", "tick", "plus", "image", "chat",
+];
 
 /// The conditions a `pane.applies` may name.
 ///
@@ -1390,6 +1391,10 @@ pub mod bundled {
         // which is a drawn icon rather than a picture, so it follows the pointer's opacity and the
         // window's colours the way every other button in the rail does.
         ("agent-tasks", include_str!("../../plugins/agent-tasks/plugin.conf"), None),
+        // The second plugin that draws, and the first to ask for a pane since the machinery was
+        // built. It has no icon of its own for the same reason: its rail button is `pane.icon`,
+        // which `theme::icon` draws, so it follows the window's colours and the pointer's opacity.
+        ("agent-chat", include_str!("../../plugins/agent-chat/plugin.conf"), None),
         (
             "mermaid",
             include_str!("../../plugins/mermaid/plugin.conf"),
@@ -1758,24 +1763,29 @@ language.extensions = .aa
         let (mut plugins, problems) = Plugins::load(None);
         assert!(problems.is_empty(), "{problems:?}");
         let surfaces = plugins.surfaces();
-        // No bundled plugin contributes a pane since `task-28`, so nothing is in a dock slot and the rail has
-        // no contributed button.
-        assert!(surfaces.panes.is_empty(), "the one plugin that draws contributes a tab, not a pane");
+        // Agent-Tasks contributes a tab and no pane, which `task-28` asked for: a board narrow enough
+        // to need sideways scrolling to see its second lane is a board nobody reads. Agent-Chat
+        // contributes a pane and no tab, which `task-1767` asked for: a conversation is a column.
+        assert_eq!(surfaces.panes.len(), 1, "one plugin asks for a pane today");
+        assert!(surfaces.pane("agent-chat/chat").is_some());
         assert!(surfaces.pane("agent-tasks/board").is_none());
-        assert!(surfaces.pane("agent-tasks/nothing").is_none());
-        assert_eq!(surfaces.tabs.len(), 1, "one plugin draws today");
+        assert!(surfaces.pane("agent-chat/nothing").is_none());
+        assert_eq!(surfaces.tabs.len(), 1, "one plugin asks for a tab today");
         assert_eq!(surfaces.tabs[0].plugin, "agent-tasks");
         assert_eq!(surfaces.tabs[0].provider, "agent-tasks");
         assert_eq!(surfaces.tabs[0].key("board"), "agent-tasks/board");
         assert!(surfaces.tab("agent-tasks/board").is_some());
-        assert_eq!(surfaces.menus.len(), 1);
-        assert_eq!(surfaces.pages.len(), 1);
-        // Switching it off withdraws every contribution at once, which is the rule `Plugins::renders`
-        // already keeps for a Mermaid diagram: the window asks before it draws.
+        assert_eq!(surfaces.menus.len(), 2);
+        assert_eq!(surfaces.pages.len(), 2);
+        // Switching one off withdraws every contribution of that plugin at once, which is the rule
+        // `Plugins::renders` already keeps for a Mermaid diagram: the window asks before it draws.
         plugins.set_enabled(None, "agent-tasks", false);
+        plugins.set_enabled(None, "agent-chat", false);
         assert!(plugins.surfaces().is_empty(), "a plugin that is off contributes nothing");
         plugins.set_enabled(None, "agent-tasks", true);
+        plugins.set_enabled(None, "agent-chat", true);
         assert_eq!(plugins.surfaces().tabs.len(), 1, "and switching it back on is one frame too");
+        assert_eq!(plugins.surfaces().panes.len(), 1);
     }
 
     #[test]

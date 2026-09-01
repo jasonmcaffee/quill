@@ -746,6 +746,34 @@ pub fn comment(painter: &egui::Painter, centre: Pos2, color: Color32) {
     );
 }
 
+/// A speech bubble with two lines in it, which is what `pane.icon = chat` draws.
+///
+/// `comment` is the same idea at eleven points across, drawn beside a comment count on a card; this
+/// one is the rail's size and has the lines in it, because at that size an empty bubble reads as a
+/// rounded rectangle. Drawn rather than lettered, which is `design/style-guide.md`'s rule for every
+/// icon here: a drawn icon takes the tint it is given and follows the rail's own three states.
+pub fn chat(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    let box_rect = Rect::from_center_size(Pos2::new(centre.x, centre.y - 1.0), egui::Vec2::new(13.0, 10.0));
+    painter.rect_stroke(
+        box_rect,
+        CornerRadius::same(3),
+        Stroke::new(1.4, color),
+        egui::StrokeKind::Inside,
+    );
+    // The tail, down and to the left, which is what tells a bubble from a box at this size.
+    painter.line_segment(
+        [Pos2::new(centre.x - 2.5, box_rect.max.y), Pos2::new(centre.x - 4.5, box_rect.max.y + 3.5)],
+        Stroke::new(1.4, color),
+    );
+    // Two lines of words in it. Inset by three so neither touches the stroke.
+    for (index, share) in [1.0_f32, 0.62].into_iter().enumerate() {
+        let y = box_rect.top() + 3.5 + index as f32 * 3.0;
+        let left = box_rect.left() + 3.0;
+        let width = (box_rect.width() - 6.0) * share;
+        painter.line_segment([Pos2::new(left, y), Pos2::new(left + width, y)], Stroke::new(1.2, color));
+    }
+}
+
 /// The four columns of a task board, which is what `pane.icon = board` draws.
 ///
 /// Drawn rather than lettered, which is the rule `design/style-guide.md` sets for every icon here: a

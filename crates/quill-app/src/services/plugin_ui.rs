@@ -105,6 +105,17 @@ pub struct Look<'a> {
     /// draw into and a test that has no canvas draws into one that records nothing. A provider asks
     /// `chrome.is_recording()` when it has a flat form to fall back to.
     pub chrome: &'a Chrome,
+    /// How a fenced code block in a plugin's markdown is coloured.
+    ///
+    /// **Handed over for the same reason the palette is.** `quill-core` holds no plugin registry, so it asks
+    /// through `CodeHighlighter` and the window answers with the same two calls `colour_the_file` makes for a
+    /// source file — which is what makes a fence of Rust in an answer look like a `.rs` file. A provider could
+    /// not build one: it cannot reach `services::plugins`, and a plugin that could would be a plugin deciding
+    /// which languages exist.
+    ///
+    /// `None` in a test and in any window with no plugins loaded, where a fence keeps the one code colour it
+    /// always had — which is exactly what the preview did before `task-1685`, so it can never be worse.
+    pub highlighter: Option<&'a dyn quill_core::CodeHighlighter>,
     /// Whether this plugin holds the keyboard this frame.
     ///
     /// **What stops a plugin reading a key press meant for something else.** Quill has one value that says who
@@ -149,6 +160,7 @@ impl<'a> Look<'a> {
             opacity: settings.opacity,
             palette: Palette::QUILL,
             chrome: &NO_CHROME,
+            highlighter: None,
             row_height: size::ROW,
             menu_row_height: MENU_ROW,
             corner_radius: f32::from(size::CONTROL_CORNER),
@@ -156,6 +168,17 @@ impl<'a> Look<'a> {
             // had the keys when it did not would take them from the editor.
             has_the_keyboard: false,
         }
+    }
+
+    /// The same look, colouring fenced code with the window's own plugins.
+    pub fn colouring_with<'b: 'c, 'c>(
+        self,
+        highlighter: &'b dyn quill_core::CodeHighlighter,
+    ) -> Look<'c>
+    where
+        'a: 'c,
+    {
+        Look { highlighter: Some(highlighter), ..self }
     }
 
     /// The same look, with the keyboard given to the plugin about to be drawn.
@@ -310,6 +333,17 @@ pub enum Request {
     /// The clipboard is the platform's and the window owns the one handle to it, which is why a provider asks
     /// rather than reaching: two owners of a clipboard is two programs fighting over one selection.
     Copy(String),
+    /// Run one of Quill's own commands and hand the answer back through [`UiProvider::answered`].
+    ///
+    /// **The one path a command becomes a change is `QuillApp::run_cli`**, and this is how a provider
+    /// reaches it. So a thing a plugin asks for and the same thing typed at `quill-cli` are the same
+    /// thing, rather than a second dispatcher a plugin brought with it. Agent-Chat asks, because the
+    /// tools it offers a model are the catalogue's own commands.
+    ///
+    /// `command` is the wire name — `tab.open` — and `arguments` is exactly what goes in the request.
+    /// `id` is the provider's own, echoed back with the answer, because more than one may be
+    /// outstanding and they do not necessarily finish in order.
+    RunCommand { id: String, command: String, arguments: serde_json::Map<String, serde_json::Value> },
 }
 
 /// What a command answered.
@@ -478,6 +512,37 @@ pub trait UiProvider: std::fmt::Debug {
         false
     }
 
+    /// What this provider wants the window to do, asked for **outside** a draw.
+    ///
+    /// [`Self::pane`] answers with requests because it is drawing; this is the same answer for a
+    /// provider that decided something while nobody was looking at it. Agent-Chat needs it because a
+    /// model's tool call arrives on a worker thread and has to be run whether or not the pane is
+    /// showing — a turn that stalled because a pane was put away would be a fault nothing on the
+    /// screen could explain. Drained once a frame beside [`Self::catch_up`], which is the one place a
+    /// plugin is let to do something between frames.
+    fn asking(&mut self) -> Vec<Request> {
+        Vec::new()
+    }
+
+    /// The answer to a [`Request::RunCommand`], echoed back with the `id` that asked for it.
+    ///
+    /// `Ok` carries the command's own `result`; `Err` carries the sentence it refused with, which is
+    /// the server's-own-words rule applied to Quill's own commands.
+    fn answered(&mut self, id: &str, answer: Result<serde_json::Value, String>) {
+        let _ = (id, answer);
+    }
+
+    /// Told what the window is showing, when it changes.
+    ///
+    /// The window owns this the way it owns the keyboard, so it is the window that says so — the
+    /// shape [`Self::keyboard`] already set. Agent-Chat tells the model which project is open and
+    /// which file is showing, because a chat in an editor that does not know what you are looking at
+    /// is a browser tab. It is **which file**, never the file's text: a pane that quietly uploaded
+    /// whatever was on the screen is a pane nobody could use on anything confidential.
+    fn showing(&mut self, project: Option<&std::path::Path>, file: Option<&std::path::Path>) {
+        let _ = (project, file);
+    }
+
     /// This provider as its own type, for a caller that has to reach past the trait.
     ///
     /// Two callers need it, and both are inside Quill: a test driving the provider's own functions the way its
@@ -500,6 +565,7 @@ pub trait UiProvider: std::fmt::Debug {
 pub fn provider(name: &str) -> Option<Box<dyn UiProvider>> {
     match name {
         "agent-tasks" => Some(Box::new(crate::services::agent_tasks::AgentTasks::new())),
+        "agent-chat" => Some(Box::new(crate::services::agent_chat::AgentChat::new())),
         _ => None,
     }
 }

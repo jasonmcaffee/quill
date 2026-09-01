@@ -257,7 +257,16 @@ fn shrink_to_fit(image: egui::ColorImage, limit: usize) -> egui::ColorImage {
 /// what stops a picture in a tab and the same picture in a preview coming out differently.
 pub fn decode(path: &Path) -> Result<egui::ColorImage, String> {
     let bytes = std::fs::read(path).map_err(|problem| format!("{problem}"))?;
-    let decoded = image::load_from_memory(&bytes).map_err(|problem| format!("{problem}"))?;
+    decode_bytes(&bytes)
+}
+
+/// The same, from bytes already in memory.
+///
+/// The Agent-Chat pane holds a picture as its own bytes rather than as a path — a conversation
+/// reopened after the file has moved still shows what was really sent — so it has nothing to hand a
+/// path-taking decoder. One decoder rather than two, for the reason [`decode`] already gives.
+pub fn decode_bytes(bytes: &[u8]) -> Result<egui::ColorImage, String> {
+    let decoded = image::load_from_memory(bytes).map_err(|problem| format!("{problem}"))?;
     let decoded = decoded.to_rgba8();
     let size = [decoded.width() as usize, decoded.height() as usize];
     let pixels = decoded
