@@ -222,10 +222,19 @@ no cards at all.
 **The elevation never introduces a hue.** The pale half is the surface *lifted* and the dark half is black
 at an alpha, which is what the dark-mode stylesheet says itself — "in dark neumorphism the 'light'
 highlight is a lifted gray (not white)" — so the palette stays closed while the board gains a whole
-dimension. `Palette` grew `board_page`, `board_lane`, `board_card` and `board_well`, and all four are
-colours Quill already had: `EDITOR`, `EXPLORER`, `CODE_PANEL` and `FIELD`, each within a few units a
-channel of the picture. Two colours are genuinely new, `AGENT` and `ATTACHED`, and each says why beside
-itself.
+dimension. **And the pale half is barely there**, which was measured rather than judged: in the picture the
+halo above a card lifts the lane it sits on by about two units a channel and the one above a lane is not
+there at all, so the character comes almost entirely from the dark side. Lifting by eighteen read as a
+bright grey rim round every surface.
+
+`Palette` grew `board_page`, `board_lane`, `board_card` and `board_well`, and all four are colours Quill
+already had: `EDITOR`, `EXPLORER`, `CODE_PANEL` and `FIELD`, each within a few units a channel of the
+picture. Three are genuinely new — `AGENT`, `ATTACHED` and `BOARD_ACCENT` — and each says why beside
+itself. The last of those is a **second blue**, which is the one thing here that breaks a rule on purpose:
+Quill's `ACCENT` is an azure and the page this board copies is built on a periwinkle, and between a rule
+about how a plugin should look and an instruction about how *this* one must look, the instruction won. It
+is contained to the board's own surfaces, and `ACCENT` still means "this is where the keyboard is"
+everywhere including here.
 
 **Five things about the cost, and every one of them was measured.**
 `cargo run --release -p quill-app --example vello_cost` is how they are measured again.
@@ -252,10 +261,12 @@ itself.
   `RenderSettings::default()` for epaint too, and epaint's glyph rasteriser never calls `flush()`. It comes
   back the day epaint does.
 
-**And it misses its own budget, which is said plainly rather than softened.** The budget was a third of a
-frame at sixty a second, about 5 ms. A four-lane board of **twenty-four** cards over 1400 by 900 points
-costs **20.7 ms** on a changed frame — a whole frame, so a drag on a full board runs at something like 40
-a second. The same board with **eight** cards over a 1000 by 700 pane is **7.9 ms**, and the header and the
+**And it misses the budget it opened with, which is said plainly and then revised rather than softened.**
+The budget was a third of a frame at sixty a second, about 5 ms. A four-lane board of **twenty-four** cards
+over 1400 by 900 points costs **20.7 ms** on a changed frame — a whole frame, so a drag on a full board
+runs at something like 40 a second. §9.1 of the design states the revised requirement in four lines: a
+still frame must be free, a changed frame may cost up to a frame while something is moving, it must be
+possible to say no, and the route back to the original number must be written down. The same board with **eight** cards over a 1000 by 700 pane is **7.9 ms**, and the header and the
 rail alone are 2.0: the cards are nearly the whole of it, which is what §9.5 of the design points a sprite
 cache at. `MAX_SCALE` caps the canvas at 1.5 pixels a point because the decoration is Gaussians and
 gradients where the text — which egui draws at the display's own resolution — is not. And

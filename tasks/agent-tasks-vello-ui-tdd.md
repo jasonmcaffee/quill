@@ -388,14 +388,20 @@ highlight colours record beside themselves: what is added is named from what is 
 | `board_card` | `CODE_PANEL` | `#20252E` against `#232933`, and `CODE_PANEL`'s own comment says it is "a step up from `EDITOR` … so the block reads as a panel on the page", which is what a card is. |
 | `board_well` | `FIELD` | `#1B2026` against `#1D212A`. |
 
-**The accent stays Quill's, and that is the one deliberate mismatch worth naming.** The reference's
-primary blue is a periwinkle around `#4C6EF5` and Quill's `ACCENT` is an azure `#489FF8`. A board with a
-blue of its own would be a board whose buttons disagreed with every other button in the window, and the
-whole point of the plugin design is that a plugin looks like the rest of it. `nearly identical` is read
-here as *the same construction*, not *the same hue* — and the hue is the one thing a person can change
-about Quill's look by changing the theme, where a shadow recipe is not.
+**The board's blue is the picture's, not Quill's, and this section said the opposite until it was
+reviewed twice.** The reference's primary blue is a periwinkle around `#4C6EF5` and Quill's `ACCENT` is an
+azure `#489FF8`. The first pass kept the azure, on the grounds that a plugin should look like the rest of
+the window and that `nearly identical` could be read as *the same construction* rather than *the same
+hue*. The reviewer named it as the most obvious mismatch left in the picture, twice, and that reading does
+not survive it: the ticket asked for a board that looks nearly identical to a specific image, and this is
+the largest thing in that image that did not.
 
-Two colours in the picture have no name in Quill at all and are added with an argument, exactly as
+So `color::BOARD_ACCENT` is the periwinkle, it reaches the `Palette` as `board_accent`, and only the
+board reads it — the primary button, the play buttons, the rail's chosen entry and the `IN PROGRESS` dot.
+Quill's own `ACCENT` still means *this is where the keyboard is* everywhere including the board, so the
+two never say the same thing in two colours.
+
+Three colours in the picture have no name in Quill at all and are added with an argument, exactly as
 `BREAKPOINT` was:
 
 | New colour | Value | Why |
@@ -468,6 +474,12 @@ through wherever the board draws nothing.
 **One row**, which is what the reference has. It was two, because the four views were in it and one row
 could not hold all of that at a pane's width; §8.5's rail is where they went.
 
+**`+ Add Task` is always drawn, and the heading is what gives way.** The rail is admitted as soon as 240
+points are left for the page, and at that width there is not room for all four things — so the heading is
+cut short on one line with an ellipsis and the count is dropped before it. A board somebody cannot add a
+ticket to is a broken board; a heading that is cut short is a heading that is cut short.
+`the_board_keeps_add_task_at_the_width_the_rail_appears_at` is the test, at exactly that width.
+
 | Part | How it is drawn |
 |---|---|
 | `Current Sprint` | Text, `TEXT_STRONG`, in the bold face at `font_size * 1.7`. |
@@ -531,9 +543,11 @@ Inside it, in the order the reference puts them:
 The reference's third round button is its JIRA link, and it is **absent** here for the reason
 `Sync JIRA` is: there is no JIRA on this board, and Quill draws no control that cannot apply.
 
-The priority chevron points **up** for high and medium and down for low. It pointed the other way, so
-every card on the board wore a downward mark and the one ticket that mattered least wore the upward
-one.
+The priority chevron points **up** for high and medium and **low draws nothing at all**. It pointed the
+other way, so every card wore a downward mark and the one ticket that mattered least wore the upward one;
+and low is now silent, which is the rule the rest of Quill keeps — a mark is drawn to say a thing is
+*unusual*, and low is what most tickets are. A downward chevron on every ordinary card says nothing while
+taking the place a mark that says something would go.
 
 The epic's colour stays a 3-point edge down the left of the card, drawn as a `Rect` with the card's
 radius on its left corners and none on its right, which is what it already is.
@@ -546,10 +560,15 @@ radius on its left corners and none on its right, which is what it already is.
 square filled with the accent gradient and carrying a `glow`, which is what the reference lights its
 chosen entry with.
 
-**It is 16 points in and not 8**, and that is not slack: a raised surface's shadow reaches about 24
-points and the canvas is cut to the pane, so at 8 the rail's own left shadow was clipped against the
-edge of the board and it read as a strip stuck to the side rather than as a floating rail. The 24
-points on its other side are the same measurement for the first lane, which had the same fault.
+**How far in it sits is asked for rather than written down**, and that is not fussiness: a raised
+surface's shadow reaches `Lift::reach()`, which for `Medium` is 25.5 points, and the canvas is cut to the
+pane — so a rail closer to the edge than that has its own left shadow clipped and reads as a strip stuck
+to the side rather than as a floating rail. It was written down as 16 and it was still clipped by a third,
+which an eye did not catch and arithmetic did. The 24 points on its other side are the same measurement
+for the first lane, which had the same fault.
+
+**Everything in it scales together.** The height scaled the buttons while the placement scaled the padding
+and the gaps as well, so above the default font size the last button hung out of the bottom.
 
 **This is the board's rail and not Quill's.** `components::activity_bar` is the strip on the window's
 own edge that puts panels away, and it belongs to the window: a plugin adding entries to it would be a
@@ -580,11 +599,26 @@ which nothing moved rasterises nothing.
 | 4 lanes, 8 cards, 1000 x 700 points | 0.003 ms | **7.9 ms** | 0.000 ms |
 | the header and the rail alone | 0.001 ms | 2.0 ms | 0.000 ms |
 
-**The budget was a third of a frame at sixty a second, about 5 ms, and a busy board is four times that.**
-That is the honest headline and it should not be softened: a full board being dragged or scrolled on a
-1400-point pane spends about one whole frame in the rasteriser, so the window drops to something like
-40 frames a second for as long as the gesture lasts. A board with a handful of cards on it — which is
-what most boards are — is 8 ms and does not.
+**The budget this design opened with was a third of a frame at sixty a second, about 5 ms. It is not met,
+and the requirement is revised here rather than the number being dressed up.**
+
+A full board being dragged or scrolled on a 1400-point pane spends about one whole frame in the
+rasteriser, so the window runs at something like 40 frames a second for as long as the gesture lasts. A
+board with a handful of cards on it — which is what most boards are — is 8 ms and does not.
+
+The revised requirement, stated so it can be argued with:
+
+1. **A still frame must be free.** It is: 0.001 ms and no allocation. This is the one that matters most,
+   because a window redrawing on a heartbeat spends nearly all of its time here.
+2. **A frame where the drawing changed may cost up to a frame**, on a board large enough to fill a wide
+   pane, while something is actually moving. That is accepted, not met-by-definition: it is a real cost
+   and it is visible as a slower drag on a full board.
+3. **It must be possible to say no.** `plugins.chrome` in `Settings -> Appearance` turns the decoration
+   off and the board draws flat, at nothing.
+4. **The route back to the original number must be written down.** It is §9.4, it is one line in
+   `Cargo.toml`, and it is blocked in somebody else's crate rather than in this design.
+
+Anyone who thinks (2) is the wrong trade has (3), and §9.5 is what to build instead.
 
 Three real costs are **outside** those numbers, and the example says so in its own output:
 
@@ -724,8 +758,14 @@ outside it; a canvas whose surface was not drawn this frame is dropped.
 a manifest naming `ui.chrome = something-else` is refused with a message; `plugins.chrome` off
 records nothing.
 
-**Screenshots.** `agent_tasks_tab` and `agent_tasks_pane` are re-accepted after somebody has opened
-them and compared them against `reference-board.png`, which is what §12 of this ticket is about.
+**Screenshots.** `agent_tasks_tab` and its siblings are re-accepted after somebody has opened them and
+compared them against `reference-board.png`. Three of them are about this design rather than about the
+board's behaviour: `agent_tasks_flat`, the whole board with the decoration switched off, which is a
+separate path through every part of it; `agent_tasks_narrow_header`, the width the rail is admitted at,
+where the header has to give something up; and `a_board_drawn_twice_is_the_same_picture`, which renders a
+real board twice and compares the pixels — the `Decor` list being pure is asserted with no window, and
+this is the same property all the way through the rasteriser and the upload, which is what the other 414
+accepted images quietly rest on.
 
 ## 12. Deliberately not here
 

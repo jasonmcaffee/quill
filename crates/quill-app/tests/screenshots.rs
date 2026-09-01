@@ -11706,6 +11706,55 @@ fn the_board_with_its_decoration_switched_off() {
     harness.snapshot(shot("agent_tasks_flat").as_str());
 }
 
+/// `task-1765`: a real board laid out twice is the same picture, pixel for pixel.
+///
+/// The `Decor` list being a pure function of what is drawn is asserted with no window in
+/// `vello_canvas::tests::the_same_drawing_twice_gives_an_identical_list`, over a drawing written out by
+/// hand. This is the same property over a **real board**, all the way through the rasteriser and the
+/// texture upload, which is what the other 412 accepted images quietly rest on: an image accepted today
+/// and compared tomorrow means nothing if the same state can produce two pictures.
+#[test]
+fn a_board_drawn_twice_is_the_same_picture() {
+    let mut harness = harness("");
+    did(&mut harness, "plugins run agent-tasks new-sprint Current Sprint");
+    did(&mut harness, "plugins run agent-tasks new-task Quill \u{2014} Plugin architecture for UI");
+    did(&mut harness, "plugins run agent-tasks new-task Rust vector db");
+    did(&mut harness, "plugins run agent-tasks move-task task-2 in_progress 0");
+    did(&mut harness, "plugins run agent-tasks board");
+    did(&mut harness, "plugins tab agent-tasks/board --open");
+    harness.run();
+    let first = harness.render().expect("render the board");
+    // A frame in between, so the second picture comes from a canvas that has been asked again rather than
+    // from the same one call.
+    harness.run();
+    let second = harness.render().expect("render the board again");
+    assert_eq!(first.dimensions(), second.dimensions());
+    assert!(
+        first.as_raw() == second.as_raw(),
+        "the same board drew two different pictures, so no accepted image of it means anything"
+    );
+}
+
+/// `task-1765`: the header keeps its one action however narrow the board gets.
+///
+/// The rail is admitted as soon as 240 points are left for the page, and at that width there is no room
+/// for the heading, the count, the search box and the button. Something has to give and it must not be
+/// the button: a board somebody cannot add a ticket to is a broken board, where a heading that is cut
+/// short is a heading that is cut short. `+ Add Task` used to be the thing that was dropped.
+#[test]
+fn the_board_keeps_add_task_at_the_width_the_rail_appears_at() {
+    let mut harness = harness("");
+    did(&mut harness, "plugins tab agent-tasks/board --open");
+    // As narrow as the explorer can make it, which is where the rail is only just admitted.
+    did(&mut harness, "panel size explorer --width 800");
+    did(&mut harness, "plugins run agent-tasks new-sprint A sprint with a long enough name to crowd the row");
+    did(&mut harness, "plugins run agent-tasks new-task Quill \u{2014} Plugin architecture for UI");
+    did(&mut harness, "plugins run agent-tasks board");
+    harness.run();
+    harness.get_by_label("+ Add Task");
+    harness.snapshot(shot("agent_tasks_narrow_header").as_str());
+}
+
 #[test]
 fn a_tickets_own_detail_with_its_todos_and_its_comments() {
     let mut harness = harness("");

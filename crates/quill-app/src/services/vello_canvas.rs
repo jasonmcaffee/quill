@@ -87,6 +87,16 @@ pub enum Lift {
 }
 
 impl Lift {
+    /// How far outside its own edge a raised surface's shadow reaches.
+    ///
+    /// Public because a caller has to leave room for it: the canvas is cut to the pane, so a surface
+    /// closer to the edge than this has its shadow clipped and reads as stuck to the side rather than as
+    /// floating. The board's rail asks.
+    pub fn reach(self) -> f32 {
+        let (offset, blur) = self.raised();
+        offset + blur * 2.5 + 2.0
+    }
+
     /// The offset and the standard deviation a raised surface's pair of shadows use.
     fn raised(self) -> (f32, f32) {
         match self {
@@ -329,7 +339,8 @@ impl Chrome {
 
     /// A surface standing above the one behind it: a lane, a card, a button.
     ///
-    /// Three items: the dark shadow down and right, the pale one up and left, then the surface over both.
+    /// Five items: a band to draw the shadows in, the dark shadow down and right, the pale one up and left,
+    /// the matching unclip, and then the surface over all of it.
     /// The pale tone is the surface **lifted**, not white — which is what the dark-mode stylesheet says
     /// itself, that "in dark neumorphism the 'light' highlight is a lifted gray (not white)" — so no
     /// elevation ever introduces a hue and the palette stays closed.
@@ -339,8 +350,7 @@ impl Chrome {
         // affordable. The surface is opaque and is painted over its own shadows, so every pixel of blur
         // inside it is computed and then thrown away; on a lane 328 by 812 that is a third of a million
         // pixels of Gaussian, twice, and it measured 3.3 ms a lane. Clipped, only the band is evaluated.
-        let reach = offset + blur * 2.5 + 2.0;
-        self.push(Decor::Clip { rect, radius, outside: true, bound: rect.expand(reach) });
+        self.push(Decor::Clip { rect, radius, outside: true, bound: rect.expand(lift.reach()) });
         self.push(Decor::Shadow {
             rect: rect.translate(Vec2::splat(offset)),
             radius,
@@ -352,7 +362,7 @@ impl Chrome {
             rect: rect.translate(Vec2::splat(-offset)),
             radius,
             blur,
-            colour: lifted(fill.representative(), 0.26).gamma_multiply(0.45),
+            colour: lifted(fill.representative(), 0.10).gamma_multiply(0.22),
             inset: false,
         });
         self.push(Decor::Unclip);
@@ -383,7 +393,7 @@ impl Chrome {
             rect: rect.translate(Vec2::splat(-offset)),
             radius,
             blur,
-            colour: lifted(fill, 0.30).gamma_multiply(0.45),
+            colour: lifted(fill, 0.16).gamma_multiply(0.30),
             inset: true,
         });
         self.push(Decor::Unclip);
@@ -427,6 +437,12 @@ impl Chrome {
 }
 
 /// A colour moved towards white by `amount`, which is how the pale half of an elevation is derived.
+///
+/// **The amounts it is called with are small, and that was measured rather than judged.** In the picture
+/// the board is copied from, the pale halo above a card lifts the lane it sits on by about **two units a
+/// channel** and the one above a lane is not there at all — the character of the design comes almost
+/// entirely from the dark side. An earlier pass lifted by eighteen units, which read as a bright grey rim
+/// round every surface, and it is what the second review meant by "materially stronger".
 fn lifted(colour: Color32, amount: f32) -> Color32 {
     let mix = |channel: u8| -> u8 {
         let value = f32::from(channel);
@@ -927,9 +943,9 @@ mod tests {
 
     #[test]
     fn the_same_drawing_twice_gives_an_identical_list() {
-        // The property everything else rests on: the caching is a hash comparison and the screenshot tests
-        // are a comparison of images, and neither means anything unless the drawing is a pure function of
-        // what is being drawn.
+        // The property everything else rests on: the caching compares one drawing against the last and the
+        // screenshot tests compare one image against the last, and neither means anything unless the
+        // drawing is a pure function of what is being drawn.
         let draw = || {
             let chrome = Chrome::recording();
             chrome.raised(rect(4.0, 4.0, 300.0, 101.0), 14.0, Fill::diagonal(rect(4.0, 4.0, 300.0, 101.0), Color32::from_rgb(1, 2, 3), Color32::from_rgb(4, 5, 6)), Lift::Small);

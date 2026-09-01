@@ -81,7 +81,11 @@ pub struct Look<'a> {
     pub font_size: f32,
     /// The point size a character grid is set in, which is the terminal's own setting.
     pub monospace_size: f32,
-    /// How opaque the window background is. A provider paints its own ground with this applied.
+    /// How opaque the window background is.
+    ///
+    /// The window paints a provider's ground with this applied — see [`UiProvider::pane`] — and a provider
+    /// paints anything of its own the same way, through [`Look::ground`], so a pane is as transparent as
+    /// the editing area rather than the one opaque rectangle in the window.
     pub opacity: f32,
     pub palette: Palette,
     /// What a row in a list is, from `design/style-guide.md`.
@@ -237,6 +241,8 @@ pub struct Palette {
     /// The violet a card's agent badge is, and the green ring it wears while its terminal is running.
     pub agent: Color32,
     pub attached: Color32,
+    /// The blue a board's own buttons are, which is the picture's rather than Quill's — see `color::BOARD_ACCENT`.
+    pub board_accent: Color32,
 }
 
 impl Palette {
@@ -266,6 +272,7 @@ impl Palette {
         board_well: color::FIELD,
         agent: color::AGENT,
         attached: color::ATTACHED,
+        board_accent: color::BOARD_ACCENT,
     };
 }
 
@@ -402,8 +409,8 @@ pub trait UiProvider: std::fmt::Debug {
 
     /// Draw the pane. Called once a frame while the pane is showing.
     ///
-    /// **The ground is already painted**, in `look.palette.board_page` with the window's opacity applied, and
-    /// a provider must not paint its own. The decoration a provider records goes into a slot reserved between
+    /// **The ground is already painted**, in `look.palette.editor` with the window's opacity applied, and a
+    /// provider must not paint its own. The decoration a provider records goes into a slot reserved between
     /// that ground and everything drawn here, and egui hands a layer's shapes to the tessellator in the order
     /// they arrive — so a second ground painted here would be painted over the decoration.
     fn pane(&mut self, ui: &mut egui::Ui, look: &Look<'_>) -> Vec<Request>;

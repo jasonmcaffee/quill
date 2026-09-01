@@ -592,7 +592,7 @@ fn header(ui: &mut egui::Ui, look: &Look<'_>, lane: Rect, status: Status, count:
     let dot = match status {
         Status::New => look.palette.text_dim,
         Status::QaFailed => crate::theme::color::CLOSE,
-        Status::InProgress => look.palette.accent,
+        Status::InProgress => look.palette.board_accent,
         Status::AgentDone => look.palette.agent,
     };
     let middle = lane.min.y + lane_header(look) / 2.0;

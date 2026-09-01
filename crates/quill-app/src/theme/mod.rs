@@ -128,6 +128,20 @@ pub mod color {
     pub const INLINE_VALUE: Color32 = TEXT_FAINT;
     pub const VALUE_CHANGED: Color32 = UNSAVED;
 
+    /// The blue a plugin's own page is built on, when that page is a copy of somebody else's.
+    ///
+    /// **This is the one place a second blue is right, and it took two reviews to be sure of it.** Quill's
+    /// [`ACCENT`] is an azure and the page the Agent-Tasks board is measured against is built on a
+    /// periwinkle; the first pass kept the azure, on the grounds that a plugin should look like the rest of
+    /// the window. `task-1765` asked for a board that looks *nearly identical to a picture*, and the
+    /// reviewer named this as the most obvious mismatch in it, twice. Between a rule about how a plugin
+    /// should look and an instruction about how this one must look, the instruction wins.
+    ///
+    /// It is contained: it reaches the `Palette` as `board_accent` and only the board reads it. Quill's own
+    /// [`ACCENT`] still means *this is where the keyboard is* everywhere, the board included, so the two
+    /// never say the same thing in two colours.
+    pub const BOARD_ACCENT: Color32 = Color32::from_rgb(0x4C, 0x6E, 0xF5);
+
     /// The colour an agent wears: the round badge on a card, and the dot on the `AGENT DONE` lane.
     ///
     /// The palette is closed and this does not open it, for the reason [`BREAKPOINT`] records beside

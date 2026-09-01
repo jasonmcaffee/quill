@@ -25,12 +25,14 @@ use egui::{Pos2, Rect, Vec2};
 use crate::services::agent_tasks::{AgentTasks, View};
 use crate::services::plugin_ui::{Look, Request};
 
-/// How tall the strip holding the sprint's name, the five views, the search box and `+ Add Task` is.
+/// How tall the strip holding the sprint's name, the search box and `+ Add Task` is.
 ///
-/// Two rows' worth, because at a pane's width the five view buttons do not fit on one line beside the sprint's
-/// name and a row that dropped the ones that did not fit left three views nobody could choose.
-/// How tall the board's own header is at the default font size, read through `header_height` so a window set to
-/// large text gets a header that can hold it. See `Look::scale`.
+/// **One row.** It was two, because the four view buttons were in it and they did not fit beside the sprint's
+/// name at a pane's width. They are down the rail now, which is what the reference does and what §8.5 of the
+/// design describes.
+///
+/// Read through `header_height` so a window set to large text gets a header that can hold it. See
+/// `Look::scale`.
 const HEADER_AT_DEFAULT: f32 = 62.0;
 
 /// How tall the board's own header is in this window.
@@ -161,11 +163,12 @@ fn beside_the_rail(
     // there is would be a rectangle whose bottom is above its top, which draws nothing and answers clicks
     // at positions nobody can see. The views are still reachable, from the menu and from the command line.
     let tall = rail_height(look);
-    if area.width() < width + RAIL_INSET + AFTER_RAIL * scale + 240.0 || area.height() < tall + PAD * 2.0 {
+    let inset = rail_inset();
+    if area.width() < width + inset + AFTER_RAIL * scale + 240.0 || area.height() < tall + PAD * 2.0 {
         return (area.shrink2(Vec2::new(PAD, 0.0)), None);
     }
     let rail_area =
-        Rect::from_min_size(Pos2::new(area.min.x + RAIL_INSET, area.min.y + PAD), Vec2::new(width, tall));
+        Rect::from_min_size(Pos2::new(area.min.x + inset, area.min.y + PAD), Vec2::new(width, tall));
     let chosen = rail(board, ui, look, rail_area);
     let page = Rect::from_min_max(
         Pos2::new(rail_area.max.x + AFTER_RAIL * scale, area.min.y),
@@ -255,15 +258,23 @@ const RAIL_PAD: f32 = 12.0;
 const AFTER_RAIL: f32 = 24.0;
 /// Between the rail and the edge of the pane.
 ///
-/// Sixteen rather than the eight everything else is inset by, because a raised surface's shadow reaches
-/// about 24 points and the canvas is cut to the pane: at eight, the rail's own left shadow was clipped
-/// against the edge of the board and it read as a strip stuck to the side rather than as a floating rail.
-const RAIL_INSET: f32 = 16.0;
+/// **Asked for rather than written down**, because the number that matters is how far a raised surface's
+/// shadow reaches and only `Lift` knows it: the canvas is cut to the pane, so a rail closer to the edge
+/// than its own shadow has that shadow clipped and reads as a strip stuck to the side. It was written down
+/// as 16 and the reach is 25.5, so it was still clipped — by a third of it — and the second review caught
+/// the arithmetic where an eye had not.
+fn rail_inset() -> f32 {
+    crate::services::vello_canvas::Lift::Medium.reach().ceil()
+}
 
 /// How tall the rail is: as tall as the buttons in it, which is what the reference draws.
 fn rail_height(look: &Look<'_>) -> f32 {
-    let button = RAIL_BUTTON * look.scale();
-    RAIL_PAD * 2.0 + button * View::ALL.len() as f32 + RAIL_GAP * (View::ALL.len() - 1) as f32
+    // **Everything scales, or nothing does.** The height scaled only the buttons while the placement below
+    // scaled the padding and the gaps as well, so above the default font size the last button hung out of
+    // the bottom of the rail.
+    let scale = look.scale();
+    (RAIL_PAD * 2.0 + RAIL_BUTTON * View::ALL.len() as f32 + RAIL_GAP * (View::ALL.len() - 1) as f32)
+        * scale
 }
 
 /// The rail down the left of the board: one icon button a view, the chosen one lit.
@@ -305,14 +316,14 @@ fn rail(board: &mut AgentTasks, ui: &mut egui::Ui, look: &Look<'_>, area: Rect) 
         let radius = 12.0 * scale;
         if look.chrome.is_recording() {
             if here {
-                look.chrome.glow(at, radius, look.palette.accent.gamma_multiply(0.45), 8.0);
+                look.chrome.glow(at, radius, look.palette.board_accent.gamma_multiply(0.45), 8.0);
                 look.chrome.rect(
                     at,
                     radius,
                     crate::services::vello_canvas::Fill::diagonal(
                         at,
-                        lighten(look.palette.accent, 0.14),
-                        darken(look.palette.accent, 0.22),
+                        lighten(look.palette.board_accent, 0.14),
+                        darken(look.palette.board_accent, 0.22),
                     ),
                 );
             }
@@ -324,7 +335,7 @@ fn rail(board: &mut AgentTasks, ui: &mut egui::Ui, look: &Look<'_>, area: Rect) 
                 );
             }
         } else if here {
-            ui.painter().rect_filled(at, egui::CornerRadius::same(radius as u8), look.palette.accent);
+            ui.painter().rect_filled(at, egui::CornerRadius::same(radius as u8), look.palette.board_accent);
         } else if response.hovered() {
             ui.painter().rect_filled(at, egui::CornerRadius::same(radius as u8), look.palette.control);
         }
@@ -375,14 +386,34 @@ fn view_switch(
     };
     // Set in the bold face at 1.7 times the editor's size, which is the weight and the proportion the
     // picture gives it: `Current Sprint` is the one thing on the board meant to be read first.
-    let heading = painter.layout_no_wrap(
-        title,
-        egui::FontId::new(
-            look.font_size * 1.7,
-            egui::FontFamily::Name(crate::theme::BOLD_FAMILY.into()),
-        ),
-        look.palette.text_strong,
+    // `+ Add Task` at the end of the row, at the size the reference draws it: 127 by 44. Placed before
+    // anything is drawn, because everything else is fitted into what it leaves.
+    let add_size = Vec2::new(127.0, 44.0) * scale;
+    let add = Rect::from_min_size(
+        Pos2::new(area.max.x - add_size.x, area.center().y - add_size.y / 2.0),
+        add_size,
     );
+    // **One line, cut short with an ellipsis**, not wrapped. `Painter::layout` wraps, and a sprint with a
+    // long name then took three lines out of a header one row tall and ran up over the lanes above it —
+    // which is what giving way is *not*: a heading that is too long should get shorter, not taller.
+    let mut job = egui::text::LayoutJob::single_section(
+        title,
+        egui::TextFormat {
+            font_id: egui::FontId::new(
+                look.font_size * 1.7,
+                egui::FontFamily::Name(crate::theme::BOLD_FAMILY.into()),
+            ),
+            color: look.palette.text_strong,
+            ..Default::default()
+        },
+    );
+    job.wrap = egui::text::TextWrapping {
+        max_width: (add.min.x - 12.0 - area.min.x).max(1.0),
+        max_rows: 1,
+        break_anywhere: false,
+        overflow_character: Some('\u{2026}'),
+    };
+    let heading = painter.layout_job(job);
     painter.galley(
         Pos2::new(area.min.x, area.center().y - heading.size().y / 2.0),
         heading.clone(),
@@ -394,23 +425,18 @@ fn view_switch(
         egui::FontId::proportional(look.font_size - 1.0),
         look.palette.text_dim,
     );
-    painter.galley(
-        Pos2::new(pen, area.center().y - count.size().y / 2.0),
-        count.clone(),
-        look.palette.text_dim,
-    );
-    pen += count.size().x + 16.0;
-
-    // `+ Add Task` at the end of the row, at the size the reference draws it: 127 by 44.
-    let add_size = Vec2::new(127.0, 44.0) * scale;
-    let add = Rect::from_min_size(
-        Pos2::new(area.max.x - add_size.x, area.center().y - add_size.y / 2.0),
-        add_size,
-    );
-    let mut adding = false;
-    if add.min.x > pen {
-        adding = primary_button(ui, look, add, "+ Add Task");
+    if pen + count.size().x < add.min.x - 12.0 {
+        painter.galley(
+            Pos2::new(pen, area.center().y - count.size().y / 2.0),
+            count.clone(),
+            look.palette.text_dim,
+        );
+        pen += count.size().x + 16.0;
     }
+    // **Always drawn.** It is the one action in the header, and a control that vanished when the pane got
+    // narrow was a board somebody could not add a ticket to — where what should give way is the heading,
+    // which is a label. So the heading is clipped to the room left in front of it, and the button stays.
+    let adding = primary_button(ui, look, add, "+ Add Task");
     // **The search box takes whatever is spare**, between the heading and the button, up to the width the
     // reference gives it. It was a fixed 200 points, which on a wide board left a broad empty band where
     // the reference has its search.
@@ -514,7 +540,7 @@ pub(crate) fn primary_button(
     label: &str,
 ) -> bool {
     let response = ui.interact(area, ui.id().with(("agent-tasks-primary", label)), egui::Sense::click());
-    let ground = look.palette.accent;
+    let ground = look.palette.board_accent;
     if look.chrome.is_recording() {
         look.chrome.glow(area, 14.0, ground.gamma_multiply(0.42), 9.0);
         look.chrome.raised(
@@ -618,7 +644,7 @@ pub(crate) fn round_button(
     let response = ui
         .interact(area, ui.id().with(("agent-tasks-round", name)), egui::Sense::click())
         .on_hover_text(name);
-    let ground = look.palette.accent;
+    let ground = look.palette.board_accent;
     let radius = area.width() / 2.0;
     if look.chrome.is_recording() {
         // Constant, and the hover is a wash on top: see `card::show` for why the decoration must not change

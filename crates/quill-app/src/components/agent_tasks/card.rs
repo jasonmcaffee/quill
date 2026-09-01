@@ -84,17 +84,16 @@ pub fn show(
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), name.clone())
     });
     let radius = CornerRadius::same(RADIUS as u8);
-    // A card under the pointer is the pill every list in Quill draws for its chosen row, rather than a
-    // colour of its own.
+    // A card under the pointer wears the pill every list in Quill draws for its chosen row, rather than a
+    // colour of its own — and it is a wash over the same decoration rather than a different elevation, for
+    // the reason written below.
     let ground = match response.hovered() || dragging {
         true => look.palette.selected_row,
         false => look.palette.board_card,
     };
-    let _ = ground;
     let painter = ui.painter().clone();
     // **A card stands off its lane rather than being a rectangle drawn on it.** With the decoration on, that
-    // is a pair of soft shadows and the surface over them, and it lifts further under the pointer, which is
-    // what the picture the board is measured against shows. With it off — no manifest key, `plugins.chrome`
+    // is a pair of soft shadows and the surface over them. With it off — no manifest key, `plugins.chrome`
     // switched off, or a `Look` built by a test — the flat form is drawn instead, which is what the board was
     // before `task-1765`.
     if look.chrome.is_recording() {
@@ -253,13 +252,19 @@ pub fn show(
 /// Three drawn marks rather than three words, because a card in a 300 point lane has no room for
 /// `High priority` and the mark is what the design image shows.
 fn priority(painter: &egui::Painter, at: Pos2, priority: Priority, look: &Look<'_>) {
-    // **Up for urgent and down for not**, which is the way round the reference draws it and the way round
-    // everything else does. It was inverted: `High` and `Medium` drew a `v` and `Low` drew a `^`, so every
-    // card on the board wore a downward chevron and the one ticket that mattered least wore the upward one.
+    // **Up for urgent, down for not, and low draws nothing at all.**
+    //
+    // The direction was inverted: `High` and `Medium` drew a `v` and `Low` drew a `^`, so every card on the
+    // board wore a downward chevron and the one ticket that mattered least wore the upward one.
+    //
+    // And low is now silent, which is the rule the rest of Quill keeps: a mark is drawn to say a thing is
+    // *unusual*, and low is what most tickets are. A downward chevron on every ordinary card is a mark that
+    // says nothing while taking up the place a mark that says something would go — and the reference draws
+    // no low-priority mark either.
     let (tint, direction) = match priority {
         Priority::High => (look.palette.unsaved, 1.0),
         Priority::Medium => (look.palette.text_control, 1.0),
-        Priority::Low => (look.palette.text_dim, -1.0),
+        Priority::Low => return,
     };
     let width = 4.0;
     let height = 3.0 * direction;
