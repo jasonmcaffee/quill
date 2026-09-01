@@ -13,3 +13,8 @@ path = "src/lib.rs"
 [dependencies]
 alacritty_terminal.workspace = true
 unicode-width.workspace = true
+
+# Job objects, and nothing else: the one promise Windows will make about a program outliving the
+# terminal it was started in. See `src/reap.rs` for why a pseudoterminal closing is not that promise.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_System_JobObjects"] }

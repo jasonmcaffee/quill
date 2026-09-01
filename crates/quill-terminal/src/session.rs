@@ -36,6 +36,7 @@ use alacritty_terminal::vte::ansi::{CursorShape as VteCursorShape, Processor};
 use crate::keys::Mode;
 use crate::mouse::MouseMode;
 use crate::palette::Palette;
+use crate::reap::Reaper;
 use crate::screen::{Cursor, CursorShape, Screen, ScreenCell};
 
 /// How many lines of output are kept above the top of the screen.
@@ -153,6 +154,12 @@ pub struct Session {
     events: Receiver<Event>,
     /// Writes to the shell. Absent in a detached session, which has no shell.
     notifier: Option<Notifier>,
+    /// Ends the shell, and everything the shell started, when this session goes.
+    ///
+    /// Shutting the reader loop down drops the pseudoterminal, which is a hangup on Unix and only a
+    /// closed pipe on Windows — and a closed pipe is not noticed by a program that is not reading
+    /// it. `task-1769` found 119 shells left behind that way. See [`crate::reap`].
+    reaper: Reaper,
     /// Parses bytes given to [`Session::feed`]. Only a detached session has one; a session with a shell
     /// has the reader thread's parser instead.
     parser: Option<Processor>,
@@ -219,6 +226,13 @@ impl Session {
         // A window identifier of zero: Quill has one window in a process, so there is nothing to tell
         // apart. It reaches the shell as `WINDOWID`.
         let pty = alacritty_terminal::tty::new(&options, size.into(), 0)?;
+        // Before the pseudoterminal is handed over, take the program it started into a job of its
+        // own, so that closing the terminal ends it whatever it happens to be doing at the time.
+        // Borrowed rather than owned: `child_watcher` keeps using the same handle to report the exit.
+        #[cfg(windows)]
+        let reaper = Reaper::adopt(pty.child_watcher().raw_handle() as *mut std::ffi::c_void);
+        #[cfg(not(windows))]
+        let reaper = Reaper::detached();
         // The fourth argument is `drain_on_exit`, and it is `true` so that **what a program wrote
         // just before it ended is read**. With it false the reader loop leaves the pseudoterminal
         // alone the moment the child exits, and a program that prints one line and stops has all of
@@ -242,6 +256,7 @@ impl Session {
             term,
             events,
             notifier: Some(notifier),
+            reaper,
             parser: None,
             size,
             palette,
@@ -271,6 +286,7 @@ impl Session {
             term: Arc::new(FairMutex::new(term)),
             events,
             notifier: None,
+            reaper: Reaper::detached(),
             parser: Some(Processor::new()),
             size,
             palette,
@@ -358,6 +374,9 @@ impl Session {
         if let Some(notifier) = self.notifier.take() {
             let _ = notifier.0.send(Msg::Shutdown);
         }
+        // And the program itself, because the shutdown above only closes the pseudoterminal, which
+        // on Windows a program in the middle of something does not notice. `task-1769`.
+        self.reaper.kill();
         self.running = false;
     }
 
@@ -741,6 +760,9 @@ impl Drop for Session {
         if let Some(notifier) = &self.notifier {
             let _ = notifier.0.send(Msg::Shutdown);
         }
+        // `Reaper`'s own `Drop` runs straight after this and is what actually ends the program: the
+        // hangup above is enough on Unix and is not enough on Windows. Nothing to do here — it is
+        // named so that a reader of this function knows the shell is not being left to the hangup.
     }
 }
 
@@ -1205,6 +1227,128 @@ mod tests {
         } else {
             "/bin/sh".to_owned()
         }
+    }
+
+    /// The pids of every `pwsh.exe` started by **this test binary** whose command line carries
+    /// `nonce`.
+    ///
+    /// By parent and by nonce, never by image alone: this box runs several agents at once, and a
+    /// check that treats any new `pwsh.exe` as its own both reports and reaps somebody else's work.
+    /// `task-1769` did exactly that before this was written.
+    #[cfg(windows)]
+    fn own_shells_named(nonce: &str) -> Vec<u32> {
+        let me = std::process::id();
+        let query = format!(
+            "Get-CimInstance Win32_Process -Filter \"Name='pwsh.exe' AND ParentProcessId={me}\" |              Where-Object {{ $_.CommandLine -like '*{nonce}*' }} | ForEach-Object {{ $_.ProcessId }}"
+        );
+        let out = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &query])
+            .output()
+            .expect("powershell answers");
+        String::from_utf8_lossy(&out.stdout).lines().filter_map(|line| line.trim().parse().ok()).collect()
+    }
+
+    /// Whether `pid` is still a process at all.
+    #[cfg(windows)]
+    fn still_running(pid: u32) -> bool {
+        let out = std::process::Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                &format!("if (Get-CimInstance Win32_Process -Filter 'ProcessId={pid}') {{ 'yes' }} else {{ 'no' }}"),
+            ])
+            .output()
+            .expect("powershell answers");
+        String::from_utf8_lossy(&out.stdout).contains("yes")
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_session_takes_its_program_with_it_even_when_the_program_is_busy() {
+        // The failure this is here for: closing a pseudoconsole is a hangup on Unix and is **not** a
+        // kill on Windows. A program blocked on its console notices; a program in the middle of
+        // something does not, and it then waits for ever on a console host nobody will ever type
+        // into. `task-1769` found 119 shells left behind that way, holding 4 GB of commit charge,
+        // accruing at about sixty a day — on a box where free commit is what decides whether a
+        // render runs at full speed.
+        //
+        // So the shell here is deliberately **busy**: it sleeps for fifteen minutes and reads
+        // nothing. If dropping the session is the only thing stopping it, it outlives this test.
+        let nonce = format!("quill-reap-{}-{}", std::process::id(), std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
+        let settings = SessionSettings {
+            shell: Some("pwsh.exe".to_owned()),
+            args: vec![
+                "-NoProfile".to_owned(),
+                "-Command".to_owned(),
+                format!("# {nonce}
+Start-Sleep -Seconds 900"),
+            ],
+            working_directory: Some(std::env::temp_dir()),
+            ..SessionSettings::default()
+        };
+        let session = Session::spawn(&settings, Size::new(14, 160), Arc::new(|| {})).expect("start a shell");
+
+        // Wait for the shell to actually be there before asking anything about it being gone.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let mut shells = Vec::new();
+        while std::time::Instant::now() < deadline {
+            shells = own_shells_named(&nonce);
+            if !shells.is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        assert_eq!(shells.len(), 1, "exactly one shell, started by this test and named by its nonce");
+        let shell = shells[0];
+
+        drop(session);
+
+        // Ending a process is not instantaneous, so this waits for it rather than asserting on the
+        // next line and being flaky about it.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while std::time::Instant::now() < deadline && still_running(shell) {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        let survived = still_running(shell);
+        if survived {
+            // Never leave the very thing this test is about behind, whether it passes or fails.
+            let _ = std::process::Command::new("powershell.exe")
+                .args(["-NoProfile", "-NonInteractive", "-Command", &format!("Stop-Process -Id {shell} -Force -Confirm:$false")])
+                .output();
+        }
+        assert!(!survived, "the shell outlived the session that started it (pid {shell})");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_session_puts_its_program_in_a_job_of_its_own() {
+        // The test above states the contract and passes without the fix as often as not, because
+        // whether closing a pseudoconsole happens to end a particular shell is a race — which is
+        // exactly why the fix cannot rely on it. This one states the mechanism instead, and is the
+        // regression test: without the job there is nothing holding the program, and a Quill that
+        // crashes or is killed (which is most of how the 119 orphans of `task-1769` were made) takes
+        // nothing with it.
+        let settings = SessionSettings {
+            shell: Some("pwsh.exe".to_owned()),
+            args: vec!["-NoProfile".to_owned(), "-Command".to_owned(), "Start-Sleep -Seconds 30".to_owned()],
+            working_directory: Some(std::env::temp_dir()),
+            ..SessionSettings::default()
+        };
+        let mut session = Session::spawn(&settings, Size::new(14, 160), Arc::new(|| {})).expect("start a shell");
+        assert!(session.reaper.is_held_by_job(), "the program is in a job that ends with this session");
+        session.kill();
+        assert!(!session.reaper.is_holding(), "killing hands the job back");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_detached_session_holds_no_program_to_reap() {
+        // The other half of the contract: a session with no shell behind it must not be holding a
+        // handle to anything, or dropping one would end a process it never started.
+        let session = Session::detached(Size::new(10, 40));
+        assert!(!session.reaper.is_holding());
     }
 
     #[test]
