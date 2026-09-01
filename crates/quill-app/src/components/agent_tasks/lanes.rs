@@ -452,7 +452,11 @@ pub fn show(board: &mut AgentTasks, ui: &mut egui::Ui, look: &Look<'_>, area: Re
         // A lane with nothing in it says so, in a well the size of the space a card would take — which is
         // what the picture shows and is better than an empty box, because an empty box reads as a board that
         // failed to draw rather than as a lane nobody has filled.
-        if cards.is_empty() && status != Status::New {
+        // Every lane, New included. New has `+ Add task` at its foot and could have been left with the
+        // bare space above it, but a lane that is empty in one place and merely blank in another is two
+        // answers to one question — and the space is the drop target, so saying what it is for is better
+        // than leaving it to be guessed at.
+        if cards.is_empty() {
             let empty = Rect::from_min_max(
                 Pos2::new(cards_area.min.x + LANE_INSET, cards_area.min.y),
                 Pos2::new(cards_area.max.x - LANE_INSET, (cards_area.min.y + EMPTY_WELL).min(cards_area.max.y)),

@@ -3300,9 +3300,17 @@ impl QuillApp {
             let body = Rect::from_min_max(egui::Pos2::new(rect.min.x, header.max.y), rect.max);
             let mut pane_ui = ui.new_child(egui::UiBuilder::new().max_rect(body));
             pane_ui.set_clip_rect(body);
-            // Reserved first, because the decoration goes behind the pane's own widgets. Filled in by
-            // `paint_the_chrome` after the loop, which is the earliest moment `self` is not borrowed by
-            // the `Look` the providers are drawing with.
+            // The pane's ground first, then the slot the decoration goes in, then the provider's widgets.
+            // The ground is the window's rather than the provider's, and it has to be: a provider that
+            // painted its own would add it to the painter *after* this slot and wash the decoration out —
+            // which is what it did, and it was invisible only because the ground carries the window's own
+            // opacity and let some of the decoration through.
+            {
+                let ground = crate::services::plugin_ui::Look::of(&self.settings, &self.renderer);
+                pane_ui.painter().rect_filled(body, 0, ground.ground(ground.palette.board_page));
+            }
+            // Filled in by `paint_the_chrome` after the loop, which is the earliest moment `self` is not
+            // borrowed by the `Look` the providers are drawing with.
             let shape = pane_ui.painter().add(egui::Shape::Noop);
             let chrome = self.chrome_for(&plugin);
             let look = crate::services::plugin_ui::Look::of(&self.settings, &self.renderer)

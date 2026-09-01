@@ -110,9 +110,9 @@ impl Lift {
     /// is taken into account.
     fn shadow_alpha(self) -> u8 {
         match self {
-            Self::Small => 112,
-            Self::Medium => 132,
-            Self::Large => 150,
+            Self::Small => 78,
+            Self::Medium => 100,
+            Self::Large => 122,
         }
     }
 }
@@ -346,7 +346,7 @@ impl Chrome {
             rect: rect.translate(Vec2::splat(-offset)),
             radius,
             blur,
-            colour: lifted(fill.representative(), 0.30).gamma_multiply(0.55),
+            colour: lifted(fill.representative(), 0.26).gamma_multiply(0.45),
             inset: false,
         });
         self.push(Decor::Unclip);
@@ -377,7 +377,7 @@ impl Chrome {
             rect: rect.translate(Vec2::splat(-offset)),
             radius,
             blur,
-            colour: lifted(fill, 0.34).gamma_multiply(0.5),
+            colour: lifted(fill, 0.30).gamma_multiply(0.45),
             inset: true,
         });
         self.push(Decor::Unclip);

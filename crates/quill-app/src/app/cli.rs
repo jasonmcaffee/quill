@@ -6016,6 +6016,7 @@ impl QuillApp {
             "editor.line_numbers" => self.settings.line_numbers.to_string(),
             "editor.suggestions" => self.settings.suggestions.name().to_owned(),
             "debug.value_tooltip" => self.settings.value_tooltip.name().to_owned(),
+            "plugins.chrome" => self.settings.plugin_chrome.to_string(),
             "mcp.enabled" => self.settings.mcp_enabled.to_string(),
             "mcp.port" => self.settings.mcp_port.to_string(),
             "mcp.tools" => self.settings.mcp_tools.name().to_owned(),
@@ -6099,6 +6100,7 @@ impl QuillApp {
                         .unwrap_or(usize::MAX)
                 });
             }
+            "plugins.chrome" => settings.plugin_chrome = flag()?,
             "mcp.enabled" => settings.mcp_enabled = flag()?,
             "mcp.port" => settings.mcp_port = crate::settings::clamp_port(number()?),
             "mcp.tools" => {
@@ -6904,6 +6906,11 @@ const SETTINGS: &[SettingKey] = &[
         help: "Whether resting the pointer on a name while the program is stopped shows its value. Show Value on the Debug menu works either way.",
     },
     SettingKey {
+        name: "plugins.chrome",
+        accepts: "true or false",
+        help: "Whether a plugin that asked for it draws depth: the soft shadows, gradients and pressed edges behind its own pane. Off, it draws flat.",
+    },
+    SettingKey {
         name: "mcp.enabled",
         accepts: "true or false",
         help: "Whether this Quill serves MCP over HTTP. An agent that launches the server itself needs neither this nor a port.",
@@ -6966,6 +6973,7 @@ fn fresh_value(name: &str, fresh: &crate::settings::Settings) -> String {
         "editor.line_numbers" => fresh.line_numbers.to_string(),
         "editor.suggestions" => fresh.suggestions.name().to_owned(),
         "debug.value_tooltip" => fresh.value_tooltip.name().to_owned(),
+        "plugins.chrome" => fresh.plugin_chrome.to_string(),
         "mcp.enabled" => fresh.mcp_enabled.to_string(),
         "mcp.port" => fresh.mcp_port.to_string(),
         "mcp.tools" => fresh.mcp_tools.name().to_owned(),

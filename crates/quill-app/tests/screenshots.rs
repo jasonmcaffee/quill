@@ -6464,6 +6464,7 @@ const SETTINGS_HELP: &[&str] = &[
     "Whether the editing area has a column of line numbers.",
     "Whether the completion popup arrives as you type. Ctrl+Space works either way.",
     "Whether resting the pointer on a name while the program is stopped shows its value. Show Value on the Debug menu works either way.",
+    "Whether a plugin that asked for it draws depth: the soft shadows, gradients and pressed edges behind its own pane. Off, it draws flat.",
     "Whether this Quill serves MCP over HTTP. An agent that launches the server itself needs neither this nor a port.",
     "The port it serves on when it does.",
     "One tool an area, or one tool a command. `mcp tools --count` says what each costs.",
@@ -11683,6 +11684,26 @@ fn the_board_as_a_tab_filling_the_editing_area() {
     did(&mut harness, "plugins tab agent-tasks/board --open");
     harness.run();
     harness.snapshot(shot("agent_tasks_tab").as_str());
+}
+
+/// `task-1765`: the decoration switched off draws the board flat, in the same frame.
+///
+/// The off switch is a control like any other and Quill's rule is that a control has a test. It is also
+/// the answer for a machine where the rasteriser is too slow, so it has to actually work rather than
+/// merely exist — and the flat form is a separate path through every part of the board, since each one
+/// asks `look.chrome.is_recording()` and draws the other shape when it is false.
+#[test]
+fn the_board_with_its_decoration_switched_off() {
+    let mut harness = harness("");
+    did(&mut harness, "settings set plugins.chrome false");
+    did(&mut harness, "plugins run agent-tasks new-sprint Current Sprint");
+    did(&mut harness, "plugins run agent-tasks new-task Quill \u{2014} Plugin architecture for UI");
+    did(&mut harness, "plugins run agent-tasks new-task Rust vector db");
+    did(&mut harness, "plugins run agent-tasks move-task task-2 agent_done 0");
+    did(&mut harness, "plugins run agent-tasks board");
+    did(&mut harness, "plugins tab agent-tasks/board --open");
+    harness.run();
+    harness.snapshot(shot("agent_tasks_flat").as_str());
 }
 
 #[test]

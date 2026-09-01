@@ -119,7 +119,9 @@ const PAD: f32 = 8.0;
 /// a modal wider than its parent.
 pub fn pane(board: &mut AgentTasks, ui: &mut egui::Ui, look: &Look<'_>) -> Vec<Request> {
     let area = ui.available_rect_before_wrap();
-    ui.painter().rect_filled(area, 0, look.ground(look.palette.editor));
+    // **The ground is the window's, not the board's.** It has to be painted *before* the slot the
+    // decoration is set into, and only the window knows where that slot is — a ground painted here would
+    // be added to the painter after it and would wash the decoration out. See `QuillApp::paint_the_chrome`.
     let mut requests = Vec::new();
     // **No pump here.** Every open provider is pumped once a frame by `QuillApp::let_the_plugins_catch_up`,
     // which is what makes an agent's output arrive while its board is put away. Pumping again from the drawing
@@ -145,7 +147,9 @@ pub fn pane(board: &mut AgentTasks, ui: &mut egui::Ui, look: &Look<'_>) -> Vec<R
 /// area is for. With no ticket open the lanes fill it.
 pub fn tab(board: &mut AgentTasks, ui: &mut egui::Ui, look: &Look<'_>) -> Vec<Request> {
     let area = ui.available_rect_before_wrap();
-    ui.painter().rect_filled(area, 0, look.ground(look.palette.editor));
+    // **The ground is the window's, not the board's.** It has to be painted *before* the slot the
+    // decoration is set into, and only the window knows where that slot is — a ground painted here would
+    // be added to the painter after it and would wash the decoration out. See `QuillApp::paint_the_chrome`.
     let mut requests = Vec::new();
     // **No pump here.** Every open provider is pumped once a frame by `QuillApp::let_the_plugins_catch_up`,
     // which is what makes an agent's output arrive while its board is put away. Pumping again from the drawing

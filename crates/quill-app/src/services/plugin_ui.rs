@@ -392,6 +392,11 @@ pub trait UiProvider: std::fmt::Debug {
     }
 
     /// Draw the pane. Called once a frame while the pane is showing.
+    ///
+    /// **The ground is already painted**, in `look.palette.board_page` with the window's opacity applied, and
+    /// a provider must not paint its own. The decoration a provider records goes into a slot reserved between
+    /// that ground and everything drawn here, and egui hands a layer's shapes to the tessellator in the order
+    /// they arrive — so a second ground painted here would be painted over the decoration.
     fn pane(&mut self, ui: &mut egui::Ui, look: &Look<'_>) -> Vec<Request>;
 
     /// Draw the tab in the editing area. Called once a frame while that tab is showing.
@@ -529,7 +534,8 @@ mod tests {
             crate::services::vello_canvas::Fill::Solid(Color32::RED),
             crate::services::vello_canvas::Lift::Small,
         );
-        assert_eq!(chrome.take().len(), 3);
+        // A band to draw the shadows in, the two shadows, the unclip and the surface — `Chrome::raised`.
+        assert_eq!(chrome.take().len(), 5);
     }
 
     #[test]
