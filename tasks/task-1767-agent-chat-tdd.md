@@ -50,8 +50,8 @@ of it in**.
 | The panel | one raised card, `--surface-1`, radius `--r-lg`, `--e-raised-sm`, holding all three rows | `ChatPanel.module.css` |
 | The header | a flat row inside it: a mint status dot with a halo, the conversation's name, uppercase mono chips naming the datasources, a ghost `+` for a new chat, and a hairline rule under the lot | `ChatHeader.module.css` |
 | The conversation | a scrolling column, 14 points between rows | `ChatConversation.module.css` |
-| A message from you | right aligned, at most 75% of the width, `--e-raised-sm`, its top-**right** corner squared off to 6 | `ChatMessage.module.css` `.messageRowUser` |
-| A message from the model | left aligned, at most 85%, `--e-pressed-sm`, its top-**left** corner squared off | `.messageRowAI` |
+| A message from you | right aligned, at most **75%** of the width, raised, its top-**right** corner squared off to 6 | `ChatMessage.module.css` `.messageRowUser` |
+| A message from the model | left aligned, at most **85%**, pressed, its top-**left** corner squared off | `.messageRowAI` |
 | A code block in one | `--e-pressed`, deeper than the bubble it is in, mono, wrapped | `.chatMessageLLM pre` |
 | Inline code | a chip on `--surface-sunken` in `--accent-blue` | `.chatMessageLLM code` |
 | A picture in one | `--e-raised-sm`, radius `--r-md`, capped at 400 points tall | `.chatMessageImage` |
@@ -125,7 +125,103 @@ the plugin system has had since it was written and this does not give it up.
 
 ---
 
-## 3. Talking to a server, which Quill has never done before
+## 3. What is on the other end: the agent you already have
+
+**The ticket's own words settle this, and they were read too narrowly the first time.** It asks for
+"a config in settings to allow configure url for Claude, codex etc.", and *url* was taken to mean the
+APIs behind those two names — `api.anthropic.com` and `api.openai.com`. Jason's clarification on the
+ticket is the correction: *"this is not meant to interact with ai server. This is supposed to be
+solely in the confines of quill and connection to Claude and codex etc through cli."*
+
+So the two rows the ticket names run the **command-line agent already installed on this machine**.
+That is not a cheaper version of talking to those APIs; it is better in four ways, and each of them is
+a thing the HTTP design had to work at and this one gets for nothing:
+
+| | Through the CLI | Through the API |
+|---|---|---|
+| The key | **There is none.** `claude` and `codex` hold their own credentials. | An environment variable Quill names, reads and must redact out of every error. |
+| Tools | **The agent's own**, with its own sandbox and permission model. | Quill's catalogue, offered behind two switches, run by the window, bounded by a round limit. |
+| The project | **Read**, because the agent starts in the folder the window has open and finds its `CLAUDE.md` or `AGENTS.md`. | Nothing but a path in a system prompt. |
+| A second question | **`--resume <session>`** with one turn's words: the context the agent built is the context it keeps. | The whole transcript, sent again, paid for again. |
+
+The three address shapes stay, because the ticket does say *url* and because a person may prefer to
+spend an API key rather than run an agent — and because the `local` row that ships is an
+OpenAI-compatible address, which is what answers on a machine with neither agent installed. What
+changes is which of the five a row uses, and that is one enum with five arms.
+
+### 3.0 The two agents' own protocols, recorded rather than guessed at
+
+Both were run and the output kept: `_agent_output/task-1767-agent-chat/cli-streams/` holds a plain
+turn and a tool-using turn from each.
+
+**Claude Code's `--output-format stream-json` is the Anthropic wire verbatim**, nested one level down
+inside a `stream_event` envelope. The same `content_block_delta`, the same `input_json_delta`, the
+same `message_delta`. So the decoder written for `/v1/messages` reads this one with a wrapper round
+it, and thinking blocks, streaming tool arguments and token deltas all arrived with no new code at
+all. The envelope adds three things: `system` with `subtype: init`, which carries the session id and
+the model; `user` messages carrying the **results of the tools the agent ran itself**; and `result`,
+which ends the turn with what it cost.
+
+**`codex exec --json` is a different model**: a thread of *items* that are started, updated and
+completed, where a shell command the agent ran is an item beside the words it said. Its items are
+**not deltas** — `item.updated` carries the text so far and `item.completed` carries all of it — so
+the decoder remembers how much of each item it has passed on and sends only the rest. Without that
+the answer appeared twice.
+
+Both are read into the same `Reply` values, so nothing above `quill-chat` knows which agent answered.
+
+### 3.0.1 What an agent may do is a setting, because it cannot stop and ask
+
+An agent run with `--print` has no way to put a permission dialog in front of anybody, so what it may
+do has to be decided before it starts. `chat.permission` has three values and one vocabulary, because
+a person choosing between "read only" and "may edit" should not have to know that one agent calls it
+a sandbox and the other a permission mode:
+
+| | `claude` | `codex` |
+|---|---|---|
+| `read` (the default) | `--permission-mode manual` | `--sandbox read-only` |
+| `edit` | `--permission-mode acceptEdits` | `--sandbox workspace-write` |
+| `full` | `--permission-mode bypassPermissions` | `--dangerously-bypass-approvals-and-sandbox` |
+
+### 3.0.2 Four things measured on real agents, each of which broke the feature
+
+Every one of these was found by driving the released binary against the agents on this machine, and
+each is a rule rather than a preference.
+
+- **Quill runs none of an agent's tool calls.** The first version handed them to `tools::resolve`,
+  which answered `claude`'s `Grep` and `Read` with *"There is no tool called `Grep`"* — put the
+  refusal in the transcript, made a `tool` message nobody asked for, and sent another round. The
+  agent recovered, having been argued with by its own client. `WaitingForTools` still means what it
+  says for an agent; what it means is that *the agent* is running one, which is what the block in the
+  pane is already drawing.
+- **The prompt goes down standard input.** npm installs `codex` on Windows as `codex.cmd`, and Rust's
+  own `Command` refuses to spawn a batch file with an argument it cannot escape — *"batch file
+  arguments are invalid"*. Quill's first line tells the agent it is answering in a pane, so every
+  prompt has a blank line in it and every `codex` turn failed. Standard input is better on every
+  platform besides: a Windows command line stops at 32,767 characters and a pasted stack trace would
+  reach it.
+- **A bare name is resolved through `PATHEXT`, and the extension-less file is not a program.** npm
+  installs three files for `codex`; one is a shell script with no extension, for Git Bash. Found
+  first and handed to `CreateProcess`, it answered *"%1 is not a valid Win32 application. (os error
+  193)"* and the pane reported that a working agent could not be started. `cmd.exe` itself only ever
+  tries the `PATHEXT` extensions, and so does this now.
+- **`codex exec resume` has no `--sandbox`**, though `codex exec` does — every second question failed
+  with *"unexpected argument '--sandbox' found"*. What resume takes is `-c`, its own configuration
+  override, so the sandbox is named there as `-c sandbox_mode="…"`. The same value, said in the two
+  vocabularies one program has for it.
+
+### 3.0.3 Stopping kills the child, and the kill cannot come from the reader
+
+The thread reading an agent is asleep inside a read on its standard output, with no timeout, and will
+not look at a stop flag until the next line arrives — which for an agent thinking about a long answer
+is not soon. Measured: `stop` put the pane back to `finished` at once, kept what had arrived, and left
+the agent running and billing. So `agent::Running` is a handle shared with whoever started the turn,
+and stopping kills through it; the blocked read then ends because the pipe has closed, which unwedges
+the thread as well. It is the same answer `quill_terminal::Session::kill` gives, for the same reason.
+
+## 3.1 Talking to a server, which Quill had never done before
+
+The three address shapes are still here, so this section still applies to them.
 
 This is the first thing in Quill that makes an outbound network request, and that deserves to be
 said out loud rather than slipped in.
@@ -136,9 +232,10 @@ downloaded, a debug adapter must not be downloaded. `task-1692` drew the line wh
 package manager the person pressed a button for, in a terminal they can watch, is not the editor
 reaching out". A chat pane is the same shape and more so: the request is the feature, it goes to an
 address the person typed into a Settings page, and it happens when they press send. Nothing here
-fetches anything at startup, on a keystroke, or on a file being opened.
+fetches anything at startup, on a keystroke, or on a file being opened. The same sentence covers a
+program: it is started when somebody presses send, and never otherwise.
 
-### 3.1 The client is `ureq`, over the machine's own TLS
+### 3.1.1 The client is `ureq`, over the machine's own TLS
 
 Three routes were weighed.
 
@@ -172,7 +269,7 @@ form, nothing keeps a cookie, and the bodies are built and read as `serde_json::
 which is the rule `services::control` already keeps for the control channel, and for the same
 reason: this is a small open protocol somebody else defined, not a Rust type going over a wire.
 
-### 3.2 Streaming is a state machine over a byte stream, not a line reader
+### 3.1.2 Streaming is a state machine over a byte stream, not a line reader
 
 Server-sent events look line-oriented and are not: a chunk from a socket can end in the middle of a
 UTF-8 character, in the middle of a `data:` line, or exactly on the blank line that ends an event.
@@ -212,7 +309,7 @@ is what the pane shows, cut to a sentence with the whole of it under a disclosur
 `quill-git`'s rule ("nothing invents an error message") applied to a second kind of program Quill
 does not control.
 
-### 3.3 The thread, and how the window finds out
+### 3.1.3 The thread, and how the window finds out
 
 `quill_chat::Client::send` spawns a thread, exactly as `quill_git::Worker` does. It owns the
 request, reads the body incrementally, and pushes `Reply`s down an `mpsc` channel; after each push
@@ -231,7 +328,7 @@ the thread as an `AtomicU64`, and replies from a passed generation are dropped. 
 `services::text_search`'s own arrangement, and it is what makes "send, change your mind, send again"
 work with no timer anywhere.
 
-### 3.4 Where the key is, which is nowhere Quill writes
+### 3.1.4 Where the key is, which is nowhere Quill writes — and for the two rows that ship, there is no key
 
 `services::agent_tasks::keychain` says it plainly: a secret is never written into a settings file,
 because a settings file is copied between machines, readable by anything that can read the folder,
@@ -309,9 +406,9 @@ Five kinds, and each is a value in `model.rs` rather than a shape the drawing de
 
 | Row | Drawn |
 |---|---|
-| `Role::User` | right aligned, at most 78% of the width, `Chrome::raised(..., Lift::Small)` on `board_card`, top-right corner squared to 6 |
-| `Role::Assistant` | left aligned, at most 92%, `Chrome::sunken(..., Lift::Small)`, top-left squared |
-| a tool call | full width less a small indent, `Chrome::sunken` on `board_well`, a raised round icon disc, a caret, and its arguments and result as mono rows |
+| `Role::User` | right aligned, at most **75%** of the width, `Chrome::raised(..., Lift::Medium)` on `board_card`, top-right corner squared to 5 |
+| `Role::Assistant` | left aligned, at most **85%**, `Chrome::sunken(..., Lift::Medium)`, top-left squared |
+| a tool call | **98%**, because it is a report rather than speech: `Chrome::sunken` on `board_well`, a raised round icon disc, a caret, and its arguments and result as mono rows |
 | thinking | the quiet colour, italic, behind a disclosure, collapsed once the answer starts |
 | a failure | `Chrome::sunken` with a `CLOSE` coloured left edge and the server's own words |
 
@@ -319,7 +416,10 @@ The body of a message is **markdown**, through `components::markdown_text`, whic
 `quill_core::markdown::render` the editor's own preview is made of. So headings, lists, quotes,
 tables and fenced code all work, a fence is coloured by whichever plugin claims its language through
 the `CodeHighlighter` seam `PluginHighlighter` already implements, and none of it is a second
-renderer. What it does **not** do is pictures and Mermaid diagrams inside a message body, for the
+renderer. A fenced block sits in a **pressed panel** and inline code in a **chip**, which
+`quill_core::markdown` already answers with `Preview::panels` and `Preview::code_spans` and which
+`markdown_text` was throwing away — so a fence used to be a line of coloured text floating on the
+surface behind it. What it does **not** do is pictures and Mermaid diagrams inside a message body, for the
 reason `components/markdown_text.rs` already records: resolving those needs two further passes that
 decode an image and lay a diagram out. A picture **attached** to a message is drawn — see §6 — and
 one written as `![](…)` inside the text shows its alt text. `plugin.limitations` says so.
@@ -401,6 +501,14 @@ text. The rule that a document cannot make a network request is not weakened by 
 ## 7. Tool calls
 
 The ticket says to understand them, and understanding them turns out to answer a bigger question.
+
+**All of this section is about a row that sends to an address.** A command-line agent has its own
+tools, its own sandbox and its own permission model, so Quill offers it none, runs none of its calls
+and bounds none of its rounds — see §3.0.2, where doing otherwise was measured arguing with a real
+`claude` about the existence of its own `Grep`. What the pane does with an agent's tool call is
+**show** it: the same block, the same disclosure, the same timing, filled in from the agent's own
+report of what it did rather than from a command Quill ran. So everything below about *drawing* one
+holds for both, and everything about *running* one holds for an address alone.
 
 ### 7.1 What the page being copied does, and why Quill's answer is different
 
@@ -572,8 +680,12 @@ Four layers, as everywhere else.
    block, a table and a picture; one mid-stream; one with a tool call open and one finished; one
    failed; the Settings page. Built through `builder()` in `tests/screenshots.rs` so they share the
    graphics device pool, and `draw_deterministically` so `vello_cpu` uses `Level::baseline()`. Every
-   one of them uses a **scripted server**, never a real endpoint: when a model answers is not
-   something a test can know, which is the terminal's own rule.
+   one of them builds its conversation out of the same `Reply` values the wire would have produced,
+   which is the terminal's own rule stated exactly: its screenshot tests feed **fixed bytes** to a
+   session with no shell behind it, because when a real one answers is not something a test can know.
+   The **scripted server** is where the transport is driven end to end, in `quill-chat`, and
+   `tests/wire_shapes.rs` reads recorded streams off disk for the two shapes whose escaping is too
+   awkward to write as a literal without getting it wrong.
 4. **The real thing.** A real request to the local endpoint on this machine, and to
    `api.anthropic.com` with a real key, driven through `quill-cli plugins run agent-chat send` and
    read back through `plugins view`. §11 records what that run said.
@@ -598,13 +710,12 @@ and `vello_cost` are: a threshold in milliseconds would be a different number on
 
 | What | Cost |
 |---|---|
-| Rendering and laying out one 504 byte answer | 0.136 ms |
+| Rendering and laying out one 504 byte answer | 0.127 ms |
 | Asking for one that has not changed | 0.000 ms |
-| A whole frame of forty messages with the last one arriving | 0.031 ms |
+| A whole frame of forty messages with the last one arriving | 0.030 ms |
 | Recording the decoration, which every frame pays | 0.001 ms |
-| Asking for the decoration on a frame where nothing moved | 0.009 ms |
-| Rasterising it on a frame where it changed, six bubbles showing | **8.7 ms** |
-| The same with one bubble showing | 4.0 ms |
+| Asking for the decoration on a frame where nothing moved | 0.008 ms |
+| Rasterising it on a frame where it changed, six bubbles showing | **9.6 ms** |
 
 **The text is free and the decoration is not**, which is the opposite of what was expected. A
 conversation of forty messages costs 0.031 ms a frame because thirty-nine of them are cached and the
@@ -615,13 +726,30 @@ keyed on the message rather than on the pane.
 20.7 ms on a full board and revised its budget on the grounds that a changed frame happens *while
 something is moving* — a drag, which lasts a second. Here the thing that moves is an answer arriving,
 which lasts a minute: the bubble grows, every row below it moves, and the whole pane is rasterised
-again. 8.7 ms is inside a 60 Hz frame and it is a lot of processor for a minute. What is done about
+again. 9.6 ms is inside a 60 Hz frame and it is a lot of processor for a minute. It was 8.7 before
+the elevation went from `Lift::Small` to `Lift::Medium`: a wider Gaussian is a wider band to blur, so
+the depth the reference asks for costs about a millisecond a frame while an answer is arriving, which
+is the trade the picture is worth. What is done about
 it is what §9.4 of that design already established: only rows that intersect the clip rectangle
 record anything, `MAX_SCALE` caps the pixmap at 1.5 pixels a point, and
 `Settings -> Appearance` has a tick box that turns the whole thing off at no cost at all. The sprite
 cache §9.5 points at would help here more than it would on a board.
 
-### 11.3 The round trip
+### 11.3 The agents, driven for real
+
+The released binary, on a scratch project, against the `claude` and `codex` really installed here.
+Both answered; both streamed; both resumed. `claude` asked for its own `Read` tool and the pane drew
+the call and its answer; `codex` ran a shell command and the pane drew that the same way. A second
+question to each named something only the first question could have told it — the file it had read,
+the word it had said — which is the whole proof that `--resume` carries the agent's own session
+rather than Quill re-sending a transcript. Stopping a long answer put the pane back at once, kept what
+had arrived, and killed the child.
+
+The four faults in §3.0.2 and the one in §3.0.3 are what those runs found. None of them could have
+been found any other way: every one is about a real program on a real machine, and four of the five
+are specifically about Windows.
+
+### 11.4 The round trip
 
 Driven through the **released binary** against a real OpenAI-compatible server on loopback that
 writes out the body it was sent, with `quill-cli plugins run agent-chat` on the other end. The pane

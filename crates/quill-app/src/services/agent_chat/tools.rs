@@ -30,8 +30,44 @@ use serde_json::{Map, Value};
 
 use quill_cli::mcp::tools::{self, Shape};
 
-/// The shape the tools are offered in. One a area, for the reason in the module comment.
+/// The shape the tools are offered in. One an area, for the reason in the module comment.
 const SHAPE: Shape = Shape::Grouped;
+
+/// The commands that hand the model a program of its own choosing, held back unless asked for.
+///
+/// **The one place the chat's trust boundary differs from the MCP server's, and it differs for a
+/// reason.** `mcp::tools::offered` holds back one command and offers the rest, because the agent on
+/// the other end of an MCP connection is Claude Code running on this machine, launched by the person,
+/// with their own credentials. The other end of *this* connection is a server: it is handed the tools
+/// by a switch in a composer, and `terminal send` would let it type `echo $ANTHROPIC_API_KEY` and
+/// then read the answer back with `terminal read`. The key Quill takes such care never to write down
+/// would be in the transcript.
+///
+/// So these are refused with a sentence naming the setting, and `chat.shell` in the Settings page is
+/// how somebody who wants an agent that can really drive the machine says so. They are **refused
+/// rather than hidden**, because the tools are generated from the catalogue and filtering the
+/// generator would be a second generator; and because a model told why can say so, where a model that
+/// simply cannot see the command tries something worse — which is `task-1695`'s own finding.
+///
+/// Written down here with the reason for each, and `every_command_that_runs_a_program_is_held_back`
+/// fails if the list drifts from what the catalogue holds.
+pub const RUNS_A_PROGRAM: &[&str] = &[
+    // Types into a shell, which is the whole machine and the whole environment with it.
+    "terminal.send",
+    // A run configuration is a command line, so adding or starting one runs a program.
+    "run.add",
+    "run.start",
+    "run.rerun",
+    // Starts a package manager against the network.
+    "debug.install",
+    // Starts another Quill on a folder of the model's choosing.
+    "launch",
+];
+
+/// Whether `command` is one that hands the model a program of its own choosing.
+pub fn runs_a_program(command: &quill_cli::catalogue::Command) -> bool {
+    RUNS_A_PROGRAM.contains(&command.wire().as_str())
+}
 
 /// Every tool Quill offers a model, built from the catalogue.
 pub fn offered() -> Vec<quill_chat::Tool> {
@@ -70,7 +106,7 @@ pub struct Resolved {
 ///
 /// The one path, so a tool call and a person typing the same command reach the same code —
 /// `QuillApp::run_cli` — rather than two paths that agree today.
-pub fn resolve(name: &str, arguments: &Value) -> Result<Resolved, String> {
+pub fn resolve(name: &str, arguments: &Value, shell: bool) -> Result<Resolved, String> {
     let given = match arguments {
         Value::Object(map) => map.clone(),
         // A model that produced no arguments at all meant an empty object, which is what a command
@@ -83,6 +119,13 @@ pub fn resolve(name: &str, arguments: &Value) -> Result<Resolved, String> {
         }
     };
     let call = tools::resolve(SHAPE, name, &given).map_err(|problem| problem.0)?;
+    if !shell && runs_a_program(call.command) {
+        return Err(format!(
+            "`{}` runs a program of your choosing, and this window does not offer that to a model. \
+             Switch on `Let the model run programs` in Settings -> Agent-Chat if you want it.",
+            call.command.wire()
+        ));
+    }
     if let Some(flag) = asks_to_wait(&call.arguments) {
         return Err(format!(
             "`{}` was asked to wait with `--{flag}`, and a tool call cannot wait: it is one turn of a              conversation rather than a script. Ask for it without waiting.",
@@ -151,6 +194,7 @@ mod tests {
         let resolved = resolve(
             "quill_tab",
             &serde_json::json!({ "command": "open", "arguments": { "path": "README.md", "--permanent": true } }),
+            false,
         )
         .expect("resolved");
         assert_eq!(resolved.command.wire(), "tab.open");
@@ -161,11 +205,11 @@ mod tests {
 
     #[test]
     fn a_tool_that_does_not_exist_is_a_sentence_rather_than_a_panic() {
-        let problem = resolve("quill_nothing", &serde_json::json!({})).expect_err("a refusal");
+        let problem = resolve("quill_nothing", &serde_json::json!({}), false).expect_err("a refusal");
         assert!(problem.contains("quill_nothing"), "{problem}");
         // And a verb the area has not got names the ones it has.
-        let problem =
-            resolve("quill_tab", &serde_json::json!({ "command": "levitate" })).expect_err("a refusal");
+        let problem = resolve("quill_tab", &serde_json::json!({ "command": "levitate" }), false)
+            .expect_err("a refusal");
         assert!(problem.contains("levitate"), "{problem}");
     }
 
@@ -179,25 +223,74 @@ mod tests {
         let problem = resolve(
             "quill_terminal",
             &serde_json::json!({ "command": "read", "arguments": { "wait-for": "$" } }),
+            false,
         )
         .expect_err("a refusal");
         assert!(problem.contains("wait-for"), "{problem}");
-        let allowed = resolve("quill_terminal", &serde_json::json!({ "command": "read" }))
+        let allowed = resolve("quill_terminal", &serde_json::json!({ "command": "read" }), false)
             .expect("reading without waiting is allowed");
         assert_eq!(allowed.command.wire(), "terminal.read");
         // A switch given as `false` is not asking to wait either.
         assert!(resolve(
             "quill_run",
-            &serde_json::json!({ "command": "output", "arguments": { "wait-for": false } })
+            &serde_json::json!({ "command": "output", "arguments": { "wait-for": false } }),
+            false,
         )
         .is_ok());
     }
 
     #[test]
     fn arguments_that_are_not_an_object_are_refused_rather_than_guessed_at() {
-        let problem = resolve("quill_tab", &serde_json::json!("open README.md")).expect_err("a refusal");
+        let problem =
+            resolve("quill_tab", &serde_json::json!("open README.md"), false).expect_err("a refusal");
         assert!(problem.contains("not an object"), "{problem}");
-        // And null is the empty object, because that is what a command taking nothing is called with.
-        assert!(resolve("quill_git", &Value::Null).is_err() || resolve("quill_git", &Value::Null).is_ok());
+        // And null **is** the empty object, because that is what a command taking nothing is called
+        // with. An earlier version of this line asserted `is_err() || is_ok()`, which is a tautology
+        // and tested nothing at all.
+        let area = resolve("quill_git", &Value::Null, false).expect_err("an area tool needs a verb");
+        assert!(area.contains("needs a `command`"), "{area}");
+        let no_arguments =
+            resolve("quill_git", &serde_json::json!({ "command": "status" }), false).expect("resolved");
+        assert!(no_arguments.arguments.is_empty(), "nothing said is nothing sent");
+    }
+
+    #[test]
+    fn a_command_that_runs_a_program_is_held_back_until_the_second_switch_is_on() {
+        // The one place this trust boundary differs from the MCP server's, and it differs because the
+        // other end of *this* connection is a server rather than an agent on this machine. See
+        // `RUNS_A_PROGRAM`.
+        let problem = resolve(
+            "quill_terminal",
+            &serde_json::json!({ "command": "send", "arguments": { "text": "echo $ANTHROPIC_API_KEY" } }),
+            false,
+        )
+        .expect_err("a refusal");
+        assert!(problem.contains("runs a program"), "{problem}");
+        assert!(
+            problem.contains("Settings"),
+            "the refusal says what to do about it: {problem}"
+        );
+        // With the switch on it is offered like anything else.
+        let allowed = resolve(
+            "quill_terminal",
+            &serde_json::json!({ "command": "send", "arguments": { "text": "ls" } }),
+            true,
+        )
+        .expect("allowed once somebody asked for it");
+        assert_eq!(allowed.command.wire(), "terminal.send");
+        // And reading is never held back, because reading runs nothing.
+        assert!(resolve("quill_terminal", &serde_json::json!({ "command": "read" }), false).is_ok());
+    }
+
+    #[test]
+    fn every_command_held_back_is_a_command_the_catalogue_really_has() {
+        // A name that drifted would hold nothing back and say nothing about it, which is the quiet
+        // half of a trust boundary going wrong.
+        for name in RUNS_A_PROGRAM {
+            assert!(
+                quill_cli::catalogue::find(name).is_some(),
+                "`{name}` is held back and the catalogue has no such command"
+            );
+        }
     }
 }

@@ -31,6 +31,22 @@ use quill_core::{layout, Layout, Rope};
 
 use crate::services::text_renderer::TextRenderer;
 
+/// Where a code background goes: the paragraphs a fenced block covers, and the bytes an inline span
+/// covers.
+///
+/// **`quill_core::markdown` already answers both** — `Preview::panels` and `Preview::code_spans` —
+/// and the editor's own preview paints a panel behind the first and a chip behind the second. This
+/// module was throwing them away, so a fence in a plugin's markdown was a line of coloured text
+/// floating on the surface behind it and inline code was a word in a different colour. It is the same
+/// two questions asked of the same reader; only the painting was missing.
+#[derive(Debug, Default, Clone)]
+pub struct CodeBackgrounds {
+    /// One `start..end` of paragraph numbers a fenced block covers.
+    pub panels: Vec<std::ops::Range<usize>>,
+    /// One `start..end` of bytes an inline span covers.
+    pub spans: Vec<std::ops::Range<usize>>,
+}
+
 /// A rendered piece of markdown: the text it came to, and where every line of it goes.
 ///
 /// Held by the caller between frames, because rendering and laying out is the expensive half and neither the
@@ -39,6 +55,8 @@ pub struct Rendered {
     /// The text the markdown came to, which is what a selection would be measured against.
     pub text: Rope,
     pub layout: Layout,
+    /// Where the code backgrounds go, so a fence reads as a block rather than as coloured text.
+    pub code: CodeBackgrounds,
     /// The source this was made from, so the caller can tell when it has changed.
     source: String,
     /// The width it was laid out at, for the same reason.
@@ -66,7 +84,11 @@ impl Rendered {
 
     /// How tall it is, which is what a caller scrolling it needs to know.
     pub fn height(&self) -> f32 {
-        self.layout.lines.last().map(|line| line.y + line.height).unwrap_or(0.0)
+        self.layout
+            .lines
+            .last()
+            .map(|line| line.y + line.height)
+            .unwrap_or(0.0)
     }
 }
 
@@ -135,8 +157,28 @@ pub fn render(
             highlighter,
         },
     );
-    let laid = layout(&preview.text, &preview.chars, &preview.paragraphs, renderer, width);
-    Rendered { text: preview.text, layout: laid, source: source.to_owned(), width }
+    let laid = layout(
+        &preview.text,
+        &preview.chars,
+        &preview.paragraphs,
+        renderer,
+        width,
+    );
+    let code = CodeBackgrounds {
+        panels: preview
+            .panels
+            .iter()
+            .map(|panel| panel.paragraphs.clone())
+            .collect(),
+        spans: preview.code_spans.clone(),
+    };
+    Rendered {
+        text: preview.text,
+        layout: laid,
+        code,
+        source: source.to_owned(),
+        width,
+    }
 }
 
 /// Paint `rendered` into `area`, scrolled down by `scroll`, and answer how tall it is.
@@ -144,13 +186,26 @@ pub fn render(
 /// Only the lines inside `area` are painted, which `editor_view::paint_text` decides from the clip rectangle —
 /// so a description of a thousand lines costs a screenful, the property `tasks/task-1666-performance-tdd.md`
 /// records for the editing area itself.
-pub fn show(
+pub fn show(ui: &mut egui::Ui, area: Rect, rendered: &Rendered, renderer: &TextRenderer, scroll: f32) -> f32 {
+    show_with(ui, area, rendered, renderer, scroll, None)
+}
+
+/// The same, with the two colours a code background is painted in.
+///
+/// `None` paints none, which is what this drew before and what a caller with nothing to say about
+/// code still gets. The colours are the caller's rather than this module's for the reason the whole
+/// `Colors` value is: a component in Quill is handed the palette rather than reaching for one.
+pub fn show_with(
     ui: &mut egui::Ui,
     area: Rect,
     rendered: &Rendered,
     renderer: &TextRenderer,
     scroll: f32,
+    code: Option<CodeColors>,
 ) -> f32 {
+    if let Some(colours) = code {
+        paint_the_code_backgrounds(ui, area, rendered, scroll, colours);
+    }
     let mut clipped = ui.new_child(egui::UiBuilder::new().max_rect(area));
     // **Intersected with what the caller was already clipped to, rather than replacing it.**
     // `Ui::set_clip_rect` sets outright, so a block whose rectangle reaches past the pane it is drawn
@@ -165,6 +220,72 @@ pub fn show(
         Pos2::new(area.left(), area.top() - scroll),
     );
     rendered.height()
+}
+
+/// What a code background is painted in: a fenced block's panel and an inline span's chip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CodeColors {
+    pub panel: egui::Color32,
+    pub chip: egui::Color32,
+    pub radius: u8,
+}
+
+/// Paint a panel behind every fenced block and a chip behind every inline span.
+///
+/// **Behind**, which is why it runs before the text: the painter takes shapes in the order they
+/// arrive, so a background added afterwards would cover the words it is a background for.
+fn paint_the_code_backgrounds(
+    ui: &mut egui::Ui,
+    area: Rect,
+    rendered: &Rendered,
+    scroll: f32,
+    colours: CodeColors,
+) {
+    let painter = ui.painter_at(area.intersect(ui.clip_rect()));
+    let top = area.top() - scroll;
+    let radius = egui::CornerRadius::same(colours.radius);
+    for block in &rendered.code.panels {
+        // A block is a run of paragraphs, and a paragraph's lines are contiguous — so the panel is
+        // the band from the first line's top to the last line's bottom, drawn the whole width so a
+        // fence reads as a block rather than as text that happens to be in another font.
+        let lines: Vec<&quill_core::PlacedLine> = rendered
+            .layout
+            .lines
+            .iter()
+            .filter(|line| block.contains(&line.paragraph))
+            .collect();
+        let (Some(first), Some(last)) = (lines.first(), lines.last()) else {
+            continue;
+        };
+        painter.rect_filled(
+            Rect::from_min_max(
+                Pos2::new(area.left(), top + first.y - 3.0),
+                Pos2::new(area.right(), top + last.y + last.height + 3.0),
+            ),
+            radius,
+            colours.panel,
+        );
+    }
+    for span in &rendered.code.spans {
+        // An inline span may wrap, so it is painted a line at a time — the part of each line the
+        // span covers, which is what `selection_rects_in` already answers for a selection.
+        for chip in rendered
+            .layout
+            .selection_rects_in(0..rendered.layout.lines.len(), span.clone())
+        {
+            // `quill_core`'s rectangle is a position and a size, and it is in the layout's own
+            // coordinates; the chip is that moved to where the text really is, and widened a little
+            // either side so a word does not touch the edge of its own background.
+            painter.rect_filled(
+                Rect::from_min_size(
+                    Pos2::new(area.left() + chip.x - 2.0, top + chip.y),
+                    egui::Vec2::new(chip.width + 4.0, chip.height),
+                ),
+                radius,
+                colours.chip,
+            );
+        }
+    }
 }
 
 /// The rendered markdown a ticket is showing, kept between frames and keyed by what it is.
@@ -185,7 +306,9 @@ pub struct Cache {
 
 impl std::fmt::Debug for Cache {
     fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        out.debug_struct("Cache").field("entries", &self.made.len()).finish()
+        out.debug_struct("Cache")
+            .field("entries", &self.made.len())
+            .finish()
     }
 }
 
@@ -239,7 +362,11 @@ mod tests_task_28 {
         };
         let source = "# A heading\n\nSome prose.\n\n- one\n- two\n\n```rust\nlet a = 1;\n```\n";
         let made = render(source, &renderer, "sans-serif", 14.0, colors, 400.0, None);
-        assert!(made.layout.lines.len() >= 5, "a heading, prose, two items and a fence: {:?}", made);
+        assert!(
+            made.layout.lines.len() >= 5,
+            "a heading, prose, two items and a fence: {:?}",
+            made
+        );
         assert!(made.height() > 0.0);
         // The heading is the first line and is set larger than the prose under it, which is the whole point of
         // looking at it rendered.
@@ -268,8 +395,17 @@ mod tests_task_28 {
         };
         let made = render("Some prose.", &renderer, "sans-serif", 14.0, colors, 400.0, None);
         assert!(!made.stale("Some prose.", 400.0), "nothing changed");
-        assert!(!made.stale("Some prose.", 400.2), "a fraction of a point is not a change");
-        assert!(made.stale("Some prose.", 500.0), "a different width has to be laid out again");
-        assert!(made.stale("Other prose.", 400.0), "a different source has to be rendered again");
+        assert!(
+            !made.stale("Some prose.", 400.2),
+            "a fraction of a point is not a change"
+        );
+        assert!(
+            made.stale("Some prose.", 500.0),
+            "a different width has to be laid out again"
+        );
+        assert!(
+            made.stale("Other prose.", 400.0),
+            "a different source has to be rendered again"
+        );
     }
 }

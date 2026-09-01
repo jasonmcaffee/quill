@@ -177,6 +177,7 @@ impl Bench {
                 project: Some(project),
                 recent_projects: Vec::new(),
                 folder: Some(folder.clone()),
+                showing: None,
                 wake: None,
             })
             .expect("a board opens");

@@ -5,12 +5,13 @@
 //! LLM chat page's own — `ChatPanel` wrapping `ChatHeader`, `ChatConversation` and `ChatComposer` —
 //! wearing the dark neumorphic palette the Agent-Tasks board is drawn in.
 //!
-//! ## Nothing here changes anything
+//! ## The drawing changes nothing, and `pane` is where the change happens
 //!
-//! A component in Quill takes a rectangle, draws, and reports what happened. So the drawing collects
-//! [`Act`]s and [`pane`] applies them once, after everything has been drawn — which is what lets the
-//! whole surface be drawn from a borrow of the conversation while the things that change it need a
-//! mutable one.
+//! Every function here that draws takes a rectangle, draws, and reports an [`Act`]; not one of them
+//! changes the conversation. [`pane`] is the provider's own entry rather than a component — it is what
+//! `UiProvider::pane` calls — and it is the one place the acts are applied, after everything has been
+//! drawn. That split is what lets the whole surface be drawn from a borrow of the conversation while
+//! the things that change it need a mutable one.
 //!
 //! ## The ground is the window's
 //!
@@ -44,8 +45,8 @@ pub const INNER: f32 = 10.0;
 pub const RADIUS: f32 = 18.0;
 /// The header row, from `ChatHeader.module.css`'s padding plus its 13 point name.
 pub const HEADER: f32 = 32.0;
-/// Between two rows of the conversation, from `ChatConversation.module.css`.
-pub const GAP: f32 = 12.0;
+/// Between two rows of the conversation, from `ChatConversation.module.css`'s own `gap: 14px`.
+pub const GAP: f32 = 14.0;
 
 /// What the drawing reported, applied by [`pane`] once everything has been drawn.
 #[derive(Debug, Clone, PartialEq)]
@@ -62,6 +63,8 @@ pub enum Act {
     Attach,
     /// A picture dropped on the pane.
     Dropped(std::path::PathBuf),
+    /// Ctrl/Cmd+V in the composer: ask the window for whatever picture is on the clipboard.
+    Paste,
     /// A starter chip: it fills the prompt rather than sending it, which is what the page this is
     /// modelled on does.
     Starter(&'static str),
@@ -87,6 +90,13 @@ pub fn pane(chat: &mut AgentChat, ui: &mut egui::Ui, look: &Look<'_>) -> Vec<Req
     // it — which is the third way in the ticket's own list, after the button and the clipboard.
     for path in dropped_pictures(ui) {
         acts.push(Act::Dropped(path));
+    }
+    // **A paste is claimed before the pane loop reads it**, which is the one-frame ordering the
+    // Markdown preview's own copy already uses. `egui` turns Ctrl/Cmd+V into `Event::Paste` with the
+    // clipboard's *text*; a picture is not text, so it arrives as an empty paste and the window is
+    // asked for the picture instead.
+    if pasting(ui) {
+        acts.push(Act::Paste);
     }
     apply(chat, acts)
 }
@@ -333,26 +343,28 @@ fn conversation(parts: &mut Parts<'_>, ui: &mut egui::Ui, look: &Look<'_>, area:
         // sending, opening a conversation and starting a new one all have to.
         scroller = scroller.vertical_scroll_offset(f32::MAX);
     }
-    scroller
-        .show(&mut body, |ui| {
-            let width = area.width();
-            for one in &session.chat.messages {
-                // A tool result is the copy that goes back up the wire; it is drawn inside the block
-                // of the call it answers, so it is not a row of its own.
-                if one.role == quill_chat::Role::Tool {
-                    continue;
-                }
-                let height = message::height(one, parts.state, look, width);
-                let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::hover());
-                // **Only what can be seen is drawn**, which is `task-1666`'s rule and, here, also what
-                // keeps the decoration's canvas the size of the pane: a bubble scrolled a thousand
-                // points away would otherwise record shadows a thousand points outside it.
-                if rect.intersects(ui.clip_rect()) {
-                    acts.extend(message::show(one, parts.state, ui, look, rect));
-                }
-                ui.add_space(GAP * look.scale());
+    scroller.show(&mut body, |ui| {
+        let width = area.width();
+        for one in &session.chat.messages {
+            // A tool result is the copy that goes back up the wire; it is drawn inside the block
+            // of the call it answers, so it is not a row of its own.
+            if one.role == quill_chat::Role::Tool {
+                continue;
             }
-        });
+            // Worked out once and handed to the drawing, because the height has to be known
+            // before the rectangle can be allocated and running it twice built the message's text
+            // twice. See `message::Shape`.
+            let shape = message::shape(one, parts.state, look, width);
+            let (rect, _) = ui.allocate_exact_size(Vec2::new(width, shape.height), egui::Sense::hover());
+            // **Only what can be seen is drawn**, which is `task-1666`'s rule and, here, also what
+            // keeps the decoration's canvas the size of the pane: a bubble scrolled a thousand
+            // points away would otherwise record shadows a thousand points outside it.
+            if rect.intersects(ui.clip_rect()) {
+                acts.extend(message::show(one, shape, parts.state, ui, look, rect));
+            }
+            ui.add_space(GAP * look.scale());
+        }
+    });
     look.chrome.unclip();
     acts
 }
@@ -638,6 +650,9 @@ fn apply(chat: &mut AgentChat, acts: Vec<Act>) -> Vec<Request> {
                     requests.push(Request::Message(problem));
                 }
             }
+            Act::Paste => requests.push(Request::ClipboardPicture {
+                id: crate::services::agent_chat::CLIPBOARD.to_owned(),
+            }),
             Act::Open(id) => {
                 if let Err(problem) = chat.open_conversation(&id) {
                     requests.push(Request::Message(problem));
@@ -716,6 +731,23 @@ fn apply(chat: &mut AgentChat, acts: Vec<Act>) -> Vec<Request> {
         }
     }
     requests
+}
+
+/// Whether the composer was pasted into this frame.
+///
+/// Only while a field in this pane has the keyboard, so a paste meant for the editing area is not
+/// taken. `Event::Paste` is what `egui` makes of Ctrl/Cmd+V; a picture on the clipboard is not text
+/// and arrives as an empty one, which is exactly the case worth asking the window about.
+fn pasting(ui: &egui::Ui) -> bool {
+    if !crate::app::text_box_has_the_keyboard(ui.ctx()) {
+        return false;
+    }
+    ui.ctx().input(|input| {
+        input
+            .events
+            .iter()
+            .any(|event| matches!(event, egui::Event::Paste(text) if text.is_empty()))
+    })
 }
 
 /// Every picture the window manager dropped on this pane this frame.

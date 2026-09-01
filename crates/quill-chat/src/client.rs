@@ -1,4 +1,5 @@
-//! The thread a request runs on, and the one place an HTTP request is made.
+//! The thread a turn runs on: the one place an HTTP request is made, and the one place a
+//! command-line agent is started.
 //!
 //! Arranged as `quill_git::Worker`, the terminal's reader loop and `services::text_search` already
 //! are: a thread, a channel and a waker. The window must not stop drawing while a model is thinking,
@@ -64,6 +65,12 @@ pub struct Arrived {
 pub struct Client {
     newest: Arc<AtomicU64>,
     stopping: Arc<AtomicBool>,
+    /// The command-line agent this turn started, so stopping can kill it.
+    ///
+    /// A flag is enough to stop reading a socket, because the reads are made with a timeout; it is
+    /// **not** enough to stop a program, because the thread reading one is asleep in a read that has
+    /// no timeout at all. See `agent::Running`.
+    running: Arc<crate::agent::Running>,
     to: Sender<Arrived>,
     from: Receiver<Arrived>,
     /// How to ask the window to draw again, once a reply has been pushed.
@@ -96,6 +103,7 @@ impl Client {
         Self {
             newest: Arc::new(AtomicU64::new(0)),
             stopping: Arc::new(AtomicBool::new(false)),
+            running: Arc::new(crate::agent::Running::default()),
             to,
             from,
             wake: None,
@@ -153,9 +161,60 @@ impl Client {
         generation
     }
 
+    /// Run a command-line agent for one turn and stream what it says back. Answers the generation.
+    ///
+    /// The other half of [`send`](Self::send), and deliberately a second entry point rather than a
+    /// flag on the first: a program takes a prompt, a folder and a session where an endpoint takes a
+    /// body, headers and a URL, and one function taking the union of those would be a function whose
+    /// arguments are half ignored on every call. Everything **after** the transport is identical —
+    /// the same generation, the same stop flag, the same channel, the same `Reply` values — so
+    /// nothing above `Client` knows which of the two it asked for.
+    pub fn ask(&mut self, provider: &Provider, ask: crate::agent::Ask) -> u64 {
+        self.stop();
+        let generation = self.newest.fetch_add(1, Ordering::SeqCst) + 1;
+        let stopping = Arc::new(AtomicBool::new(false));
+        self.stopping = Arc::clone(&stopping);
+        let running = Arc::clone(&self.running);
+        let newest = Arc::clone(&self.newest);
+        let to = self.to.clone();
+        let wake = self.wake.clone();
+        let provider = provider.clone();
+        std::thread::Builder::new()
+            .name(format!("quill-chat agent {generation}"))
+            .spawn(move || {
+                let say = |reply: Reply| {
+                    // **A session id is kept even after the turn has been overtaken.** Everything
+                    // else a passed generation says is dropped where it is made, but the agent holds
+                    // that session whether or not Quill waited for the answer, and losing it would
+                    // start a new conversation in the agent on the next question.
+                    let keep = matches!(reply, Reply::Session(_));
+                    if !keep
+                        && (newest.load(Ordering::SeqCst) != generation
+                            || stopping.load(Ordering::SeqCst))
+                    {
+                        return false;
+                    }
+                    if to.send(Arrived { generation, reply }).is_err() {
+                        return false;
+                    }
+                    if let Some(wake) = &wake {
+                        wake();
+                    }
+                    true
+                };
+                crate::agent::run(&provider, &ask, &stopping, &running, &say);
+            })
+            .expect("a thread for a chat turn");
+        generation
+    }
+
     /// Stop whatever is in flight, keeping what has already arrived.
+    ///
+    /// The flag stops a socket, which is read with a timeout; the kill stops a program, whose reader
+    /// has none and would otherwise sit in a read until the agent said something of its own accord.
     pub fn stop(&mut self) {
         self.stopping.store(true, Ordering::SeqCst);
+        self.running.stop();
     }
 
     /// Every reply that has arrived since the last time this was asked, newest request only.
@@ -165,7 +224,11 @@ impl Client {
         let generation = self.generation();
         self.from
             .try_iter()
-            .filter(|arrived| arrived.generation == generation)
+            // A session id is kept whichever turn it came from, for the reason `ask` gives: the
+            // agent holds that session whether or not this window waited for the answer.
+            .filter(|arrived| {
+                arrived.generation == generation || matches!(arrived.reply, Reply::Session(_))
+            })
             .map(|arrived| arrived.reply)
             .collect()
     }
@@ -184,6 +247,25 @@ pub fn run(
     stopping: &AtomicBool,
     say: &dyn Fn(Reply) -> bool,
 ) {
+    // **Nothing the server says is shown before the key is taken out of it.** A refusal is quoted
+    // verbatim, which is `quill-git`'s rule and the right one; but an endpoint that echoes the
+    // request back — a debugging proxy, a misconfigured gateway, or one written to do it — would put
+    // the key in the pane and then in the transcript on disk, which is the one thing Quill promises
+    // never to write down. So every header value long enough to be a secret is replaced in anything
+    // that comes back.
+    let secrets: Vec<String> = headers
+        .iter()
+        .filter(|(name, _)| name != "content-type" && name != "accept")
+        .map(|(_, value)| value.trim_start_matches("Bearer ").to_owned())
+        .filter(|value| value.chars().count() >= 8)
+        .collect();
+    let say = &move |reply: Reply| {
+        say(match reply {
+            Reply::Failed(said) => Reply::Failed(redacted(&said, &secrets)),
+            Reply::Text(said) => Reply::Text(redacted(&said, &secrets)),
+            other => other,
+        })
+    };
     let config = ureq::Agent::config_builder()
         // **Named rather than left to the default, and it is not a preference.** `ureq`'s default TLS
         // provider is Rustls whether or not the feature is on, and asking for an `https` URL with the
@@ -206,6 +288,12 @@ pub fn run(
         // the silence below.
         .timeout_global(None)
         .timeout_recv_body(Some(SILENCE))
+        // **No redirects, and that is a security decision rather than a preference.** A redirect
+        // takes the request somewhere the person did not configure, and `ureq` strips `authorization`
+        // when it follows one but has never heard of Anthropic's `x-api-key` — so a redirect to
+        // somewhere else would carry the key there. An endpoint that answers with a redirect is not
+        // the endpoint that was typed into the Settings page, and the honest thing is to say so.
+        .max_redirects(0)
         .build();
     let agent = ureq::Agent::new_with_config(config);
     let mut request = agent.post(url);
@@ -262,6 +350,15 @@ pub fn run(
                 return;
             }
         };
+        // A server that never sends an event boundary would otherwise grow the buffer until the
+        // allocator gives up — see `sse::LARGEST_EVENT`.
+        if framing.is_overlong() {
+            say(Reply::Failed(format!(
+                "the server sent more than {} bytes with no end to the event in it.",
+                sse::LARGEST_EVENT
+            )));
+            return;
+        }
         for event in framing.feed(&buffer[..read]) {
             for reply in decoder.event(&event) {
                 if !say(reply) {
@@ -321,6 +418,21 @@ fn refusal(status: u16, body: &str) -> String {
     }
 }
 
+/// `text` with every secret in it replaced.
+///
+/// Whole-value replacement rather than a pattern: what is being looked for is known exactly, so there
+/// is nothing to guess at and nothing that can be nearly right. A short value is not looked for at
+/// all — `redacted` would otherwise chew a sentence to pieces over a two character key.
+fn redacted(text: &str, secrets: &[String]) -> String {
+    let mut out = text.to_owned();
+    for secret in secrets {
+        if out.contains(secret.as_str()) {
+            out = out.replace(secret.as_str(), "\u{2026}");
+        }
+    }
+    out
+}
+
 /// The first part of `text`, for a body that is a page rather than a message.
 fn shorten(text: &str) -> String {
     let trimmed = text.trim();
@@ -373,6 +485,7 @@ mod tests {
             let _ = socket.read_exact(&mut sent);
             let reason = match status {
                 200 => "OK",
+                302 => "Found",
                 401 => "Unauthorized",
                 _ => "Error",
             };
@@ -496,6 +609,80 @@ data: [DONE]\n\n";
         };
         assert!(said.contains(&address.to_string()), "{said}");
         assert!(said.contains("nothing is answering"), "{said}");
+    }
+
+    #[test]
+    fn a_redirect_is_refused_rather_than_followed() {
+        // **A redirect takes the request somewhere the person did not configure**, and `ureq` strips
+        // `authorization` when it follows one but has never heard of Anthropic's `x-api-key` — so a
+        // redirect to somewhere else would carry the key there. An endpoint that answers with one is
+        // not the endpoint that was typed into the Settings page.
+        let url = scripted(302, "location: http://example.invalid/v1/messages\r\n", b"", 1);
+        let replies = against(&url, Wire::Anthropic, true);
+        assert_eq!(replies.len(), 1);
+        let Reply::Failed(said) = &replies[0] else {
+            panic!("{replies:?}");
+        };
+        assert!(
+            said.contains("302"),
+            "the refusal says what the server answered: {said}"
+        );
+    }
+
+    #[test]
+    fn a_key_the_server_echoes_back_never_reaches_the_pane() {
+        // A refusal is quoted verbatim, which is the right rule; but a gateway that echoes the request
+        // back would put the key in the conversation and then in the transcript on disk, which is the
+        // one thing Quill promises never to write down.
+        const ECHOED: &[u8] = b"{\"error\":{\"message\":\"bad key sk-secret-value-1234 rejected\"}}";
+        let url = scripted(401, "content-type: application/json\r\n", ECHOED, 1);
+        let replies = std::sync::Mutex::new(Vec::new());
+        let stopping = AtomicBool::new(false);
+        run(
+            &url,
+            &[
+                ("content-type".to_owned(), "application/json".to_owned()),
+                ("x-api-key".to_owned(), "sk-secret-value-1234".to_owned()),
+            ],
+            Wire::Anthropic,
+            "{}",
+            true,
+            &stopping,
+            &|reply| {
+                replies.lock().expect("replies").push(reply);
+                true
+            },
+        );
+        let said = replies.into_inner().expect("replies");
+        let Reply::Failed(message) = &said[0] else {
+            panic!("{said:?}");
+        };
+        assert!(
+            !message.contains("sk-secret-value-1234"),
+            "the key came back: {message}"
+        );
+        assert!(
+            message.contains("bad key"),
+            "the rest of what the server said is kept: {message}"
+        );
+        // And `content-type` is not treated as a secret, or every message would lose the words
+        // `application/json` out of the middle of it.
+        assert!(!message.contains("\u{2026}/json"));
+    }
+
+    #[test]
+    fn a_stream_that_never_frames_an_event_is_stopped_rather_than_growing_for_ever() {
+        // A server can otherwise grow the buffer until the allocator gives up, which ends the process.
+        // Half a megabyte of `x` with no blank line in it, fed until the ceiling is passed.
+        let mut framing = sse::Reader::new();
+        let block = vec![b'x'; 64 * 1024];
+        let mut fed = 0;
+        while !framing.is_overlong() {
+            framing.feed(&block);
+            fed += block.len();
+            assert!(fed < sse::LARGEST_EVENT * 2, "the ceiling was never reached");
+        }
+        assert!(fed > sse::LARGEST_EVENT);
     }
 
     #[test]

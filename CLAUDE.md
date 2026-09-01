@@ -178,7 +178,7 @@ WebView2's low-memory target, and closing the last rendered tab drops the view a
 entirely: 197 MB with none open, 527 MB with one, 531 MB with four. Toolbar navigation and
 `quill-cli browser` both go through `QuillApp::run_browser_command`.
 
-## The chat pane is the first thing in Quill that opens a socket, and the request is the feature
+## The chat pane runs the agent you already have, and that is the whole of the design
 
 `task-1767` asks for "an agent chat plugin that opens as a right panel (left side toggle icon), can be
 moved around like the other panels, and looks like our ai service LLM chat, supports streaming,
@@ -195,27 +195,88 @@ its right click menu and `quill-cli plugins pane agent-chat/chat --side bottom` 
 in the plugin, because `task-1697` built them for every panel and `task-28` left the machinery in
 place when Agent-Tasks stopped asking for a pane. `theme::icon::chat` is the one new drawing.
 
-**Everything that talks to a server is `crates/quill-chat`**, which has no user interface dependency
-and is arranged as `quill-dap` is: the endpoints, the two wire shapes, the server-sent-event framing,
-the conversation, the turn state machine and the thread a request runs on. Its tests run against a
+**Everything that talks to anything is `crates/quill-chat`**, which has no user interface dependency
+and is arranged as `quill-dap` is: the endpoints, the five shapes, the server-sent-event framing, the
+conversation, the turn state machine and the thread a turn runs on. Its tests run against a
 **scripted server** — a `TcpListener` on `127.0.0.1:0` replaying fixed bytes in chunked writes — which
 is `quill-dap`'s scripted adapters with a socket instead of a pipe, and it is what makes "the whole
 client, end to end" a unit test. The framing is fed the same stream split at every byte boundary and
-has to produce the same events.
+has to produce the same events. The two command-line shapes are tested the same way, against recorded
+JSONL from real runs of both agents.
 
-**Two wire shapes and no third.** OpenAI's `/v1/chat/completions` is what llama.cpp, LM Studio,
-Ollama, every gateway on this machine and OpenAI itself speak; Anthropic's `/v1/messages` is a
-genuinely different protocol — named events, indexed content blocks, a system prompt that is a field
-rather than a message, tool results gathered into one `user` message because two in a row are refused.
-Both are read into the **same** `Reply` values, so `components::agent_chat` has never heard of a
+**The two rows the ticket names run the agent already installed on this machine** —
+*"connection to Claude and codex etc through cli"* — and `services/agent.rs` is that transport. It is
+the better half of the feature rather than a cheaper one, and the four reasons are worth keeping:
+
+- **Quill holds no key at all.** Nothing to put in a settings file, nothing to read out of an
+  environment variable, nothing to redact out of an error message. `claude` and `codex` hold their
+  own credentials, which is their business and not this window's.
+- **The agent brings its own tools**, its own sandbox and its own permission model — so the question
+  of what a model may do to this machine is answered by a program the person already trusts with it.
+  Quill runs **none** of an agent's tool calls; what it does with one is *show* it. That had to be
+  made explicit: measured against a real `claude`, this window answered its `Grep` and `Read` with
+  "there is no tool called `Grep`", put the refusal in the transcript and sent another round.
+- **It reads the project.** Started in the folder the window has open, `claude` finds that project's
+  `CLAUDE.md` and `codex` its `AGENTS.md`, so the answer is about the code in front of you without a
+  word of it being uploaded by Quill.
+- **The conversation is the agent's.** A second question is `--resume <session>` carrying one turn's
+  words, not the whole transcript sent again, so the context the agent built is the context it keeps.
+  `Conversation::session` is where that id lives, beside the messages and written down with them.
+
+`chat.permission` — `read`, `edit` or `full` — is what an agent may do, in one vocabulary rather than
+each agent's own: `--permission-mode manual/acceptEdits/bypassPermissions` against
+`--sandbox read-only/workspace-write` and `--dangerously-bypass-approvals-and-sandbox`. It is a
+setting rather than a prompt because an agent run with `--print` cannot stop and ask.
+
+**Four things about running a program that were each measured on a real one.** The prompt goes down
+**standard input**, not on the command line: npm installs `codex` on Windows as `codex.cmd`, and
+Rust's own `Command` refuses to spawn a batch file with an argument it cannot escape — *"batch file
+arguments are invalid"* — and every prompt here has a blank line in it. A bare name is resolved
+through **`PATHEXT` first and the extension-less file not at all**, because npm also installs an
+extension-less shell script for Git Bash and `CreateProcess` answered *"%1 is not a valid Win32
+application"* on it. **`codex exec resume` has no `--sandbox`** though `codex exec` does, so the
+sandbox is named there as `-c sandbox_mode="…"`. And **stopping kills the child through a shared
+handle**, because the thread reading an agent is asleep in a read with no timeout and will not look at
+a flag until the next line arrives — `stop` put the pane back to `finished` at once and left the agent
+running.
+
+**Five shapes, and `claude-cli` wraps a wire Quill already read.** Claude Code's
+`--output-format stream-json` nests **the Anthropic wire verbatim** inside a `stream_event` envelope —
+the same `content_block_delta`, `input_json_delta` and `message_delta` that `/v1/messages` sends — so
+the decoder that reads that API reads this one level down, and thinking, tool calls and token deltas
+needed no new code. What the envelope adds is the session id, the `user` messages carrying the results
+of tools the agent ran itself, and `result`. `codex-cli` is a genuinely different model and gets its
+own reading: a thread of **items** that are started, updated and completed, where a shell command the
+agent ran is an item beside the words it said. Its items are **not deltas** — `item.updated` carries
+the text so far and `item.completed` carries all of it — so only the part not yet shown is passed on.
+
+Three address shapes remain, because a row can still be pointed at one and the ticket asks to
+"configure url". OpenAI's `/v1/chat/completions` is what llama.cpp, LM Studio, Ollama and every
+gateway on this machine speak, and it is what the third shipped row uses. Anthropic's `/v1/messages`
+is a genuinely different protocol — named events, indexed content blocks, a system prompt that is a
+field rather than a message, tool results gathered into one `user` message because two in a row are
+refused. And `responses` is the shape the **Codex models are served on**, which is a list of items
+rather than of messages, with `instructions` rather than a system message and `max_output_tokens`
+rather than `max_tokens`.
+
+All five are read into the **same** `Reply` values, so `components::agent_chat` has never heard of a
 `content_block_delta`. A configuration naming a shape this version has not got is refused with the
 list, which is the rule `language.renders`, `run.project`, `debug.adapter` and `ui.chrome` all keep.
 
-**Nothing is fetched that was not asked for, and that rule is not weakened.** One request is made,
-when somebody presses send, to an address they typed into a Settings page. There is no discovery, no
-model list, no telemetry and nothing at startup — and a Markdown image inside an answer still shows
-its alt text rather than being fetched. `task-1692` drew this line already: a package manager somebody
-pressed a button for is not the editor reaching out, and neither is this.
+**A model's own reasoning goes back up exactly as it came down.** Anthropic signs a thinking block and
+verifies the signature on the next turn, so a continuation whose blocks were rebuilt out of the words
+on the screen is refused — and a `redacted_thinking` block is encrypted and cannot be rebuilt at all.
+The Responses shape wants its `reasoning` items back for the same reason, because Quill sends
+`store: false` and the server therefore holds no copy to carry on from. So `Message::reasoning` keeps
+the blocks as JSON beside the words they produced, and the request builders replay them **ahead** of
+the message they belong to. What is *drawn* is the text; what is *sent* is the block.
+
+**Nothing is fetched or started that was not asked for, and that rule is not weakened.** One turn
+goes out when somebody presses send — a program they named in a Settings page, or an address they
+typed into one. There is no discovery, no model list, no telemetry and nothing at startup, and a
+Markdown image inside an answer still shows its alt text rather than being fetched. `task-1692` drew
+this line already: a package manager somebody pressed a button for is not the editor reaching out, and
+neither is an agent they pressed send on.
 
 **The client is `ureq` with `native-tls`, and the provider has to be named.** `native-tls` is schannel
 on Windows and Security.framework on macOS, so the certificates Quill trusts are the certificates the
@@ -227,14 +288,17 @@ thread, taking the whole answer with it. Every request to a hosted API went that
 screenshot test drove a tool round and found it; `an_https_address_is_refused_rather_than_panicking_inside_the_transport`
 is what keeps it found.
 
-**A key is never written by Quill.** `services::agent_tasks::keychain` says a secret must not go in a
-settings file and says honestly that there is no Windows keychain here, so an endpoint names an
-**environment variable** — `ANTHROPIC_API_KEY`, the one `claude` itself reads — and it is read at the
-moment a request is sent and never held. What is written down is the name of the place the key is,
-which is the same thing Agent-Tasks writes down. The Settings page says `set` or `not set` and never
-the value, and a refusal names the variable rather than quoting a header.
+**A key is never written by Quill, and for the two rows that ship there is no key.**
+`services::agent_tasks::keychain` says a secret must not go in a settings file and says honestly that
+there is no Windows keychain here — so a row that *sends to an address* names an **environment
+variable**, read at the moment a request is sent and never held, and a row that *runs a program* names
+nothing at all because the agent holds its own. What is written down is the name of the place the key
+is, which is the same thing Agent-Tasks writes down. The Settings page says `set` or `not set` and
+never the value, it does not draw a key field for a program at all, and a refusal names the variable —
+or the program — rather than quoting a header.
 
-**The tools a model may call are Quill's own commands, generated from the catalogue.**
+**For an address, the tools a model may call are Quill's own commands, generated from the
+catalogue** — and for a program there are none, because the agent has its own.
 `quill_cli::mcp::tools` already turns the catalogue into tools with their schemas, so
 `services::agent_chat::tools` is a translation between two envelopes and nothing else — never a
 second list. A call goes back through `QuillApp::run_cli`, **the one place a command turns into a
@@ -244,6 +308,22 @@ robot button, and `chat.tool_limit` bounds a turn at eight rounds because a mode
 every file should stop being funded by a pane nobody is watching. A command that *waits* is refused
 with a sentence: a tool call that never returned would leave the conversation stopped with nothing on
 the screen to say why.
+
+**And a command that runs a program of the model's choosing is behind a second switch.** Quill's
+catalogue includes `terminal send`, `run add`, `run start`, `run rerun`, `debug install` and `launch`,
+which between them will run any command line at all on this machine — and the other end of this
+connection is a **server**, which is not the same trust as an agent a person started in their own
+terminal. `tools::RUNS_A_PROGRAM` is that list, `chat.shell` is the switch, and both are off unless
+somebody says so. The rest of the catalogue stays behind the one switch it always was.
+
+**Three things about the transport that are refusals rather than features.** A **redirect is not
+followed** — `ureq` strips `authorization` when it follows one and has never heard of Anthropic's
+`x-api-key`, so a redirect would carry the key somewhere nobody configured, and an endpoint that
+answers with one is not the endpoint that was typed in. A server's own words are quoted verbatim in a
+refusal, which is `quill-git`'s rule, so the **key is redacted out of them first**: a gateway that
+echoes the request back would otherwise put the secret in the conversation and then in the transcript
+on disk. And a stream that never frames an event is stopped at `sse::LARGEST_EVENT` rather than being
+buffered until the allocator gives up, which ends the process.
 
 **Three additions to the plugin contract, each with a default so nothing that shipped changes.**
 `Request::RunCommand` is how a provider reaches `run_cli`; `UiProvider::asking` is what a provider

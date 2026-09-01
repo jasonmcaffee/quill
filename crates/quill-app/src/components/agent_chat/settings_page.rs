@@ -10,13 +10,21 @@
 //! them. It scrolls, which `components/agent_tasks/settings_page.rs` established for a page with more
 //! in it than the 640 points every page gets.
 //!
+//! ## A row is a program or an address, and it draws the fields that apply
+//!
+//! The two rows that ship run the **command-line agent** installed on this machine, so what they
+//! need is a program and how much it may do — and a URL, a key and a token budget are four fields
+//! that mean nothing there. They are **absent** rather than dimmed for such a row, which is Quill's
+//! own rule for a control that can never apply.
+//!
 //! ## No key is drawn and no key is written
 //!
-//! A row says `set` or `not set` and never the value, because a page that showed it would be a page
-//! somebody screenshots. What is typed here is the **name of an environment variable**; the value is
-//! read at the moment a request is sent and is never held, written down or logged. That is
-//! `services::agent_tasks::keychain`'s rule, and it is what makes it safe for this file to be copied
-//! between machines.
+//! A row that sends to an address says `set` or `not set` and never the value, because a page that
+//! showed it would be a page somebody screenshots. What is typed here is the **name of an
+//! environment variable**; the value is read at the moment a request is sent and is never held,
+//! written down or logged. That is `services::agent_tasks::keychain`'s rule, and it is what makes it
+//! safe for this file to be copied between machines. A row that runs a program has no key at all —
+//! the agent holds its own.
 
 use egui::{CornerRadius, Pos2, Rect, Stroke, Vec2};
 
@@ -27,6 +35,13 @@ use crate::services::plugin_ui::{Look, Request};
 use crate::theme::color;
 
 const PAD: f32 = 12.0;
+/// How wide one of the wire-shape buttons is, and the gap between two of them.
+///
+/// Narrower than the 74 the first version used, because there are five of them now: at 74 the row
+/// was 390 points wide against the 350 there is between the name field and `Use`, and `responses`
+/// was drawn underneath `Use`. Measured against the rendered page rather than guessed at.
+const WIRE_BUTTON: f32 = 60.0;
+const WIRE_GAP: f32 = 4.0;
 /// A field's own height, and the gap under a row.
 const FIELD: f32 = 26.0;
 const GAP: f32 = 10.0;
@@ -69,9 +84,10 @@ fn rows(chat: &mut AgentChat, ui: &mut egui::Ui, look: &Look<'_>) -> Vec<Request
         ui,
         inner,
         pen,
-        "Where a message is sent. `openai` is the shape llama.cpp, LM Studio, Ollama and OpenAI all \
-         speak; `anthropic` is Claude's own. A key is never stored by Quill — name the environment \
-         variable it is in and it is read when a message is sent.",
+        "What answers. `claude-cli` and `codex-cli` run the agent already installed on this machine: \
+         they need no key, they bring their own tools, and they read the open project's own \
+         instructions. `openai`, `anthropic` and `responses` send to a URL instead — for those a key \
+         is never stored by Quill, so name the environment variable it is in.",
     );
 
     let mut removing: Option<usize> = None;
@@ -81,7 +97,9 @@ fn rows(chat: &mut AgentChat, ui: &mut egui::Ui, look: &Look<'_>) -> Vec<Request
         // rows each holding a `Use`, a `Remove` and an `openai` would be three widgets sharing one id,
         // which egui reports as a duplicate and which makes the second row's buttons unclickable.
         let mut row = ui.new_child(
-            egui::UiBuilder::new().max_rect(area).id_salt(("agent-chat-endpoint", index)),
+            egui::UiBuilder::new()
+                .max_rect(area)
+                .id_salt(("agent-chat-endpoint", index)),
         );
         let (height, act) = endpoint(&mut row, look, inner, pen, &mut configuration, index, &chosen);
         pen += height;
@@ -118,55 +136,95 @@ fn rows(chat: &mut AgentChat, ui: &mut egui::Ui, look: &Look<'_>) -> Vec<Request
     }
     pen += FIELD + GAP * 2.0;
 
+    // **Which section is drawn depends on what the chosen row is**, because the two transports ask
+    // opposite questions. An agent is a whole program with its own tools and its own sandbox, so the
+    // only question is how much it may do; an endpoint is a model on the end of a socket, so the
+    // question is which of Quill's own commands it may ask for. Drawing both would be a page with
+    // four controls on it of which two can never apply — the absent-control rule, made once here
+    // rather than four times.
+    let an_agent = configuration.provider().is_some_and(|one| one.is_a_program());
+
     pen = crate::components::modal::section(ui, inner, pen, "Answering");
 
-    let row = Rect::from_min_size(Pos2::new(inner.left(), pen), Vec2::new(inner.width(), 22.0));
-    if crate::components::modal::check(ui, row, "Stream the answer", &mut configuration.stream) {
-        changed = true;
-    }
-    pen += 22.0;
-    pen = crate::components::modal::note(
-        ui,
-        inner,
-        pen,
-        "On, the answer arrives a word at a time. Off, it arrives whole — which is what a proxy that \
-         will not stream needs.",
-    );
+    if an_agent {
+        pen = crate::components::modal::note(
+            ui,
+            inner,
+            pen,
+            "The chosen row is a program on this machine, so it answers with its own tools, its own sandbox \
+             and its own account. It runs in the project this window has open and reads that \
+             project's own instructions.",
+        );
+        pen = permission_row(ui, inner, pen, &mut configuration, &mut changed);
+    } else {
+        let row = Rect::from_min_size(Pos2::new(inner.left(), pen), Vec2::new(inner.width(), 22.0));
+        if crate::components::modal::check(ui, row, "Stream the answer", &mut configuration.stream) {
+            changed = true;
+        }
+        pen += 22.0;
+        pen = crate::components::modal::note(
+            ui,
+            inner,
+            pen,
+            "On, the answer arrives a word at a time. Off, it arrives whole — which is what a proxy \
+             that will not stream needs. A program always streams.",
+        );
 
-    let row = Rect::from_min_size(Pos2::new(inner.left(), pen), Vec2::new(inner.width(), 22.0));
-    if crate::components::modal::check(
-        ui,
-        row,
-        "Let the model use Quill's own commands",
-        &mut configuration.tools,
-    ) {
-        changed = true;
-    }
-    pen += 22.0;
-    pen = crate::components::modal::note(
-        ui,
-        inner,
-        pen,
-        "Off unless you say so. On, the model is offered Quill's whole command catalogue as tools, so \
-         it can open a file, read the git status or run a search — through exactly the code a menu \
-         entry runs. The same switch is the first button in the composer.",
-    );
+        let row = Rect::from_min_size(Pos2::new(inner.left(), pen), Vec2::new(inner.width(), 22.0));
+        if crate::components::modal::check(
+            ui,
+            row,
+            "Let the model use Quill's own commands",
+            &mut configuration.tools,
+        ) {
+            changed = true;
+        }
+        pen += 22.0;
+        pen = crate::components::modal::note(
+            ui,
+            inner,
+            pen,
+            "Off unless you say so. On, the model is offered Quill's whole command catalogue as \
+             tools, so it can open a file, read the git status or run a search — through exactly the \
+             code a menu entry runs. The same switch is the first button in the composer.",
+        );
 
-    let mut limit = configuration.tool_limit.to_string();
-    if let Some(typed) = one_field(ui, look, inner, &mut pen, "Tool rounds", &mut limit, "8") {
-        if let Ok(rounds) = typed.trim().parse::<u32>() {
-            if rounds > 0 {
-                configuration.tool_limit = rounds.min(32);
-                changed = true;
+        let row = Rect::from_min_size(Pos2::new(inner.left(), pen), Vec2::new(inner.width(), 22.0));
+        if crate::components::modal::check(
+            ui,
+            row,
+            "…including the ones that run a program",
+            &mut configuration.shell,
+        ) {
+            changed = true;
+        }
+        pen += 22.0;
+        pen = crate::components::modal::note(
+            ui,
+            inner,
+            pen,
+            "A second switch, because typing into a terminal, starting a run configuration and \
+             installing a debug adapter hand this machine's shell to whatever is on the far end of \
+             that URL.",
+        );
+
+        let mut limit = configuration.tool_limit.to_string();
+        if let Some(typed) = one_field(ui, look, inner, &mut pen, "Tool rounds", &mut limit, "8") {
+            if let Ok(rounds) = typed.trim().parse::<u32>() {
+                if rounds > 0 {
+                    configuration.tool_limit = rounds.min(32);
+                    changed = true;
+                }
             }
         }
+        pen = crate::components::modal::note(
+            ui,
+            inner,
+            pen,
+            "How many times in one turn the model may ask for tools before the pane stops asking \
+             again.",
+        );
     }
-    pen = crate::components::modal::note(
-        ui,
-        inner,
-        pen,
-        "How many times in one turn the model may ask for tools before the pane stops asking again.",
-    );
 
     let mut system = configuration.system.clone();
     if one_field(ui, look, inner, &mut pen, "System", &mut system, "nothing").is_some() {
@@ -177,8 +235,8 @@ fn rows(chat: &mut AgentChat, ui: &mut egui::Ui, look: &Look<'_>) -> Vec<Request
         ui,
         inner,
         pen,
-        "Added after Quill's own line, which says which project is open and which file is showing. \
-         The file's text is never sent.",
+        "Added after Quill's own line, which says which file is showing. The file's text is never \
+         sent by Quill.",
     );
 
     let mut history = configuration.history.to_string();
@@ -200,6 +258,52 @@ fn rows(chat: &mut AgentChat, ui: &mut egui::Ui, look: &Look<'_>) -> Vec<Request
         }
     }
     requests
+}
+
+/// What a command-line agent may do, as three buttons.
+///
+/// Buttons rather than a dropdown for the reason the wire shapes are buttons: there are three, and
+/// which one is chosen is the most consequential thing on this page, so it should be readable
+/// without opening anything.
+fn permission_row(
+    ui: &mut egui::Ui,
+    area: Rect,
+    top: f32,
+    configuration: &mut crate::services::agent_chat::Configuration,
+    changed: &mut bool,
+) -> f32 {
+    crate::components::modal::label(
+        &ui.painter_at(area),
+        Rect::from_min_size(Pos2::new(area.left(), top), Vec2::new(area.width(), FIELD)),
+        area.left(),
+        "May",
+        color::TEXT_DIM,
+        11.5,
+    );
+    let mut left = area.left() + LABEL;
+    for named in quill_chat::PERMISSIONS {
+        let at = Rect::from_min_size(Pos2::new(left, top), Vec2::new(84.0, FIELD));
+        let on = configuration.permission.name() == *named;
+        if crate::components::controls::choice_button(ui, at, named, on) {
+            if let Some(permission) = quill_chat::Permission::from_name(named) {
+                configuration.permission = permission;
+                *changed = true;
+            }
+        }
+        left += 90.0;
+    }
+    let said = match configuration.permission {
+        quill_chat::Permission::Read => {
+            "Read the project and answer. It will not edit a file or run a command."
+        }
+        quill_chat::Permission::Edit => {
+            "Read, and edit files in the project this window has open. Nothing outside it."
+        }
+        quill_chat::Permission::Full => {
+            "Anything, with no sandbox: edit any file and run any command, without asking."
+        }
+    };
+    crate::components::modal::note(ui, area, top + FIELD + 4.0, said)
 }
 
 /// What one endpoint's row reported.
@@ -239,19 +343,29 @@ fn endpoint(
         configuration.providers[index].name = name.trim().to_owned();
         act = Some(Act::Changed);
     }
-    // Which shape it speaks, as buttons rather than a dropdown: there are two, and two buttons are
-    // quicker to read than a list that has to be opened.
+    // Which shape it speaks, as buttons rather than a dropdown: there are five and they are the
+    // whole of what this row is, so a list that has to be opened would hide the answer.
     let mut left = name_at.right() + 8.0;
     for named in WIRES {
-        let at = Rect::from_min_size(Pos2::new(left, head.top()), Vec2::new(74.0, FIELD));
+        let at = Rect::from_min_size(Pos2::new(left, head.top()), Vec2::new(WIRE_BUTTON, FIELD));
         let on = configuration.providers[index].wire.name() == *named;
         if crate::components::controls::choice_button(ui, at, named, on) {
             if let Some(wire) = Wire::from_name(named) {
                 configuration.providers[index].wire = wire;
+                // **Changing the shape fills in what that shape needs.** A row switched to
+                // `codex-cli` with `https://api.anthropic.com/…` still in it is a row that says it
+                // runs codex and names an address, which is a page telling two stories at once.
+                let row = &mut configuration.providers[index];
+                if wire.is_a_program() && row.command.trim().is_empty() {
+                    row.command = match wire {
+                        Wire::CodexCli => "codex".to_owned(),
+                        _ => "claude".to_owned(),
+                    };
+                }
                 act = Some(Act::Changed);
             }
         }
-        left += 80.0;
+        left += WIRE_BUTTON + WIRE_GAP;
     }
     let use_at = Rect::from_min_size(
         Pos2::new(area.right() - 118.0, head.top()),
@@ -266,64 +380,64 @@ fn endpoint(
     }
     pen = head.bottom() + GAP;
 
-    let mut url = configuration.providers[index].url.clone();
-    if one_field(
-        ui,
-        look,
-        area.shrink2(Vec2::new(8.0, 0.0)),
-        &mut pen,
-        "URL",
-        &mut url,
-        "https://…",
-    )
-    .is_some()
-    {
-        configuration.providers[index].url = url.trim().to_owned();
-        act = Some(Act::Changed);
+    let inside = area.shrink2(Vec2::new(8.0, 0.0));
+    let a_program = configuration.providers[index].is_a_program();
+    if a_program {
+        // **A program, and nothing else this row needs.** The agent holds its own key and picks its
+        // own model unless one is named, so a URL, a key and a token budget are three fields that
+        // could never do anything here.
+        let mut command = configuration.providers[index].command.clone();
+        if one_field(ui, look, inside, &mut pen, "Program", &mut command, "claude").is_some() {
+            configuration.providers[index].command = command.trim().to_owned();
+            act = Some(Act::Changed);
+        }
+    } else {
+        let mut url = configuration.providers[index].url.clone();
+        if one_field(ui, look, inside, &mut pen, "URL", &mut url, "https://…").is_some() {
+            configuration.providers[index].url = url.trim().to_owned();
+            act = Some(Act::Changed);
+        }
     }
     let mut model = configuration.providers[index].model.clone();
     if one_field(
         ui,
         look,
-        area.shrink2(Vec2::new(8.0, 0.0)),
+        inside,
         &mut pen,
         "Model",
         &mut model,
-        "the model's name",
+        match a_program {
+            // Empty is the honest default for an agent: it answers with the model its own person
+            // chose, and naming one here would quietly override a choice made elsewhere.
+            true => "the agent's own",
+            false => "the model's name",
+        },
     )
     .is_some()
     {
         configuration.providers[index].model = model.trim().to_owned();
         act = Some(Act::Changed);
     }
-    let mut key = configuration.providers[index].key_env.clone();
-    if one_field(
-        ui,
-        look,
-        area.shrink2(Vec2::new(8.0, 0.0)),
-        &mut pen,
-        "Key from",
-        &mut key,
-        "ANTHROPIC_API_KEY",
-    )
-    .is_some()
-    {
-        configuration.providers[index].key_env = key.trim().to_owned();
-        act = Some(Act::Changed);
-    }
-    let mut budget = configuration.providers[index].max_tokens.to_string();
-    if let Some(typed) = one_field(
-        ui,
-        look,
-        area.shrink2(Vec2::new(8.0, 0.0)),
-        &mut pen,
-        "Most tokens",
-        &mut budget,
-        &DEFAULT_MAX_TOKENS.to_string(),
-    ) {
-        if let Ok(count) = typed.trim().parse::<u32>() {
-            configuration.providers[index].max_tokens = count.clamp(64, 200_000);
+    if !a_program {
+        let mut key = configuration.providers[index].key_env.clone();
+        if one_field(ui, look, inside, &mut pen, "Key from", &mut key, "ANTHROPIC_API_KEY").is_some() {
+            configuration.providers[index].key_env = key.trim().to_owned();
             act = Some(Act::Changed);
+        }
+        let mut budget = configuration.providers[index].max_tokens.to_string();
+        if let Some(typed) = one_field(
+            ui,
+            look,
+            inside,
+            &mut pen,
+            "Most tokens",
+            &mut budget,
+            &DEFAULT_MAX_TOKENS.to_string(),
+        ) {
+            if let Ok(count) = typed.trim().parse::<u32>() {
+                configuration.providers[index].max_tokens = count.clamp(64, 200_000);
+                act = Some(Act::Changed);
+            }
         }
     }
 
@@ -333,9 +447,14 @@ fn endpoint(
     let (said, tint) = match provider.why_not() {
         Some(why) => (why, color::CLOSE),
         None => (
-            match provider.wants_a_key() {
-                true => format!("Ready · key set from ${}", provider.key_env),
-                false => "Ready · no key needed".to_owned(),
+            match (provider.is_a_program(), provider.wants_a_key()) {
+                // **Not the path it was found at**, though `why_the_program_will_not_run` knows it
+                // and `plugins run agent-chat providers` reports it. A person's own home folder is
+                // in that path, and this page is drawn into a screenshot test that is committed —
+                // so the one place it would certainly end up is a repository.
+                (true, _) => "Ready · found on this machine, and it holds its own account".to_owned(),
+                (false, true) => format!("Ready · key set from ${}", provider.key_env),
+                (false, false) => "Ready · no key needed".to_owned(),
             },
             color::GIT_ADDED,
         ),

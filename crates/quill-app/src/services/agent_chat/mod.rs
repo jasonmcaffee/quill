@@ -27,7 +27,7 @@ pub mod tools;
 use std::path::{Path, PathBuf};
 
 use quill_chat::model::{Message, Part, Role};
-use quill_chat::provider::{Provider, Wire};
+use quill_chat::provider::{Provider, Wire, WIRES};
 use quill_chat::{Client, Conversation, Session, State};
 
 use crate::services::plugin_ui::{Answer, Context, Look, Request, UiProvider};
@@ -40,6 +40,12 @@ pub const DEFAULT_TOOL_LIMIT: u32 = 8;
 
 /// How many conversations are kept.
 pub const DEFAULT_HISTORY: usize = 20;
+
+/// What a request for the clipboard's picture is answered under.
+///
+/// A name rather than a number, so it cannot be mistaken for one of the tool positions
+/// `ask_for_the_tools` sends — those parse as a `usize` and this does not.
+pub const CLIPBOARD: &str = "clipboard";
 
 /// The plugin's own settings, in `plugins/agent-chat/settings.conf` beside its manifest.
 ///
@@ -56,7 +62,22 @@ pub struct Configuration {
     pub stream: bool,
     /// Whether Quill's own commands are offered to the model. Off unless somebody says so.
     pub tools: bool,
+    /// Whether the commands that run a program of the model's choosing are among them.
+    ///
+    /// A second switch rather than a wider first one, because `terminal send` is a different kind of
+    /// thing from `editor text`: it hands a server on the far end of a socket this machine's shell,
+    /// with this machine's environment in it. See `tools::RUNS_A_PROGRAM`.
+    pub shell: bool,
     pub tool_limit: u32,
+    /// How much a command-line agent may do to this machine without being asked.
+    ///
+    /// **Only a command-line agent has one**, and it is the setting that matters most for those:
+    /// `claude` and `codex` run with `--print`, so they cannot stop and ask a question, and what they
+    /// may do has to be decided before they start. `read` is the default and is both agents' own
+    /// safest mode. Quill's own `tools` and `shell` switches are the equivalent for an HTTP endpoint,
+    /// where the model asks and Quill runs it — the two are never both in play, because the
+    /// transport decides which of them applies.
+    pub permission: quill_chat::Permission,
     /// The person's own system prompt, added after Quill's own line.
     pub system: String,
     pub history: usize,
@@ -73,7 +94,9 @@ impl Default for Configuration {
             // pressed. A pane that could edit files the moment it was opened would be a pane nobody
             // dares open.
             tools: false,
+            shell: false,
             tool_limit: DEFAULT_TOOL_LIMIT,
+            permission: quill_chat::Permission::default(),
             system: String::new(),
             history: DEFAULT_HISTORY,
         }
@@ -84,23 +107,32 @@ impl Configuration {
     const FILE: &'static str = "settings.conf";
 
     /// Read the configuration out of the plugin's folder, or the defaults when there is no file.
-    pub fn read(folder: &Path) -> Self {
+    ///
+    /// Answers what it could not read as well; the pane draws it where a refusal goes.
+    pub fn read(folder: &Path) -> (Self, Vec<String>) {
         let Ok(text) = std::fs::read_to_string(folder.join(Self::FILE)) else {
-            return Self::default();
+            return (Self::default(), Vec::new());
         };
         Self::of(&Values::parse(&text))
     }
 
     /// The same, from values already read, so a test needs no file.
-    pub fn of(values: &Values) -> Self {
+    ///
+    /// Answers the rows it could not read as well, because a row silently dropped is an endpoint that
+    /// is simply not there and nothing says why — the fault every other registry in Quill is refused
+    /// with a list to avoid.
+    pub fn of(values: &Values) -> (Self, Vec<String>) {
         let mut configuration = Self {
             providers: Vec::new(),
             ..Self::default()
         };
+        let mut refused = Vec::new();
         let count = values.number("providers").unwrap_or(0.0).max(0.0) as usize;
         for index in 0..count.min(32) {
-            if let Some(provider) = provider_at(values, index) {
-                configuration.providers.push(provider);
+            match provider_at(values, index) {
+                Ok(Some(provider)) => configuration.providers.push(provider),
+                Ok(None) => {}
+                Err(problem) => refused.push(problem),
             }
         }
         // A file that names no provider at all — or whose every row was refused — gets the three
@@ -118,8 +150,24 @@ impl Configuration {
         if let Some(tools) = values.flag("tools") {
             configuration.tools = tools;
         }
+        if let Some(shell) = values.flag("shell") {
+            configuration.shell = shell;
+        }
         if let Some(limit) = values.number("tool-limit") {
             configuration.tool_limit = limit.clamp(1.0, 32.0) as u32;
+        }
+        if let Some(named) = values.text("permission") {
+            match quill_chat::Permission::from_name(named) {
+                Some(permission) => configuration.permission = permission,
+                // Refused with the list rather than falling back quietly, because falling back to
+                // `read` would look like an agent that will not do as it is told, and falling back
+                // to anything else would be Quill widening a permission nobody granted.
+                None => refused.push(format!(
+                    "`{}` is not something an agent may be allowed to do, and this version of Quill has {}.",
+                    named.trim(),
+                    quill_chat::PERMISSIONS.join(", ")
+                )),
+            }
         }
         if let Some(system) = values.text("system") {
             configuration.system = system.to_owned();
@@ -127,7 +175,7 @@ impl Configuration {
         if let Some(history) = values.number("history") {
             configuration.history = history.clamp(1.0, 500.0) as usize;
         }
-        configuration
+        (configuration, refused)
     }
 
     /// Write it back into the plugin's folder.
@@ -137,6 +185,7 @@ impl Configuration {
         for (index, provider) in self.providers.iter().enumerate() {
             values.set(&format!("provider.{index}.name"), provider.name.clone());
             values.set(&format!("provider.{index}.wire"), provider.wire.name());
+            values.set(&format!("provider.{index}.command"), provider.command.clone());
             values.set(&format!("provider.{index}.url"), provider.url.clone());
             values.set(&format!("provider.{index}.model"), provider.model.clone());
             values.set(&format!("provider.{index}.key-env"), provider.key_env.clone());
@@ -149,7 +198,9 @@ impl Configuration {
         values.set("chosen", self.chosen.clone());
         values.set("stream", self.stream.to_string());
         values.set("tools", self.tools.to_string());
+        values.set("shell", self.shell.to_string());
         values.set("tool-limit", self.tool_limit.to_string());
+        values.set("permission", self.permission.name());
         values.set("system", self.system.replace('\n', " "));
         values.set("history", self.history.to_string());
         std::fs::create_dir_all(folder)
@@ -158,8 +209,10 @@ impl Configuration {
             folder.join(Self::FILE),
             values.to_text_headed(
                 "# The Agent-Chat plugin's settings. `Settings -> Agent-Chat` writes this file and reads it back.\n\
-                 # A provider names the environment variable its key comes from; the key itself is never written\n\
-                 # here or anywhere else by Quill. `wire` is `openai` or `anthropic`.",
+                 # `wire` is `claude-cli` or `codex-cli` for a row that runs the agent installed on this machine —\n\
+                 # those need no key at all — or `openai`, `anthropic` or `responses` for one that sends to a URL.\n\
+                 # A row that sends names the environment variable its key comes from; the key itself is never\n\
+                 # written here or anywhere else by Quill.",
             ),
         )
         .map_err(|problem| format!("{} could not be written: {problem}", folder.display()))
@@ -192,21 +245,38 @@ impl Configuration {
     }
 }
 
-/// One provider's row, or nothing when the file names a wire this version has not got.
+/// One provider's row, nothing when the row is empty, or the sentence it is refused with.
 ///
 /// **Refused with the list rather than half-loaded**, which is the rule `plugin.kind`,
 /// `language.renders`, `run.project`, `debug.adapter` and `ui.chrome` all keep. A row whose wire is
-/// unknown would be an endpoint every request to which fails obscurely.
-fn provider_at(values: &Values, index: usize) -> Option<Provider> {
-    let name = values.text(&format!("provider.{index}.name"))?.trim().to_owned();
+/// unknown would be an endpoint every request to which fails obscurely — and a row silently dropped
+/// is worse still, because the Settings page then shows a list somebody's file does not match.
+fn provider_at(values: &Values, index: usize) -> Result<Option<Provider>, String> {
+    let Some(name) = values.text(&format!("provider.{index}.name")) else {
+        return Ok(None);
+    };
+    let name = name.trim().to_owned();
     if name.is_empty() {
-        return None;
+        return Ok(None);
     }
-    let named = values.text(&format!("provider.{index}.wire")).unwrap_or("openai");
-    let wire = Wire::from_name(named)?;
-    Some(Provider {
+    let named = values
+        .text(&format!("provider.{index}.wire"))
+        .unwrap_or("openai")
+        .trim();
+    let Some(wire) = Wire::from_name(named) else {
+        return Err(format!(
+            "`{name}` speaks `{named}`, and this version of Quill speaks {}.",
+            WIRES.join(", ")
+        ));
+    };
+    Ok(Some(Provider {
         name,
         wire,
+        command: values
+            .text(&format!("provider.{index}.command"))
+            .unwrap_or_default()
+            .trim()
+            .to_owned(),
         url: values
             .text(&format!("provider.{index}.url"))
             .unwrap_or_default()
@@ -231,7 +301,7 @@ fn provider_at(values: &Values, index: usize) -> Option<Provider> {
             .number(&format!("provider.{index}.max-tokens"))
             .unwrap_or(quill_chat::provider::DEFAULT_MAX_TOKENS as f32)
             .clamp(64.0, 200_000.0) as u32,
-    })
+    }))
 }
 
 /// A picture waiting to go up with the next message.
@@ -247,9 +317,15 @@ pub struct Attachment {
 /// A tool call handed to the window and not yet answered.
 #[derive(Debug, Clone, PartialEq)]
 struct Outstanding {
-    id: String,
+    /// **Where the call sits in the message that asked for it**, not the id the server gave.
+    ///
+    /// A server can send two calls with one id — it should not, and one does — and filing the work
+    /// under the id meant skipping the second as already outstanding and then answering only the
+    /// first, which left the turn stopped with no way out. `Session::tools_to_run` gives the
+    /// position and nothing else can collide with it.
+    at: usize,
     /// When it went out, so the block can say how long it took.
-    at: std::time::Instant,
+    began: std::time::Instant,
 }
 
 /// What the drawing keeps between frames.
@@ -289,6 +365,11 @@ pub struct PaneState {
     /// Keyed on where the picture is rather than on its bytes, so a conversation with twenty pictures
     /// in it does not decode twenty pictures a frame.
     pub pictures: std::collections::HashMap<String, egui::TextureHandle>,
+    /// How big each of those is, read out of the picture's own header.
+    ///
+    /// Kept apart from the textures because the measuring pass needs it and has no `egui::Ui` to
+    /// upload one with. See `services::picture::dimensions_of`.
+    pub picture_sizes: std::collections::HashMap<String, (f32, f32)>,
 }
 
 /// The pieces of the pane the drawing is handed.
@@ -339,6 +420,8 @@ pub struct AgentChat {
     pub attachments: Vec<Attachment>,
     next_attachment: u64,
     outstanding: Vec<Outstanding>,
+    /// How many tool calls this turn has made, so the calls are bounded as well as the rounds.
+    calls: u32,
     /// Requests made outside a draw — running a tool — drained by the window once a frame.
     asking: Vec<Request>,
     history: Vec<Summary>,
@@ -386,6 +469,7 @@ impl AgentChat {
             attachments: Vec::new(),
             next_attachment: 1,
             outstanding: Vec::new(),
+            calls: 0,
             asking: Vec::new(),
             history: Vec::new(),
             problem: None,
@@ -512,6 +596,16 @@ impl AgentChat {
         Ok(())
     }
 
+    /// Attach the picture the window read off the clipboard.
+    fn attach_from(&mut self, value: &serde_json::Value) -> Result<(), String> {
+        let media = value["media"].as_str().unwrap_or("image/png").to_owned();
+        let name = value["name"].as_str().unwrap_or("pasted.png").to_owned();
+        let bytes = quill_chat::base64::decode(value["data"].as_str().unwrap_or_default())
+            .ok_or_else(|| "the picture on the clipboard could not be read.".to_owned())?;
+        self.attach_bytes(name, media, bytes);
+        Ok(())
+    }
+
     /// Attach a picture already in memory, which is what a paste from the clipboard is.
     pub fn attach_bytes(&mut self, name: String, media: String, bytes: Vec<u8>) {
         let id = self.next_attachment;
@@ -522,6 +616,21 @@ impl AgentChat {
             media,
             bytes,
         });
+    }
+
+    /// The attachments as the picture parts of a message, taken off the draft.
+    ///
+    /// Taken rather than copied, because a picture that stayed on the draft after being sent would go
+    /// up again with the next question.
+    pub fn take_the_attachments(&mut self) -> Vec<Part> {
+        std::mem::take(&mut self.attachments)
+            .into_iter()
+            .map(|attachment| Part::Picture {
+                media: attachment.media,
+                bytes: attachment.bytes,
+                name: attachment.name,
+            })
+            .collect()
     }
 
     pub fn remove_attachment(&mut self, id: u64) {
@@ -550,15 +659,12 @@ impl AgentChat {
         if !said.trim().is_empty() {
             message.parts.push(Part::Text(said.trim_end().to_owned()));
         }
-        for attachment in std::mem::take(&mut self.attachments) {
-            message.parts.push(Part::Picture {
-                media: attachment.media,
-                bytes: attachment.bytes,
-                name: attachment.name,
-            });
-        }
+        message.parts.extend(self.take_the_attachments());
         self.session.chat.provider = provider.name.clone();
         let id = self.session.ask(message);
+        // A new turn, so the bounds start again.
+        self.calls = 0;
+        self.outstanding.clear();
         self.problem = None;
         self.ui.jump_to_bottom = true;
         self.dirty = true;
@@ -577,6 +683,11 @@ impl AgentChat {
             self.session.reply(quill_chat::Reply::Failed(why));
             return;
         }
+        if provider.is_a_program() {
+            let ask = self.what_to_ask_the_agent();
+            self.client.ask(provider, ask);
+            return;
+        }
         let tools = match self.configuration.tools {
             true => tools::offered(),
             false => Vec::new(),
@@ -590,6 +701,72 @@ impl AgentChat {
         );
         self.client
             .send(provider, body.to_string(), self.configuration.stream);
+    }
+
+    /// What one turn asks a command-line agent.
+    ///
+    /// **One turn's words, not the transcript.** The agent keeps its own session, so a second
+    /// question is `--resume` and the context it has built is the context it keeps; sending the whole
+    /// conversation again would be paying twice for something the agent already has, and would
+    /// confuse an agent whose own record of the turn includes tools Quill never saw.
+    ///
+    /// Quill's own line about where it is goes in front of the **first** question only, for the same
+    /// reason: after that the agent knows, and repeating it every turn would be a paragraph of
+    /// preamble on every message.
+    fn what_to_ask_the_agent(&mut self) -> quill_chat::Ask {
+        let newest = self
+            .session
+            .chat
+            .messages
+            .iter()
+            .rev()
+            .find(|message| message.role == Role::User);
+        let said = newest.map(Message::text).unwrap_or_default();
+        let session = self.session.chat.session.clone();
+        let prompt = match session.is_empty() {
+            true => format!("{}\n\n{said}", self.what_the_agent_should_know()),
+            false => said,
+        };
+        // **Written to files, because both agents take a picture by path.** The pane holds one as
+        // bytes so that a conversation reopened after the file moved still shows what was sent; an
+        // agent needs a file, so one is written into the temporary folder for the length of the turn.
+        let mut pictures = Vec::new();
+        if let Some(message) = newest {
+            let folder = std::env::temp_dir();
+            for (name, _, bytes) in message.pictures() {
+                if let Some(path) = quill_chat::agent::write_a_picture(&folder, name, bytes) {
+                    pictures.push(path);
+                }
+            }
+        }
+        quill_chat::Ask {
+            prompt,
+            // **The project the window has open**, which is what makes the agent's answer about the
+            // code in front of you: `claude` finds that project's `CLAUDE.md` there and `codex` its
+            // `AGENTS.md`, and every file tool either of them has is rooted in it.
+            folder: self.project.clone(),
+            session,
+            pictures,
+            permission: self.configuration.permission,
+        }
+    }
+
+    /// The line Quill puts in front of an agent's first question.
+    ///
+    /// Shorter than [`system_prompt`](Self::system_prompt), and deliberately: an agent already knows
+    /// what it is and has its own instructions from the project. What it cannot know is that it is
+    /// answering in a pane rather than in a terminal, and which file the person is looking at.
+    fn what_the_agent_should_know(&self) -> String {
+        let mut lines = vec![
+            "You are answering in a chat pane inside Quill, a code editor, beside the person's work. Be brief and concrete; they can see their own screen, and your answer is read as markdown rather than in a terminal.".to_owned(),
+        ];
+        if let Some(showing) = &self.showing {
+            lines.push(format!("The file they are looking at is {}.", showing.display()));
+        }
+        if !self.configuration.system.trim().is_empty() {
+            lines.push(self.configuration.system.trim().to_owned());
+        }
+        lines.join(" ")
     }
 
     /// What Quill tells the model about where it is.
@@ -644,7 +821,18 @@ impl AgentChat {
         if anything {
             self.session.chat.changed = store::seconds_now();
         }
-        if matches!(self.session.state(), State::WaitingForTools) {
+        // **A command-line agent runs its own tools, so Quill runs none of them.** Measured against
+        // a real `claude`: it asked for `Grep` and `Read`, which are its own tools and are not in
+        // Quill's catalogue, and this window answered both with "there is no tool called `Grep`" —
+        // put that refusal in the transcript, made a `tool` message nobody asked for, and sent
+        // another round. The agent recovered, but it had been argued with by its own client.
+        // `WaitingForTools` still means what it says there; what it means is *the agent* is running
+        // one, which is exactly what the block in the pane is drawing.
+        let mine_to_run = !self
+            .configuration
+            .provider()
+            .is_some_and(|one| one.is_a_program());
+        if mine_to_run && matches!(self.session.state(), State::WaitingForTools) {
             self.ask_for_the_tools();
         }
         if anything && !self.session.is_busy() {
@@ -654,40 +842,92 @@ impl AgentChat {
     }
 
     /// Hand every outstanding tool call to the window, once each.
+    ///
+    /// Three things are refused here rather than run, and each goes back up as the call's answer so
+    /// the model reads it and picks something else — a turn hanging on a call nobody will run is the
+    /// one outcome with nothing on the screen to explain it.
     fn ask_for_the_tools(&mut self) {
-        for call in self.session.tools_to_run() {
-            if self.outstanding.iter().any(|one| one.id == call.id) {
+        for (at, call) in self.session.tools_to_run() {
+            if self.outstanding.iter().any(|one| one.at == at) {
                 continue;
             }
             self.outstanding.push(Outstanding {
-                id: call.id.clone(),
-                at: std::time::Instant::now(),
+                at,
+                began: std::time::Instant::now(),
             });
-            match tools::resolve(&call.name, &call.arguments_value()) {
+            // **The calls of a turn are bounded as well as its rounds.** `tool_limit` bounds how many
+            // times the model may be asked again; nothing bounded how many calls one answer could
+            // ask for, and one answer can hold any number.
+            self.calls += 1;
+            if self.calls > self.call_limit() {
+                self.answered_at(
+                    at,
+                    Err(format!(
+                        "this turn has already asked for {} tools, which is the limit \
+                         (Tool rounds in Settings -> Agent-Chat, four calls a round).",
+                        self.call_limit()
+                    )),
+                );
+                continue;
+            }
+            // Arguments that are not JSON are a refusal rather than an empty object, because reading
+            // them as `{}` runs the command with its defaults — see `ToolCall::parsed_arguments`.
+            let arguments = match call.parsed_arguments() {
+                Ok(arguments) => arguments,
+                Err(problem) => {
+                    self.answered_at(at, Err(problem));
+                    continue;
+                }
+            };
+            match tools::resolve(&call.name, &arguments, self.configuration.shell) {
                 Ok(resolved) => self.asking.push(Request::RunCommand {
-                    id: call.id.clone(),
+                    id: format!("{at}"),
                     command: resolved.command.wire(),
                     arguments: resolved.arguments,
                 }),
-                // A refusal is an answer: it goes straight back up so the model reads it and picks
-                // something else, rather than the turn hanging on a call nobody will run.
-                Err(problem) => self.answered(&call.id, Err(problem)),
+                Err(problem) => self.answered_at(at, Err(problem)),
             }
         }
     }
 
-    /// What a tool answered, from the window.
+    /// The most tool calls one turn may make.
+    ///
+    /// Four a round, which is the shape of the thing being bounded: a round is one answer from the
+    /// model, and an answer that asks for more than a handful of tools at once is an answer that has
+    /// misunderstood the question. One number in the settings rather than two, because two numbers
+    /// nobody can tell apart is worse than a ratio written down here.
+    fn call_limit(&self) -> u32 {
+        self.configuration.tool_limit.saturating_mul(4)
+    }
+
+    /// What the window answered: a tool call by its position, or the clipboard's picture.
     fn tool_answered(&mut self, id: &str, answer: Result<serde_json::Value, String>) {
+        if id == CLIPBOARD {
+            match answer.and_then(|value| self.attach_from(&value)) {
+                Ok(()) => self.problem = None,
+                // A paste with no picture on the clipboard is an ordinary thing to do by accident, so
+                // it says so where the other refusals go rather than doing nothing.
+                Err(problem) => self.problem = Some(problem),
+            }
+            return;
+        }
+        let Ok(at) = id.parse::<usize>() else {
+            return;
+        };
+        self.answered_at(at, answer.map(|value| shorten_for_a_model(&value)));
+    }
+
+    /// The same, for a call this side refused before it ever reached the window.
+    fn answered_at(&mut self, at: usize, answer: Result<String, String>) {
         let took = self
             .outstanding
             .iter()
-            .find(|one| one.id == id)
-            .map(|one| one.at.elapsed().as_millis().min(u64::MAX as u128) as u64)
+            .find(|one| one.at == at)
+            .map(|one| one.began.elapsed().as_millis().min(u64::MAX as u128) as u64)
             .unwrap_or(0);
-        self.outstanding.retain(|one| one.id != id);
-        let answer = answer.map(|value| shorten_for_a_model(&value));
+        self.outstanding.retain(|one| one.at != at);
         self.dirty = true;
-        if !self.session.tool_answered(id, answer, took) {
+        if !self.session.tool_answered(at, answer, took) {
             return;
         }
         // Every tool has answered, so the model is asked again — unless it has been asked enough
@@ -746,6 +986,12 @@ impl AgentChat {
                 "name": one.name, "media": one.media, "bytes": one.bytes.len(),
             })).collect::<Vec<serde_json::Value>>(),
             "problem": self.problem,
+            // **Which file, never the file's text.** A pane that quietly uploaded whatever was on
+            // the screen is a pane nobody could use on anything confidential; with the tools on the
+            // model can read it by asking, which is the right shape for an editor whose every command
+            // is already a tool.
+            "showing": self.showing.as_ref().map(|path| path.display().to_string()),
+            "project": self.project.as_ref().map(|path| path.display().to_string()),
             // Deliberately **not** `total`, which is the key the pane's own header draws as a count
             // beside its name. A board's count is how many tickets there are and is worth reading at a
             // glance; a chat's is how many messages have been said, which is a number nobody wants in
@@ -827,9 +1073,17 @@ impl UiProvider for AgentChat {
     fn open(&mut self, context: &Context) -> Result<(), String> {
         self.folder = context.folder.clone();
         self.project = context.project.clone();
+        // **Told at open, not only when it next changes.** The window compares before it tells, so a
+        // provider opened after the comparison had already settled was never told at all and its
+        // system prompt said nothing about the file in front of the person until they switched tabs.
+        self.showing = context.showing.clone();
         self.store = Store::at(self.folder.clone());
         if let Some(folder) = &self.folder {
-            self.configuration = Configuration::read(folder);
+            let (configuration, refused) = Configuration::read(folder);
+            self.configuration = configuration;
+            if !refused.is_empty() {
+                self.problem = Some(refused.join(" "));
+            }
         }
         self.client.set_waker(context.wake.clone());
         self.refresh_the_history();
@@ -949,9 +1203,16 @@ impl UiProvider for AgentChat {
             )
             .with(serde_json::json!({
                 "chosen": self.provider().map(|one| one.name.clone()),
+                "permission": self.configuration.permission.name(),
                 "providers": self.configuration.providers.iter().map(|one| serde_json::json!({
                     "name": one.name,
                     "wire": one.wire.name(),
+                    // Whether it runs a program or sends to an address, and — for a program — where
+                    // that program really is, because an agent that is not installed is the
+                    // commonest reason a row cannot answer and a path is what says so.
+                    "runs_a_program": one.is_a_program(),
+                    "command": one.command,
+                    "program": one.program_path().map(|path| path.display().to_string()),
                     "url": one.url,
                     "model": one.model,
                     "key_env": one.key_env,
@@ -1102,15 +1363,21 @@ mod tests {
         configuration.tools = true;
         configuration.tool_limit = 3;
         configuration.system = "Be terse.".to_owned();
+        configuration.permission = quill_chat::Permission::Edit;
         configuration.providers[2].url = "http://127.0.0.1:9999/v1/chat/completions".to_owned();
+        configuration.providers[2].key_env = "OPENAI_API_KEY".to_owned();
         configuration.write(&folder).expect("written");
-        let read = Configuration::read(&folder);
+        let (read, refused) = Configuration::read(&folder);
         assert_eq!(read, configuration);
-        // And no key is anywhere in the file, whatever a provider names.
+        assert!(refused.is_empty(), "{refused:?}");
         let text = std::fs::read_to_string(folder.join(Configuration::FILE)).expect("the file");
+        // The two rows that ship run a program, so what is written down for them is the program.
+        assert!(text.contains("provider.0.command = claude"), "{text}");
+        assert!(text.contains("provider.1.command = codex"), "{text}");
+        // And a row that does send names the variable its key comes from — never the key.
         assert!(
-            text.contains("ANTHROPIC_API_KEY"),
-            "the name of the variable is written down"
+            text.contains("OPENAI_API_KEY"),
+            "the name of the variable is written down: {text}"
         );
         assert!(!text.to_lowercase().contains("secret"));
     }
@@ -1129,19 +1396,28 @@ mod tests {
              provider.1.url = http://127.0.0.1:8080/v1/chat/completions\n\
              provider.1.model = m\n",
         );
-        let configuration = Configuration::of(&values);
+        let (configuration, refused) = Configuration::of(&values);
         assert_eq!(configuration.providers.len(), 1);
         assert_eq!(configuration.providers[0].name, "mine");
         assert!(quill_chat::provider::WIRES.contains(&configuration.providers[0].wire.name()));
+        // **And it says so**, which is the other half of the rule: a row silently dropped is an
+        // endpoint that is not there with nothing at all to explain it.
+        assert_eq!(refused.len(), 1, "{refused:?}");
+        assert!(refused[0].contains("gemini"), "{refused:?}");
+        assert!(
+            refused[0].contains("anthropic"),
+            "the refusal lists what there is: {refused:?}"
+        );
     }
 
     #[test]
     fn a_file_that_names_no_provider_gets_the_three_that_ship() {
         // A pane with no endpoint cannot do anything, and somebody who wanted none would have
         // switched the plugin off.
-        let configuration = Configuration::of(&Values::parse("stream = false\n"));
+        let (configuration, refused) = Configuration::of(&Values::parse("stream = false\n"));
         assert_eq!(configuration.providers.len(), 3);
         assert!(!configuration.stream);
+        assert!(refused.is_empty());
     }
 
     #[test]
@@ -1162,7 +1438,18 @@ mod tests {
             .expect_err("nothing to send")
             .contains("nothing to send"));
         chat.draft = "hello".to_owned();
+        // **A program that is not installed is refused before it is spawned**, which is
+        // `task-1692`'s rule for a missing debug adapter kept for a missing agent — and it is the
+        // refusal that replaced the missing-key one, because a command-line row has no key.
         chat.configuration.choose("claude").expect("chosen");
+        chat.configuration.providers[0].command = "quill-no-such-agent-anywhere".to_owned();
+        let problem = chat.send().expect_err("not installed");
+        assert!(problem.contains("quill-no-such-agent-anywhere"), "{problem}");
+
+        // And the missing-key refusal for a row that really does send to an address.
+        chat.configuration.providers[0].wire = quill_chat::Wire::Anthropic;
+        chat.configuration.providers[0].url = "https://api.anthropic.com/v1/messages".to_owned();
+        chat.configuration.providers[0].model = "claude-opus-5".to_owned();
         chat.configuration.providers[0].key_env = "QUILL_A_VARIABLE_NOTHING_SETS".to_owned();
         let problem = chat.send().expect_err("no key");
         assert!(problem.contains("QUILL_A_VARIABLE_NOTHING_SETS"), "{problem}");
@@ -1208,13 +1495,15 @@ mod tests {
         let Request::RunCommand { id, command, .. } = &asked[0] else {
             panic!("{asked:?}");
         };
-        assert_eq!(id, "t1");
+        // **The position rather than the server's id**, because two calls can carry one id and
+        // answering by id then left the second running for ever. See `Outstanding`.
+        assert_eq!(id, "0");
         assert_eq!(command, "git.status");
 
         // The answer goes back into the conversation as a tool result. Found by its role rather than
         // as the last message, because answering the last outstanding tool is what starts the next
         // round — and here that round is refused for want of a key, which is a message of its own.
-        chat.answered("t1", Ok(serde_json::json!({ "branch": "main" })));
+        chat.answered("0", Ok(serde_json::json!({ "branch": "main" })));
         let results = chat
             .session
             .chat
@@ -1222,7 +1511,11 @@ mod tests {
             .iter()
             .find(|message| message.role == Role::Tool)
             .expect("a result message");
-        assert!(results.tools[0].answer.as_deref().expect("an answer").contains("main"));
+        assert!(results.tools[0]
+            .answer
+            .as_deref()
+            .expect("an answer")
+            .contains("main"));
     }
 
     #[test]
@@ -1248,7 +1541,11 @@ mod tests {
             .find(|message| message.role == Role::Tool)
             .expect("a result message");
         assert!(results.tools[0].failed);
-        assert!(results.tools[0].answer.as_deref().expect("a reason").contains("quill_levitate"));
+        assert!(results.tools[0]
+            .answer
+            .as_deref()
+            .expect("a reason")
+            .contains("quill_levitate"));
     }
 
     #[test]
@@ -1327,6 +1624,82 @@ mod tests {
     }
 
     #[test]
+    fn a_picture_off_the_clipboard_is_attached_and_an_empty_clipboard_says_so() {
+        // The window owns the clipboard, so the pane **asks** for the picture and the answer comes
+        // back through `UiProvider::answered` under the `clipboard` id — the same channel a tool
+        // call's answer comes back on, which is why the id is a name rather than a number.
+        let mut chat = opened("paste");
+        let bytes = vec![0x89, b'P', b'N', b'G', 13, 10, 26, 10, 1, 2, 3];
+        let answer = serde_json::json!({
+            "media": "image/png",
+            "name": "pasted-8x8.png",
+            "data": quill_chat::base64::encode(&bytes),
+        });
+        chat.answered(CLIPBOARD, Ok(answer));
+        assert_eq!(chat.attachments.len(), 1);
+        assert_eq!(chat.attachments[0].name, "pasted-8x8.png");
+        assert_eq!(chat.attachments[0].bytes, bytes, "the bytes survived the base64");
+        assert!(chat.problem.is_none());
+
+        // And a paste with nothing on the clipboard is an ordinary thing to do by accident, so it
+        // says so where every other refusal goes rather than doing nothing at all.
+        chat.answered(CLIPBOARD, Err("there is no picture on the clipboard.".to_owned()));
+        assert_eq!(chat.attachments.len(), 1, "the one already attached is left alone");
+        assert_eq!(chat.problem.as_deref(), Some("there is no picture on the clipboard."));
+    }
+
+    #[test]
+    fn the_calls_a_turn_may_make_are_bounded_as_well_as_the_rounds() {
+        // Two bounds, because one does not imply the other: eight rounds of one call each and one
+        // round of eight hundred calls are both a turn nobody is watching. The call bound is derived
+        // from the round bound rather than being a second number in the settings, because two numbers
+        // nobody can tell apart is worse than a ratio written down beside the code.
+        let mut chat = opened("bound");
+        assert_eq!(chat.call_limit(), chat.configuration.tool_limit * 4);
+        chat.configuration_mut().tool_limit = 2;
+        assert_eq!(chat.call_limit(), 8);
+    }
+
+    #[test]
+    fn what_is_written_down_is_read_back_and_a_key_is_never_among_it() {
+        // The Settings page writes through `Configuration::write`, so what it can set is what comes
+        // back. **The key is the thing that must not be there**: an endpoint names the environment
+        // variable it is in, and the value is read at the moment a request is sent and never held.
+        let folder = a_folder("settings-round-trip");
+        let mut configuration = Configuration::default();
+        configuration.chosen = "codex".to_owned();
+        configuration.stream = false;
+        configuration.tools = true;
+        configuration.shell = true;
+        configuration.tool_limit = 3;
+        configuration.permission = quill_chat::Permission::Full;
+        configuration.providers[0].wire = quill_chat::Wire::Anthropic;
+        configuration.providers[0].url = "https://example.test/v1/messages".to_owned();
+        configuration.providers[0].key_env = "ANTHROPIC_API_KEY".to_owned();
+        configuration.providers[0].max_tokens = 2048;
+        configuration.write(&folder).expect("the settings are written");
+
+        let (read, refused) = Configuration::read(&folder);
+        assert!(refused.is_empty(), "{refused:?}");
+        assert_eq!(read.chosen, "codex");
+        assert!(!read.stream);
+        assert!(read.tools);
+        assert!(read.shell, "the second switch is remembered separately from the first");
+        assert_eq!(read.tool_limit, 3);
+        assert_eq!(read.providers[0].url, "https://example.test/v1/messages");
+        assert_eq!(read.providers[0].max_tokens, 2048);
+        assert_eq!(read.providers[1].wire, quill_chat::Wire::CodexCli);
+        assert_eq!(read.permission, quill_chat::Permission::Full);
+
+        let written = std::fs::read_to_string(folder.join(Configuration::FILE)).expect("the file");
+        assert!(!written.contains("sk-"), "a key reached the disk: {written}");
+        assert!(
+            written.contains("ANTHROPIC_API_KEY"),
+            "what is written down is the name of the place the key is: {written}"
+        );
+    }
+
+    #[test]
     fn every_command_it_lists_is_a_command_it_answers() {
         // The rule `every_registered_provider_can_be_built` keeps for the registry, kept for the
         // commands: one listed with no arm would be a command `plugins show` offers and `plugins run`
@@ -1353,7 +1726,10 @@ mod tests {
         let view = chat.view();
         assert_eq!(view["state"], "sending");
         assert_eq!(view["messages"], 1);
-        assert!(view["total"].is_null(), "a chat's count is not drawn beside its pane's name");
+        assert!(
+            view["total"].is_null(),
+            "a chat's count is not drawn beside its pane's name"
+        );
         assert_eq!(view["conversation"]["messages"][0]["text"], "hello");
         assert_eq!(view["tools"], false);
         assert!(view["provider"]["name"].is_string());

@@ -12,7 +12,7 @@
 //! [`State::WaitingForTools`] is the state between them. [`Session::round`] counts them, and the
 //! caller stops at a limit rather than funding a loop nobody is watching.
 
-use crate::model::{Conversation, Message, Role, ToolCall};
+use crate::model::{Conversation, Message, Role, ToolCall, Usage};
 use crate::wire::Reply;
 
 /// What the session is doing.
@@ -62,6 +62,14 @@ pub struct Session {
     pub model: String,
     /// How many times the model has been asked in this turn, so a tool loop can be bounded.
     round: u32,
+    /// What this **message** has cost, as the server has reported it so far.
+    ///
+    /// Held apart from the conversation's total because Anthropic's reports are cumulative for the
+    /// message rather than incremental: `message_start` says the input tokens and one output token,
+    /// and `message_delta` says the whole output again. Added, a turn's output came out one too many
+    /// every time. The largest report wins here, and the message's final figure is added to the
+    /// conversation when the message ends.
+    turn: Usage,
 }
 
 impl Session {
@@ -72,6 +80,7 @@ impl Session {
             answering: None,
             model: String::new(),
             round: 0,
+            turn: Usage::default(),
         }
     }
 
@@ -124,17 +133,52 @@ impl Session {
                 self.state = State::Streaming;
                 self.answer().thinking.push_str(&delta);
             }
+            // Kept beside the words rather than instead of them: one is what a person reads and the
+            // other is what goes back up. See `Message::reasoning`.
+            Reply::Reasoning(block) => self.answer().reasoning.push(block),
             Reply::ToolCall { id, name, arguments } => {
                 self.answer().tools.push(ToolCall::new(id, name, arguments));
             }
-            Reply::Usage { input, output } => {
-                // Added rather than replaced, because Anthropic reports the input tokens on
-                // `message_start` and the output tokens on `message_delta`, so a report carrying
-                // only one of the two is the ordinary case.
-                self.chat.usage.input += input;
-                self.chat.usage.output += output;
+            // **The agent's own session, kept on the conversation**, so a second question carries
+            // the first one on rather than starting the agent again with no memory of it.
+            Reply::Session(session) => self.chat.session = session,
+            // **A tool the agent ran itself.** Quill did not run it and has nothing to send back: it
+            // is filled in on the call that is already showing, which is what turns the running block
+            // in the pane into a finished one. A call this conversation has never heard of is
+            // ignored rather than invented, because a block with no call above it would be a report
+            // of something nobody asked for.
+            Reply::ToolAnswer { id, answer, failed } => {
+                self.state = State::Streaming;
+                for message in self.chat.messages.iter_mut().rev() {
+                    if let Some(call) = message.tools.iter_mut().find(|call| call.id == id) {
+                        call.answer = Some(answer);
+                        call.failed = failed;
+                        break;
+                    }
+                }
             }
+            Reply::Usage { input, output } => {
+                // **The largest report of a turn wins, and the turns are added up.**
+                //
+                // Anthropic reports the input tokens on `message_start` and the output tokens twice —
+                // once as `1` on `message_start` and again as the real total on `message_delta`, both
+                // **cumulative for that message**. Adding every report made a turn's output 1 too many
+                // every time. OpenAI reports once at the end, which the same rule handles: one report
+                // is trivially the largest.
+                self.turn.input = self.turn.input.max(input);
+                self.turn.output = self.turn.output.max(output);
+            }
+            // **A turn that failed stays failed.** A stream that reports an error still ends, and the
+            // end used to arrive as an ordinary stop a moment later and take the reason away — so a
+            // rate limit came out as a short answer with nothing to say why. The failure is the news
+            // and the end is not; `Decoder::finish` stops saying it as well, and this is the half that
+            // holds whatever the transport does.
+            Reply::Finished { .. } if matches!(self.state, State::Failed(_)) => {}
             Reply::Finished { reason } => {
+                // **Only a call nothing has answered leaves the turn waiting.** An agent runs its own
+                // tools, so by the time its turn ends every call it made has an answer already —
+                // which is what stops a command-line turn sitting in `waiting-for-tools` for ever
+                // with nobody to answer it.
                 let wants_tools = self
                     .chat
                     .message(self.answering.unwrap_or_default())
@@ -143,6 +187,7 @@ impl Session {
                     message.finish = Some(reason.clone());
                 }
                 self.drop_an_empty_answer();
+                self.bank_the_turn();
                 self.state = match wants_tools {
                     true => State::WaitingForTools,
                     false => State::Finished { reason },
@@ -160,9 +205,19 @@ impl Session {
                     self.chat.push(message);
                 }
                 self.drop_an_empty_answer_keeping_failures();
+                self.bank_the_turn();
                 self.state = State::Failed(problem);
             }
         }
+    }
+
+    /// Add what this message cost to the conversation's total, and start counting again.
+    ///
+    /// Called when a message ends, however it ends — a turn that failed still cost what it cost.
+    fn bank_the_turn(&mut self) {
+        self.chat.usage.input += self.turn.input;
+        self.chat.usage.output += self.turn.output;
+        self.turn = Usage::default();
     }
 
     /// Stop where it is, keeping whatever had arrived.
@@ -175,36 +230,45 @@ impl Session {
             message.finish = Some("stopped".to_owned());
         }
         self.drop_an_empty_answer();
+        self.bank_the_turn();
         self.state = State::Finished {
             reason: "stopped".to_owned(),
         };
     }
 
-    /// Every tool the model is waiting on, in the order it asked for them.
-    pub fn tools_to_run(&self) -> Vec<ToolCall> {
+    /// Every tool the model is waiting on, with **where it sits** in the message that asked.
+    ///
+    /// **The position rather than the id, because a server can send two calls with one id.** It
+    /// should not, and one does: the caller used to file its outstanding work under the id, skip the
+    /// second call as already outstanding, and then answer only the first — leaving the second
+    /// running for ever and the turn stopped with no way out of it. A position is Quill's own and
+    /// cannot collide.
+    pub fn tools_to_run(&self) -> Vec<(usize, ToolCall)> {
         self.chat
             .last()
             .map(|message| {
                 message
                     .tools
                     .iter()
-                    .filter(|tool| tool.is_running())
-                    .cloned()
+                    .enumerate()
+                    .filter(|(_, tool)| tool.is_running())
+                    .map(|(at, tool)| (at, tool.clone()))
                     .collect()
             })
             .unwrap_or_default()
     }
 
-    /// Record what a tool answered, and add the result message once they have all answered.
+    /// Record what the tool at `at` answered, and add the result message once they have all answered.
     ///
-    /// Answers whether the model can be asked again, which is the caller's cue to send.
-    pub fn tool_answered(&mut self, id: &str, answer: Result<String, String>, took: u64) -> bool {
+    /// Answers whether the model can be asked again, which is the caller's cue to send. `at` is the
+    /// position [`Self::tools_to_run`] gave, for the reason written there.
+    pub fn tool_answered(&mut self, at: usize, answer: Result<String, String>, took: u64) -> bool {
         let (text, failed) = match answer {
             Ok(text) => (text, false),
             Err(problem) => (problem, true),
         };
         if let Some(message) = self.chat.last_mut() {
-            if let Some(tool) = message.tools.iter_mut().find(|tool| tool.id == id) {
+            if let Some(tool) = message.tools.get_mut(at) {
                 tool.answer = Some(text);
                 tool.failed = failed;
                 tool.took = Some(took);
@@ -313,14 +377,28 @@ mod tests {
     }
 
     #[test]
-    fn two_usage_reports_are_added_rather_than_the_second_replacing_the_first() {
-        // Anthropic sends the input tokens on `message_start` and the output tokens on
-        // `message_delta`, so a client that replaced would report the input as zero.
+    fn anthropics_cumulative_usage_reports_are_not_added_up() {
+        // `message_start` says the input tokens and **one** output token; `message_delta` says the
+        // whole output again. Both are cumulative for that message, so adding them made every turn's
+        // output one too many. The largest report of a message is what it cost.
         let mut session = a_session();
         session.reply(Reply::Usage { input: 11, output: 1 });
         session.reply(Reply::Usage { input: 0, output: 24 });
+        session.reply(Reply::Finished {
+            reason: "stop".to_owned(),
+        });
         assert_eq!(session.chat.usage.input, 11);
-        assert_eq!(session.chat.usage.output, 25);
+        assert_eq!(session.chat.usage.output, 24, "24 in total, not 25");
+
+        // And a second turn is added to the first, because those really are separate messages.
+        session.ask(Message::said(0, Role::User, "Again"));
+        session.reply(Reply::Text("Yes.".to_owned()));
+        session.reply(Reply::Usage { input: 30, output: 5 });
+        session.reply(Reply::Finished {
+            reason: "stop".to_owned(),
+        });
+        assert_eq!(session.chat.usage.input, 41);
+        assert_eq!(session.chat.usage.output, 29);
     }
 
     #[test]
@@ -341,9 +419,14 @@ mod tests {
             "the turn is not over while a tool is outstanding"
         );
         assert_eq!(session.tools_to_run().len(), 1);
+        assert_eq!(
+            session.tools_to_run()[0].0,
+            0,
+            "the first call is at position nought"
+        );
 
         // The answer is recorded, a result message appears, and the caller is told it may send.
-        assert!(session.tool_answered("t1", Ok("clean".to_owned()), 12));
+        assert!(session.tool_answered(0, Ok("clean".to_owned()), 12));
         assert!(session.tools_to_run().is_empty());
         let results = session.chat.last().expect("a result message");
         assert_eq!(results.role, Role::Tool);
@@ -384,10 +467,10 @@ mod tests {
         });
         assert_eq!(session.tools_to_run().len(), 2);
         assert!(
-            !session.tool_answered("a", Ok("one".to_owned()), 1),
+            !session.tool_answered(0, Ok("one".to_owned()), 1),
             "still one outstanding"
         );
-        assert!(session.tool_answered("b", Err("no".to_owned()), 2));
+        assert!(session.tool_answered(1, Err("no".to_owned()), 2));
         let results = session.chat.last().expect("results");
         assert_eq!(results.tools.len(), 2);
         assert!(
@@ -409,6 +492,58 @@ mod tests {
             State::Failed("overloaded_error: Overloaded".to_owned())
         );
         assert!(!session.is_busy());
+    }
+
+    #[test]
+    fn an_ordinary_end_after_a_failure_leaves_the_failure_standing() {
+        // The transport reports the end of the stream whatever ended it, and taking the later of the
+        // two threw away the only thing that said why.
+        let mut session = a_session();
+        session.reply(Reply::Text("Half an ans".to_owned()));
+        session.reply(Reply::Failed("HTTP 429: rate_limit_error".to_owned()));
+        session.reply(Reply::Finished {
+            reason: "stop".to_owned(),
+        });
+        assert_eq!(
+            *session.state(),
+            State::Failed("HTTP 429: rate_limit_error".to_owned())
+        );
+        let answer = session.chat.last().expect("the answer");
+        assert_eq!(answer.text(), "Half an ans");
+        assert_eq!(answer.failure.as_deref(), Some("HTTP 429: rate_limit_error"));
+        // And asking again clears it, because a new turn is a new turn.
+        session.ask(Message::said(0, Role::User, "Again?"));
+        assert_eq!(*session.state(), State::Sending);
+    }
+
+    #[test]
+    fn two_calls_carrying_one_id_are_both_answered_rather_than_wedging_the_turn() {
+        // A server should not send two calls with one id, and one does. Answered by id, the second
+        // stayed running for ever and the turn stopped with no way out of it; answered by position,
+        // there is nothing to collide.
+        let mut session = a_session();
+        for _ in 0..2 {
+            session.reply(Reply::ToolCall {
+                id: "same".to_owned(),
+                name: "quill_git".to_owned(),
+                arguments: "{}".to_owned(),
+            });
+        }
+        session.reply(Reply::Finished {
+            reason: "tool_use".to_owned(),
+        });
+        let waiting = session.tools_to_run();
+        assert_eq!(waiting.len(), 2);
+        assert_eq!(waiting[0].0, 0);
+        assert_eq!(waiting[1].0, 1);
+        assert!(!session.tool_answered(0, Ok("first".to_owned()), 1));
+        assert!(
+            session.tool_answered(1, Ok("second".to_owned()), 2),
+            "the turn can go on"
+        );
+        let results = session.chat.last().expect("results");
+        assert_eq!(results.tools[0].answer.as_deref(), Some("first"));
+        assert_eq!(results.tools[1].answer.as_deref(), Some("second"));
     }
 
     #[test]

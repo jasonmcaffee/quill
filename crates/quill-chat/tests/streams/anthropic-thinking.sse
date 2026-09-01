@@ -1,0 +1,27 @@
+event: content_block_start
+data: {"index":0,"content_block":{"type":"thinking","thinking":""}}
+
+event: content_block_delta
+data: {"index":0,"delta":{"type":"thinking_delta","thinking":"Let me"}}
+
+event: content_block_delta
+data: {"index":0,"delta":{"type":"thinking_delta","thinking":" see."}}
+
+event: content_block_delta
+data: {"index":0,"delta":{"type":"signature_delta","signature":"sig-abc"}}
+
+event: content_block_stop
+data: {"index":0}
+
+event: content_block_start
+data: {"index":1,"content_block":{"type":"redacted_thinking","data":"opaque"}}
+
+event: content_block_stop
+data: {"index":1}
+
+event: message_delta
+data: {"delta":{"stop_reason":"end_turn"}}
+
+event: message_stop
+data: {}
+

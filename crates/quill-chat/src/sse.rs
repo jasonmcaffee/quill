@@ -21,6 +21,14 @@ pub struct Event {
     pub data: String,
 }
 
+/// The most one event may be before the stream is treated as broken.
+///
+/// **A server can otherwise grow this without limit by never sending a blank line**, and the process
+/// ends when the allocator gives up. Four megabytes is far more than any event either API sends — the
+/// largest is a whole tool call's arguments — and small enough that a stream which never frames is
+/// stopped in a second rather than in a minute.
+pub const LARGEST_EVENT: usize = 4 * 1024 * 1024;
+
 /// A buffer that turns bytes into events.
 #[derive(Debug, Default)]
 pub struct Reader {
@@ -34,6 +42,11 @@ pub struct Reader {
 impl Reader {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Whether the stream has gone past [`LARGEST_EVENT`] with no event boundary in it.
+    pub fn is_overlong(&self) -> bool {
+        self.buffer.len() > LARGEST_EVENT
     }
 
     /// Feed in what just arrived, and take whatever events are now whole.
@@ -69,17 +82,18 @@ impl Reader {
     fn next_boundary(&self) -> Option<Boundary> {
         let mut at = 0;
         while at + 1 < self.buffer.len() {
-            if self.buffer[at] == b'\n' && self.buffer[at + 1] == b'\n' {
-                return Some(Boundary {
-                    length: at,
-                    taken: at + 2,
-                });
-            }
-            if at + 3 < self.buffer.len() && &self.buffer[at..at + 4] == b"\r\n\r\n" {
-                return Some(Boundary {
-                    length: at,
-                    taken: at + 4,
-                });
+            // **Two line endings of any spelling**, which is what the specification means by a blank
+            // line: a newline, a carriage return and newline, and a lone carriage return are all one,
+            // and they may be mixed. An earlier version looked for the first two only, so a stream
+            // that used a lone carriage return — or that a proxy had re-wrapped to one — never framed
+            // an event at all and the whole answer arrived as nothing.
+            if let Some(first) = ending_at(&self.buffer, at) {
+                if let Some(second) = ending_at(&self.buffer, at + first) {
+                    return Some(Boundary {
+                        length: at,
+                        taken: at + first + second,
+                    });
+                }
             }
             at += 1;
         }
@@ -93,6 +107,17 @@ struct Boundary {
     taken: usize,
 }
 
+/// How many bytes of line ending start at `at`, or nothing when none does.
+///
+/// The pair is looked for before the lone carriage return, so `\r\n` is never read as two endings.
+fn ending_at(buffer: &[u8], at: usize) -> Option<usize> {
+    match buffer.get(at)? {
+        b'\r' if buffer.get(at + 1) == Some(&b'\n') => Some(2),
+        b'\r' | b'\n' => Some(1),
+        _ => None,
+    }
+}
+
 /// One block of `field: value` lines as an event, or `None` when it holds no data.
 ///
 /// An event with no `data:` is a comment or a keep-alive. Both APIs send keep-alives on a slow
@@ -100,8 +125,9 @@ struct Boundary {
 fn parse(block: &str) -> Option<Event> {
     let mut name = String::new();
     let mut data: Option<String> = None;
-    for line in block.lines() {
-        let line = line.strip_suffix('\r').unwrap_or(line);
+    // Split on every spelling of a line ending rather than on `\n` alone, for the reason
+    // `next_boundary` gives: a lone `\r` is a line ending and `str::lines` does not treat it as one.
+    for line in block.split(['\n', '\r']) {
         let Some((field, value)) = line.split_once(':') else {
             continue;
         };

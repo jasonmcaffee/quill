@@ -39,15 +39,37 @@ pub enum Reply {
     Started {
         model: String,
     },
+    /// The command-line agent's own session id, which the next turn is resumed with.
+    ///
+    /// Only a program sends this. It is a reply rather than a value read off the thread afterwards
+    /// because the turn may be abandoned half way through and the session is still worth keeping —
+    /// the agent has one whether or not Quill waited for the answer.
+    Session(String),
     /// More words.
     Text(String),
     /// More reasoning, which is not the answer and is not drawn as one.
     Thinking(String),
+    /// A whole reasoning block, exactly as it arrived, to be sent back untouched.
+    ///
+    /// See `Message::reasoning`: these are signed, and a continuation whose blocks were rebuilt out
+    /// of the text is refused.
+    Reasoning(Value),
     /// A tool the model wants run, complete — its arguments have stopped arriving.
     ToolCall {
         id: String,
         name: String,
         arguments: String,
+    },
+    /// A tool the **agent ran itself**, and what it got.
+    ///
+    /// Only a command-line agent sends this: `claude` and `codex` have their own tools, their own
+    /// sandbox and their own permission model, so Quill does not run anything on their behalf — what
+    /// it does with a tool call is *show* it, and this is the other half of showing it. An HTTP
+    /// endpoint never sends one, because there the model asks and Quill answers.
+    ToolAnswer {
+        id: String,
+        answer: String,
+        failed: bool,
     },
     Usage {
         input: u64,
@@ -87,6 +109,12 @@ pub fn request(
     match provider.wire {
         Wire::OpenAi => openai_request(provider, chat, system, tools, stream),
         Wire::Anthropic => anthropic_request(provider, chat, system, tools, stream),
+        Wire::Responses => responses_request(provider, chat, system, tools, stream),
+        // **A program has no wire request at all**, which is the point of it: `agent::command_line`
+        // builds a command line instead, and everything about a body, a header and a URL is
+        // irrelevant. An empty object rather than a panic, because a caller that got here has made a
+        // mistake and a window that fell over would be a worse way to learn about it.
+        Wire::ClaudeCli | Wire::CodexCli => Value::Null,
     }
 }
 
@@ -280,20 +308,26 @@ fn anthropic_request(
 }
 
 fn anthropic_content(message: &Message) -> Value {
-    let mut blocks: Vec<Value> = message
-        .parts
-        .iter()
-        .filter_map(|part| match part {
-            // An empty text block is refused by the API, and a message that was only a picture has
-            // one, so it is dropped rather than sent.
-            Part::Text(text) if text.is_empty() => None,
-            Part::Text(text) => Some(json!({ "type": "text", "text": text })),
-            Part::Picture { media, bytes, .. } => Some(json!({
-                "type": "image",
-                "source": { "type": "base64", "media_type": media, "data": base64::encode(bytes) },
-            })),
-        })
-        .collect();
+    // **The reasoning first, exactly as it arrived.** Anthropic wants the thinking blocks of a turn
+    // back, in order, ahead of everything else, and verifies the signature it put on each one — so
+    // they are replayed as values rather than rebuilt. See `Message::reasoning`.
+    let mut blocks: Vec<Value> = message.reasoning.clone();
+    blocks.extend(
+        message
+            .parts
+            .iter()
+            .filter_map(|part| match part {
+                // An empty text block is refused by the API, and a message that was only a picture has
+                // one, so it is dropped rather than sent.
+                Part::Text(text) if text.is_empty() => None,
+                Part::Text(text) => Some(json!({ "type": "text", "text": text })),
+                Part::Picture { media, bytes, .. } => Some(json!({
+                    "type": "image",
+                    "source": { "type": "base64", "media_type": media, "data": base64::encode(bytes) },
+                })),
+            })
+            .collect::<Vec<Value>>(),
+    );
     for tool in &message.tools {
         blocks.push(json!({
             "type": "tool_use",
@@ -303,6 +337,122 @@ fn anthropic_content(message: &Message) -> Value {
         }));
     }
     Value::Array(blocks)
+}
+
+// ---------------------------------------------------------------------------- OpenAI's Responses API
+
+/// The body to POST to `/v1/responses`.
+///
+/// **A flat list of items rather than a list of messages**, which is the shape difference that
+/// matters: a tool call the model made and the answer to it are items in their own right, beside the
+/// messages, rather than a field on one message and a message of another role. The system prompt is
+/// `instructions`, a field of its own, as it is for Anthropic.
+fn responses_request(
+    provider: &Provider,
+    chat: &Conversation,
+    system: &str,
+    tools: &[Tool],
+    stream: bool,
+) -> Value {
+    let mut input = Vec::new();
+    for message in &chat.messages {
+        match message.role {
+            Role::Tool => {
+                for tool in &message.tools {
+                    input.push(json!({
+                        "type": "function_call_output",
+                        "call_id": tool.id,
+                        "output": tool.answer.clone().unwrap_or_default(),
+                    }));
+                }
+            }
+            Role::User | Role::Assistant => {
+                // The reasoning first, exactly as it arrived, for the reason `anthropic_content`
+                // gives: with `store: false` there is no copy on the server to carry on from.
+                for block in &message.reasoning {
+                    input.push(block.clone());
+                }
+                if message.has_content() {
+                    let content = responses_content(message);
+                    if !content.as_array().map(Vec::is_empty).unwrap_or(true) {
+                        input.push(json!({
+                            "type": "message",
+                            "role": message.role.wire_name(),
+                            "content": content,
+                        }));
+                    }
+                }
+                // The call the model made, replayed as its own item so the output above can name it.
+                for tool in &message.tools {
+                    input.push(json!({
+                        "type": "function_call",
+                        "call_id": tool.id,
+                        "name": tool.name,
+                        "arguments": tool.arguments,
+                    }));
+                }
+            }
+        }
+    }
+    let mut body = json!({
+        "model": provider.model,
+        // Its own name for the budget. `max_tokens` is silently ignored here, which is the sort of
+        // difference that looks like it works until an answer is cut off at the model's own default.
+        "max_output_tokens": provider.max_tokens,
+        "input": input,
+        "stream": stream,
+        // Off, because Quill has nothing to do with a conversation the server is keeping: the
+        // transcript is `Conversation` and it is sent whole every turn, which is what the other two
+        // shapes do. Left on, the server would keep a copy of every conversation somebody has here.
+        "store": false,
+    });
+    if !system.trim().is_empty() {
+        body["instructions"] = Value::String(system.to_owned());
+    }
+    if !tools.is_empty() {
+        body["tools"] = Value::Array(
+            tools
+                .iter()
+                .map(|tool| {
+                    // Flat, where the chat-completions shape nests the same three fields under
+                    // `function`.
+                    json!({
+                        "type": "function",
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": tool.schema,
+                    })
+                })
+                .collect(),
+        );
+    }
+    body
+}
+
+/// A message's content in the Responses shape.
+///
+/// The part names differ by **who said it**: what goes up is `input_text` and `input_image`, and what
+/// came back is `output_text`. Sending an assistant message as `input_text` is refused.
+fn responses_content(message: &Message) -> Value {
+    let mine = message.role == Role::User;
+    Value::Array(
+        message
+            .parts
+            .iter()
+            .filter_map(|part| match part {
+                Part::Text(text) if text.trim().is_empty() => None,
+                Part::Text(text) => Some(match mine {
+                    true => json!({ "type": "input_text", "text": text }),
+                    false => json!({ "type": "output_text", "text": text, "annotations": [] }),
+                }),
+                // A picture only ever goes up, so there is no output form of one to write.
+                Part::Picture { media, bytes, .. } => Some(json!({
+                    "type": "input_image",
+                    "image_url": base64::to_data_url(media, bytes),
+                })),
+            })
+            .collect(),
+    )
 }
 
 // ---------------------------------------------------------------------------------- reading
@@ -319,10 +469,17 @@ pub struct Decoder {
     /// A list of pairs rather than a map, because there are never more than a handful and the order
     /// they were opened in is the order they should be run in.
     building: Vec<(usize, Building)>,
-    /// Which content block indices are `thinking` rather than `text`, for the Anthropic shape.
-    thinking: Vec<usize>,
+    /// The reasoning blocks being built, by the index the protocol files them under.
+    thinking: Vec<(usize, Reasoning)>,
     /// Whether `Finished` has been emitted, so a `[DONE]` after a `finish_reason` does not emit two.
     finished: bool,
+    /// Whether the server said the answer failed.
+    ///
+    /// **A stream that reports an error still ends**, and without this the end was reported as an
+    /// ordinary stop: `finish` emitted `Finished { reason: "stop" }` a moment after `Failed`, and the
+    /// session took the later one — so a rate limit or an overloaded model came out as a short answer
+    /// with no reason attached. The end of a failed stream is not news.
+    failed: bool,
     /// Whether `Started` has been emitted.
     ///
     /// **Real OpenAI puts `model` in every chunk**, so without this the answer began once a token. It
@@ -338,6 +495,34 @@ struct Building {
     arguments: String,
 }
 
+/// A reasoning block being built, kept as its own fields so it can be put back together exactly.
+///
+/// The signature is what makes this worth doing: Anthropic verifies it over the block it sent, so a
+/// block rebuilt out of the displayed text is refused. See `Message::reasoning`.
+#[derive(Debug, Default, Clone)]
+struct Reasoning {
+    /// `thinking` or `redacted_thinking`.
+    kind: String,
+    text: String,
+    signature: String,
+    /// The opaque payload of a `redacted_thinking` block, which cannot be reconstructed at all.
+    data: String,
+}
+
+impl Reasoning {
+    /// The block as it will go back up, which is the block that came down.
+    fn to_value(&self) -> Value {
+        match self.kind.as_str() {
+            "redacted_thinking" => json!({ "type": "redacted_thinking", "data": self.data }),
+            _ => json!({
+                "type": "thinking",
+                "thinking": self.text,
+                "signature": self.signature,
+            }),
+        }
+    }
+}
+
 impl Decoder {
     pub fn new(wire: Wire) -> Self {
         Self {
@@ -346,6 +531,7 @@ impl Decoder {
             thinking: Vec::new(),
             finished: false,
             started: false,
+            failed: false,
         }
     }
 
@@ -354,23 +540,48 @@ impl Decoder {
         match self.wire {
             Wire::OpenAi => self.openai_event(event),
             Wire::Anthropic => self.anthropic_event(event),
+            Wire::Responses => self.responses_event(event),
+            // Read by `agent::Decoder`, which owns one of these for the events `claude` nests inside
+            // its own envelope and never hands it one of its own.
+            Wire::ClaudeCli | Wire::CodexCli => Vec::new(),
         }
     }
 
-    /// What is left when the stream ends: any tool call still open, and a `Finished` if none arrived.
+    /// The server said the answer is over: `[DONE]`, `message_stop`, `response.completed`.
+    ///
+    /// Anything still being built is complete, because the server would not have said this otherwise.
+    fn done(&mut self, reason: &str) -> Vec<Reply> {
+        if self.failed || self.finished {
+            return Vec::new();
+        }
+        let mut replies = self.flush_tools();
+        self.finished = true;
+        replies.push(Reply::Finished {
+            reason: reason.to_owned(),
+        });
+        replies
+    }
+
+    /// The **socket** closed, which is not the same thing as the server saying it had finished.
     ///
     /// A connection cut in the middle of an answer is a real thing, and the honest report of it is
-    /// the text that did arrive plus a finish that says it was cut short — not a silent stop that
-    /// looks exactly like a model choosing to say nothing more.
+    /// the text that did arrive and a failure saying the connection ended — not a silent `stop` that
+    /// looks exactly like a model choosing to say nothing more. That is what this used to do, and it
+    /// was worse than it sounds: it also **flushed a half-built tool call**, whose truncated JSON was
+    /// then read as an empty object, so a stream cut in the middle of `{"path":"src/` could run the
+    /// command with its defaults instead of refusing.
     pub fn finish(&mut self) -> Vec<Reply> {
-        let mut replies = self.flush_tools();
-        if !self.finished {
-            self.finished = true;
-            replies.push(Reply::Finished {
-                reason: "stop".to_owned(),
-            });
+        // Whatever was half-built goes, either way: a turn that ended before the server said so holds
+        // no complete tool call, and one that already failed has nothing to run.
+        self.building.clear();
+        self.thinking.clear();
+        if self.failed || self.finished {
+            return Vec::new();
         }
-        replies
+        self.failed = true;
+        vec![Reply::Failed(
+            "the connection ended before the answer did. What is above is what arrived.".to_owned(),
+        )]
     }
 
     /// Every tool call that has stopped arriving, in the order they were opened.
@@ -392,6 +603,24 @@ impl Decoder {
             .collect()
     }
 
+    /// The reasoning block being built at `index`, made if it is not there.
+    fn reasoning_slot(&mut self, index: usize, kind: &str) -> &mut Reasoning {
+        if !self.thinking.iter().any(|(at, _)| *at == index) {
+            self.thinking.push((
+                index,
+                Reasoning {
+                    kind: kind.to_owned(),
+                    ..Reasoning::default()
+                },
+            ));
+        }
+        self.thinking
+            .iter_mut()
+            .find(|(at, _)| *at == index)
+            .map(|(_, one)| one)
+            .expect("just inserted")
+    }
+
     fn slot(&mut self, index: usize) -> &mut Building {
         if !self.building.iter().any(|(at, _)| *at == index) {
             self.building.push((index, Building::default()));
@@ -404,8 +633,10 @@ impl Decoder {
     }
 
     fn openai_event(&mut self, event: &Event) -> Vec<Reply> {
+        // `[DONE]` is the **server** saying the answer is over, which is a clean end. The socket
+        // closing without it is not, and `finish` is what says so.
         if event.data.trim() == "[DONE]" {
-            return self.finish();
+            return self.done("stop");
         }
         let Ok(value) = serde_json::from_str::<Value>(&event.data) else {
             return Vec::new();
@@ -413,6 +644,7 @@ impl Decoder {
         // An error can arrive as an event rather than as a status code, which is what a gateway
         // does when it has already sent its headers.
         if let Some(message) = error_message(&value) {
+            self.failed = true;
             return vec![Reply::Failed(message)];
         }
         let mut replies = Vec::new();
@@ -470,11 +702,119 @@ impl Decoder {
         replies
     }
 
+    /// One event of a `/v1/responses` stream.
+    ///
+    /// **Named events over a flat item list**, which is a third arrangement again: text arrives on
+    /// `response.output_text.delta`, a tool call is announced whole on `response.output_item.added`
+    /// and its arguments then arrive as fragments, and the usage comes with `response.completed`.
+    fn responses_event(&mut self, event: &Event) -> Vec<Reply> {
+        let Ok(value) = serde_json::from_str::<Value>(&event.data) else {
+            return Vec::new();
+        };
+        match event.name.as_str() {
+            "response.created" | "response.in_progress" => {
+                let model = value["response"]["model"].as_str().unwrap_or_default().to_owned();
+                match self.started {
+                    true => Vec::new(),
+                    false => {
+                        self.started = true;
+                        vec![Reply::Started { model }]
+                    }
+                }
+            }
+            "response.output_text.delta" => match value["delta"].as_str() {
+                Some(text) if !text.is_empty() => vec![Reply::Text(text.to_owned())],
+                _ => Vec::new(),
+            },
+            // The model's own summary of its reasoning, which is not the answer and is not drawn as
+            // one — the same place Anthropic's `thinking_delta` goes.
+            "response.reasoning_summary_text.delta" => match value["delta"].as_str() {
+                Some(text) if !text.is_empty() => vec![Reply::Thinking(text.to_owned())],
+                _ => Vec::new(),
+            },
+            "response.output_item.added" => {
+                let item = &value["item"];
+                if item["type"] == "function_call" {
+                    // Filed under the **output index**, because that is what the argument fragments
+                    // carry; the `call_id` is the model's own and is what the answer has to name.
+                    let index = value["output_index"].as_u64().unwrap_or(0) as usize;
+                    let slot = self.slot(index);
+                    slot.id = item["call_id"].as_str().unwrap_or_default().to_owned();
+                    slot.name = item["name"].as_str().unwrap_or_default().to_owned();
+                    // A call may arrive with its arguments already whole, which is what a cached
+                    // response looks like.
+                    if let Some(arguments) = item["arguments"].as_str() {
+                        slot.arguments.push_str(arguments);
+                    }
+                }
+                Vec::new()
+            }
+            "response.function_call_arguments.delta" => {
+                let index = value["output_index"].as_u64().unwrap_or(0) as usize;
+                let fragment = value["delta"].as_str().unwrap_or_default().to_owned();
+                self.slot(index).arguments.push_str(&fragment);
+                Vec::new()
+            }
+            "response.output_item.done" => {
+                // **A reasoning item is kept whole and replayed**, for the same reason Anthropic's
+                // thinking blocks are: with `store: false` the server keeps nothing, so a continuation
+                // that dropped them would ask the model to carry on from work it can no longer see.
+                if value["item"]["type"] == "reasoning" {
+                    return vec![Reply::Reasoning(value["item"].clone())];
+                }
+                if value["item"]["type"] != "function_call" {
+                    return Vec::new();
+                }
+                let index = value["output_index"].as_u64().unwrap_or(0) as usize;
+                let Some(position) = self.building.iter().position(|(at, _)| *at == index) else {
+                    return Vec::new();
+                };
+                let (_, one) = self.building.remove(position);
+                // The finished item carries the whole of the arguments, so it is preferred over what
+                // was accumulated: a stream that sent no fragments at all still produces a call.
+                let arguments = match value["item"]["arguments"].as_str() {
+                    Some(whole) if !whole.is_empty() => whole.to_owned(),
+                    _ => one.arguments,
+                };
+                match one.name.is_empty() {
+                    true => Vec::new(),
+                    false => vec![Reply::ToolCall {
+                        id: one.id,
+                        name: one.name,
+                        arguments,
+                    }],
+                }
+            }
+            "response.completed" | "response.incomplete" => {
+                let mut replies = Vec::new();
+                if let Some(usage) = usage_of(&value["response"]["usage"], "input_tokens", "output_tokens") {
+                    replies.push(usage);
+                }
+                // `incomplete` carries why it stopped, which is nearly always the token budget.
+                let reason = value["response"]["incomplete_details"]["reason"]
+                    .as_str()
+                    .unwrap_or("stop")
+                    .to_owned();
+                replies.extend(self.done(&reason));
+                replies
+            }
+            "response.failed" | "error" => {
+                self.failed = true;
+                let said = error_message(&value["response"])
+                    .or_else(|| error_message(&value))
+                    .unwrap_or_else(|| event.data.clone());
+                vec![Reply::Failed(said)]
+            }
+            _ => Vec::new(),
+        }
+    }
+
     fn anthropic_event(&mut self, event: &Event) -> Vec<Reply> {
         let Ok(value) = serde_json::from_str::<Value>(&event.data) else {
             return Vec::new();
         };
         if event.name == "error" || value["type"] == "error" {
+            self.failed = true;
             return vec![Reply::Failed(
                 error_message(&value).unwrap_or_else(|| event.data.clone()),
             )];
@@ -499,7 +839,16 @@ impl Decoder {
                         slot.id = block["id"].as_str().unwrap_or_default().to_owned();
                         slot.name = block["name"].as_str().unwrap_or_default().to_owned();
                     }
-                    Some("thinking") | Some("redacted_thinking") => self.thinking.push(index),
+                    Some(kind @ ("thinking" | "redacted_thinking")) => {
+                        let data = block["data"].as_str().unwrap_or_default().to_owned();
+                        let slot = self.reasoning_slot(index, kind);
+                        slot.data = data;
+                        // A `thinking` block may open with text already in it, and a
+                        // `redacted_thinking` one arrives whole — it has no deltas at all.
+                        if let Some(text) = block["thinking"].as_str() {
+                            slot.text.push_str(text);
+                        }
+                    }
                     // A `text` block may open with text already in it, which is what a cached
                     // prefix looks like.
                     _ => {
@@ -520,9 +869,22 @@ impl Decoder {
                         _ => Vec::new(),
                     },
                     Some("thinking_delta") => match delta["thinking"].as_str() {
-                        Some(text) if !text.is_empty() => vec![Reply::Thinking(text.to_owned())],
+                        Some(text) if !text.is_empty() => {
+                            self.reasoning_slot(index, "thinking").text.push_str(text);
+                            vec![Reply::Thinking(text.to_owned())]
+                        }
                         _ => Vec::new(),
                     },
+                    // **The signature, which is the whole reason the block is kept.** It arrives after
+                    // the text and Anthropic verifies it over the block; a continuation whose blocks
+                    // were rebuilt out of the displayed words is refused.
+                    Some("signature_delta") => {
+                        let signature = delta["signature"].as_str().unwrap_or_default().to_owned();
+                        self.reasoning_slot(index, "thinking")
+                            .signature
+                            .push_str(&signature);
+                        Vec::new()
+                    }
                     Some("input_json_delta") => {
                         let fragment = delta["partial_json"].as_str().unwrap_or_default().to_owned();
                         self.slot(index).arguments.push_str(&fragment);
@@ -532,6 +894,11 @@ impl Decoder {
                 }
             }
             "content_block_stop" => {
+                // A reasoning block that has stopped is whole, and goes up with the next request.
+                if let Some(at) = self.thinking.iter().position(|(at, _)| *at == index) {
+                    let (_, one) = self.thinking.remove(at);
+                    return vec![Reply::Reasoning(one.to_value())];
+                }
                 // **Here a tool call really is complete**, one block at a time, which is why this
                 // shape can report a call while a later block is still arriving.
                 let Some(position) = self.building.iter().position(|(at, _)| *at == index) else {
@@ -560,10 +927,7 @@ impl Decoder {
                 }
                 replies
             }
-            "message_stop" => match self.finished {
-                true => Vec::new(),
-                false => self.finish(),
-            },
+            "message_stop" => self.done("stop"),
             _ => Vec::new(),
         }
     }
@@ -624,6 +988,9 @@ pub fn whole(wire: Wire, body: &str) -> Vec<Reply> {
     }
     let mut replies = Vec::new();
     match wire {
+        // A program is always streamed — there is no second, whole-answer mode to fall back to,
+        // because its answer arrives as lines whether or not anybody wanted them one at a time.
+        Wire::ClaudeCli | Wire::CodexCli => {}
         Wire::OpenAi => {
             if let Some(model) = value["model"].as_str() {
                 replies.push(Reply::Started {
@@ -657,6 +1024,50 @@ pub fn whole(wire: Wire, body: &str) -> Vec<Reply> {
             }
             replies.push(Reply::Finished {
                 reason: choice["finish_reason"].as_str().unwrap_or("stop").to_owned(),
+            });
+        }
+        Wire::Responses => {
+            if let Some(model) = value["model"].as_str() {
+                replies.push(Reply::Started {
+                    model: model.to_owned(),
+                });
+            }
+            // A flat list of items rather than a message with fields on it, which is the same
+            // difference the streamed form has.
+            for item in value["output"].as_array().map(Vec::as_slice).unwrap_or_default() {
+                match item["type"].as_str() {
+                    Some("message") => {
+                        for part in item["content"].as_array().map(Vec::as_slice).unwrap_or_default() {
+                            if let Some(text) = part["text"].as_str() {
+                                if !text.is_empty() {
+                                    replies.push(Reply::Text(text.to_owned()));
+                                }
+                            }
+                        }
+                    }
+                    Some("function_call") => replies.push(Reply::ToolCall {
+                        id: item["call_id"].as_str().unwrap_or_default().to_owned(),
+                        name: item["name"].as_str().unwrap_or_default().to_owned(),
+                        arguments: item["arguments"].as_str().unwrap_or("{}").to_owned(),
+                    }),
+                    Some("reasoning") => {
+                        for part in item["summary"].as_array().map(Vec::as_slice).unwrap_or_default() {
+                            if let Some(text) = part["text"].as_str() {
+                                replies.push(Reply::Thinking(text.to_owned()));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(usage) = usage_of(&value["usage"], "input_tokens", "output_tokens") {
+                replies.push(usage);
+            }
+            replies.push(Reply::Finished {
+                reason: value["incomplete_details"]["reason"]
+                    .as_str()
+                    .unwrap_or("stop")
+                    .to_owned(),
             });
         }
         Wire::Anthropic => {
@@ -717,6 +1128,45 @@ mod tests {
         replies
     }
 
+    /// An endpoint of each shape, so a test says which one it is about.
+    ///
+    /// **Built rather than looked up in `Provider::defaults`.** The two rows the ticket names run a
+    /// command line rather than sending to an address, so the shipped list holds one HTTP row and
+    /// this file is about the three HTTP shapes — an endpoint pointed at Anthropic's API is
+    /// something a person can still configure, and this is what it looks like when they have.
+    fn endpoint(wire: Wire, url: &str, model: &str) -> Provider {
+        Provider {
+            name: wire.name().to_owned(),
+            wire,
+            command: String::new(),
+            url: url.to_owned(),
+            model: model.to_owned(),
+            key_env: String::new(),
+            key_entry: String::new(),
+            max_tokens: crate::provider::DEFAULT_MAX_TOKENS,
+        }
+    }
+    fn openai() -> Provider {
+        Provider::defaults()
+            .into_iter()
+            .find(|one| one.wire == Wire::OpenAi)
+            .expect("an openai row")
+    }
+    fn anthropic() -> Provider {
+        endpoint(
+            Wire::Anthropic,
+            "https://api.anthropic.com/v1/messages",
+            "claude-opus-5",
+        )
+    }
+    fn responses() -> Provider {
+        endpoint(
+            Wire::Responses,
+            "https://api.openai.com/v1/responses",
+            "gpt-5-codex",
+        )
+    }
+
     fn a_chat() -> Conversation {
         let mut chat = Conversation::new("c1", "claude");
         chat.push(Message::said(1, Role::User, "Why?"));
@@ -725,9 +1175,9 @@ mod tests {
 
     #[test]
     fn the_openai_request_is_what_that_api_documents() {
-        let provider = Provider::defaults()[1].clone();
+        let provider = openai();
         let body = request(&provider, &a_chat(), "You are in Quill.", &[], true);
-        assert_eq!(body["model"], "gpt-5-codex");
+        assert_eq!(body["model"], "local");
         assert_eq!(body["stream"], true);
         assert_eq!(
             body["stream_options"]["include_usage"], true,
@@ -744,7 +1194,7 @@ mod tests {
 
     #[test]
     fn the_anthropic_request_puts_the_system_prompt_in_a_field_of_its_own() {
-        let provider = Provider::defaults()[0].clone();
+        let provider = anthropic();
         let body = request(&provider, &a_chat(), "You are in Quill.", &[], true);
         assert_eq!(body["system"], "You are in Quill.");
         assert_eq!(
@@ -769,7 +1219,7 @@ mod tests {
         });
         chat.push(message);
 
-        let openai = request(&Provider::defaults()[1], &chat, "", &[], true);
+        let openai = request(&openai(), &chat, "", &[], true);
         let parts = openai["messages"][0]["content"]
             .as_array()
             .expect("an array once there is a picture");
@@ -777,7 +1227,7 @@ mod tests {
         assert_eq!(parts[1]["type"], "image_url");
         assert_eq!(parts[1]["image_url"]["url"], "data:image/png;base64,AQID");
 
-        let anthropic = request(&Provider::defaults()[0], &chat, "", &[], true);
+        let anthropic = request(&anthropic(), &chat, "", &[], true);
         let blocks = anthropic["messages"][0]["content"].as_array().expect("blocks");
         assert_eq!(blocks[1]["type"], "image");
         assert_eq!(blocks[1]["source"]["type"], "base64");
@@ -809,7 +1259,7 @@ mod tests {
         results.tools.push(second);
         chat.push(results);
 
-        let openai = request(&Provider::defaults()[1], &chat, "", &[], true);
+        let openai = request(&openai(), &chat, "", &[], true);
         let messages = openai["messages"].as_array().expect("messages");
         assert_eq!(messages.len(), 4, "user, assistant, and one tool message each");
         assert_eq!(messages[1]["tool_calls"][0]["function"]["name"], "git.status");
@@ -821,7 +1271,7 @@ mod tests {
         assert_eq!(messages[2]["tool_call_id"], "t1");
         assert_eq!(messages[3]["content"], "no such file");
 
-        let anthropic = request(&Provider::defaults()[0], &chat, "", &[], true);
+        let anthropic = request(&anthropic(), &chat, "", &[], true);
         let messages = anthropic["messages"].as_array().expect("messages");
         assert_eq!(messages.len(), 3, "the two results are one user message");
         assert_eq!(messages[1]["content"][1]["type"], "tool_use");
@@ -844,7 +1294,7 @@ mod tests {
         chat.push(failed);
         chat.push(Message::said(3, Role::User, "Are you there now?"));
 
-        let openai = request(&Provider::defaults()[1], &chat, "", &[], true);
+        let openai = request(&openai(), &chat, "", &[], true);
         let roles: Vec<&str> = openai["messages"]
             .as_array()
             .expect("messages")
@@ -852,7 +1302,7 @@ mod tests {
             .filter_map(|one| one["role"].as_str())
             .collect();
         assert_eq!(roles, ["user", "user"], "the failed turn is not on the wire");
-        let anthropic = request(&Provider::defaults()[0], &chat, "", &[], true);
+        let anthropic = request(&anthropic(), &chat, "", &[], true);
         assert_eq!(anthropic["messages"].as_array().expect("messages").len(), 2);
     }
 
@@ -863,11 +1313,11 @@ mod tests {
             description: "What git says.".to_owned(),
             schema: json!({ "type": "object", "properties": {} }),
         }];
-        let openai = request(&Provider::defaults()[1], &a_chat(), "", &tools, true);
+        let openai = request(&openai(), &a_chat(), "", &tools, true);
         assert_eq!(openai["tools"][0]["type"], "function");
         assert_eq!(openai["tools"][0]["function"]["name"], "git_status");
         assert_eq!(openai["tools"][0]["function"]["parameters"]["type"], "object");
-        let anthropic = request(&Provider::defaults()[0], &a_chat(), "", &tools, true);
+        let anthropic = request(&anthropic(), &a_chat(), "", &tools, true);
         assert_eq!(anthropic["tools"][0]["name"], "git_status");
         assert_eq!(anthropic["tools"][0]["input_schema"]["type"], "object");
     }
@@ -907,9 +1357,17 @@ data: [DONE]\n\n";
 data: {\"model\":\"gpt-5\",\"choices\":[{\"delta\":{\"content\":\"b\"}}]}\n\n\
 data: {\"model\":\"gpt-5\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
         let replies = decode(Wire::OpenAi, stream);
-        let began = replies.iter().filter(|reply| matches!(reply, Reply::Started { .. })).count();
+        let began = replies
+            .iter()
+            .filter(|reply| matches!(reply, Reply::Started { .. }))
+            .count();
         assert_eq!(began, 1, "{replies:?}");
-        assert_eq!(replies[0], Reply::Started { model: "gpt-5".to_owned() });
+        assert_eq!(
+            replies[0],
+            Reply::Started {
+                model: "gpt-5".to_owned()
+            }
+        );
     }
 
     #[test]
@@ -1013,21 +1471,51 @@ event: content_block_delta\ndata: {\"index\":1,\"delta\":{\"type\":\"text_delta\
     }
 
     #[test]
-    fn a_stream_cut_off_mid_answer_still_ends_the_turn() {
-        // A connection dropped after two tokens is a real thing, and a silent stop looks exactly
-        // like a model choosing to say nothing more.
+    fn a_stream_that_reported_an_error_does_not_then_report_an_ordinary_end() {
+        // The stream still closes after the error, and `finish` used to call that a stop — which the
+        // session took, so a rate limit came out as a short answer with nothing to say why.
+        let mut decoder = Decoder::new(Wire::Anthropic);
+        let mut replies = Vec::new();
+        for event in events(
+            b"event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Half\"}}\n\n\
+event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n",
+        ) {
+            replies.extend(decoder.event(&event));
+        }
+        replies.extend(decoder.finish());
+        assert_eq!(replies[0], Reply::Text("Half".to_owned()));
+        assert_eq!(
+            replies[1],
+            Reply::Failed("overloaded_error: Overloaded".to_owned())
+        );
+        assert_eq!(replies.len(), 2, "nothing after the failure: {replies:?}");
+    }
+
+    #[test]
+    fn a_stream_cut_off_mid_answer_is_a_failure_rather_than_an_ordinary_stop() {
+        // A connection dropped after two tokens is a real thing, and calling it a stop looks exactly
+        // like a model choosing to say nothing more. Worse, it used to **flush a half-built tool
+        // call**, whose truncated JSON was then read as an empty object — so a cut in the middle of a
+        // path could run the command with its defaults.
         let mut decoder = Decoder::new(Wire::OpenAi);
         let mut replies = Vec::new();
-        for event in events(b"data: {\"choices\":[{\"delta\":{\"content\":\"half\"}}]}\n\n") {
+        let stream = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"half\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c\",\"function\":{\"name\":\"quill_editor\",\"arguments\":\"{\\\"pa\"}}]}}]}\n\n",
+        );
+        for event in events(stream.as_bytes()) {
             replies.extend(decoder.event(&event));
         }
         replies.extend(decoder.finish());
         assert_eq!(replies[0], Reply::Text("half".to_owned()));
+        assert!(
+            matches!(&replies[1], Reply::Failed(said) if said.contains("connection ended")),
+            "{replies:?}"
+        );
         assert_eq!(
-            replies[1],
-            Reply::Finished {
-                reason: "stop".to_owned()
-            }
+            replies.len(),
+            2,
+            "the half-built call is not offered: {replies:?}"
         );
     }
 

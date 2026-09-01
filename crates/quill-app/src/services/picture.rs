@@ -177,10 +177,6 @@ impl Picture {
     }
 }
 
-/// Read a file into the pixels egui wants, saying in words why not when it cannot.
-///
-/// The reason is the one the decoder gave. Nothing here invents a message, which is the same rule
-/// `quill-git` follows: the library knows why better than Quill does.
 /// Put a picture on the graphics card, shrinking it first if the card will not hold it.
 ///
 /// Every graphics device has a largest texture it will take, and egui **panics** when it is handed
@@ -251,6 +247,35 @@ fn shrink_to_fit(image: egui::ColorImage, limit: usize) -> egui::ColorImage {
     }
 }
 
+/// The picture on the clipboard, as the media type and bytes a plugin can send.
+///
+/// **PNG, whatever was copied**, because a clipboard holds raw pixels rather than a file: what a
+/// screenshot tool put there has no format at all until something writes one, and PNG is the format
+/// both APIs take and the one that does not lose anything.
+///
+/// A refusal rather than nothing when the clipboard holds text, or a file, or is empty — a plugin
+/// that asked has to be able to say why nothing happened.
+pub fn from_the_clipboard() -> Result<serde_json::Value, String> {
+    let mut clipboard = arboard::Clipboard::new()
+        .map_err(|problem| format!("the clipboard could not be opened: {problem}"))?;
+    let held = clipboard
+        .get_image()
+        .map_err(|_| "there is no picture on the clipboard.".to_owned())?;
+    let width = held.width as u32;
+    let height = held.height as u32;
+    let buffer = image::RgbaImage::from_raw(width, height, held.bytes.into_owned())
+        .ok_or_else(|| "the picture on the clipboard could not be read.".to_owned())?;
+    let mut bytes = Vec::new();
+    image::DynamicImage::ImageRgba8(buffer)
+        .write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png)
+        .map_err(|problem| format!("the picture could not be encoded: {problem}"))?;
+    Ok(serde_json::json!({
+        "media": "image/png",
+        "name": format!("pasted-{width}x{height}.png"),
+        "data": quill_chat::base64::encode(&bytes),
+    }))
+}
+
 /// Read a picture file into pixels egui can upload.
 ///
 /// Public inside the crate because the Markdown preview decodes pictures too, and one decoder is
@@ -258,6 +283,21 @@ fn shrink_to_fit(image: egui::ColorImage, limit: usize) -> egui::ColorImage {
 pub fn decode(path: &Path) -> Result<egui::ColorImage, String> {
     let bytes = std::fs::read(path).map_err(|problem| format!("{problem}"))?;
     decode_bytes(&bytes)
+}
+
+/// How big a picture is, without decoding a pixel of it.
+///
+/// **Because the row has to be measured before it is drawn.** A message's height is worked out in
+/// `message::pieces`, which has no `egui::Ui` and so cannot upload a texture; reserving the tallest a
+/// picture may be drawn instead left a landscape photograph sitting in a column of empty pane. Every
+/// format `image` reads carries its size in a header, so this is a few dozen bytes rather than a
+/// decode, and it is cached beside the texture for the same reason the texture is.
+pub fn dimensions_of(bytes: &[u8]) -> Option<(f32, f32)> {
+    let read = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?;
+    let (width, height) = read.into_dimensions().ok()?;
+    Some((width as f32, height as f32))
 }
 
 /// The same, from bytes already in memory.

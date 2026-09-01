@@ -51,6 +51,8 @@ pub struct PluginUi {
     settings_folder: Option<PathBuf>,
     /// The project this window has open, which a provider is told about when it is opened.
     project: Option<PathBuf>,
+    /// The file showing, told to a provider when it opens. See `plugin_ui::Context::showing`.
+    showing_file: Option<PathBuf>,
     /// The folders this machine has had open, newest first, told to a provider the same way.
     recent_projects: Vec<PathBuf>,
     /// How a provider asks the window to draw again from another thread.
@@ -106,6 +108,12 @@ impl PluginUi {
 
     pub fn set_project(&mut self, project: Option<PathBuf>) {
         self.project = project;
+    }
+
+    /// Which file is showing, so a provider opened later is told at once rather than at the next
+    /// change. See `plugin_ui::Context::showing`.
+    pub fn set_showing(&mut self, showing: Option<PathBuf>) {
+        self.showing_file = showing;
     }
 
     /// The recent projects, for a provider that offers them as choices. See `plugin_ui::Context`.
@@ -227,6 +235,7 @@ impl PluginUi {
             .ok_or_else(|| format!("this version of Quill has no `{provider}` provider"))?;
         let context = Context {
             project: self.project.clone(),
+            showing: self.showing_file.clone(),
             recent_projects: self.recent_projects.clone(),
             folder: self.settings_folder.as_ref().map(|folder| folder.join(plugin)),
             wake: self.wake.clone(),

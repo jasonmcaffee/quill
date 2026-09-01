@@ -36,7 +36,11 @@ const USED: f32 = 14.0;
 /// A thumbnail of an attached picture, and the row it sits in.
 const THUMB: f32 = 38.0;
 /// The prompt well when there is one line in it, and the most it grows to.
-const PROMPT: f32 = 42.0;
+///
+/// **Sixty-eight rather than forty-two**, which is the reference's own: at forty-two the field was
+/// shallower than its own send button and the whole composer read as cramped, which is the first
+/// thing a review of the picture said about it.
+const PROMPT: f32 = 68.0;
 const PROMPT_ROWS: usize = 6;
 /// The disc at the end of the prompt.
 const SEND: f32 = 32.0;
@@ -117,7 +121,49 @@ pub fn show(mut parts: Parts<'_>, ui: &mut egui::Ui, look: &Look<'_>, area: Rect
 fn pill(parts: &Parts<'_>, ui: &mut egui::Ui, look: &Look<'_>, area: Rect) -> Vec<Act> {
     let scale = look.scale();
     let mut acts = Vec::new();
-    let buttons = 3;
+    // Three, and each is a **state** rather than a command: whether the model may drive the window, a
+    // picture waiting to go up with the next message, and whether the answer arrives a token at a
+    // time. That is `ChatTool`'s own design — a pill of states reads at a glance where a pill of
+    // buttons does not. Anything that is not a state is elsewhere: new and the history are in the
+    // header, and stop is the send button. The history had a second button here and it was taken
+    // away, because two controls doing one thing in one pane is one too many.
+    //
+    // **Two of the three are absent when the row is a command-line agent**, which is the
+    // absent-control rule rather than tidiness: `claude` and `codex` bring their own tools, so
+    // handing them Quill's would be offering a switch that does nothing, and they always stream, so
+    // a switch that turned it off would be a switch that lies. What is left is the attachment, which
+    // means the same thing either way.
+    let an_agent = parts
+        .configuration
+        .provider()
+        .is_some_and(|one| one.is_a_program());
+    let mut tools: Vec<(&str, fn(&egui::Painter, Pos2, Color32), bool, Color32, Act)> = Vec::new();
+    if !an_agent {
+        tools.push((
+            "Quill tools",
+            icon::terminal,
+            parts.configuration.tools,
+            crate::theme::color::AGENT,
+            Act::ToggleTools,
+        ));
+    }
+    tools.push((
+        "Attach a picture",
+        icon::image,
+        !parts.attachments.is_empty(),
+        look.palette.board_accent,
+        Act::Attach,
+    ));
+    if !an_agent {
+        tools.push((
+            "Stream",
+            icon::run,
+            parts.configuration.stream,
+            look.palette.attached,
+            Act::ToggleStream,
+        ));
+    }
+    let buttons = tools.len();
     let width = (TOOL * buttons as f32 + 4.0 * (buttons as f32 + 1.0)) * scale;
     let pill = Rect::from_center_size(
         Pos2::new(area.center().x, area.center().y),
@@ -136,35 +182,6 @@ fn pill(parts: &Parts<'_>, ui: &mut egui::Ui, look: &Look<'_>, area: Rect) -> Ve
         );
     }
     let mut centre = Pos2::new(pill.left() + (4.0 + TOOL / 2.0) * scale, pill.center().y);
-    // Three, and each is a **state** rather than a command: whether the model may drive the window, a
-    // picture waiting to go up with the next message, and whether the answer arrives a token at a
-    // time. That is `ChatTool`'s own design — a pill of states reads at a glance where a pill of
-    // buttons does not. Anything that is not a state is elsewhere: new and the history are in the
-    // header, and stop is the send button. The history had a second button here and it was taken
-    // away, because two controls doing one thing in one pane is one too many.
-    let tools: [(&str, fn(&egui::Painter, Pos2, Color32), bool, Color32, Act); 3] = [
-        (
-            "Quill tools",
-            icon::terminal,
-            parts.configuration.tools,
-            crate::theme::color::AGENT,
-            Act::ToggleTools,
-        ),
-        (
-            "Attach a picture",
-            icon::image,
-            !parts.attachments.is_empty(),
-            look.palette.board_accent,
-            Act::Attach,
-        ),
-        (
-            "Stream",
-            icon::run,
-            parts.configuration.stream,
-            look.palette.attached,
-            Act::ToggleStream,
-        ),
-    ];
     for (name, drawing, on, accent, act) in tools {
         let at = Rect::from_center_size(centre, Vec2::splat(TOOL * scale));
         let response = ui.interact(at, ui.id().with(("agent-chat-tool-button", name)), Sense::click());
@@ -338,8 +355,7 @@ fn prompt(parts: Parts<'_>, ui: &mut egui::Ui, look: &Look<'_>, area: Rect) -> V
         );
         // Named, because every control in Quill has a plain name and a test finds one by it. Its hint
         // text is not a name: it is what the field says when it is empty.
-        response
-            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Message"));
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Message"));
         // **Enter sends and Shift+Enter is a new line**, which is what the page this copies does and
         // what everybody expects of a chat.
         //
@@ -354,8 +370,7 @@ fn prompt(parts: Parts<'_>, ui: &mut egui::Ui, look: &Look<'_>, area: Rect) -> V
         // reads the frame's events first. That costs nothing: `AgentChat::send` trims the end of what
         // it is given, so the line break the field added never reaches the message.
         if response.has_focus() && !busy {
-            let send =
-                ui.input(|input| input.key_pressed(egui::Key::Enter) && input.modifiers.is_none());
+            let send = ui.input(|input| input.key_pressed(egui::Key::Enter) && input.modifiers.is_none());
             if send {
                 acts.push(Act::Send);
             }
@@ -363,13 +378,22 @@ fn prompt(parts: Parts<'_>, ui: &mut egui::Ui, look: &Look<'_>, area: Rect) -> V
     }
 
     // The one disc: send while there is something to send, stop while an answer is arriving.
-    let response = ui.interact(disc, ui.id().with("agent-chat-send"), Sense::click());
+    //
+    // **It senses a click only when it can do something**, which is Quill's rule about a control that
+    // cannot apply. It is still *drawn*, because a button that vanished as the field emptied would
+    // make the field jump about while somebody was typing in it — absent here means inert rather than
+    // gone, and it says so by being quiet.
+    let ready = busy || !parts.draft.trim().is_empty() || !parts.attachments.is_empty();
+    let sense = match ready {
+        true => Sense::click(),
+        false => Sense::hover(),
+    };
+    let response = ui.interact(disc, ui.id().with("agent-chat-send"), sense);
     let name = match busy {
         true => "Stop answering",
         false => "Send",
     };
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name.to_owned()));
-    let ready = busy || !parts.draft.trim().is_empty() || !parts.attachments.is_empty();
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ready, name.to_owned()));
     let (start, end) = match (busy, ready) {
         (true, _) => (
             crate::theme::color::CLOSE,
@@ -400,7 +424,9 @@ fn prompt(parts: Parts<'_>, ui: &mut egui::Ui, look: &Look<'_>, area: Rect) -> V
             .circle_filled(disc.center(), disc.width() / 2.0, start);
     }
     let tint = match ready {
-        true => Color32::WHITE,
+        // The palette's own white rather than `Color32::WHITE`: the palette is closed, and a colour
+        // written out here is a colour no theme can reach.
+        true => look.palette.text_strong,
         false => look.palette.text_faint,
     };
     match busy {

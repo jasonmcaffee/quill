@@ -12692,10 +12692,20 @@ fn the_boards_own_settings_page_with_its_agent_configuration() {
 // from a model. `tasks/task-1767-agent-chat-tdd.md` is the design and
 // `_agent_output/task-1767-agent-chat/reference-chat.png` is the picture it is measured against.
 //
-// **No test here makes a network request.** A conversation is built out of the same `Reply` values the
-// wire would have produced, which is the terminal's own rule — its screenshot tests feed fixed bytes to
-// a session with no shell behind it, because when a real one answers is not something a test can know.
-// `quill-chat`'s own tests drive the whole client against a scripted server on loopback.
+// **No test here makes a network request or starts an agent.** A conversation is built out of the
+// same `Reply` values the transport would have produced, which is the terminal's own rule — its
+// screenshot tests feed fixed bytes to a session with no shell behind it, because when a real one
+// answers is not something a test can know. `quill-chat`'s own tests drive the whole client against a
+// scripted server on loopback, and its `agent` tests assert on the command line that *would* be run.
+//
+// The two tests that really call `send` therefore point the chosen row at [`NO_SUCH_AGENT`] first.
+// That matters more than it used to: the rows that ship run `claude` and `codex`, and **both are
+// installed on the machine this is developed on**, so a test that sent would spawn a real agent, bill
+// a real account and never settle. Both of those tests failed exactly that way when the transport
+// changed, which is how the rule came to be written down here.
+
+/// A program nothing on any machine answers to, so a send is refused before anything is spawned.
+const NO_SUCH_AGENT: &str = "quill-no-such-agent-anywhere";
 
 /// Reach the chat plugin's own state, the way its buttons do.
 ///
@@ -12825,6 +12835,11 @@ fn an_answer_that_is_still_arriving_shows_what_has_come_so_far() {
 fn a_tool_the_model_asked_for_is_run_by_the_window_and_its_answer_comes_back() {
     let mut harness = harness("Some prose.");
     did(&mut harness, "plugins pane agent-chat/chat --show");
+    // **An address row, because only an address row asks Quill to run anything.** The two rows that
+    // ship run a command-line agent, and an agent has its own tools — so with one of those chosen
+    // this loop does not exist and the turn would sit in `waiting-for-tools` for ever waiting on a
+    // window that is deliberately not going to answer.
+    did(&mut harness, "plugins run agent-chat use local");
     did(&mut harness, "plugins run agent-chat tools on");
     with_the_chat(&mut harness, |chat| {
         chat.configuration_mut().tool_limit = 1;
@@ -12870,6 +12885,7 @@ fn a_tool_the_model_asked_for_is_run_by_the_window_and_its_answer_comes_back() {
 fn a_tool_call_is_shown_while_it_runs_and_when_it_has_finished() {
     let mut harness = harness("");
     did(&mut harness, "plugins pane agent-chat/chat --show");
+    did(&mut harness, "plugins run agent-chat use local");
     did(&mut harness, "plugins run agent-chat tools on");
     harness.run();
     with_the_chat(&mut harness, |chat| {
@@ -12903,6 +12919,89 @@ fn a_tool_call_is_shown_while_it_runs_and_when_it_has_finished() {
     harness.snapshot(shot("agent_chat_tool_answered").as_str());
 }
 
+/// A picture goes up: attached to the draft, and drawn inside the bubble once it has been sent.
+///
+/// **Up only.** Neither API answers with a picture, so nothing comes back that way — what is drawn is
+/// what was sent. The bytes are read at the moment it is attached rather than the path being
+/// remembered, which is `model::Part::Picture`'s own reason: a conversation reopened after the file
+/// has moved still shows what was sent.
+#[test]
+fn a_picture_attached_to_a_question_is_drawn_in_the_bubble_it_was_sent_with() {
+    let mut harness = harness("");
+    did(&mut harness, "plugins pane agent-chat/chat --show");
+    harness.run();
+    let picture = sample_folder().join("picture.png");
+    let attached = did(
+        &mut harness,
+        &format!("plugins run agent-chat attach {}", picture.display()),
+    );
+    assert_eq!(attached["attachments"], 1);
+    assert_eq!(
+        did(&mut harness, "plugins view agent-chat")["attachments"][0]["name"],
+        "picture.png"
+    );
+
+    // Sent, which here is done by hand because no test in this file makes a request: the attachment
+    // becomes a `Part::Picture` on the message beside its words.
+    with_the_chat(&mut harness, |chat| {
+        let parts = chat.take_the_attachments();
+        let id = chat.session_mut().chat.next_id();
+        let mut asked = quill_chat::Message::new(id, quill_chat::Role::User);
+        asked.parts.push(quill_chat::Part::Text("What is wrong with this diagram?".to_owned()));
+        asked.parts.extend(parts);
+        chat.session_mut().chat.push(asked);
+        let id = chat.session_mut().chat.next_id();
+        chat.session_mut().chat.push(quill_chat::Message::said(
+            id,
+            quill_chat::Role::Assistant,
+            "The arrow leaves the subgraph rather than the node inside it.",
+        ));
+    });
+    let view = did(&mut harness, "plugins view agent-chat");
+    assert_eq!(view["attachments"].as_array().map(Vec::len), Some(0), "the draft was emptied");
+    // Named and measured rather than printed: a base64 payload in a command line's answer is a
+    // screenful of nothing anybody can read.
+    let pictures = view["conversation"]["messages"][0]["pictures"].as_array().expect("the pictures");
+    assert_eq!(pictures[0]["name"], "picture.png");
+    assert_eq!(pictures[0]["media"], "image/png");
+    assert!(pictures[0]["bytes"].as_u64().is_some_and(|bytes| bytes > 0));
+    harness.snapshot(shot("agent_chat_picture").as_str());
+}
+
+/// A pane opened after a file was already showing is told which file, rather than waiting for a change.
+///
+/// The window compares before it clones and tells nothing on a frame where neither moved — which is
+/// `task-1666`'s rule and is also what made the first version wrong: a pane opened *after* the tab was
+/// opened had missed the only announcement there would ever be, so `plugins view agent-chat` said no
+/// file was showing while one plainly was. The answer it is told is **which file, never its text**.
+#[test]
+fn a_chat_opened_after_a_file_is_told_which_file_is_showing() {
+    let mut harness = harness("Some prose.");
+    let opened = sample_folder().join("readme.md");
+    did(&mut harness, &format!("tab open {} --permanent", opened.display()));
+    harness.run();
+
+    // Opened only now, which is the case the once-a-frame comparison would otherwise skip.
+    did(&mut harness, "plugins pane agent-chat/chat --show");
+    harness.run();
+    let view = did(&mut harness, "plugins view agent-chat");
+    let showing = view["showing"].as_str().expect("the pane was told which file is showing");
+    assert!(showing.ends_with("readme.md"), "{showing}");
+    assert!(
+        !serde_json::to_string(&view).expect("json").contains("Some prose."),
+        "which file, never the file's text: {view}"
+    );
+
+    // And it follows the tab from then on, because that is the same announcement.
+    did(&mut harness, &format!("tab open {} --permanent", sample_folder().join("notes.txt").display()));
+    harness.run();
+    let followed = did(&mut harness, "plugins view agent-chat")["showing"]
+        .as_str()
+        .expect("the file that is showing")
+        .to_owned();
+    assert!(followed.ends_with("notes.txt"), "{followed}");
+}
+
 /// A refusal is the server's own words, kept beside whatever had already arrived.
 #[test]
 fn a_refusal_is_drawn_in_the_servers_own_words() {
@@ -12920,9 +13019,40 @@ fn a_refusal_is_drawn_in_the_servers_own_words() {
     harness.snapshot(shot("agent_chat_failed").as_str());
 }
 
-/// The endpoints, each with its URL, its model and where its key comes from — and never a key.
+/// A folder holding stand-ins for `claude` and `codex`, put at the front of this process's `PATH`.
+///
+/// **So that a page showing whether an agent is installed draws the same thing on every machine.**
+/// The rows that ship run a program, and whether one is found is exactly the sort of thing a
+/// screenshot test must not depend on — it is installed on the machine this is developed on and it
+/// will not be on the next one, and the page would then draw a red refusal there and a green line
+/// here. Written once behind a `OnceLock` for the reason `sample_folder` is: two tests writing one
+/// fixture is one test reading a file another has just truncated.
+fn agents_on_the_path() {
+    static ONCE: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    ONCE.get_or_init(|| {
+        let folder = std::env::temp_dir().join("quill-screenshot-agents");
+        std::fs::create_dir_all(&folder).expect("a folder for the stand-in agents");
+        for name in ["claude", "codex"] {
+            let at = folder.join(match cfg!(windows) {
+                true => format!("{name}.exe"),
+                false => name.to_owned(),
+            });
+            if !at.is_file() {
+                std::fs::write(&at, b"").expect("a file that stands in for an agent");
+            }
+        }
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let mut folders = vec![folder];
+        folders.extend(std::env::split_paths(&path));
+        let joined = std::env::join_paths(folders).expect("a PATH");
+        std::env::set_var("PATH", joined);
+    });
+}
+
+/// The two rows that run an agent and the one that sends to an address, and never a key.
 #[test]
 fn the_chats_settings_page_lists_the_endpoints() {
+    agents_on_the_path();
     let mut harness = harness("");
     did(&mut harness, "plugins pane agent-chat/chat --show");
     did(&mut harness, "action run settings");
@@ -12944,9 +13074,23 @@ fn the_chat_answers_the_command_line() {
     let rows = providers["providers"].as_array().expect("the endpoints");
     let names: Vec<&str> = rows.iter().filter_map(|one| one["name"].as_str()).collect();
     assert_eq!(names, ["claude", "codex", "local"]);
-    assert_eq!(rows[0]["wire"], "anthropic");
-    assert_eq!(rows[1]["wire"], "openai");
+    // **The two rows the ticket names run the command line, not the API.** *"connection to Claude
+    // and codex etc through cli"* — so what a row holds is a program, and Quill holds no key for
+    // either of them.
+    assert_eq!(rows[0]["wire"], "claude-cli");
+    assert_eq!(rows[0]["command"], "claude");
+    assert_eq!(rows[0]["runs_a_program"], true);
+    assert_eq!(rows[0]["key"], false);
+    assert_eq!(rows[0]["key_env"], "");
+    assert_eq!(rows[1]["wire"], "codex-cli");
+    assert_eq!(rows[1]["command"], "codex");
+    // The third is an address, so the ticket's "configure url" has something to configure and a
+    // machine with neither agent installed can still be pointed at an llama.cpp.
+    assert_eq!(rows[2]["wire"], "openai");
+    assert_eq!(rows[2]["runs_a_program"], false);
     assert_eq!(rows[2]["url"], "http://127.0.0.1:8080/v1/chat/completions");
+    // What an agent may do without asking, which is the setting that replaced the key.
+    assert_eq!(providers["permission"], "read");
     let printed = serde_json::to_string(&providers).expect("json");
     assert!(!printed.contains("sk-"), "no key is ever printed: {printed}");
 
@@ -12985,20 +13129,20 @@ fn the_chat_answers_the_command_line() {
     assert!(reply.message.contains("levitate"), "{}", reply.message);
 }
 
-/// Sending to an endpoint with no key refuses before a request goes out, and says what to do about it.
+/// Sending to a row that cannot answer refuses before anything is started, and says what to do.
 #[test]
-fn sending_to_an_endpoint_with_no_key_is_refused_before_anything_is_sent() {
+fn sending_to_an_endpoint_that_cannot_answer_is_refused_before_anything_is_sent() {
     let mut harness = harness("");
     did(&mut harness, "plugins pane agent-chat/chat --show");
     did(&mut harness, "plugins run agent-chat use claude");
     with_the_chat(&mut harness, |chat| {
-        chat.configuration_mut().providers[0].key_env = "QUILL_A_VARIABLE_NOTHING_SETS".to_owned();
+        chat.configuration_mut().providers[0].command = NO_SUCH_AGENT.to_owned();
     });
     let reply = run(&mut harness, "plugins run agent-chat send Are you there?");
     assert!(!reply.ok);
     assert!(
-        reply.message.contains("QUILL_A_VARIABLE_NOTHING_SETS"),
-        "the refusal names the variable the key would have come from: {}",
+        reply.message.contains(NO_SUCH_AGENT),
+        "the refusal names the program it would have run: {}",
         reply.message
     );
     // Nothing went into the conversation, so the question is still there to be sent once a key is set.
@@ -13020,7 +13164,7 @@ fn enter_in_the_composer_sends_and_shift_enter_does_not() {
     did(&mut harness, "plugins pane agent-chat/chat --show");
     did(&mut harness, "plugins run agent-chat use claude");
     with_the_chat(&mut harness, |chat| {
-        chat.configuration_mut().providers[0].key_env = "QUILL_A_VARIABLE_NOTHING_SETS".to_owned();
+        chat.configuration_mut().providers[0].command = NO_SUCH_AGENT.to_owned();
     });
     harness.get_by_label("Message").click();
     harness.run();
@@ -13038,13 +13182,13 @@ fn enter_in_the_composer_sends_and_shift_enter_does_not() {
     assert!(after["problem"].is_null(), "shift+enter did not try to send: {after}");
     assert_eq!(after["messages"], 0);
 
-    // Enter sends, which here is refused before a request goes out — and the refusal names the
-    // variable the key would have come from, which is what makes it a useful refusal.
+    // Enter sends, which here is refused before anything is started — and the refusal names the
+    // program it would have run, which is what makes it a useful refusal.
     harness.key_press(egui::Key::Enter);
     harness.run();
     let after = did(&mut harness, "plugins view agent-chat");
     let problem = after["problem"].as_str().expect("the refusal reached the pane");
-    assert!(problem.contains("QUILL_A_VARIABLE_NOTHING_SETS"), "{problem}");
+    assert!(problem.contains(NO_SUCH_AGENT), "{problem}");
     // And what was typed is still there, because a refusal must not eat somebody's question.
     assert!(
         after["draft"].as_str().expect("the draft").contains("Are you there?"),

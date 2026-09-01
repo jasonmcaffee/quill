@@ -344,6 +344,13 @@ pub enum Request {
     /// `id` is the provider's own, echoed back with the answer, because more than one may be
     /// outstanding and they do not necessarily finish in order.
     RunCommand { id: String, command: String, arguments: serde_json::Map<String, serde_json::Value> },
+    /// The picture on the clipboard, if there is one, answered through [`UiProvider::answered`].
+    ///
+    /// **The window owns the one handle to the clipboard**, which is why [`Request::Copy`] exists and
+    /// is the same reason this does: two owners of a clipboard are two programs fighting over one
+    /// selection. The answer is `{ "media": …, "name": …, "data": <base64> }`, or a refusal saying
+    /// there was no picture on it.
+    ClipboardPicture { id: String },
 }
 
 /// What a command answered.
@@ -382,6 +389,13 @@ impl Answer {
 pub struct Context {
     /// The folder this window has open, when it has one.
     pub project: Option<PathBuf>,
+    /// The file showing in the window when this provider was opened.
+    ///
+    /// [`UiProvider::showing`] is told when it *changes*, and the window compares before it tells —
+    /// so a provider opened after that comparison had settled was never told at all. This is the
+    /// other half: what it was when the provider opened. It is **which file**, never its text, for
+    /// the reason written on that method.
+    pub showing: Option<PathBuf>,
     /// The folders this machine has had open, newest first, which is the list `File -> Open Recent` draws.
     ///
     /// **Handed over rather than reached for**, which is the rule the project folder and the opacity already

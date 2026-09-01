@@ -3409,6 +3409,14 @@ impl QuillApp {
             // **The one place a command becomes a change is `run_cli`**, and this is a plugin
             // reaching it. The answer goes back to the provider that asked, by the id it asked with,
             // because more than one may be outstanding and they do not finish in order.
+            // The window reads the clipboard, because the window owns it. `arboard` is the same
+            // handle `Request::Copy` writes through.
+            Request::ClipboardPicture { id } => {
+                let answer = crate::services::picture::from_the_clipboard();
+                if let Some(provider) = self.plugin_ui.provider(plugin) {
+                    provider.answered(&id, answer);
+                }
+            }
             Request::RunCommand { id, command, arguments } => {
                 let request = quill_cli::protocol::Request::new("", &command, arguments);
                 let answer = self.run_cli_for_a_plugin(&request, ctx);
@@ -3620,12 +3628,21 @@ impl QuillApp {
     /// this the way it owns the keyboard, so it is the window that says so; a provider that read it
     /// for itself would be a second thing deciding what a tab is.
     fn tell_the_plugins_what_is_showing(&mut self) {
-        let showing = self.files.active().path().map(std::path::Path::to_path_buf);
-        let project = Some(self.tree.root().to_path_buf());
-        if self.told_the_plugins == Some((project.clone(), showing.clone())) {
+        // **Compared before anything is cloned**, which is the whole of the once-a-frame rule: the
+        // comparison is two borrowed paths and a frame in which neither moved allocates nothing.
+        let showing = self.files.active().path();
+        let project = self.tree.root();
+        let same = self.told_the_plugins.as_ref().is_some_and(|(before, was)| {
+            before.as_deref() == Some(project) && was.as_deref() == showing
+        });
+        if same {
             return;
         }
+        let project = Some(project.to_path_buf());
+        let showing = showing.map(std::path::Path::to_path_buf);
         self.told_the_plugins = Some((project.clone(), showing.clone()));
+        // Kept for a provider opened later, which is told at open rather than at the next change.
+        self.plugin_ui.set_showing(showing.clone());
         for plugin in self.plugin_ui.surfaces().plugins() {
             if !self.plugin_ui.is_open(&plugin) {
                 continue;

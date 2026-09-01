@@ -99,15 +99,36 @@ impl ToolCall {
         }
     }
 
-    /// The arguments as a value, or an empty object when the model produced nothing usable.
+    /// The arguments as a value, or a sentence saying they are not usable.
     ///
-    /// A model that emits `{"path": ` and stops has produced arguments that are not JSON, and the
-    /// honest answer to that is an empty object and a refusal from the command, rather than a panic.
-    pub fn arguments_value(&self) -> serde_json::Value {
-        match self.arguments.trim().is_empty() {
-            true => serde_json::json!({}),
-            false => serde_json::from_str(&self.arguments).unwrap_or_else(|_| serde_json::json!({})),
+    /// **A refusal rather than an empty object.** A model that emits `{"path": ` and stops — or a
+    /// stream cut off in the middle of the fragments — has produced arguments that are not JSON, and
+    /// reading them as `{}` runs the command *with its defaults*: `explorer new-file` with no path,
+    /// `git` with no verb. Silently doing a different thing is the worst of the three possible
+    /// answers, so this says so and the caller sends the sentence back to the model.
+    ///
+    /// Nothing at all **is** an empty object, because that is what a command taking no arguments is
+    /// called with.
+    pub fn parsed_arguments(&self) -> Result<serde_json::Value, String> {
+        if self.arguments.trim().is_empty() {
+            return Ok(serde_json::json!({}));
         }
+        serde_json::from_str(&self.arguments).map_err(|problem| {
+            format!(
+                "`{}` was called with arguments that are not JSON ({problem}): {}",
+                self.name,
+                a_fragment_of(&self.arguments)
+            )
+        })
+    }
+
+    /// The arguments as a value, with anything unusable read as nothing.
+    ///
+    /// For **drawing and for replaying up the wire**, where a refusal has nowhere to go: what is put
+    /// back must be the JSON the model produced or, failing that, something the API will accept.
+    /// [`Self::parsed_arguments`] is what decides whether the call is run.
+    pub fn arguments_value(&self) -> serde_json::Value {
+        self.parsed_arguments().unwrap_or_else(|_| serde_json::json!({}))
     }
 
     pub fn is_running(&self) -> bool {
@@ -122,7 +143,21 @@ pub struct Message {
     pub role: Role,
     pub parts: Vec<Part>,
     /// What the model was thinking, when it says. Kept apart from the answer, because it is not one.
+    ///
+    /// **For reading.** What goes back up the wire is [`Self::reasoning`], not this.
     pub thinking: String,
+    /// The reasoning blocks exactly as they arrived, for sending back.
+    ///
+    /// **Kept whole and replayed untouched, because they are signed.** Anthropic requires every
+    /// `thinking` and `redacted_thinking` block of a turn to come back verbatim with a tool result,
+    /// signature and all, and refuses a continuation whose blocks were reconstructed — which is what
+    /// building them out of [`Self::thinking`] would be. A `redacted_thinking` block is encrypted and
+    /// cannot be reconstructed at all.
+    ///
+    /// Empty in the ordinary case, because Quill does not ask for extended thinking. A gateway that
+    /// turns it on is the case this exists for: a client that dropped the blocks would work until the
+    /// first tool call and then be refused with a 400 nobody could explain.
+    pub reasoning: Vec<serde_json::Value>,
     pub tools: Vec<ToolCall>,
     /// Why this message ended, when it did: `stop`, `tool_use`, `length`, `stopped`.
     pub finish: Option<String>,
@@ -137,6 +172,7 @@ impl Message {
             role,
             parts: Vec::new(),
             thinking: String::new(),
+            reasoning: Vec::new(),
             tools: Vec::new(),
             finish: None,
             failure: None,
@@ -226,6 +262,14 @@ pub struct Conversation {
     pub messages: Vec<Message>,
     /// The provider it was last spoken to, so reopening it picks the same one back up.
     pub provider: String,
+    /// The command-line agent's own session id, so a second question carries the first one on.
+    ///
+    /// **On the conversation rather than on the provider**, because it is *this* conversation the
+    /// agent is holding: starting a new one in the pane has to start a new one in the agent too, and
+    /// opening an old one out of the history has to pick that agent session back up. Empty for an
+    /// HTTP endpoint, which keeps no session of its own — there the transcript Quill holds *is* the
+    /// context, and it is sent again every turn.
+    pub session: String,
     pub usage: Usage,
     /// When it was last changed, as seconds since the epoch, for ordering the history.
     pub changed: u64,
@@ -244,6 +288,7 @@ impl Conversation {
             name: String::new(),
             messages: Vec::new(),
             provider: provider.into(),
+            session: String::new(),
             usage: Usage::default(),
             changed: 0,
             next_id: 1,
@@ -294,6 +339,7 @@ impl Conversation {
             "id": self.id,
             "name": self.display_name(),
             "provider": self.provider,
+            "session": self.session,
             "changed": self.changed,
             "usage": { "input": self.usage.input, "output": self.usage.output },
             "messages": self.messages.iter().map(message_json).collect::<Vec<serde_json::Value>>(),
@@ -328,6 +374,18 @@ fn message_json(message: &Message) -> serde_json::Value {
             }))
             .collect::<Vec<serde_json::Value>>(),
     })
+}
+
+/// A fragment of `text`, short enough to put in a sentence.
+///
+/// For quoting back what a model produced when it will not parse. Distinct from [`shorten`], which
+/// takes the first *line* because it is naming a conversation.
+fn a_fragment_of(text: &str) -> String {
+    let trimmed = text.trim();
+    match trimmed.chars().count() > 120 {
+        true => trimmed.chars().take(120).collect::<String>() + "…",
+        false => trimmed.to_owned(),
+    }
 }
 
 /// The first line of `text`, cut to something that fits a header.
@@ -426,11 +484,18 @@ mod tests {
         assert!(!failed.has_content());
         assert!(!failed.is_empty(), "it is still worth drawing");
         failed.push_text("Half an ans");
-        assert!(failed.has_content(), "what did arrive is still what the model said");
+        assert!(
+            failed.has_content(),
+            "what did arrive is still what the model said"
+        );
         // Whitespace alone is not content either: a model that emitted one newline before failing
         // would otherwise put an empty turn back on the wire.
-        let mut blank = Message::said(2, Role::Assistant, "   
- ");
+        let mut blank = Message::said(
+            2,
+            Role::Assistant,
+            "   
+ ",
+        );
         assert!(!blank.has_content());
         blank.tools.push(ToolCall::new("t", "n", "{}"));
         assert!(blank.has_content(), "a tool call is something it said");

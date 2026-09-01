@@ -40,8 +40,15 @@ const PAD_Y: f32 = 10.0;
 const RADIUS: f32 = 14.0;
 const CORNER: f32 = 5.0;
 /// How much of the row a bubble may take, by who said it.
-const USER_SHARE: f32 = 0.80;
-const MODEL_SHARE: f32 = 0.96;
+///
+/// The reference's own `max-width: 75%` and `85%`, which is what makes an answer read as speech
+/// rather than as a container that happens to hold words. An earlier version used 80 and 96, and at
+/// 96 the assistant bubble filled the pane and the alignment stopped saying anything.
+const USER_SHARE: f32 = 0.75;
+const MODEL_SHARE: f32 = 0.85;
+/// How wide a report is: a tool block, a failure, the thinking. Nearly the whole row, because none of
+/// them is speech.
+const BLOCK_SHARE: f32 = 0.98;
 /// The tallest a picture inside a bubble is drawn.
 const PICTURE: f32 = 200.0;
 /// One tool block's own header.
@@ -60,8 +67,14 @@ enum Piece {
     Words {
         body: f32,
     },
+    /// A picture attached to the message, with the width its row is given.
+    ///
+    /// Its own width rather than the bubble's, because a message that is *only* a picture has no
+    /// words to measure and its bubble is therefore the smallest one allowed — which drew a
+    /// photograph sixty points across.
     Picture {
         index: usize,
+        width: f32,
         height: f32,
     },
     Tool {
@@ -95,7 +108,7 @@ fn pieces(
     state: &mut PaneState,
     look: &Look<'_>,
     width: f32,
-) -> (Vec<Piece>, f32, f32) {
+) -> (Vec<Piece>, f32, f32, String) {
     let scale = look.scale();
     let mine = message.role == Role::User;
     let share = match mine {
@@ -117,7 +130,7 @@ fn pieces(
     // **A tool block, a failure and the thinking are as wide as the row allows, whatever the words
     // above them are.** They are reports rather than speech: sized to their own message, a tool called
     // from a two word answer came out two words wide, with its own caret clipped off the end of it.
-    let block = width * MODEL_SHARE;
+    let block = width * BLOCK_SHARE;
     let in_block = (block - 24.0 * scale).max(24.0);
 
     let mut out = Vec::new();
@@ -141,10 +154,12 @@ fn pieces(
         out.push(Piece::Words { body });
     }
     for (index, part) in message.parts.iter().enumerate() {
-        if let Part::Picture { .. } = part {
+        if let Part::Picture { bytes, .. } = part {
             out.push(Piece::Picture {
                 index,
-                height: PICTURE + 8.0,
+                width: most,
+                height: picture_height(state, &picture_key(message, index), bytes, most / scale)
+                    + 8.0,
             });
         }
     }
@@ -159,20 +174,44 @@ fn pieces(
         let body = rendered_height(state, look, &format!("failure-{}", message.id), failure, in_block);
         out.push(Piece::Failure { body });
     }
-    (out, bubble, block)
+    (out, bubble, block, text)
 }
 
-/// How tall this row is, in points.
-pub fn height(message: &Message, state: &mut PaneState, look: &Look<'_>, width: f32) -> f32 {
+/// A row worked out: what it is made of, how wide each part is, and how tall the whole thing is.
+///
+/// **Worked out once a frame rather than twice.** The caller has to know a row's height before it can
+/// allocate the rectangle to draw it in, and the first version answered that by running the whole of
+/// [`pieces`] again — which builds the message's text and looks up every rendered block a second
+/// time. Now it is built once and handed to [`show`].
+pub struct Shape {
+    pieces: Vec<Piece>,
+    bubble: f32,
+    block: f32,
+    /// The message's words, built once. `Message::text` joins its parts, so it allocates.
+    text: String,
+    /// How tall the row is, in points, at the size the window is set to.
+    pub height: f32,
+}
+
+/// What this row is made of and how tall it is.
+pub fn shape(message: &Message, state: &mut PaneState, look: &Look<'_>, width: f32) -> Shape {
     let scale = look.scale();
-    let (pieces, _, _) = pieces(message, state, look, width);
-    pieces.iter().map(|piece| piece.height() * scale).sum::<f32>()
-        + (pieces.len().saturating_sub(1) as f32) * 6.0 * scale
+    let (pieces, bubble, block, text) = pieces(message, state, look, width);
+    let height = pieces.iter().map(|piece| piece.height() * scale).sum::<f32>()
+        + (pieces.len().saturating_sub(1) as f32) * 6.0 * scale;
+    Shape {
+        pieces,
+        bubble,
+        block,
+        text,
+        height,
+    }
 }
 
 /// Draw the row and say what was pressed.
 pub fn show(
     message: &Message,
+    shape: Shape,
     state: &mut PaneState,
     ui: &mut egui::Ui,
     look: &Look<'_>,
@@ -180,18 +219,29 @@ pub fn show(
 ) -> Vec<Act> {
     let scale = look.scale();
     let mut acts = Vec::new();
-    let (pieces, bubble_width, block_width) = pieces(message, state, look, area.width());
+    let Shape {
+        pieces,
+        bubble: bubble_width,
+        block: block_width,
+        text: said,
+        ..
+    } = shape;
     let mine = message.role == Role::User;
     let mut pen = area.top();
     for piece in pieces {
         let height = piece.height() * scale;
         // A bubble is as wide as its words and sits on its own side; a report is as wide as the row
         // and always starts at the left.
-        let wide =
-            matches!(piece, Piece::Tool { .. } | Piece::Failure { .. } | Piece::Thinking { .. });
-        let width = match wide {
-            true => block_width,
-            false => bubble_width,
+        let wide = matches!(
+            piece,
+            Piece::Tool { .. } | Piece::Failure { .. } | Piece::Thinking { .. }
+        );
+        let width = match piece {
+            Piece::Picture { width, .. } => width,
+            _ => match wide {
+                true => block_width,
+                false => bubble_width,
+            },
         };
         let left = match mine && !wide {
             true => area.right() - width,
@@ -210,9 +260,9 @@ pub fn show(
                     ),
                 );
                 let key = format!("message-{}", message.id);
-                let text = message.text();
-                let made = rendered(state, look, &key, &text, inside.width());
-                crate::components::markdown_text::show(ui, inside, made, look.renderer, 0.0);
+                let code = code_colours(look);
+                let made = rendered(state, look, &key, &said, inside.width());
+                crate::components::markdown_text::show_with(ui, inside, made, look.renderer, 0.0, Some(code));
                 // The copy button, which is `.messageActions`: it appears under the pointer rather
                 // than sitting there, because a column of bubbles each with a permanent button on it
                 // is a column of buttons.
@@ -233,7 +283,7 @@ pub fn show(
                         Vec2::splat(18.0 * scale),
                     );
                     if crate::components::controls::icon_button(ui, at, "Copy message", icon::copy) {
-                        acts.push(Act::Copy(text));
+                        acts.push(Act::Copy(said.clone()));
                     }
                 }
             }
@@ -264,35 +314,64 @@ fn painter_in(ui: &egui::Ui, rect: Rect) -> egui::Painter {
 fn bubble(ui: &mut egui::Ui, look: &Look<'_>, rect: Rect, mine: bool) {
     let scale = look.scale();
     let radius = RADIUS * scale;
+    let squared = (CORNER * scale) as u8;
     // The corner nearest its own side is squared off, which is `.messageWrapper`'s
     // `border-top-left-radius: 6px` and its mirror for a message from the person.
     let corners = match mine {
         true => CornerRadius {
             nw: radius as u8,
-            ne: (CORNER * scale) as u8,
+            ne: squared,
             sw: radius as u8,
             se: radius as u8,
         },
         false => CornerRadius {
-            nw: (CORNER * scale) as u8,
+            nw: squared,
             ne: radius as u8,
             sw: radius as u8,
             se: radius as u8,
         },
     };
     if look.chrome.is_recording() {
-        // `Chrome` takes one radius rather than four, so the squared corner is drawn as an `egui`
-        // rectangle over the decoration's own — which costs nothing and is invisible, because both
-        // are the same colour.
         match mine {
+            // **Raised for the person, pressed for the model**, at `Lift::Medium` rather than
+            // `Lift::Small`: the reference's shadow pairs are broad and soft, and at `Small` a bubble
+            // came out with a one point dark edge and almost no light side — dark and rounded rather
+            // than neumorphic.
             true => look
                 .chrome
-                .raised(rect, radius, Fill::Solid(look.palette.board_card), Lift::Small),
+                .raised(rect, radius, Fill::Solid(look.palette.board_card), Lift::Medium),
             false => look
                 .chrome
-                .sunken(rect, radius, look.palette.board_card, Lift::Small),
+                .sunken(rect, radius, look.palette.board_card, Lift::Medium),
         }
-        ui.painter().rect_filled(rect, corners, Color32::TRANSPARENT);
+        // **The corner nearest its own side, really squared.** `Chrome` takes one radius rather than
+        // four, so the corner is squared by filling it: a patch of the same colour, square on the two
+        // outer edges and following the bubble's curve on the two inner ones. The first version
+        // painted a *transparent* rectangle there, which of course changed nothing and left all four
+        // corners round — which is what the accepted image showed.
+        let corner = Rect::from_min_size(
+            match mine {
+                true => Pos2::new(rect.right() - radius, rect.top()),
+                false => Pos2::new(rect.left(), rect.top()),
+            },
+            Vec2::splat(radius),
+        );
+        ui.painter().rect_filled(
+            corner,
+            CornerRadius {
+                nw: match mine {
+                    true => 0,
+                    false => squared,
+                },
+                ne: match mine {
+                    true => squared,
+                    false => 0,
+                },
+                sw: 0,
+                se: 0,
+            },
+            look.palette.board_card,
+        );
     } else {
         ui.painter().rect(
             rect,
@@ -345,10 +424,42 @@ fn thinking(
             rect.max,
         );
         let key = format!("think-{}", message.id);
+        let code = code_colours(look);
         let made = rendered(state, look, &key, &message.thinking, body.width());
-        crate::components::markdown_text::show(ui, body, made, look.renderer, 0.0);
+        crate::components::markdown_text::show_with(ui, body, made, look.renderer, 0.0, Some(code));
     }
     acts
+}
+
+/// Where a message's picture is cached, by the message and the part.
+fn picture_key(message: &Message, index: usize) -> String {
+    format!("picture-{}-{index}", message.id)
+}
+
+/// How tall a picture is drawn, in unscaled points, at `width` points across.
+///
+/// **The picture's real height rather than the tallest one may be.** Reserving [`PICTURE`] whatever
+/// the picture was left a landscape photograph with a column of empty pane under it, all the way down
+/// to the next message. `fit` is the same arithmetic [`picture`] draws with, so the room reserved and
+/// the room used are one answer rather than two that can disagree.
+fn picture_height(state: &mut PaneState, key: &str, bytes: &[u8], width: f32) -> f32 {
+    let size = match state.picture_sizes.get(key) {
+        Some(size) => *size,
+        None => {
+            // A picture that will not even say how big it is shows its name instead, on one row.
+            let size = crate::services::picture::dimensions_of(bytes).unwrap_or((width, 20.0));
+            state.picture_sizes.insert(key.to_owned(), size);
+            size
+        }
+    };
+    fit(size, width).1
+}
+
+/// A picture of `size` fitted into `width` points, never enlarged and never taller than [`PICTURE`].
+fn fit(size: (f32, f32), width: f32) -> (f32, f32) {
+    let room = (width - 4.0).max(1.0);
+    let factor = (room / size.0.max(1.0)).min(PICTURE / size.1.max(1.0)).min(1.0);
+    (size.0 * factor, size.1 * factor)
 }
 
 /// A picture attached to a message, drawn under its words.
@@ -363,7 +474,7 @@ fn picture(
     let Some(Part::Picture { media, bytes, name }) = message.parts.get(index) else {
         return;
     };
-    let key = format!("picture-{}-{index}", message.id);
+    let key = picture_key(message, index);
     // **Uploaded once and kept**, keyed on the message and the part rather than on the bytes, so a
     // conversation with twenty pictures in it does not decode twenty pictures on every frame. Through
     // `services::picture::upload`, which shrinks to the card's largest texture first — egui *panics*
@@ -398,11 +509,16 @@ fn picture(
     };
     let scale = look.scale();
     let size = texture.size_vec2();
-    let room = Vec2::new(rect.width() - 4.0 * scale, PICTURE * scale);
-    let factor = (room.x / size.x.max(1.0)).min(room.y / size.y.max(1.0)).min(1.0);
+    // The same arithmetic the row was measured with, so the picture fills the room reserved for it.
+    let (wide, tall) = fit((size.x, size.y), rect.width() / scale);
+    // On its own side, which is what makes a picture somebody sent read as part of what they said.
+    let left = match message.role == Role::User {
+        true => rect.right() - (wide + 2.0) * scale,
+        false => rect.left() + 2.0 * scale,
+    };
     let drawn = Rect::from_min_size(
-        Pos2::new(rect.left() + 2.0 * scale, rect.top() + 4.0 * scale),
-        size * factor,
+        Pos2::new(left, rect.top() + 4.0 * scale),
+        Vec2::new(wide, tall) * scale,
     );
     if look.chrome.is_recording() {
         look.chrome.raised(
@@ -541,6 +657,7 @@ fn tool_block(
             Pos2::new(rect.right() - 12.0 * scale, rect.bottom() - 4.0 * scale),
         );
         let arguments = fenced(&tool.arguments);
+        let code = code_colours(look);
         let made = rendered(
             state,
             look,
@@ -549,7 +666,7 @@ fn tool_block(
             inside.width(),
         );
         let used = made.height();
-        crate::components::markdown_text::show(ui, inside, made, look.renderer, 0.0);
+        crate::components::markdown_text::show_with(ui, inside, made, look.renderer, 0.0, Some(code));
         if let Some(answer) = &tool.answer {
             let below = Rect::from_min_max(Pos2::new(inside.left(), inside.top() + used), inside.max);
             let text = fenced(answer);
@@ -560,7 +677,7 @@ fn tool_block(
                 &text,
                 below.width(),
             );
-            crate::components::markdown_text::show(ui, below, made, look.renderer, 0.0);
+            crate::components::markdown_text::show_with(ui, below, made, look.renderer, 0.0, Some(code));
         }
     }
     acts
@@ -590,19 +707,37 @@ fn failure(message: &Message, state: &mut PaneState, ui: &mut egui::Ui, look: &L
     );
     let inside = rect.shrink2(Vec2::new(PAD_X * scale, PAD_Y * scale));
     let key = format!("failure-{}", message.id);
+    let code = code_colours(look);
     let made = rendered(state, look, &key, said, inside.width());
-    crate::components::markdown_text::show(ui, inside, made, look.renderer, 0.0);
+    crate::components::markdown_text::show_with(ui, inside, made, look.renderer, 0.0, Some(code));
 }
 
 /// The colours markdown is rendered in here.
 fn colours(look: &Look<'_>) -> crate::components::markdown_text::Colors {
     crate::components::markdown_text::Colors {
-        text: look.palette.text_control,
+        // Brighter than the dim body text the first version used: in the reference the depth does the
+        // separating and the words are the bright thing on the surface.
+        text: look.palette.text,
         strong: look.palette.text_strong,
-        code: look.palette.attached,
+        // **Blue, which is the reference's own `--accent-blue`.** It was the mint `attached` before,
+        // which was the most conspicuously wrong colour in the pane: mint means *running* everywhere
+        // else here, on a tool block and on the state dot.
+        code: look.palette.board_accent,
         link: look.palette.accent,
         quiet: look.palette.text_dim,
         rule: look.palette.divider,
+    }
+}
+
+/// What a code background is drawn in: a fence's pressed panel and an inline chip.
+///
+/// Both are colours Quill already has. The panel is the well every field in the window is, and the
+/// chip is `CODE_CHIP`, which is what the Markdown preview already paints behind inline code.
+fn code_colours(look: &Look<'_>) -> crate::components::markdown_text::CodeColors {
+    crate::components::markdown_text::CodeColors {
+        panel: look.palette.board_well,
+        chip: crate::theme::color::CODE_CHIP,
+        radius: 6,
     }
 }
 

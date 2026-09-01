@@ -2826,6 +2826,7 @@ mod tests_task_28 {
         board
             .open(&Context {
                 project: Some(PathBuf::from("/here/now")),
+                showing: None,
                 recent_projects: vec![PathBuf::from("/older"), PathBuf::from("/here/now")],
                 folder: None,
                 wake: None,
