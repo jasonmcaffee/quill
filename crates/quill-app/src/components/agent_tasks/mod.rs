@@ -420,7 +420,10 @@ fn view_switch(
         Pos2::new(add.min.x - 12.0 - width, area.center().y - add_size.y / 2.0),
         Vec2::new(width, add_size.y),
     );
-    let room_for_search = width > 120.0 * scale;
+    // 140 points unscaled, not 120 scaled: a field is wide enough to search in when it can hold a few
+    // letters and its magnifier, and that does not get wider because the editor is set in 20 point text.
+    // Scaled, a large font took the search box away on a window where it plainly fitted.
+    let room_for_search = width > 140.0;
     if room_for_search && look.chrome.is_recording() {
         look.chrome.sunken(
             search,
