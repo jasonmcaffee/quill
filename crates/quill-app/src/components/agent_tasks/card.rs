@@ -118,11 +118,17 @@ pub fn show(
             Color32::from_rgb(colour.r, colour.g, colour.b),
         );
     }
-    let left = area.min.x + EDGE + 10.0;
-    let right = area.max.x - 10.0;
+    // **Every measurement inside a card scales with the editor's font**, which the boxes have done since
+    // `Look::scale` was written and the contents had not. At 32 point text the footer band was still 26
+    // points from the bottom of a 200 point card, so the two round buttons hung out of the bottom of the
+    // card and were clipped away by the lane — a card with no play button on it. Found at the width the
+    // rail's own boundary test drives, which is why that test earns its place twice over.
+    let scale = look.scale();
+    let left = area.min.x + EDGE + 10.0 * scale;
+    let right = area.max.x - 10.0 * scale;
     super::clipped_in(
         &painter,
-        Pos2::new(left, area.min.y + 12.0),
+        Pos2::new(left, area.min.y + 12.0 * scale),
         task.display_title(),
         egui::FontId::new(
             look.font_size - 1.0,
@@ -135,10 +141,10 @@ pub fn show(
     );
     // The priority mark on a line of its own under the title, which is where the design puts it, rather
     // than beside the title where a title that wrapped to two lines would run into it.
-    priority(&painter, Pos2::new(left + 5.0, area.max.y - 34.0), task.priority, look);
+    priority(&painter, Pos2::new(left + 5.0 * scale, area.max.y - 34.0 * scale), task.priority, look);
     // The epic's name on the epic's colour, and the JIRA key beside it, which is what the reference capture puts
     // under the title. The coloured left edge alone said an epic existed without saying which.
-    let mut chip = left + 16.0;
+    let mut chip = left + 16.0 * scale;
     if let Some(epic) = task.epic_id.and_then(|id| board.epic(id)) {
         let colour = crate::services::plugins::colour(&epic.color)
             .map(|colour| Color32::from_rgb(colour.r, colour.g, colour.b))
@@ -180,11 +186,14 @@ pub fn show(
     // leaves a card about 200 points wide, and the counts used to march right from the key without knowing the
     // badge was there, so the comment count and the agent badge were drawn on top of each other — two sets of
     // glyphs in one place, which is what the tab screenshot recorded in the Agent Done lane.
-    let footer = area.max.y - 26.0;
-    let scale = look.scale().min(1.6);
-    let badge = Vec2::splat(BADGE * scale);
-    let play = Vec2::splat(PLAY * scale);
-    let badge_at = Rect::from_min_size(Pos2::new(right - badge.x, footer - 4.0), badge);
+    let footer = area.max.y - 26.0 * scale;
+    // The round buttons stop growing before everything else does: at three times the default font a 90
+    // point play button would be most of the card, and a target is big enough once it is big enough.
+    let buttons = scale.min(1.6);
+    let badge = Vec2::splat(BADGE * buttons);
+    let play = Vec2::splat(PLAY * buttons);
+    let badge_at =
+        Rect::from_min_size(Pos2::new(right - badge.x, footer - 4.0 * scale), badge);
     agent_badge(&painter, badge_at, task, look, live);
     // The start button only when starting would do something. **Absent rather than dimmed**, which is the rule
     // the `F` button and the three code navigation entries already follow: a card whose agent is already running
@@ -192,7 +201,7 @@ pub fn show(
     let mut controls = badge_at.min.x;
     if live.can_start {
         let start_at = Rect::from_min_size(
-            Pos2::new(badge_at.min.x - play.x - 8.0, badge_at.center().y - play.y / 2.0),
+            Pos2::new(badge_at.min.x - play.x - 8.0 * scale, badge_at.center().y - play.y / 2.0),
             play,
         );
         if super::round_button(ui, look, start_at, &format!("Start {}", task.key), icon::run) {
@@ -201,7 +210,7 @@ pub fn show(
         controls = start_at.min.x;
     }
     // Where the counts have to stop, with a gap so they do not touch what is beside them.
-    let stop = controls - 6.0;
+    let stop = controls - 6.0 * scale;
     let mut pen = left;
     let tint = match board::todos_complete(task) {
         true => look.palette.added,
@@ -220,24 +229,46 @@ pub fn show(
         true
     };
     if room_for(&painter, &mut pen, &task.key, look.palette.text_dim) {
-        pen += 10.0;
+        pen += 10.0 * scale;
     }
-    // Both counts, always, including at zero — which is what the reference capture shows: `0/0` and `0`. A count
-    // that vanished at zero moved the ones beside it every time a ticket gained its first todo.
-    if pen + 14.0 < stop {
-        icon::tick(&painter, Pos2::new(pen + 5.0, footer + 6.0), tint);
-        pen += 14.0;
-        if room_for(&painter, &mut pen, &format!("{}/{}", task.todo_done_count, task.todo_count), tint) {
-            pen += 12.0;
+    // Both are drawn even at zero — which is what the reference capture shows, `0/0` and `0` — because a
+    // count that vanished at zero moved the ones beside it every time a ticket gained its first todo.
+    // **A mark and its number are one decision, laid out once.** They were two — a test of the mark's own
+    // width and then `room_for` on the number — and a card narrow enough for the first and not the second
+    // wore a tick on its own, which says nothing at all. One measurement cannot disagree with itself.
+    let mut counted = |painter: &egui::Painter,
+                       pen: &mut f32,
+                       mark: fn(&egui::Painter, Pos2, Color32),
+                       gap: f32,
+                       said: &str,
+                       tint: Color32| {
+        let galley =
+            painter.layout_no_wrap(said.to_owned(), egui::FontId::proportional(look.font_size - 2.0), tint);
+        if *pen + gap + galley.size().x > stop {
+            return;
         }
-    }
-    // The comment count with the mark the reference draws beside it. It was a bare number, which read as
-    // a second half of the todo count rather than as a count of something else.
-    if pen + 16.0 < stop {
-        icon::comment(&painter, Pos2::new(pen + 6.0, footer + 7.0), look.palette.text_dim);
-        pen += 16.0;
-        room_for(&painter, &mut pen, &task.comment_count.to_string(), look.palette.text_dim);
-    }
+        mark(painter, Pos2::new(*pen + gap * 0.4, footer + 6.0 * scale), tint);
+        painter.galley(Pos2::new(*pen + gap, footer), galley.clone(), tint);
+        *pen += gap + galley.size().x + 12.0 * scale;
+    };
+    // Both counts, with the marks the reference draws beside them. The comment count was a bare number,
+    // which read as a second half of the todo count rather than as a count of something else.
+    counted(
+        &painter,
+        &mut pen,
+        icon::tick,
+        14.0 * scale,
+        &format!("{}/{}", task.todo_done_count, task.todo_count),
+        tint,
+    );
+    counted(
+        &painter,
+        &mut pen,
+        icon::comment,
+        16.0 * scale,
+        &task.comment_count.to_string(),
+        look.palette.text_dim,
+    );
     if response.clicked() {
         pressed.open = true;
     }
@@ -253,10 +284,12 @@ pub fn show(
 /// and a mark is what the reference draws. Two of them: a doubled chevron for high and a single one for
 /// medium, both pointing up. Low draws nothing — see below.
 fn priority(painter: &egui::Painter, at: Pos2, priority: Priority, look: &Look<'_>) {
-    // **Up for urgent, down for not, and low draws nothing at all.**
+    let scale = look.scale();
+    // **Up for urgent, and nothing at all for low.**
     //
     // The direction was inverted: `High` and `Medium` drew a `v` and `Low` drew a `^`, so every card on the
-    // board wore a downward chevron and the one ticket that mattered least wore the upward one.
+    // board wore a downward chevron and the one ticket that mattered least wore the upward one. Nothing
+    // points down any more.
     //
     // And low is now silent, which is the rule the rest of Quill keeps: a mark is drawn to say a thing is
     // *unusual*, and low is what most tickets are. A downward chevron on every ordinary card is a mark that
@@ -267,25 +300,25 @@ fn priority(painter: &egui::Painter, at: Pos2, priority: Priority, look: &Look<'
         Priority::Medium => (look.palette.text_control, 1.0),
         Priority::Low => return,
     };
-    let width = 4.0;
-    let height = 3.0 * direction;
+    let width = 4.0 * scale;
+    let height = 3.0 * scale * direction;
     painter.line_segment(
         [Pos2::new(at.x - width, at.y + height), Pos2::new(at.x, at.y - height)],
-        Stroke::new(1.4, tint),
+        Stroke::new(1.4 * scale, tint),
     );
     painter.line_segment(
         [Pos2::new(at.x, at.y - height), Pos2::new(at.x + width, at.y + height)],
-        Stroke::new(1.4, tint),
+        Stroke::new(1.4 * scale, tint),
     );
     // High priority draws the mark twice, which is the double chevron the design image shows.
     if priority == Priority::High {
         painter.line_segment(
             [Pos2::new(at.x - width, at.y + height * 2.4), Pos2::new(at.x, at.y)],
-            Stroke::new(1.4, tint),
+            Stroke::new(1.4 * scale, tint),
         );
         painter.line_segment(
             [Pos2::new(at.x, at.y), Pos2::new(at.x + width, at.y + height * 2.4)],
-            Stroke::new(1.4, tint),
+            Stroke::new(1.4 * scale, tint),
         );
     }
 }

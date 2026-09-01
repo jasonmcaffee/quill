@@ -627,9 +627,11 @@ The revised requirement, stated so it can be argued with:
 
 1. **A still frame must be free.** It is: 0.001 ms and no allocation. This is the one that matters most,
    because a window redrawing on a heartbeat spends nearly all of its time here.
-2. **A frame where the drawing changed may cost up to a frame**, on a board large enough to fill a wide
-   pane, while something is actually moving. That is accepted, not met-by-definition: it is a real cost
-   and it is visible as a slower drag on a full board.
+2. **A frame where the drawing changed may cost more than a frame** on a board large enough to fill a
+   wide pane, while something is actually moving. The measured figure is **20.7 ms** against a 60 Hz
+   frame's 16.7, before the GPU upload and before the board's own layout — so a drag on a full board runs
+   somewhere below 50 frames a second rather than at 60. That is accepted, not met-by-definition: it is a
+   real cost, it is visible, and the number is the one in §9.1's table rather than a rounder one.
 3. **It must be possible to say no.** `plugins.chrome` in `Settings -> Appearance` turns the decoration
    off and the board draws flat, at nothing.
 4. **The route back to the original number must be written down.** It is §9.4, it is one line in

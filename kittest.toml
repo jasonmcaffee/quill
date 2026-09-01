@@ -8,6 +8,14 @@
 # It is kept small on purpose. A generous allowance lets a real change through: an earlier setting of
 # 2000 pixels on macOS hid a change to the folder markers in the explorer, and the test passed while the
 # window looked different. Small enough to catch a changed glyph is the point.
+#
+# **It is not small enough to catch every one, and that is worth knowing before trusting an image.**
+# `task-1765` measured it: an eleven by eight outline mark on a card appeared and then stopped being
+# drawn, and both runs passed against the same accepted image because the mark is fewer than sixty
+# pixels. The way to be sure an image is the current rendering is to **delete it** and run with
+# `UPDATE_SNAPSHOTS=1`, which is what to do before looking at one to judge a change. Lowering the number
+# further is not the answer: font rasterising on the same machine moves a handful of pixels on its own,
+# and a suite that flakes is a suite nobody reads.
 output_path = "tests/snapshots"
 threshold = 0.8
 max_failed_pixels = 60

@@ -755,7 +755,7 @@ impl AgentTasks {
         self.view
     }
 
-    /// Show one of the five views, reading whatever that view needs.
+    /// Show one of the four views, reading whatever that view needs.
     pub fn set_view(&mut self, view: View) {
         self.view = view;
         // The listings are read here rather than while drawing, so choosing the view is what costs the query.

@@ -388,7 +388,12 @@ fn view_switch(
     // picture gives it: `Current Sprint` is the one thing on the board meant to be read first.
     // `+ Add Task` at the end of the row, at the size the reference draws it: 127 by 44. Placed before
     // anything is drawn, because everything else is fitted into what it leaves.
-    let add_size = Vec2::new(127.0, 44.0) * scale;
+    //
+    // **Never wider than half the row.** At 32 point text the button is 254 points wide, and on a board
+    // narrow enough to be at the rail's own boundary that is most of the header — so it is capped, and the
+    // word inside it is what gets shorter. A button that ran off the left of its own page would be a
+    // control drawn where nothing can reach it.
+    let add_size = Vec2::new((127.0 * scale).min(area.width() * 0.5), 44.0 * scale);
     let add = Rect::from_min_size(
         Pos2::new(area.max.x - add_size.x, area.center().y - add_size.y / 2.0),
         add_size,
@@ -559,14 +564,26 @@ pub(crate) fn primary_button(
         };
         ui.painter().rect_filled(area, egui::CornerRadius::same(8), flat);
     }
-    let galley = ui.painter().layout_no_wrap(
+    // Cut short rather than allowed to run out of the button, for `view_switch`'s reason: on a narrow board
+    // the button is capped and the word has to fit what is left of it.
+    let mut job = egui::text::LayoutJob::single_section(
         label.to_owned(),
-        egui::FontId::new(
-            look.font_size - 3.0,
-            egui::FontFamily::Name(crate::theme::BOLD_FAMILY.into()),
-        ),
-        look.palette.text_strong,
+        egui::TextFormat {
+            font_id: egui::FontId::new(
+                look.font_size - 3.0,
+                egui::FontFamily::Name(crate::theme::BOLD_FAMILY.into()),
+            ),
+            color: look.palette.text_strong,
+            ..Default::default()
+        },
     );
+    job.wrap = egui::text::TextWrapping {
+        max_width: (area.width() - 12.0).max(1.0),
+        max_rows: 1,
+        break_anywhere: false,
+        overflow_character: Some('\u{2026}'),
+    };
+    let galley = ui.painter().layout_job(job);
     ui.painter().galley(area.center() - galley.size() / 2.0, galley, look.palette.text_strong);
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)

@@ -11706,28 +11706,34 @@ fn the_board_with_its_decoration_switched_off() {
     harness.snapshot(shot("agent_tasks_flat").as_str());
 }
 
-/// `task-1765`: a real board laid out twice is the same picture, pixel for pixel.
+/// `task-1765`: the same board in two windows is the same picture, pixel for pixel.
 ///
 /// The `Decor` list being a pure function of what is drawn is asserted with no window in
 /// `vello_canvas::tests::the_same_drawing_twice_gives_an_identical_list`, over a drawing written out by
 /// hand. This is the same property over a **real board**, all the way through the rasteriser and the
-/// texture upload, which is what the other 412 accepted images quietly rest on: an image accepted today
+/// texture upload, which is what the other 414 accepted images quietly rest on: an image accepted today
 /// and compared tomorrow means nothing if the same state can produce two pictures.
+///
+/// **Two windows rather than two frames of one**, because the second frame of one window is a cache hit —
+/// the canvas compares the drawing against what it already has and hands back the same texture, which
+/// proves the cache works and not that the rasteriser is deterministic. Two windows rasterise twice.
 #[test]
-fn a_board_drawn_twice_is_the_same_picture() {
-    let mut harness = harness("");
-    did(&mut harness, "plugins run agent-tasks new-sprint Current Sprint");
-    did(&mut harness, "plugins run agent-tasks new-task Quill \u{2014} Plugin architecture for UI");
-    did(&mut harness, "plugins run agent-tasks new-task Rust vector db");
-    did(&mut harness, "plugins run agent-tasks move-task task-2 in_progress 0");
-    did(&mut harness, "plugins run agent-tasks board");
-    did(&mut harness, "plugins tab agent-tasks/board --open");
-    harness.run();
-    let first = harness.render().expect("render the board");
-    // A frame in between, so the second picture comes from a canvas that has been asked again rather than
-    // from the same one call.
-    harness.run();
-    let second = harness.render().expect("render the board again");
+fn the_same_board_in_two_windows_is_the_same_picture() {
+    fn board(harness: &mut Harness<'static, QuillApp>) {
+        did(harness, "plugins run agent-tasks new-sprint Current Sprint");
+        did(harness, "plugins run agent-tasks new-task Quill \u{2014} Plugin architecture for UI");
+        did(harness, "plugins run agent-tasks new-task Rust vector db");
+        did(harness, "plugins run agent-tasks move-task task-2 in_progress 0");
+        did(harness, "plugins run agent-tasks board");
+        did(harness, "plugins tab agent-tasks/board --open");
+        harness.run();
+    }
+    let mut one = harness("");
+    board(&mut one);
+    let first = one.render().expect("render the board");
+    let mut two = harness("");
+    board(&mut two);
+    let second = two.render().expect("render the board in a second window");
     assert_eq!(first.dimensions(), second.dimensions());
     assert!(
         first.as_raw() == second.as_raw(),
@@ -11735,22 +11741,31 @@ fn a_board_drawn_twice_is_the_same_picture() {
     );
 }
 
-/// `task-1765`: the header keeps its one action however narrow the board gets.
+/// `task-1765`: the header keeps its one action at the width the rail is admitted at.
 ///
-/// The rail is admitted as soon as 240 points are left for the page, and at that width there is no room
-/// for the heading, the count, the search box and the button. Something has to give and it must not be
-/// the button: a board somebody cannot add a ticket to is a broken board, where a heading that is cut
-/// short is a heading that is cut short. `+ Add Task` used to be the thing that was dropped.
+/// **The width is reached with the font, not with the explorer**, because the explorer is clamped at 620
+/// points and cannot squeeze the editing area far enough on this window: an earlier version of this test
+/// asked for 800, got 620, and left the board 523 points wide against a threshold of 342 — so it was not
+/// at the boundary at all, which is what the third review caught. Every measurement in the threshold
+/// scales with the editor's font except the shadow's own reach, so 32 point text raises it to about 418
+/// and the board is then within a hundred points of it.
+///
+/// At that width there is no room for the heading, the count, the search box and the button. Something
+/// has to give and it must not be the button: a board somebody cannot add a ticket to is a broken board,
+/// where a heading that is cut short is a heading that is cut short.
 #[test]
 fn the_board_keeps_add_task_at_the_width_the_rail_appears_at() {
     let mut harness = harness("");
     did(&mut harness, "plugins tab agent-tasks/board --open");
-    // As narrow as the explorer can make it, which is where the rail is only just admitted.
     did(&mut harness, "panel size explorer --width 800");
+    did(&mut harness, "settings set appearance.font.size 32");
     did(&mut harness, "plugins run agent-tasks new-sprint A sprint with a long enough name to crowd the row");
     did(&mut harness, "plugins run agent-tasks new-task Quill \u{2014} Plugin architecture for UI");
     did(&mut harness, "plugins run agent-tasks board");
     harness.run();
+    // Both, and that is the point: the rail is drawn, so this really is past the threshold, and the one
+    // action in the header survived it.
+    harness.get_by_label("Board");
     harness.get_by_label("+ Add Task");
     harness.snapshot(shot("agent_tasks_narrow_header").as_str());
 }

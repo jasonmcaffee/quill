@@ -265,8 +265,9 @@ everywhere including here.
 The budget was a third of a frame at sixty a second, about 5 ms. A four-lane board of **twenty-four** cards
 over 1400 by 900 points costs **20.7 ms** on a changed frame — a whole frame, so a drag on a full board
 runs at something like 40 a second. §9.1 of the design states the revised requirement in four lines: a
-still frame must be free, a changed frame may cost up to a frame while something is moving, it must be
-possible to say no, and the route back to the original number must be written down. The same board with **eight** cards over a 1000 by 700 pane is **7.9 ms**, and the header and the
+still frame must be free, a changed frame may cost **more** than a frame — 20.7 against a 60 Hz frame's
+16.7 — while something is actually moving, it must be possible to say no, and the route back to the
+original number must be written down. The same board with **eight** cards over a 1000 by 700 pane is **7.9 ms**, and the header and the
 rail alone are 2.0: the cards are nearly the whole of it, which is what §9.5 of the design points a sprite
 cache at. `MAX_SCALE` caps the canvas at 1.5 pixels a point because the decoration is Gaussians and
 gradients where the text — which egui draws at the display's own resolution — is not. And
