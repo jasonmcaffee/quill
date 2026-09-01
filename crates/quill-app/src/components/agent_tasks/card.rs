@@ -351,7 +351,7 @@ fn agent_badge(painter: &egui::Painter, area: Rect, task: &Task, look: &Look<'_>
         look.chrome.disc(
             area.center(),
             radius,
-            Fill::diagonal(area, lighten(ground, 0.10), darken(ground, 0.16)),
+            Fill::diagonal(area, lighten(ground, 0.04), darken(ground, 0.12)),
         );
         // The mint ring, and only while a terminal for this ticket is really running in this window. The gap
         // between the badge and the ring is the picture's: two points of dark, then two points of green.

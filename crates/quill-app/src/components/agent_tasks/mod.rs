@@ -322,8 +322,8 @@ fn rail(board: &mut AgentTasks, ui: &mut egui::Ui, look: &Look<'_>, area: Rect) 
                     radius,
                     crate::services::vello_canvas::Fill::diagonal(
                         at,
-                        lighten(look.palette.board_accent, 0.14),
-                        darken(look.palette.board_accent, 0.22),
+                        lighten(look.palette.board_accent, 0.05),
+                        darken(look.palette.board_accent, 0.09),
                     ),
                 );
             }
@@ -517,6 +517,12 @@ fn view_switch(
 
 /// A colour moved towards white, and one moved towards black.
 ///
+/// **The amounts are small.** `darken` scales every channel, so a large amount takes the blue out of a
+/// blue: at 0.22 the bottom right of the primary button was about thirty levels of blue below the
+/// reference's, which the third review measured. The picture's own gradients are shallow — `#567DF9` to
+/// `#4365E5` across the whole of `+ Add Task` — and 0.05 and 0.09 reproduce that pair to within a few
+/// units a channel.
+///
 /// What a gradient's two ends are made of. The board never names a second colour for the light end of a
 /// button: it lightens and darkens the one it already has, so the palette stays closed and a gradient can
 /// never disagree with the flat colour it was derived from.
@@ -551,7 +557,7 @@ pub(crate) fn primary_button(
         look.chrome.raised(
             area,
             14.0,
-            crate::services::vello_canvas::Fill::diagonal(area, lighten(ground, 0.14), darken(ground, 0.22)),
+            crate::services::vello_canvas::Fill::diagonal(area, lighten(ground, 0.05), darken(ground, 0.09)),
             crate::services::vello_canvas::Lift::Small,
         );
         if response.hovered() {
@@ -670,7 +676,7 @@ pub(crate) fn round_button(
         look.chrome.disc(
             area.center(),
             radius,
-            crate::services::vello_canvas::Fill::diagonal(area, lighten(ground, 0.12), darken(ground, 0.18)),
+            crate::services::vello_canvas::Fill::diagonal(area, lighten(ground, 0.05), darken(ground, 0.09)),
         );
         if response.hovered() {
             ui.painter().circle_filled(area.center(), radius, egui::Color32::from_white_alpha(24));
