@@ -719,7 +719,7 @@ fn fields(
 /// is a real distinction rather than a decorative one: a filled button among seven quiet fields reads as the
 /// thing to press, and this is the thing not to press.
 fn danger_button(ui: &mut egui::Ui, look: &Look<'_>, area: Rect, said: &str) -> bool {
-    let tint = crate::theme::color::CLOSE;
+    let tint = crate::theme::color::close();
     let response =
         ui.interact(area, ui.id().with(("agent-tasks-danger", said)), egui::Sense::click());
     if response.hovered() {

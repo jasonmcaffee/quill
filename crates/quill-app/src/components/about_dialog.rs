@@ -86,10 +86,10 @@ fn line(ui: &mut egui::Ui, body: Rect, index: usize, label: &str, value: &str) {
         Pos2::new(body.left(), body.top() + index as f32 * LINE),
         Vec2::new(body.width(), LINE),
     );
-    let after = modal::label(ui.painter(), row, row.left(), label, color::TEXT_CONTROL, 12.5);
+    let after = modal::label(ui.painter(), row, row.left(), label, color::text_control(), 12.5);
     // Nothing follows `Developed by` but the name, so the two are one sentence with one space in it;
     // the other two have a colon of their own and read as a label and a value.
-    modal::label(ui.painter(), row, after + 6.0, value, color::TEXT_STRONG, 12.5);
+    modal::label(ui.painter(), row, after + 6.0, value, color::text_strong(), 12.5);
 
     let name = format!("{label} {value}");
     let response = ui.interact(row, ui.id().with(("about-line", index)), Sense::hover());

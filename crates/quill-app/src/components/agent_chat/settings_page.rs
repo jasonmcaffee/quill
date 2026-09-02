@@ -286,7 +286,7 @@ fn permission_row(
         Rect::from_min_size(Pos2::new(area.left(), top), Vec2::new(area.width(), FIELD)),
         area.left(),
         "May",
-        color::TEXT_DIM,
+        color::text_dim(),
         11.5,
     );
     let mut left = area.left() + LABEL;
@@ -459,7 +459,7 @@ fn endpoint(
     // the composer shows when a send is refused, so the page and the pane cannot disagree.
     let provider = &configuration.providers[index];
     let (said, tint) = match why_not {
-        Some(why) => (why, color::CLOSE),
+        Some(why) => (why, color::close()),
         None => (
             match (provider.is_a_program(), provider.wants_a_key()) {
                 // **Not the path it was found at**, though `why_the_program_will_not_run` knows it
@@ -470,7 +470,7 @@ fn endpoint(
                 (false, true) => format!("Ready · key set from ${}", provider.key_env),
                 (false, false) => "Ready · no key needed".to_owned(),
             },
-            color::GIT_ADDED,
+            color::git_added(),
         ),
     };
     let painter = ui.painter_at(area);
@@ -496,8 +496,8 @@ fn endpoint(
         Stroke::new(
             1.0,
             match in_use {
-                true => color::ACCENT,
-                false => color::DIVIDER,
+                true => color::accent(),
+                false => color::divider(),
             },
         ),
         egui::StrokeKind::Inside,
@@ -518,7 +518,7 @@ fn one_field(
     hint: &str,
 ) -> Option<String> {
     let row = Rect::from_min_size(Pos2::new(area.left(), *pen), Vec2::new(area.width(), FIELD));
-    crate::components::modal::label(&ui.painter_at(area), row, row.left(), name, color::TEXT_DIM, 11.5);
+    crate::components::modal::label(&ui.painter_at(area), row, row.left(), name, color::text_dim(), 11.5);
     let box_at = Rect::from_min_max(Pos2::new(row.left() + LABEL, row.top()), row.max);
     let response = crate::components::modal::field(ui, box_at, name, value);
     if value.trim().is_empty() {
@@ -527,7 +527,7 @@ fn one_field(
             egui::Align2::LEFT_TOP,
             hint,
             egui::FontId::proportional(look.font_size * 0.82),
-            color::TEXT_FAINT,
+            color::text_faint(),
         );
     }
     *pen += FIELD + GAP * 0.6;

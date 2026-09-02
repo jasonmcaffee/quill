@@ -69,20 +69,20 @@ pub fn search_field_over(
         painter.rect(
             area,
             CornerRadius::same(size::CONTROL_CORNER),
-            color::FIELD,
-            Stroke::new(1.0, color::CONTROL_BORDER),
+            color::field(),
+            Stroke::new(1.0, color::control_border()),
             egui::StrokeKind::Inside,
         );
     }
-    icon::magnifier(&painter, Pos2::new(area.left() + 15.0, area.center().y), color::TEXT_FAINT);
+    icon::magnifier(&painter, Pos2::new(area.left() + 15.0, area.center().y), color::text_faint());
     let text_rect = field_text_rect(ui, area, 28.0);
     let mut field = ui.new_child(egui::UiBuilder::new().max_rect(text_rect));
     let response = field.add(
         egui::TextEdit::singleline(value)
-            .hint_text(egui::RichText::new(hint).color(color::TEXT_FAINT))
+            .hint_text(egui::RichText::new(hint).color(color::text_faint()))
             .frame(egui::Frame::NONE)
             .desired_width(text_rect.width())
-            .text_color(color::TEXT_CONTROL),
+            .text_color(color::text_control()),
     );
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, name));
     response
@@ -104,7 +104,7 @@ pub fn marked_text(
 ) -> std::sync::Arc<egui::Galley> {
     let mut job = egui::text::LayoutJob::default();
     let plain = egui::TextFormat { font_id: font.clone(), color: tint, ..Default::default() };
-    let marked = egui::TextFormat { font_id: font, color: color::ACCENT, ..Default::default() };
+    let marked = egui::TextFormat { font_id: font, color: color::accent(), ..Default::default() };
     for (index, character) in text.chars().enumerate() {
         let format = if marks.contains(&index) { marked.clone() } else { plain.clone() };
         job.append(&character.to_string(), 0.0, format);
@@ -150,27 +150,27 @@ pub fn dropdown_over<T>(
         painter.rect(
             area,
             CornerRadius::same(size::CONTROL_CORNER),
-            color::CONTROL,
-            Stroke::new(1.0, color::CONTROL_BORDER),
+            color::control(),
+            Stroke::new(1.0, color::control_border()),
             egui::StrokeKind::Inside,
         );
     }
     let mut text_left = area.left() + 10.0;
     if let Some(draw) = draw {
-        draw(painter, Pos2::new(text_left + 4.0, area.center().y), color::TEXT_DIM);
+        draw(painter, Pos2::new(text_left + 4.0, area.center().y), color::text_dim());
         text_left += 16.0;
     }
     let galley = painter.layout_no_wrap(
         value.to_owned(),
         egui::FontId::proportional(12.5),
-        color::TEXT_CONTROL,
+        color::text_control(),
     );
     painter.galley(
         Pos2::new(text_left, area.center().y - galley.size().y / 2.0),
         galley,
-        color::TEXT_CONTROL,
+        color::text_control(),
     );
-    icon::chevron_down(painter, Pos2::new(area.right() - 11.0, area.center().y), color::TEXT_DIM);
+    icon::chevron_down(painter, Pos2::new(area.right() - 11.0, area.center().y), color::text_dim());
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, ui.is_enabled(), name)
     });
@@ -185,8 +185,8 @@ pub fn dropdown_over<T>(
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .frame(
             egui::Frame::popup(ui.style())
-                .fill(color::CONTROL)
-                .stroke(Stroke::new(1.0, color::CONTROL_BORDER)),
+                .fill(color::control())
+                .stroke(Stroke::new(1.0, color::control_border())),
         )
         .width(area.width().max(120.0))
         .show(contents)
@@ -227,11 +227,11 @@ pub fn flyout<T>(
         egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&response)) != response.clicked();
     let painter = ui.painter();
     if open {
-        painter.rect_filled(area, CornerRadius::same(size::CONTROL_CORNER), color::ACCENT);
+        painter.rect_filled(area, CornerRadius::same(size::CONTROL_CORNER), color::accent());
     } else if response.hovered() {
-        painter.rect_filled(area, CornerRadius::same(size::CONTROL_CORNER), color::CONTROL);
+        painter.rect_filled(area, CornerRadius::same(size::CONTROL_CORNER), color::control());
     }
-    let tint = if open { color::TEXT_STRONG } else { color::TEXT_CONTROL };
+    let tint = if open { color::text_strong() } else { color::text_control() };
     draw(painter, area.center(), tint);
     response.widget_info(|| {
         egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), open, name)
@@ -240,8 +240,8 @@ pub fn flyout<T>(
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .frame(
             egui::Frame::popup(ui.style())
-                .fill(color::MENU)
-                .stroke(Stroke::new(1.0, color::CONTROL_BORDER)),
+                .fill(color::menu())
+                .stroke(Stroke::new(1.0, color::control_border())),
         )
         .width(width)
         .show(contents)
@@ -274,18 +274,18 @@ pub fn labelled_flyout<T>(
         != response.clicked();
     let painter = ui.painter();
     if open {
-        painter.rect_filled(area, CornerRadius::same(size::CONTROL_CORNER), color::CONTROL);
+        painter.rect_filled(area, CornerRadius::same(size::CONTROL_CORNER), color::control());
     } else if response.hovered() {
-        painter.rect_filled(area, CornerRadius::same(size::CONTROL_CORNER), color::CONTROL);
+        painter.rect_filled(area, CornerRadius::same(size::CONTROL_CORNER), color::control());
     }
-    let tint = if open { color::TEXT_STRONG } else { color::TEXT_CONTROL };
+    let tint = if open { color::text_strong() } else { color::text_control() };
     let galley = painter.layout_no_wrap(label.to_owned(), egui::FontId::proportional(12.5), tint);
     painter.galley(
         Pos2::new(area.left() + 9.0, area.center().y - galley.size().y / 2.0),
         galley,
         tint,
     );
-    icon::chevron_down(painter, Pos2::new(area.right() - 10.0, area.center().y), color::TEXT_DIM);
+    icon::chevron_down(painter, Pos2::new(area.right() - 10.0, area.center().y), color::text_dim());
     response.widget_info(|| {
         egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), open, name)
     });
@@ -293,8 +293,8 @@ pub fn labelled_flyout<T>(
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .frame(
             egui::Frame::popup(ui.style())
-                .fill(color::MENU)
-                .stroke(Stroke::new(1.0, color::CONTROL_BORDER)),
+                .fill(color::menu())
+                .stroke(Stroke::new(1.0, color::control_border())),
         )
         .width(width)
         .show(contents)
@@ -355,19 +355,19 @@ pub fn choice_button_over(
             );
         }
     } else if active {
-        painter.rect_filled(area, CornerRadius::same(size::CONTROL_CORNER), color::ACCENT);
+        painter.rect_filled(area, CornerRadius::same(size::CONTROL_CORNER), color::accent());
     } else if response.hovered() {
-        painter.rect_filled(area, CornerRadius::same(size::CONTROL_CORNER), color::CONTROL);
+        painter.rect_filled(area, CornerRadius::same(size::CONTROL_CORNER), color::control());
     } else {
         painter.rect(
             area,
             CornerRadius::same(size::CONTROL_CORNER),
             Color32::TRANSPARENT,
-            Stroke::new(1.0, color::CONTROL_BORDER),
+            Stroke::new(1.0, color::control_border()),
             egui::StrokeKind::Inside,
         );
     }
-    let tint = if active { color::TEXT_STRONG } else { color::TEXT_CONTROL };
+    let tint = if active { color::text_strong() } else { color::text_control() };
     let galley =
         painter.layout_no_wrap(label.to_owned(), egui::FontId::proportional(12.5), tint);
     painter.galley(area.center() - galley.size() / 2.0, galley, tint);
@@ -380,8 +380,8 @@ pub fn choice_button_over(
 /// A heading beside a row of controls in a flyout, naming what the row is for.
 pub fn row_label(painter: &egui::Painter, at: Pos2, name: &str) {
     let galley =
-        painter.layout_no_wrap(name.to_owned(), egui::FontId::proportional(11.5), color::TEXT_DIM);
-    painter.galley(Pos2::new(at.x, at.y - galley.size().y / 2.0), galley, color::TEXT_DIM);
+        painter.layout_no_wrap(name.to_owned(), egui::FontId::proportional(11.5), color::text_dim());
+    painter.galley(Pos2::new(at.x, at.y - galley.size().y / 2.0), galley, color::text_dim());
 }
 
 /// The rows of one menu, whether it hangs from the bar or from a right click.
@@ -466,10 +466,10 @@ pub fn menu_row(
     let sense = if enabled { Sense::click() } else { Sense::hover() };
     let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), height), sense);
     if response.hovered() && enabled {
-        ui.painter().rect_filled(rect, CornerRadius::same(4), color::SELECTED_ROW);
+        ui.painter().rect_filled(rect, CornerRadius::same(4), color::selected_row());
     }
     let painter = ui.painter();
-    let tint = if enabled { color::TEXT_CONTROL } else { color::TEXT_FAINT.gamma_multiply(0.6) };
+    let tint = if enabled { color::text_control() } else { color::text_faint().gamma_multiply(0.6) };
     let left = rect.left() + 8.0 + indent;
     if checked {
         // Drawn, not the character at U+2713. No font in the stack Quill hands egui has a shape for
@@ -477,7 +477,7 @@ pub fn menu_row(
         // `Raw Markdown` on the View menu in any capture of it, and the exact fault the style guide
         // already records for the shift symbol. `icon::tick` is the same tick every tick box in
         // Quill draws.
-        icon::tick(painter, Pos2::new(left + 6.0, rect.center().y), color::ACCENT);
+        icon::tick(painter, Pos2::new(left + 6.0, rect.center().y), color::accent());
     }
     let label = painter.layout_no_wrap(name.to_owned(), egui::FontId::proportional(12.5), tint);
     painter.galley(
@@ -489,12 +489,12 @@ pub fn menu_row(
         let keys = painter.layout_no_wrap(
             shortcut.to_owned(),
             egui::FontId::proportional(11.5),
-            color::TEXT_FAINT,
+            color::text_faint(),
         );
         painter.galley(
             Pos2::new(rect.right() - 8.0 - keys.size().x, rect.center().y - keys.size().y / 2.0),
             keys,
-            color::TEXT_FAINT,
+            color::text_faint(),
         );
     }
     response.widget_info(|| {
@@ -508,11 +508,11 @@ pub fn menu_heading(ui: &mut egui::Ui, name: &str, indent: f32) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 22.0), Sense::hover());
     let painter = ui.painter();
     let label =
-        painter.layout_no_wrap(name.to_owned(), egui::FontId::proportional(11.0), color::TEXT_DIM);
+        painter.layout_no_wrap(name.to_owned(), egui::FontId::proportional(11.0), color::text_dim());
     painter.galley(
         Pos2::new(rect.left() + 8.0 + indent, rect.center().y - label.size().y / 2.0),
         label,
-        color::TEXT_DIM,
+        color::text_dim(),
     );
 }
 
@@ -527,9 +527,9 @@ pub fn icon_button(
         .interact(area, ui.id().with(("icon-button", name)), Sense::click())
         .on_hover_text(name);
     if response.hovered() {
-        ui.painter().rect_filled(area, CornerRadius::same(4), color::CONTROL);
+        ui.painter().rect_filled(area, CornerRadius::same(4), color::control());
     }
-    draw(ui.painter(), area.center(), color::TEXT_DIM);
+    draw(ui.painter(), area.center(), color::text_dim());
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), name)
     });
@@ -540,9 +540,9 @@ pub fn icon_button(
 pub fn bar_button(ui: &mut egui::Ui, area: Rect, name: &str, strong: bool) -> egui::Response {
     let response = ui.interact(area, ui.id().with(("bar-button", name)), Sense::click());
     if response.hovered() {
-        ui.painter().rect_filled(area, CornerRadius::same(4), color::CONTROL);
+        ui.painter().rect_filled(area, CornerRadius::same(4), color::control());
     }
-    let tint = if strong { color::TEXT_STRONG } else { color::TEXT_CONTROL };
+    let tint = if strong { color::text_strong() } else { color::text_control() };
     let painter = ui.painter();
     let label = painter.layout_no_wrap(name.to_owned(), egui::FontId::proportional(12.5), tint);
     painter.galley(

@@ -630,7 +630,7 @@ fn quiet_button_named(
 ) -> (f32, bool) {
     let scale = look.scale();
     let tint = match danger {
-        true => crate::theme::color::CLOSE,
+        true => crate::theme::color::close(),
         false => look.palette.text_control,
     };
     let galley = ui.painter().layout_no_wrap(
@@ -716,7 +716,7 @@ fn row(
     if task.priority != Priority::Medium {
         let up = task.priority == Priority::High;
         let tint = match up {
-            true => crate::theme::color::CLOSE,
+            true => crate::theme::color::close(),
             false => look.palette.text_faint,
         };
         chevron(&painter, Pos2::new(pen + 4.0 * scale, middle), up, tint, scale);

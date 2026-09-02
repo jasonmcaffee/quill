@@ -280,21 +280,21 @@ fn configuration_section(
 /// drawn everywhere else: the accent behind it, the ordinary control fill behind the other.
 fn chooser(ui: &mut egui::Ui, area: Rect, name: &str, chosen: bool) -> bool {
     let response = ui.interact(area, ui.id().with(("mcp-chooser", name)), Sense::click());
-    let fill = if chosen || response.hovered() { color::ACCENT } else { color::CONTROL };
+    let fill = if chosen || response.hovered() { color::accent() } else { color::control() };
     let painter = ui.painter();
     painter.rect(
         area,
         CornerRadius::same(size::CONTROL_CORNER),
         fill,
-        Stroke::new(1.0, color::CONTROL_BORDER),
+        Stroke::new(1.0, color::control_border()),
         egui::StrokeKind::Inside,
     );
     let galley = painter.layout_no_wrap(
         name.to_owned(),
         egui::FontId::proportional(12.0),
-        color::TEXT_STRONG,
+        color::text_strong(),
     );
-    painter.galley(area.center() - galley.size() / 2.0, galley, color::TEXT_STRONG);
+    painter.galley(area.center() - galley.size() / 2.0, galley, color::text_strong());
     response.widget_info(|| {
         egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), chosen, name)
     });
@@ -308,7 +308,7 @@ fn block(ui: &mut egui::Ui, area: Rect, top: f32, title: &str, text: &str) -> f3
     let galley = painter.layout(
         text.to_owned(),
         egui::FontId::monospace(10.5),
-        color::TEXT_CONTROL,
+        color::text_control(),
         BLOCK_WIDTH - 24.0,
     );
     let frame = Rect::from_min_size(
@@ -318,11 +318,11 @@ fn block(ui: &mut egui::Ui, area: Rect, top: f32, title: &str, text: &str) -> f3
     painter.rect(
         frame,
         CornerRadius::same(size::CONTROL_CORNER),
-        color::FIELD,
-        Stroke::new(1.0, color::CONTROL_BORDER),
+        color::field(),
+        Stroke::new(1.0, color::control_border()),
         egui::StrokeKind::Inside,
     );
-    painter.galley(frame.min + Vec2::new(12.0, 8.0), galley, color::TEXT_CONTROL);
+    painter.galley(frame.min + Vec2::new(12.0, 8.0), galley, color::text_control());
     // Named so a screenshot test can find it, and so somebody reading the window out loud is told
     // what the block is rather than being read the whole of it.
     let response = ui.interact(frame, ui.id().with(("mcp-block", title)), Sense::hover());

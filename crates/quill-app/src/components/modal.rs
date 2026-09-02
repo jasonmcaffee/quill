@@ -158,8 +158,8 @@ pub fn show<R>(
         .backdrop_color(Color32::from_black_alpha(120))
         .frame(
             egui::Frame::NONE
-                .fill(color::EXPLORER)
-                .stroke(Stroke::new(1.0, color::CONTROL_BORDER))
+                .fill(color::explorer())
+                .stroke(Stroke::new(1.0, color::control_border()))
                 .corner_radius(CornerRadius::same(10)),
         )
         .show(ctx, |ui| {
@@ -356,12 +356,12 @@ pub fn header(ui: &mut egui::Ui, area: Rect, title: &str) -> bool {
 pub fn header_of(ui: &mut egui::Ui, area: Rect, key: Option<&str>, title: &str) -> bool {
     let bar = Rect::from_min_size(area.min, Vec2::new(area.width(), HEADER));
     let painter = ui.painter_at(area);
-    painter.rect_filled(bar, CornerRadius { nw: 10, ne: 10, sw: 0, se: 0 }, color::TITLE_BAR);
+    painter.rect_filled(bar, CornerRadius { nw: 10, ne: 10, sw: 0, se: 0 }, color::title_bar());
     let mut pen = area.left() + 20.0;
     if let Some(key) = key {
         let said =
-            painter.layout_no_wrap(key.to_owned(), egui::FontId::monospace(12.0), color::TEXT_DIM);
-        painter.galley(Pos2::new(pen, bar.center().y - said.size().y / 2.0), said.clone(), color::TEXT_DIM);
+            painter.layout_no_wrap(key.to_owned(), egui::FontId::monospace(12.0), color::text_dim());
+        painter.galley(Pos2::new(pen, bar.center().y - said.size().y / 2.0), said.clone(), color::text_dim());
         pen += said.size().x + 14.0;
     }
     // **Bold only when there is a key in front of it.** A dialog's title is one short phrase and has always
@@ -372,12 +372,12 @@ pub fn header_of(ui: &mut egui::Ui, area: Rect, key: Option<&str>, title: &str) 
         true => egui::FontId::new(13.0, egui::FontFamily::Name(crate::theme::BOLD_FAMILY.into())),
         false => egui::FontId::proportional(13.0),
     };
-    let galley = painter.layout_no_wrap(title.to_owned(), face, color::TEXT_STRONG);
+    let galley = painter.layout_no_wrap(title.to_owned(), face, color::text_strong());
     let width = galley.size().x;
     painter.galley(
         Pos2::new(pen, bar.center().y - galley.size().y / 2.0),
         galley,
-        color::TEXT_STRONG,
+        color::text_strong(),
     );
     let title_at = pen;
     // The title is **named** as well as drawn, so a test and assistive technology can say which modal is open.
@@ -396,7 +396,7 @@ pub fn header_of(ui: &mut egui::Ui, area: Rect, key: Option<&str>, title: &str) 
     named.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, name.clone()));
     painter.line_segment(
         [Pos2::new(bar.left(), bar.bottom()), Pos2::new(bar.right(), bar.bottom())],
-        Stroke::new(1.0, color::DIVIDER),
+        Stroke::new(1.0, color::divider()),
     );
     let close = Rect::from_center_size(Pos2::new(area.right() - 24.0, bar.center().y), Vec2::splat(22.0));
     controls::icon_button(ui, close, "Close", icon::cross)
@@ -484,7 +484,7 @@ pub fn footer_confirmed_by(
     let bar = Rect::from_min_max(Pos2::new(area.left(), area.bottom() - FOOTER), area.max);
     ui.painter_at(area).line_segment(
         [Pos2::new(bar.left(), bar.top()), Pos2::new(bar.right(), bar.top())],
-        Stroke::new(1.0, color::DIVIDER),
+        Stroke::new(1.0, color::divider()),
     );
     let mut pressed = None;
     let mut right = bar.right() - 20.0;
@@ -517,20 +517,20 @@ pub fn button(ui: &mut egui::Ui, area: Rect, name: &str, enabled: bool, primary:
     let sense = if enabled { Sense::click() } else { Sense::hover() };
     let response = ui.interact(area, ui.id().with(("modal-button", name)), sense);
     let fill = match (enabled, primary, response.hovered()) {
-        (false, _, _) => color::CONTROL.gamma_multiply(0.6),
-        (true, true, _) => color::ACCENT,
-        (true, false, true) => color::CONTROL.gamma_multiply(1.25),
-        (true, false, false) => color::CONTROL,
+        (false, _, _) => color::control().gamma_multiply(0.6),
+        (true, true, _) => color::accent(),
+        (true, false, true) => color::control().gamma_multiply(1.25),
+        (true, false, false) => color::control(),
     };
     let painter = ui.painter();
     painter.rect(
         area,
         CornerRadius::same(size::CONTROL_CORNER),
         fill,
-        Stroke::new(1.0, if primary && enabled { color::ACCENT } else { color::CONTROL_BORDER }),
+        Stroke::new(1.0, if primary && enabled { color::accent() } else { color::control_border() }),
         egui::StrokeKind::Inside,
     );
-    let tint = if enabled { color::TEXT_STRONG } else { color::TEXT_FAINT };
+    let tint = if enabled { color::text_strong() } else { color::text_faint() };
     let galley = painter.layout_no_wrap(name.to_owned(), egui::FontId::proportional(12.5), tint);
     painter.galley(area.center() - galley.size() / 2.0, galley, tint);
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, name));
@@ -541,12 +541,12 @@ pub fn button(ui: &mut egui::Ui, area: Rect, name: &str, enabled: bool, primary:
 pub fn section(ui: &mut egui::Ui, area: Rect, top: f32, name: &str) -> f32 {
     let painter = ui.painter_at(area.expand(20.0));
     let galley =
-        painter.layout_no_wrap(name.to_owned(), egui::FontId::proportional(12.5), color::TEXT_STRONG);
+        painter.layout_no_wrap(name.to_owned(), egui::FontId::proportional(12.5), color::text_strong());
     let y = top + 8.0;
-    painter.galley(Pos2::new(area.left(), y - galley.size().y / 2.0), galley.clone(), color::TEXT_STRONG);
+    painter.galley(Pos2::new(area.left(), y - galley.size().y / 2.0), galley.clone(), color::text_strong());
     painter.line_segment(
         [Pos2::new(area.left() + galley.size().x + 12.0, y), Pos2::new(area.right(), y)],
-        Stroke::new(1.0, color::DIVIDER),
+        Stroke::new(1.0, color::divider()),
     );
     y + 18.0
 }
@@ -555,9 +555,9 @@ pub fn section(ui: &mut egui::Ui, area: Rect, top: f32, name: &str) -> f32 {
 pub fn note(ui: &mut egui::Ui, area: Rect, top: f32, text: &str) -> f32 {
     let painter = ui.painter_at(area.expand(20.0));
     let galley =
-        painter.layout(text.to_owned(), egui::FontId::proportional(11.5), color::TEXT_FAINT, area.width());
+        painter.layout(text.to_owned(), egui::FontId::proportional(11.5), color::text_faint(), area.width());
     let height = galley.size().y;
-    painter.galley(Pos2::new(area.left(), top), galley, color::TEXT_FAINT);
+    painter.galley(Pos2::new(area.left(), top), galley, color::text_faint());
     top + height + 8.0
 }
 
@@ -569,19 +569,19 @@ pub fn check(ui: &mut egui::Ui, row: Rect, name: &str, value: &mut bool) -> bool
     painter.rect(
         box_rect,
         CornerRadius::same(3),
-        if *value { color::ACCENT } else { color::FIELD },
-        Stroke::new(1.0, if *value { color::ACCENT } else { color::CONTROL_BORDER }),
+        if *value { color::accent() } else { color::field() },
+        Stroke::new(1.0, if *value { color::accent() } else { color::control_border() }),
         egui::StrokeKind::Inside,
     );
     if *value {
-        icon::tick(painter, box_rect.center(), color::TEXT_STRONG);
+        icon::tick(painter, box_rect.center(), color::text_strong());
     }
     let galley =
-        painter.layout_no_wrap(name.to_owned(), egui::FontId::proportional(12.5), color::TEXT_CONTROL);
+        painter.layout_no_wrap(name.to_owned(), egui::FontId::proportional(12.5), color::text_control());
     painter.galley(
         Pos2::new(box_rect.right() + 10.0, row.center().y - galley.size().y / 2.0),
         galley,
-        color::TEXT_CONTROL,
+        color::text_control(),
     );
     response.widget_info(|| {
         egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), *value, name)
@@ -598,8 +598,8 @@ pub fn field(ui: &mut egui::Ui, area: Rect, name: &str, value: &mut String) -> e
     ui.painter().rect(
         area,
         CornerRadius::same(size::CONTROL_CORNER),
-        color::FIELD,
-        Stroke::new(1.0, color::CONTROL_BORDER),
+        color::field(),
+        Stroke::new(1.0, color::control_border()),
         egui::StrokeKind::Inside,
     );
     let text_rect = crate::components::controls::field_text_rect(ui, area, 8.0);
@@ -608,7 +608,7 @@ pub fn field(ui: &mut egui::Ui, area: Rect, name: &str, value: &mut String) -> e
         egui::TextEdit::singleline(value)
             .frame(egui::Frame::NONE)
             .desired_width(text_rect.width())
-            .text_color(color::TEXT_CONTROL),
+            .text_color(color::text_control()),
     );
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, name));
     response
@@ -630,9 +630,9 @@ pub fn row(
     let response = ui.interact(rect, ui.id().with(("modal-row", id)), Sense::click());
     let pill = rect.shrink2(Vec2::new(8.0, 1.0));
     if chosen {
-        ui.painter().rect_filled(pill, CornerRadius::same(5), color::SELECTED_ROW);
+        ui.painter().rect_filled(pill, CornerRadius::same(5), color::selected_row());
     } else if response.hovered() {
-        ui.painter().rect_filled(pill, CornerRadius::same(5), color::CONTROL);
+        ui.painter().rect_filled(pill, CornerRadius::same(5), color::control());
     }
     draw(ui.painter(), rect);
     response.widget_info(|| {
@@ -653,8 +653,8 @@ pub fn monospaced(ui: &mut egui::Ui, area: Rect, id: &str, text: &str) {
     ui.painter().rect(
         area,
         CornerRadius::same(size::CONTROL_CORNER),
-        color::EDITOR,
-        Stroke::new(1.0, color::DIVIDER),
+        color::editor(),
+        Stroke::new(1.0, color::divider()),
         egui::StrokeKind::Inside,
     );
     let inner = area.shrink(8.0);
@@ -664,15 +664,15 @@ pub fn monospaced(ui: &mut egui::Ui, area: Rect, id: &str, text: &str) {
         for line in text.lines() {
             // A diff reads by colour before it reads by sign, which is the whole point of one.
             let tint = match line.chars().next() {
-                Some('+') if !line.starts_with("+++") => color::GIT_ADDED,
-                Some('-') if !line.starts_with("---") => color::CLOSE,
-                Some('@') => color::ACCENT,
-                _ => color::TEXT_CONTROL,
+                Some('+') if !line.starts_with("+++") => color::git_added(),
+                Some('-') if !line.starts_with("---") => color::close(),
+                Some('@') => color::accent(),
+                _ => color::text_control(),
             };
             ui.label(egui::RichText::new(line).monospace().size(11.5).color(tint));
         }
         if text.trim().is_empty() {
-            ui.label(egui::RichText::new("Nothing to show.").size(11.5).color(color::TEXT_FAINT));
+            ui.label(egui::RichText::new("Nothing to show.").size(11.5).color(color::text_faint()));
         }
     });
 }

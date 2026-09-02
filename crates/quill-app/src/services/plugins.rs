@@ -162,7 +162,7 @@ impl Kind {
 /// A colour scheme: one colour per kind of token.
 ///
 /// **It colours the tokens and not the background.** Dracula's own `#282A36` is not used, and
-/// Quill's `theme::color::EDITOR` stays, because the window letting the desktop show through is the
+/// Quill's `theme::color::editor()` stays, because the window letting the desktop show through is the
 /// whole character of the product and a scheme that repaints the editing area opaque would take that
 /// away in exchange for being a shade nearer a screenshot.
 #[derive(Debug, Clone, PartialEq, Eq)]

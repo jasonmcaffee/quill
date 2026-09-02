@@ -152,7 +152,7 @@ fn show_list(
     configurations: &RunConfigurations,
     running: &[String],
 ) {
-    ui.painter().rect_filled(area, egui::CornerRadius::same(6), color::EXPLORER_FOOTER);
+    ui.painter().rect_filled(area, egui::CornerRadius::same(6), color::explorer_footer());
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(area.shrink(4.0)));
     child.set_clip_rect(area);
     let mut chosen: Option<String> = None;
@@ -164,8 +164,8 @@ fn show_list(
             // A temporary is drawn in the quiet colour, exactly as it is in the widget's flyout:
             // it is something that was run rather than something somebody kept.
             let tint = match origin {
-                Origin::Permanent => color::TEXT_CONTROL,
-                Origin::Temporary | Origin::Suggested => color::TEXT_DIM,
+                Origin::Permanent => color::text_control(),
+                Origin::Temporary | Origin::Suggested => color::text_dim(),
             };
             let label = name.clone();
             let response = modal::row(ui, &name, &name, is_chosen, move |painter, row| {
@@ -174,7 +174,7 @@ fn show_list(
                     crate::theme::icon::state_dot(
                         painter,
                         Pos2::new(left + 4.0, row.center().y),
-                        color::GIT_ADDED,
+                        color::git_added(),
                     );
                 }
                 left += 14.0;
@@ -187,7 +187,7 @@ fn show_list(
         if configurations.is_empty() {
             ui.add_space(6.0);
             ui.label(
-                egui::RichText::new("  Nothing yet. Press Add.").size(11.5).color(color::TEXT_FAINT),
+                egui::RichText::new("  Nothing yet. Press Add.").size(11.5).color(color::text_faint()),
             );
         }
     });
@@ -254,7 +254,7 @@ fn show_fields(
         ("Environment", "Run configuration environment", &mut configuration.env),
     ] {
         let row = Rect::from_min_size(Pos2::new(area.left(), pen), Vec2::new(area.width(), 26.0));
-        modal::label(ui.painter(), row, row.left(), label, color::TEXT_CONTROL, 12.5);
+        modal::label(ui.painter(), row, row.left(), label, color::text_control(), 12.5);
         let field = Rect::from_min_size(
             Pos2::new(row.left() + 104.0, row.top()),
             Vec2::new((row.width() - 104.0).max(120.0), 26.0),

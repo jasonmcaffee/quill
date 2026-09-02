@@ -143,7 +143,7 @@ fn pill(parts: &Parts<'_>, ui: &mut egui::Ui, look: &Look<'_>, area: Rect) -> Ve
             "Quill tools",
             icon::terminal,
             parts.configuration.tools,
-            crate::theme::color::AGENT,
+            crate::theme::color::agent(),
             Act::ToggleTools,
         ));
     }
@@ -217,7 +217,7 @@ fn pill(parts: &Parts<'_>, ui: &mut egui::Ui, look: &Look<'_>, area: Rect) -> Ve
 fn used(parts: &Parts<'_>, ui: &mut egui::Ui, look: &Look<'_>, area: Rect) {
     let painter = ui.painter_at(area);
     let (said, tint) = match parts.problem {
-        Some(problem) => (problem.to_owned(), crate::theme::color::CLOSE),
+        Some(problem) => (problem.to_owned(), crate::theme::color::close()),
         None => (
             format!(
                 "in {} · out {}",
@@ -399,8 +399,8 @@ fn prompt(parts: Parts<'_>, ui: &mut egui::Ui, look: &Look<'_>, area: Rect) -> V
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ready, name.to_owned()));
     let (start, end) = match (busy, ready) {
         (true, _) => (
-            crate::theme::color::CLOSE,
-            crate::theme::color::CLOSE.gamma_multiply(0.75),
+            crate::theme::color::close(),
+            crate::theme::color::close().gamma_multiply(0.75),
         ),
         (false, true) => (
             look.palette.board_accent,

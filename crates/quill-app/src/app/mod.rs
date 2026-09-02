@@ -1466,7 +1466,7 @@ impl QuillApp {
     /// The alpha is what makes the desktop visible through the window. It is applied to the background
     /// only; text is painted separately at full alpha.
     pub fn background(&self) -> Color32 {
-        theme::faded(color::EDITOR, self.settings.opacity)
+        theme::faded(color::editor(), self.settings.opacity)
     }
 
     // ------------------------------------------------------------------- the marked passages
@@ -4408,7 +4408,7 @@ impl QuillApp {
             self.files.at_mut(index).coloured_revision = Some(revision);
             return;
         };
-        let base = quill_core::Color::rgb(color::TEXT.r(), color::TEXT.g(), color::TEXT.b());
+        let base = quill_core::Color::rgb(color::text().r(), color::text().g(), color::text().b());
         let text = self.files.at(index).document.text().to_string();
         if text.len() > Self::COLOUR_LIMIT {
             self.message = Some(format!(
@@ -5706,26 +5706,26 @@ impl QuillApp {
         let base = quill_core::CharStyle {
             family: self.settings.font_family.clone(),
             size: self.document().active_style().size,
-            color: quill_core::Color::rgb(color::TEXT.r(), color::TEXT.g(), color::TEXT.b()),
+            color: quill_core::Color::rgb(color::text().r(), color::text().g(), color::text().b()),
             ..quill_core::CharStyle::default()
         };
         let colors = quill_core::PreviewColors {
             text: quill_core::Color::rgb(
-                color::TEXT_STRONG.r(),
-                color::TEXT_STRONG.g(),
-                color::TEXT_STRONG.b(),
+                color::text_strong().r(),
+                color::text_strong().g(),
+                color::text_strong().b(),
             ),
             code: quill_core::Color::rgb(0x7E, 0xD3, 0x9B),
-            link: quill_core::Color::rgb(color::ACCENT.r(), color::ACCENT.g(), color::ACCENT.b()),
+            link: quill_core::Color::rgb(color::accent().r(), color::accent().g(), color::accent().b()),
             quiet: quill_core::Color::rgb(
-                color::TEXT_DIM.r(),
-                color::TEXT_DIM.g(),
-                color::TEXT_DIM.b(),
+                color::text_dim().r(),
+                color::text_dim().g(),
+                color::text_dim().b(),
             ),
             rule: quill_core::Color::rgb(
-                color::DIVIDER.r(),
-                color::DIVIDER.g(),
-                color::DIVIDER.b(),
+                color::divider().r(),
+                color::divider().g(),
+                color::divider().b(),
             ),
         };
         let mono = self.renderer.monospaced_family();
@@ -6103,7 +6103,7 @@ impl QuillApp {
         ui.painter().rect_filled(
             full,
             CornerRadius::same(size::WINDOW_CORNER),
-            theme::faded(color::EDITOR, self.settings.opacity),
+            theme::faded(color::editor(), self.settings.opacity),
         );
 
         let title_rect = Rect::from_min_size(full.min, Vec2::new(full.width(), size::TITLE_BAR));
@@ -7741,7 +7741,7 @@ impl QuillApp {
                     name: file.name(),
                     modified: file.document.is_modified(),
                     transient: file.transient,
-                    marker: file.path().map(theme::file_marker).unwrap_or(color::FILE_TEXT),
+                    marker: file.path().map(theme::file_marker).unwrap_or(color::file_text()),
                     icon,
                 }
             })
@@ -8630,7 +8630,7 @@ impl QuillApp {
             self.preview_layout(),
             origin,
             self.files.active().preview_selection.range(),
-            color::TEXT_SELECTION,
+            color::text_selection(),
             2.0,
         );
         editor_view::paint_text(&painter_ui, &self.renderer, self.preview_layout(), origin);
@@ -8736,7 +8736,7 @@ impl QuillApp {
             if rect.bottom() < clip.top() || rect.top() > clip.bottom() {
                 continue;
             }
-            ui.painter().rect_filled(rect, 4.0, color::CODE_PANEL);
+            ui.painter().rect_filled(rect, 4.0, color::code_panel());
         }
     }
 
@@ -8758,7 +8758,7 @@ impl QuillApp {
             if span.start >= bytes.end {
                 break;
             }
-            editor_view::paint_behind(ui, layout, origin, span.clone(), color::CODE_CHIP, 3.0);
+            editor_view::paint_behind(ui, layout, origin, span.clone(), color::code_chip(), 3.0);
         }
     }
 
@@ -8796,9 +8796,9 @@ impl QuillApp {
                     let galley = painter.layout_no_wrap(
                         words,
                         egui::FontId::proportional(13.0),
-                        color::TEXT_DIM,
+                        color::text_dim(),
                     );
-                    painter.galley(at, galley, color::TEXT_DIM);
+                    painter.galley(at, galley, color::text_dim());
                 }
             }
         }
@@ -9372,8 +9372,8 @@ impl QuillApp {
             self.layout(),
             origin,
             editor_view::PaintStyle {
-                selection: color::TEXT_SELECTION,
-                caret: color::ACCENT,
+                selection: color::text_selection(),
+                caret: color::accent(),
                 show_caret: has_keyboard,
                 underline: symbol.word.clone(),
                 execution_point,
@@ -9559,11 +9559,11 @@ fn line_number_in_file(path: &Path, offset: usize) -> usize {
 
 fn git_colour(state: quill_git::State) -> Color32 {
     match state {
-        quill_git::State::Untracked => color::GIT_UNTRACKED,
-        quill_git::State::Added | quill_git::State::Copied => color::GIT_ADDED,
-        quill_git::State::Unmerged => color::CLOSE,
-        quill_git::State::Ignored | quill_git::State::Unchanged => color::TEXT_FAINT.gamma_multiply(0.7),
-        _ => color::GIT_MODIFIED,
+        quill_git::State::Untracked => color::git_untracked(),
+        quill_git::State::Added | quill_git::State::Copied => color::git_added(),
+        quill_git::State::Unmerged => color::close(),
+        quill_git::State::Ignored | quill_git::State::Unchanged => color::text_faint().gamma_multiply(0.7),
+        _ => color::git_modified(),
     }
 }
 

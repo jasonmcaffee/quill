@@ -272,22 +272,22 @@ pub fn show_problem(
     painter.rect(
         panel,
         CornerRadius::same(6),
-        color::EXPLORER,
-        Stroke::new(1.0, color::CONTROL_BORDER),
+        color::explorer(),
+        Stroke::new(1.0, color::control_border()),
         egui::StrokeKind::Inside,
     );
-    let heading = if problem.unsupported { color::TEXT_DIM } else { color::UNSAVED };
+    let heading = if problem.unsupported { color::text_dim() } else { color::unsaved() };
     let mut y = panel.top() + 12.0;
     y += write(painter, panel, y, &problem.message(), heading, 14.0);
     if !problem.text.trim().is_empty() {
-        y += write(painter, panel, y, &problem.text, color::TEXT_DIM, 13.0);
+        y += write(painter, panel, y, &problem.text, color::text_dim(), 13.0);
     }
     y += 8.0;
     for line in source.lines().take(200) {
         if y > panel.bottom() - 14.0 {
             break;
         }
-        y += write(painter, panel, y, line, color::TEXT_DIM, 12.5);
+        y += write(painter, panel, y, line, color::text_dim(), 12.5);
     }
 }
 

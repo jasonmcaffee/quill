@@ -134,10 +134,10 @@ pub fn show_with(
     plugins: &[PluginButton],
 ) -> RailOutcome {
     let painter = ui.painter_at(area);
-    painter.rect_filled(area, CornerRadius::ZERO, crate::theme::faded(color::EXPLORER_FOOTER, opacity));
+    painter.rect_filled(area, CornerRadius::ZERO, crate::theme::faded(color::explorer_footer(), opacity));
     painter.line_segment(
         [Pos2::new(area.right(), area.top()), Pos2::new(area.right(), area.bottom())],
-        egui::Stroke::new(1.0, color::DIVIDER),
+        egui::Stroke::new(1.0, color::divider()),
     );
 
     let mut outcome = RailOutcome::default();
@@ -339,16 +339,16 @@ fn rail_button(
         .on_hover_text(name);
     let painter = ui.painter();
     if on {
-        painter.rect_filled(hit, CornerRadius::same(size::CONTROL_CORNER), color::SELECTED_ROW);
+        painter.rect_filled(hit, CornerRadius::same(size::CONTROL_CORNER), color::selected_row());
     } else if response.hovered() && enabled {
-        painter.rect_filled(hit, CornerRadius::same(size::CONTROL_CORNER), color::CONTROL);
+        painter.rect_filled(hit, CornerRadius::same(size::CONTROL_CORNER), color::control());
     }
     let tint = if !enabled {
-        color::TEXT_FAINT.gamma_multiply(0.6)
+        color::text_faint().gamma_multiply(0.6)
     } else if on {
-        color::TEXT_STRONG
+        color::text_strong()
     } else {
-        color::TEXT_DIM
+        color::text_dim()
     };
     draw(painter, centre, tint);
     response.widget_info(|| {

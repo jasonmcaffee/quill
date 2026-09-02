@@ -83,9 +83,9 @@ fn header(ui: &mut egui::Ui, area: Rect, state: &mut PluginsState, plugins: &Plu
     let heading = ui.painter().layout_no_wrap(
         "Plugins".to_owned(),
         egui::FontId::proportional(13.5),
-        color::TEXT_STRONG,
+        color::text_strong(),
     );
-    ui.painter().galley(Pos2::new(area.left() + 20.0, top), heading, color::TEXT_STRONG);
+    ui.painter().galley(Pos2::new(area.left() + 20.0, top), heading, color::text_strong());
 
     let mut pen = area.left() + 120.0;
     for (tab, name) in [(Tab::Marketplace, "Marketplace"), (Tab::Installed, "Installed")] {
@@ -102,14 +102,14 @@ fn header(ui: &mut egui::Ui, area: Rect, state: &mut PluginsState, plugins: &Plu
             ui.painter().rect(
                 rect,
                 CornerRadius::same(size::CONTROL_CORNER),
-                color::SELECTED_ROW,
-                Stroke::new(1.0, color::ACCENT),
+                color::selected_row(),
+                Stroke::new(1.0, color::accent()),
                 egui::StrokeKind::Inside,
             );
         } else if response.hovered() {
-            ui.painter().rect_filled(rect, CornerRadius::same(size::CONTROL_CORNER), color::CONTROL);
+            ui.painter().rect_filled(rect, CornerRadius::same(size::CONTROL_CORNER), color::control());
         }
-        let tint = if chosen { color::TEXT_STRONG } else { color::TEXT_CONTROL };
+        let tint = if chosen { color::text_strong() } else { color::text_control() };
         modal::label(ui.painter(), rect, rect.left() + 12.0, &label, tint, 12.0);
         response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, chosen, name));
         if response.clicked() {
@@ -123,19 +123,19 @@ fn header(ui: &mut egui::Ui, area: Rect, state: &mut PluginsState, plugins: &Plu
     ui.painter().rect(
         search,
         CornerRadius::same(size::CONTROL_CORNER),
-        color::FIELD,
-        Stroke::new(1.0, color::CONTROL_BORDER),
+        color::field(),
+        Stroke::new(1.0, color::control_border()),
         egui::StrokeKind::Inside,
     );
-    icon::magnifier(ui.painter(), Pos2::new(search.left() + 13.0, search.center().y), color::TEXT_FAINT);
+    icon::magnifier(ui.painter(), Pos2::new(search.left() + 13.0, search.center().y), color::text_faint());
     let text_rect = crate::components::controls::field_text_rect(ui, search, 26.0);
     let mut field = ui.new_child(egui::UiBuilder::new().max_rect(text_rect));
     let response = field.add(
         egui::TextEdit::singleline(&mut state.search)
-            .hint_text(egui::RichText::new("Search plugins").color(color::TEXT_FAINT))
+            .hint_text(egui::RichText::new("Search plugins").color(color::text_faint()))
             .frame(egui::Frame::NONE)
             .desired_width(text_rect.width())
-            .text_color(color::TEXT_CONTROL),
+            .text_color(color::text_control()),
     );
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Search plugins")
@@ -154,8 +154,8 @@ fn list_of_plugins(
     ui.painter().rect(
         area,
         CornerRadius::same(size::CONTROL_CORNER),
-        color::EXPLORER_FOOTER,
-        Stroke::new(1.0, color::DIVIDER),
+        color::explorer_footer(),
+        Stroke::new(1.0, color::divider()),
         egui::StrokeKind::Inside,
     );
     let needle = state.search.trim().to_lowercase();
@@ -178,7 +178,7 @@ fn list_of_plugins(
     egui::ScrollArea::vertical().id_salt("plugin-list").show(&mut child, |ui| {
         if showing.is_empty() {
             ui.add_space(8.0);
-            ui.label(egui::RichText::new("  Nothing matches.").size(11.5).color(color::TEXT_FAINT));
+            ui.label(egui::RichText::new("  Nothing matches.").size(11.5).color(color::text_faint()));
         }
         for plugin in &showing {
             let picked = state.chosen.as_deref() == Some(plugin.id.as_str());
@@ -191,18 +191,18 @@ fn list_of_plugins(
                 if let Some(picture) = &picture {
                     crate::services::icons::draw(painter, Pos2::new(rect.left() + 22.0, rect.center().y), picture);
                 }
-                let tint = if picked { color::TEXT_STRONG } else { color::TEXT_CONTROL };
+                let tint = if picked { color::text_strong() } else { color::text_control() };
                 modal::label(painter, rect, rect.left() + 40.0, &name, tint, 12.5);
                 let lower = Rect::from_min_size(
                     Pos2::new(rect.left(), rect.center().y + 8.0),
                     Vec2::new(rect.width(), 14.0),
                 );
-                modal::label(painter, lower, rect.left() + 40.0, &under, color::TEXT_FAINT, 10.5);
+                modal::label(painter, lower, rect.left() + 40.0, &under, color::text_faint(), 10.5);
                 if enabled {
                     let box_rect =
                         Rect::from_center_size(Pos2::new(rect.right() - 20.0, rect.center().y), Vec2::splat(15.0));
-                    painter.rect_filled(box_rect, CornerRadius::same(3), color::ACCENT);
-                    icon::tick(painter, box_rect.center(), color::TEXT_STRONG);
+                    painter.rect_filled(box_rect, CornerRadius::same(3), color::accent());
+                    icon::tick(painter, box_rect.center(), color::text_strong());
                 }
             });
             if response.clicked() {
@@ -229,9 +229,9 @@ fn row(
     let response = ui.interact(rect, ui.id().with(("plugin-row", id)), Sense::click());
     let pill = rect.shrink2(Vec2::new(6.0, 2.0));
     if chosen {
-        ui.painter().rect_filled(pill, CornerRadius::same(5), color::SELECTED_ROW);
+        ui.painter().rect_filled(pill, CornerRadius::same(5), color::selected_row());
     } else if response.hovered() {
-        ui.painter().rect_filled(pill, CornerRadius::same(5), color::CONTROL);
+        ui.painter().rect_filled(pill, CornerRadius::same(5), color::control());
     }
     let upper = Rect::from_min_size(rect.min, Vec2::new(rect.width(), 26.0));
     draw(ui.painter(), upper);
@@ -257,9 +257,9 @@ fn detail(
     let title = ui.painter().layout_no_wrap(
         plugin.name.clone(),
         egui::FontId::proportional(16.0),
-        color::TEXT_STRONG,
+        color::text_strong(),
     );
-    ui.painter().galley(Pos2::new(area.left() + 26.0, pen), title.clone(), color::TEXT_STRONG);
+    ui.painter().galley(Pos2::new(area.left() + 26.0, pen), title.clone(), color::text_strong());
     pen += title.size().y + 6.0;
 
     let vendor = format!("{}  \u{00B7}  version {}", plugin.vendor, plugin.version);
@@ -292,10 +292,10 @@ fn detail(
     egui::ScrollArea::vertical().id_salt("plugin-detail").show(&mut child, |ui| {
         let heading = |ui: &mut egui::Ui, text: &str| {
             ui.add_space(6.0);
-            ui.label(egui::RichText::new(text).size(12.5).color(color::TEXT_STRONG));
+            ui.label(egui::RichText::new(text).size(12.5).color(color::text_strong()));
         };
         let note = |ui: &mut egui::Ui, text: String| {
-            ui.label(egui::RichText::new(text).size(11.5).color(color::TEXT_FAINT));
+            ui.label(egui::RichText::new(text).size(11.5).color(color::text_faint()));
         };
         heading(ui, "Overview");
         note(ui, plugin.description.clone());

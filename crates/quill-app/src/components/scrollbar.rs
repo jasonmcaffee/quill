@@ -172,7 +172,7 @@ pub fn paint(ui: &egui::Ui, bar: &Bar, id: &str, active: bool) {
         painter.rect_filled(
             bar.track.shrink2(Vec2::new((GRAB - THICK) / 2.0, 0.0)),
             CornerRadius::same(4),
-            color::DIVIDER.gamma_multiply(strength * 0.6),
+            color::divider().gamma_multiply(strength * 0.6),
         );
     }
     // Quiet, the thumb is a control's grey and as thin as a mark can be and still be seen; used, it
@@ -182,7 +182,7 @@ pub fn paint(ui: &egui::Ui, bar: &Bar, id: &str, active: bool) {
         bar.thumb.center(),
         Vec2::new(THIN + (THICK - THIN) * strength, bar.thumb.height()),
     );
-    painter.rect_filled(thumb, CornerRadius::same(4), mix(color::CONTROL, color::TEXT_DIM, strength));
+    painter.rect_filled(thumb, CornerRadius::same(4), mix(color::control(), color::text_dim(), strength));
 }
 
 /// A colour part of the way between two, which is how the thumb fades.

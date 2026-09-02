@@ -166,7 +166,7 @@ impl<'a> Look<'a> {
             font_size: settings.font_size,
             monospace_size: settings.terminal_font_size,
             opacity: settings.opacity,
-            palette: Palette::QUILL,
+            palette: Palette::active(),
             chrome: &NO_CHROME,
             highlighter: None,
             row_height: size::ROW,
@@ -293,39 +293,46 @@ pub struct Palette {
     /// The violet a card's agent badge is, and the green ring it wears while its terminal is running.
     pub agent: Color32,
     pub attached: Color32,
-    /// The blue a board's own buttons are, which is the picture's rather than Quill's — see `color::BOARD_ACCENT`.
+    /// The blue a board's own buttons are, which is the picture's rather than Quill's — see `color::board_accent()`.
     pub board_accent: Color32,
 }
 
 impl Palette {
-    /// Quill's own palette, which is the only one there is.
-    pub const QUILL: Palette = Palette {
-        editor: color::EDITOR,
-        panel: color::EXPLORER,
-        panel_footer: color::EXPLORER_FOOTER,
-        control: color::CONTROL,
-        control_border: color::CONTROL_BORDER,
-        field: color::FIELD,
-        divider: color::DIVIDER,
-        menu: color::MENU,
-        accent: color::ACCENT,
-        selected_row: color::SELECTED_ROW,
-        unsaved: color::UNSAVED,
-        text_strong: color::TEXT_STRONG,
-        text: color::TEXT,
-        text_control: color::TEXT_CONTROL,
-        text_dim: color::TEXT_DIM,
-        text_faint: color::TEXT_FAINT,
-        added: color::GIT_ADDED,
-        modified: color::GIT_MODIFIED,
-        board_page: color::EDITOR,
-        board_lane: color::EXPLORER,
-        board_card: color::CODE_PANEL,
-        board_well: color::FIELD,
-        agent: color::AGENT,
-        attached: color::ATTACHED,
-        board_accent: color::BOARD_ACCENT,
-    };
+    /// The palette of the theme this window is painting in.
+    ///
+    /// A function rather than the `const QUILL` it was until `task-1776`: a colour is read out of the
+    /// active theme now, so there is no constant left to be. What is unchanged is the thing the note above
+    /// is about — a provider is handed **one** palette, worked out here, and a manifest still has no way
+    /// to add a colour to it.
+    pub fn active() -> Palette {
+        Palette {
+            editor: color::editor(),
+            panel: color::explorer(),
+            panel_footer: color::explorer_footer(),
+            control: color::control(),
+            control_border: color::control_border(),
+            field: color::field(),
+            divider: color::divider(),
+            menu: color::menu(),
+            accent: color::accent(),
+            selected_row: color::selected_row(),
+            unsaved: color::unsaved(),
+            text_strong: color::text_strong(),
+            text: color::text(),
+            text_control: color::text_control(),
+            text_dim: color::text_dim(),
+            text_faint: color::text_faint(),
+            added: color::git_added(),
+            modified: color::git_modified(),
+            board_page: color::editor(),
+            board_lane: color::explorer(),
+            board_card: color::code_panel(),
+            board_well: color::field(),
+            agent: color::agent(),
+            attached: color::attached(),
+            board_accent: color::board_accent(),
+        }
+    }
 }
 
 /// Where a provider's modal reserved room for the decoration behind it.
@@ -721,12 +728,12 @@ mod tests {
         // well are `EDITOR`, `EXPLORER`, `CODE_PANEL` and `FIELD`, each within a few units a channel of the
         // picture the board is measured against. A test rather than a comment, because a later change that
         // reached for a colour of its own would otherwise pass quietly.
-        let palette = Palette::QUILL;
-        assert_eq!(palette.board_page, color::EDITOR);
-        assert_eq!(palette.board_lane, color::EXPLORER);
-        assert_eq!(palette.board_card, color::CODE_PANEL);
-        assert_eq!(palette.board_well, color::FIELD);
-        assert_eq!(palette.attached, color::GIT_ADDED);
+        let palette = Palette::active();
+        assert_eq!(palette.board_page, color::editor());
+        assert_eq!(palette.board_lane, color::explorer());
+        assert_eq!(palette.board_card, color::code_panel());
+        assert_eq!(palette.board_well, color::field());
+        assert_eq!(palette.attached, color::git_added());
         // And the ladder really is a ladder: each step is lighter than the one behind it, or a card drawn
         // on a lane drawn on the page would be three rectangles nobody could tell apart.
         let brightness = |colour: Color32| u32::from(colour.r()) + u32::from(colour.g()) + u32::from(colour.b());
@@ -746,7 +753,7 @@ mod tests {
         let look = Look::of(&settings, &renderer);
         assert_eq!(look.font_size, 17.0);
         assert_eq!(look.opacity, 0.5);
-        assert_eq!(look.palette, Palette::QUILL, "there is one palette and a plugin gets it");
+        assert_eq!(look.palette, Palette::active(), "there is one palette and a plugin gets it");
         // The opacity setting reaches the ground a provider paints, so a pane is as transparent as the
         // editing area rather than the one opaque rectangle in the window.
         let ground = look.ground(look.palette.editor);

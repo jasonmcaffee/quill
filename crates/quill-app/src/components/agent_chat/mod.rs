@@ -304,10 +304,10 @@ fn header(parts: &Parts<'_>, ui: &mut egui::Ui, look: &Look<'_>, area: Rect) -> 
 fn state_of(parts: &Parts<'_>, look: &Look<'_>) -> (Color32, &'static str) {
     use quill_chat::State;
     match parts.session.state() {
-        State::Failed(_) => (crate::theme::color::CLOSE, "failed"),
+        State::Failed(_) => (crate::theme::color::close(), "failed"),
         State::Sending | State::Streaming => (look.palette.board_accent, "answering"),
-        State::WaitingForTools => (crate::theme::color::AGENT, "running a tool"),
-        _ => (crate::theme::color::GIT_ADDED, "ready"),
+        State::WaitingForTools => (crate::theme::color::agent(), "running a tool"),
+        _ => (crate::theme::color::git_added(), "ready"),
     }
 }
 
@@ -611,7 +611,7 @@ fn provider_list(parts: &Parts<'_>, ui: &mut egui::Ui, look: &Look<'_>, area: Re
         // What is wrong with it, if anything, rather than a row that silently will not work when it
         // is pressed. `Provider::why_not` is the same sentence the composer shows.
         let (said, tint) = match provider.why_not() {
-            Some(why) => (why, crate::theme::color::CLOSE),
+            Some(why) => (why, crate::theme::color::close()),
             None => (
                 format!("{} · {}", provider.model, provider.wire.name()),
                 look.palette.text_dim,

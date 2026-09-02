@@ -562,9 +562,9 @@ pub fn show(ctx: &egui::Context, state: &mut References, split: f32) -> Outcome 
 
         let summary = state.summary();
         let tint = match (&state.refusal, &state.warning) {
-            (Some(_), _) => color::CLOSE,
-            (None, Some(_)) => color::GIT_MODIFIED,
-            _ => color::TEXT_FAINT,
+            (Some(_), _) => color::close(),
+            (None, Some(_)) => color::git_modified(),
+            _ => color::text_faint(),
         };
         modal::label(
             &ui.painter_at(area),
@@ -634,7 +634,7 @@ fn rows(ui: &mut egui::Ui, area: Rect, state: &mut References) -> Option<(PathBu
             } else {
                 format!("  Nothing in this project uses '{}'", state.name)
             };
-            ui.label(egui::RichText::new(words).size(11.5).color(color::TEXT_FAINT));
+            ui.label(egui::RichText::new(words).size(11.5).color(color::text_faint()));
             return;
         }
         for (index, row) in state.rows.iter().enumerate() {
@@ -672,7 +672,7 @@ fn rows(ui: &mut egui::Ui, area: Rect, state: &mut References) -> Option<(PathBu
                             rect,
                             x,
                             &shown,
-                            color::TEXT_STRONG,
+                            color::text_strong(),
                             11.5,
                         );
                         modal::label(
@@ -680,7 +680,7 @@ fn rows(ui: &mut egui::Ui, area: Rect, state: &mut References) -> Option<(PathBu
                             rect,
                             x + 10.0,
                             &format!("\u{00B7} {count}"),
-                            color::TEXT_FAINT,
+                            color::text_faint(),
                             11.0,
                         );
                     });
@@ -708,23 +708,23 @@ fn rows(ui: &mut egui::Ui, area: Rect, state: &mut References) -> Option<(PathBu
                             x += 24.0;
                         }
                         let tint = match (chosen, quiet) {
-                            (_, true) => color::TEXT_FAINT,
-                            (true, false) => color::TEXT_STRONG,
-                            (false, false) => color::TEXT_DIM,
+                            (_, true) => color::text_faint(),
+                            (true, false) => color::text_strong(),
+                            (false, false) => color::text_dim(),
                         };
                         let x = modal::label(painter, rect, x, &format!("{}", hit.line), tint, 11.0);
                         let galley = controls::marked_text(
                             painter,
                             &text,
                             &marks,
-                            if quiet { color::TEXT_FAINT } else { color::TEXT_CONTROL },
+                            if quiet { color::text_faint() } else { color::text_control() },
                             egui::FontId::monospace(11.5),
                         );
                         let width = galley.size().x;
                         painter.galley(
                             Pos2::new(x + 14.0, rect.center().y - galley.size().y / 2.0),
                             galley,
-                            if quiet { color::TEXT_FAINT } else { color::TEXT_CONTROL },
+                            if quiet { color::text_faint() } else { color::text_control() },
                         );
                         // The suffix that says a match is textual rather than code, which is the
                         // whole of what makes it second-class rather than hidden.
@@ -734,7 +734,7 @@ fn rows(ui: &mut egui::Ui, area: Rect, state: &mut References) -> Option<(PathBu
                                 rect,
                                 x + 14.0 + width + 12.0,
                                 &format!("\u{00B7} {}", hit.role.suffix()),
-                                color::TEXT_FAINT,
+                                color::text_faint(),
                                 10.5,
                             );
                         }
@@ -799,8 +799,8 @@ fn tick(painter: &egui::Painter, row: Rect, x: f32, on: bool) {
     painter.rect(
         rect,
         egui::CornerRadius::same(3),
-        if on { color::ACCENT } else { egui::Color32::TRANSPARENT },
-        egui::Stroke::new(1.0, if on { color::ACCENT } else { color::CONTROL_BORDER }),
+        if on { color::accent() } else { egui::Color32::TRANSPARENT },
+        egui::Stroke::new(1.0, if on { color::accent() } else { color::control_border() }),
         egui::StrokeKind::Inside,
     );
     if on {
@@ -810,14 +810,14 @@ fn tick(painter: &egui::Painter, row: Rect, x: f32, on: bool) {
                 Pos2::new(middle.x - 3.5, middle.y),
                 Pos2::new(middle.x - 1.0, middle.y + 2.5),
             ],
-            egui::Stroke::new(1.6, color::EDITOR),
+            egui::Stroke::new(1.6, color::editor()),
         );
         painter.line_segment(
             [
                 Pos2::new(middle.x - 1.0, middle.y + 2.5),
                 Pos2::new(middle.x + 3.5, middle.y - 2.5),
             ],
-            egui::Stroke::new(1.6, color::EDITOR),
+            egui::Stroke::new(1.6, color::editor()),
         );
     }
 }
@@ -834,13 +834,13 @@ fn part_tick(painter: &egui::Painter, row: Rect, x: f32) {
         rect,
         egui::CornerRadius::same(3),
         egui::Color32::TRANSPARENT,
-        egui::Stroke::new(1.0, color::ACCENT),
+        egui::Stroke::new(1.0, color::accent()),
         egui::StrokeKind::Inside,
     );
     let middle = rect.center();
     painter.line_segment(
         [Pos2::new(middle.x - 3.5, middle.y), Pos2::new(middle.x + 3.5, middle.y)],
-        egui::Stroke::new(1.6, color::ACCENT),
+        egui::Stroke::new(1.6, color::accent()),
     );
 }
 
@@ -860,20 +860,20 @@ fn show_preview(ui: &mut egui::Ui, area: Rect, state: &mut References) {
         ui.label(
             egui::RichText::new("  Choose a reference to see the file it is in")
                 .size(11.5)
-                .color(color::TEXT_FAINT),
+                .color(color::text_faint()),
         );
         return;
     };
     // The path along the top of the pane, on a line of its own.
     let heading = Rect::from_min_size(inner.min, Vec2::new(inner.width(), 22.0));
     let painter = ui.painter_at(heading);
-    painter.rect_filled(heading, egui::CornerRadius::same(3), color::CONTROL);
+    painter.rect_filled(heading, egui::CornerRadius::same(3), color::control());
     modal::label(
         &painter,
         heading,
         heading.left() + 8.0,
         &short_path(&preview.path),
-        color::TEXT_STRONG,
+        color::text_strong(),
         11.0,
     );
     let below = Rect::from_min_max(Pos2::new(inner.left(), heading.bottom() + 2.0), inner.max);
@@ -882,7 +882,7 @@ fn show_preview(ui: &mut egui::Ui, area: Rect, state: &mut References) {
     if let Some(problem) = &preview.problem {
         let mut ui = child;
         ui.add_space(8.0);
-        ui.label(egui::RichText::new(format!("  {problem}")).size(11.5).color(color::CLOSE));
+        ui.label(egui::RichText::new(format!("  {problem}")).size(11.5).color(color::close()));
         return;
     }
     let hit = state.chosen_hit();
@@ -910,15 +910,15 @@ fn show_preview(ui: &mut egui::Ui, area: Rect, state: &mut References) {
             let painter = ui.painter();
             let on_the_match = number == matched_line;
             if on_the_match {
-                painter.rect_filled(rect, egui::CornerRadius::same(3), color::SELECTED_ROW);
+                painter.rect_filled(rect, egui::CornerRadius::same(3), color::selected_row());
             }
-            let tint = if on_the_match { color::TEXT_STRONG } else { color::TEXT_DIM };
+            let tint = if on_the_match { color::text_strong() } else { color::text_dim() };
             modal::label(
                 painter,
                 rect,
                 rect.left() + 6.0,
                 &format!("{number:>5}"),
-                color::TEXT_FAINT,
+                color::text_faint(),
                 10.5,
             );
             let marks = if on_the_match { char_marks(line, &range) } else { Vec::new() };
@@ -944,8 +944,8 @@ fn frame(ui: &egui::Ui, area: Rect) {
     ui.painter().rect(
         area,
         egui::CornerRadius::same(size::CONTROL_CORNER),
-        color::EDITOR,
-        egui::Stroke::new(1.0, color::DIVIDER),
+        color::editor(),
+        egui::Stroke::new(1.0, color::divider()),
         egui::StrokeKind::Inside,
     );
 }

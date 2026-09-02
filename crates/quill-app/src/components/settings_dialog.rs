@@ -164,7 +164,7 @@ fn contents(
     painter.rect_filled(
         header,
         CornerRadius { nw: 10, ne: 10, sw: 0, se: 0 },
-        color::TITLE_BAR,
+        color::title_bar(),
     );
     let title = if project.is_empty() {
         "Settings".to_owned()
@@ -172,11 +172,11 @@ fn contents(
         format!("Settings \u{2014} {project}")
     };
     let galley =
-        painter.layout_no_wrap(title, egui::FontId::proportional(13.0), color::TEXT_STRONG);
+        painter.layout_no_wrap(title, egui::FontId::proportional(13.0), color::text_strong());
     painter.galley(
         Pos2::new(area.left() + 20.0, header.center().y - galley.size().y / 2.0),
         galley,
-        color::TEXT_STRONG,
+        color::text_strong(),
     );
     let close = Rect::from_center_size(
         Pos2::new(area.right() - 24.0, header.center().y),
@@ -193,7 +193,7 @@ fn contents(
     );
     let list = Rect::from_min_size(body.min, Vec2::new(LIST_WIDTH, body.height()));
     let page_area = Rect::from_min_max(Pos2::new(list.right(), body.top()), body.max);
-    ui.painter_at(area).rect_filled(list, CornerRadius::ZERO, color::EXPLORER_FOOTER);
+    ui.painter_at(area).rect_filled(list, CornerRadius::ZERO, color::explorer_footer());
     line(ui, Pos2::new(list.right(), list.top()), Pos2::new(list.right(), list.bottom()));
 
     show_list(ui, list, state, plugin_pages);
@@ -249,12 +249,12 @@ fn contents(
     let note = ui.painter_at(area).layout_no_wrap(
         "Changes take effect at once.".to_owned(),
         egui::FontId::proportional(11.0),
-        color::TEXT_FAINT,
+        color::text_faint(),
     );
     ui.painter_at(area).galley(
         Pos2::new(footer.left() + 20.0, footer.center().y - note.size().y / 2.0),
         note,
-        color::TEXT_FAINT,
+        color::text_faint(),
     );
 
     outcome
@@ -275,19 +275,19 @@ fn show_list(
     painter.rect(
         search,
         CornerRadius::same(size::CONTROL_CORNER),
-        color::FIELD,
-        Stroke::new(1.0, color::DIVIDER),
+        color::field(),
+        Stroke::new(1.0, color::divider()),
         egui::StrokeKind::Inside,
     );
-    icon::magnifier(&painter, Pos2::new(search.left() + 13.0, search.center().y), color::TEXT_FAINT);
+    icon::magnifier(&painter, Pos2::new(search.left() + 13.0, search.center().y), color::text_faint());
     let text_rect = crate::components::controls::field_text_rect(ui, search, 26.0);
     let mut field = ui.new_child(egui::UiBuilder::new().max_rect(text_rect));
     field.add(
         egui::TextEdit::singleline(&mut state.search)
-            .hint_text(egui::RichText::new("Search settings").color(color::TEXT_FAINT))
+            .hint_text(egui::RichText::new("Search settings").color(color::text_faint()))
             .frame(egui::Frame::NONE)
             .desired_width(text_rect.width())
-            .text_color(color::TEXT_CONTROL),
+            .text_color(color::text_control()),
     );
 
     let mut pen = search.bottom() + 14.0;
@@ -309,17 +309,17 @@ fn show_list(
                 &ui.painter_at(area),
                 Pos2::new(row.left() + 18.0, row.center().y),
                 true,
-                color::TEXT_DIM,
+                color::text_dim(),
             );
             let galley = ui.painter_at(area).layout_no_wrap(
                 page.group().to_owned(),
                 egui::FontId::proportional(12.5),
-                color::TEXT_CONTROL,
+                color::text_control(),
             );
             ui.painter_at(area).galley(
                 Pos2::new(row.left() + 30.0, row.center().y - galley.size().y / 2.0),
                 galley,
-                color::TEXT_CONTROL,
+                color::text_control(),
             );
             pen += size::ROW;
         }
@@ -336,9 +336,9 @@ fn show_list(
         let galley = ui.painter_at(area).layout_no_wrap(
             "No setting matches".to_owned(),
             egui::FontId::proportional(11.5),
-            color::TEXT_FAINT,
+            color::text_faint(),
         );
-        ui.painter_at(area).galley(Pos2::new(area.left() + 30.0, pen + 4.0), galley, color::TEXT_FAINT);
+        ui.painter_at(area).galley(Pos2::new(area.left() + 30.0, pen + 4.0), galley, color::text_faint());
     }
 }
 
@@ -371,11 +371,11 @@ fn page_row(ui: &mut egui::Ui, row: Rect, title: &str, chosen: bool, indent: f32
     let response = ui.interact(row, ui.id().with(("settings-page", title.to_owned())), Sense::click());
     let pill = row.shrink2(Vec2::new(8.0, 1.0));
     if chosen {
-        ui.painter().rect_filled(pill, CornerRadius::same(5), color::SELECTED_ROW);
+        ui.painter().rect_filled(pill, CornerRadius::same(5), color::selected_row());
     } else if response.hovered() {
-        ui.painter().rect_filled(pill, CornerRadius::same(5), color::CONTROL);
+        ui.painter().rect_filled(pill, CornerRadius::same(5), color::control());
     }
-    let tint = if chosen { color::TEXT_STRONG } else { color::TEXT_CONTROL };
+    let tint = if chosen { color::text_strong() } else { color::text_control() };
     let galley = ui.painter().layout_no_wrap(
         title.to_owned(),
         egui::FontId::proportional(12.5),
@@ -579,19 +579,19 @@ pub(crate) fn checkbox(ui: &mut egui::Ui, row: Rect, name: &str, value: &mut boo
     painter.rect(
         box_rect,
         CornerRadius::same(3),
-        if *value { color::ACCENT } else { color::FIELD },
-        Stroke::new(1.0, if *value { color::ACCENT } else { color::CONTROL_BORDER }),
+        if *value { color::accent() } else { color::field() },
+        Stroke::new(1.0, if *value { color::accent() } else { color::control_border() }),
         egui::StrokeKind::Inside,
     );
     if *value {
-        icon::tick(painter, box_rect.center(), color::TEXT_STRONG);
+        icon::tick(painter, box_rect.center(), color::text_strong());
     }
     let galley =
-        painter.layout_no_wrap(name.to_owned(), egui::FontId::proportional(12.5), color::TEXT_CONTROL);
+        painter.layout_no_wrap(name.to_owned(), egui::FontId::proportional(12.5), color::text_control());
     painter.galley(
         Pos2::new(box_rect.right() + 10.0, row.center().y - galley.size().y / 2.0),
         galley,
-        color::TEXT_CONTROL,
+        color::text_control(),
     );
     response.widget_info(|| {
         egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), *value, name)
@@ -687,32 +687,32 @@ pub(crate) fn breadcrumb(ui: &mut egui::Ui, area: Rect, page: Page) -> f32 {
         let title = painter.layout_no_wrap(
             page.title().to_owned(),
             egui::FontId::proportional(13.5),
-            color::TEXT_STRONG,
+            color::text_strong(),
         );
-        painter.galley(Pos2::new(area.left() + 24.0, y - title.size().y / 2.0), title, color::TEXT_STRONG);
+        painter.galley(Pos2::new(area.left() + 24.0, y - title.size().y / 2.0), title, color::text_strong());
         return y + 22.0;
     }
     let group = painter.layout_no_wrap(
         page.group().to_owned(),
         egui::FontId::proportional(13.5),
-        color::TEXT_DIM,
+        color::text_dim(),
     );
     let mut pen = area.left() + 24.0;
-    painter.galley(Pos2::new(pen, y - group.size().y / 2.0), group.clone(), color::TEXT_DIM);
+    painter.galley(Pos2::new(pen, y - group.size().y / 2.0), group.clone(), color::text_dim());
     pen += group.size().x + 8.0;
     let arrow = painter.layout_no_wrap(
         "\u{203A}".to_owned(),
         egui::FontId::proportional(13.5),
-        color::TEXT_FAINT,
+        color::text_faint(),
     );
-    painter.galley(Pos2::new(pen, y - arrow.size().y / 2.0), arrow.clone(), color::TEXT_FAINT);
+    painter.galley(Pos2::new(pen, y - arrow.size().y / 2.0), arrow.clone(), color::text_faint());
     pen += arrow.size().x + 8.0;
     let title = painter.layout_no_wrap(
         page.title().to_owned(),
         egui::FontId::proportional(13.5),
-        color::TEXT_STRONG,
+        color::text_strong(),
     );
-    painter.galley(Pos2::new(pen, y - title.size().y / 2.0), title, color::TEXT_STRONG);
+    painter.galley(Pos2::new(pen, y - title.size().y / 2.0), title, color::text_strong());
     y + 22.0
 }
 
@@ -720,13 +720,13 @@ pub(crate) fn breadcrumb(ui: &mut egui::Ui, area: Rect, page: Page) -> f32 {
 pub(crate) fn section(ui: &mut egui::Ui, area: Rect, top: f32, name: &str) -> f32 {
     let painter = ui.painter_at(area);
     let galley =
-        painter.layout_no_wrap(name.to_owned(), egui::FontId::proportional(12.5), color::TEXT_STRONG);
+        painter.layout_no_wrap(name.to_owned(), egui::FontId::proportional(12.5), color::text_strong());
     let y = top + 12.0;
-    painter.galley(Pos2::new(area.left() + 24.0, y - galley.size().y / 2.0), galley.clone(), color::TEXT_STRONG);
+    painter.galley(Pos2::new(area.left() + 24.0, y - galley.size().y / 2.0), galley.clone(), color::text_strong());
     let from = area.left() + 24.0 + galley.size().x + 12.0;
     painter.line_segment(
         [Pos2::new(from, y), Pos2::new(area.right() - 24.0, y)],
-        Stroke::new(1.0, color::DIVIDER),
+        Stroke::new(1.0, color::divider()),
     );
     y + 20.0
 }
@@ -738,11 +738,11 @@ pub(crate) fn row_at(area: Rect, top: f32) -> Rect {
 pub(crate) fn label(ui: &mut egui::Ui, area: Rect, row: Rect, text: &str) {
     let painter = ui.painter_at(area);
     let galley =
-        painter.layout_no_wrap(text.to_owned(), egui::FontId::proportional(12.5), color::TEXT_CONTROL);
+        painter.layout_no_wrap(text.to_owned(), egui::FontId::proportional(12.5), color::text_control());
     painter.galley(
         Pos2::new(row.left(), row.center().y - galley.size().y / 2.0),
         galley,
-        color::TEXT_CONTROL,
+        color::text_control(),
     );
 }
 
@@ -752,31 +752,31 @@ pub(crate) fn note(ui: &mut egui::Ui, area: Rect, top: f32, text: &str) -> f32 {
     let galley = painter.layout(
         text.to_owned(),
         egui::FontId::proportional(11.5),
-        color::TEXT_FAINT,
+        color::text_faint(),
         area.width() - 48.0,
     );
-    painter.galley(Pos2::new(area.left() + 24.0, top), galley.clone(), color::TEXT_FAINT);
+    painter.galley(Pos2::new(area.left() + 24.0, top), galley.clone(), color::text_faint());
     top + galley.size().y + 8.0
 }
 
 /// A button with a word in it, which the footer uses.
 pub(crate) fn wide_button(ui: &mut egui::Ui, area: Rect, name: &str) -> bool {
     let response = ui.interact(area, ui.id().with(("settings-button", name)), Sense::click());
-    let fill = if response.hovered() { color::ACCENT } else { color::CONTROL };
+    let fill = if response.hovered() { color::accent() } else { color::control() };
     let painter = ui.painter();
     painter.rect(
         area,
         CornerRadius::same(size::CONTROL_CORNER),
         fill,
-        Stroke::new(1.0, color::CONTROL_BORDER),
+        Stroke::new(1.0, color::control_border()),
         egui::StrokeKind::Inside,
     );
     let galley = painter.layout_no_wrap(
         name.to_owned(),
         egui::FontId::proportional(12.5),
-        color::TEXT_STRONG,
+        color::text_strong(),
     );
-    painter.galley(area.center() - galley.size() / 2.0, galley, color::TEXT_STRONG);
+    painter.galley(area.center() - galley.size() / 2.0, galley, color::text_strong());
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), name)
     });
@@ -784,5 +784,5 @@ pub(crate) fn wide_button(ui: &mut egui::Ui, area: Rect, name: &str) -> bool {
 }
 
 fn line(ui: &egui::Ui, from: Pos2, to: Pos2) {
-    ui.painter().line_segment([from, to], Stroke::new(1.0, color::DIVIDER));
+    ui.painter().line_segment([from, to], Stroke::new(1.0, color::divider()));
 }

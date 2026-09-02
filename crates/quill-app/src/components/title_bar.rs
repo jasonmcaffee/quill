@@ -141,17 +141,17 @@ pub fn show(
     painter.rect_filled(
         area,
         CornerRadius { nw: size::WINDOW_CORNER, ne: size::WINDOW_CORNER, sw: 0, se: 0 },
-        crate::theme::faded(color::TITLE_BAR, opacity),
+        crate::theme::faded(color::title_bar(), opacity),
     );
 
     let buttons_at_left = placement == MenuPlacement::Native;
     let first_centre = first_button(area, placement);
     let buttons: [(Color32, &str); 3] = if buttons_at_left {
         // The order macOS puts them in.
-        [(color::CLOSE, "Close"), (color::MINIMISE, "Minimise"), (color::MAXIMISE, "Maximise")]
+        [(color::close(), "Close"), (color::minimise(), "Minimise"), (color::maximise(), "Maximise")]
     } else {
         // The order Windows puts them in.
-        [(color::MINIMISE, "Minimise"), (color::MAXIMISE, "Maximise"), (color::CLOSE, "Close")]
+        [(color::minimise(), "Minimise"), (color::maximise(), "Maximise"), (color::close(), "Close")]
     };
     for (index, (fill, label)) in buttons.into_iter().enumerate() {
         let centre = Pos2::new(first_centre.x + index as f32 * BUTTON_STEP, first_centre.y);
@@ -217,14 +217,14 @@ pub fn show(
         let galley = painter.layout(
             project.to_owned(),
             egui::FontId::proportional(13.0),
-            color::TEXT_STRONG,
+            color::text_strong(),
             (name_to - name_from).max(1.0),
         );
         if name_to > name_from {
             painter.galley(
                 Pos2::new(name_from, area.center().y - galley.size().y / 2.0),
                 galley.clone(),
-                color::TEXT_STRONG,
+                color::text_strong(),
             );
             name_from += galley.size().x;
         }
@@ -258,7 +258,7 @@ pub fn show(
 
 /// The line under a bar and above the status bar, and the line between the explorer and the editor.
 pub fn divider(painter: &egui::Painter, from: Pos2, to: Pos2) {
-    painter.line_segment([from, to], Stroke::new(1.0, color::DIVIDER));
+    painter.line_segment([from, to], Stroke::new(1.0, color::divider()));
 }
 
 #[cfg(test)]
