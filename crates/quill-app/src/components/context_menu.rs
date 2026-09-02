@@ -46,8 +46,8 @@ pub fn show(ui: &mut egui::Ui, name: &str, at: Pos2, entries: &[Entry]) -> Conte
     .layout(egui::Layout::top_down_justified(egui::Align::Min))
     .frame(
         egui::Frame::popup(ui.style())
-            .fill(color::MENU)
-            .stroke(Stroke::new(1.0, color::CONTROL_BORDER))
+            .fill(color::menu())
+            .stroke(Stroke::new(1.0, color::control_border()))
             .inner_margin(6),
     )
     .width(WIDTH);

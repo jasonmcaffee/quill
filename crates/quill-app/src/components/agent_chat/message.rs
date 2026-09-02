@@ -589,7 +589,7 @@ fn tool_block(
     let (tint, drawing): (Color32, fn(&egui::Painter, Pos2, Color32)) = match (tool.is_running(), tool.failed)
     {
         (true, _) => (look.palette.attached, icon::run),
-        (false, true) => (crate::theme::color::CLOSE, icon::cross),
+        (false, true) => (crate::theme::color::close(), icon::cross),
         (false, false) => (look.palette.board_accent, icon::tick),
     };
     drawing(&painter, disc, tint);
@@ -682,7 +682,7 @@ fn failure(message: &Message, state: &mut PaneState, ui: &mut egui::Ui, look: &L
     painter_in(ui, rect).rect_filled(
         Rect::from_min_size(rect.min, Vec2::new(2.5 * scale, rect.height())),
         CornerRadius::same(1),
-        crate::theme::color::CLOSE,
+        crate::theme::color::close(),
     );
     let inside = rect.shrink2(Vec2::new(PAD_X * scale, PAD_Y * scale));
     let key = format!("failure-{}", message.id);
@@ -715,7 +715,7 @@ fn colours(look: &Look<'_>) -> crate::components::markdown_text::Colors {
 fn code_colours(look: &Look<'_>) -> crate::components::markdown_text::CodeColors {
     crate::components::markdown_text::CodeColors {
         panel: look.palette.board_well,
-        chip: crate::theme::color::CODE_CHIP,
+        chip: crate::theme::color::code_chip(),
         radius: 6,
     }
 }

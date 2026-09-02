@@ -643,6 +643,7 @@ impl QuillApp {
             "explorer" => self.cli_explorer(request, verb),
             "modal" => self.cli_modal(request, verb, ctx),
             "settings" => self.cli_settings(request, verb),
+            "theme" => self.cli_theme(request, verb),
             "plugins" => self.cli_plugins(request, verb),
             "git" => self.cli_git(request, verb),
             "action" => self.cli_action(request, verb, ctx),
@@ -6145,6 +6146,11 @@ impl QuillApp {
             "appearance.font.family" => self.settings.font_family.clone(),
             "appearance.font.size" => format!("{:.0}", self.settings.font_size),
             "appearance.background.opacity" => format!("{:.3}", self.settings.opacity),
+            "appearance.theme" => self.settings.theme.clone(),
+            "appearance.accent" => self.settings.accent.clone(),
+            "appearance.icons" => self.settings.icons.clone(),
+            "appearance.ui.font.family" => self.settings.ui_font_family.clone(),
+            "appearance.ui.font.size" => format!("{:.1}", self.settings.ui_font_size),
             "terminal.font.size" => format!("{:.0}", self.settings.terminal_font_size),
             "terminal.shell" => self.settings.terminal_shell.clone(),
             "editor.line_numbers" => self.settings.line_numbers.to_string(),
@@ -6194,6 +6200,64 @@ impl QuillApp {
             "appearance.font.size" => {
                 settings.font_size =
                     number()?.clamp(settings::MIN_FONT_SIZE, settings::MAX_FONT_SIZE)
+            }
+            "appearance.theme" => {
+                // Named by key or by the name on the screen, exactly as `theme set` takes it, and
+                // remembered as the **key** so a settings file written by one route reads the same to the
+                // other. Empty is Quill's own, which is what the file says by saying nothing.
+                if value.trim().is_empty() {
+                    settings.theme = String::new();
+                } else {
+                    let Some(theme) = self.plugins.theme(value) else {
+                        let names: Vec<String> =
+                            self.plugins.themes().into_iter().map(|theme| theme.name).collect();
+                        return Err(format!(
+                            "There is no theme called {value}. There is {}.",
+                            names.join(", ")
+                        ));
+                    };
+                    settings.theme = match theme.key == crate::theme::Theme::quill_dark().key {
+                        true => String::new(),
+                        false => theme.key,
+                    };
+                }
+            }
+            "appearance.accent" => {
+                if value.trim().is_empty() {
+                    settings.accent = String::new();
+                } else if crate::services::plugins::colour(value).is_some() {
+                    settings.accent = value.trim().to_uppercase();
+                } else {
+                    return Err(format!(
+                        "{value} is not a colour. Write one as #RRGGBB, or leave it empty for the theme's own."
+                    ));
+                }
+            }
+            "appearance.icons" => {
+                if value.trim().is_empty() {
+                    settings.icons = String::new();
+                } else if let Some(set) = crate::theme::IconSet::parse(value) {
+                    settings.icons = set.name().to_owned();
+                } else {
+                    return Err(format!(
+                        "There is no icon set called {value}. Quill draws {}, and empty follows the theme.",
+                        crate::services::plugins::ICON_SETS.join(" and ")
+                    ));
+                }
+            }
+            "appearance.ui.font.family" => {
+                if !value.trim().is_empty()
+                    && !self.renderer.families().iter().any(|family| family == value)
+                {
+                    return Err(format!(
+                        "This machine has no font called {value}. `settings fonts` lists them."
+                    ));
+                }
+                settings.ui_font_family = value.trim().to_owned();
+            }
+            "appearance.ui.font.size" => {
+                settings.ui_font_size =
+                    number()?.clamp(settings::MIN_UI_FONT_SIZE, settings::MAX_UI_FONT_SIZE)
             }
             "appearance.background.opacity" => {
                 settings.opacity = number()?.clamp(settings::MIN_OPACITY, 1.0)
@@ -6281,6 +6345,200 @@ impl QuillApp {
             );
         }
         Value::Object(map)
+    }
+
+    // ---------------------------------------------------------------------------------- the theme
+
+    /// `theme` — what the whole window is painted in — `task-1776`.
+    ///
+    /// `settings set appearance.theme` reaches the same code, because `apply_the_theme` is the one place a
+    /// theme becomes a change. These exist because a setting can be written and cannot be **discovered**:
+    /// `settings list` can say what `appearance.theme` holds, and nothing but this can say what it will
+    /// accept — and the study in `CLAUDE.md` measured what an agent does when it cannot discover a thing,
+    /// which is to reach for `bash` instead.
+    fn cli_theme(&mut self, request: &Request, verb: &str) -> Outcome {
+        match verb {
+            "list" => {
+                let active = crate::theme::active().key;
+                let themes = self.plugins.themes();
+                let rows: Vec<String> = themes
+                    .iter()
+                    .map(|theme| {
+                        format!(
+                            "{}{:<28}{:<18}{}",
+                            if theme.key == active { "*" } else { " " },
+                            theme.key,
+                            theme.plugin,
+                            theme.name
+                        )
+                    })
+                    .collect();
+                let value: Vec<Value> = themes
+                    .iter()
+                    .map(|theme| {
+                        json!({
+                            "key": theme.key,
+                            "name": theme.name,
+                            "plugin": theme.plugin,
+                            "dark": theme.dark,
+                            "icons": theme.icons.name(),
+                            "active": theme.key == active,
+                            // The six the Settings page draws as swatches, which is what a theme is
+                            // recognised by. The whole palette is `theme show`, so a list of six themes
+                            // does not answer with two hundred and forty colours.
+                            "colours": json!({
+                                "editor": Self::hex_colour(theme.palette.editor),
+                                "explorer": Self::hex_colour(theme.palette.explorer),
+                                "accent": Self::hex_colour(theme.palette.accent),
+                                "added": Self::hex_colour(theme.palette.git_added),
+                                "unsaved": Self::hex_colour(theme.palette.unsaved),
+                                "close": Self::hex_colour(theme.palette.close),
+                            }),
+                            "colours_the_tokens": theme.syntax.is_some(),
+                        })
+                    })
+                    .collect();
+                lines(
+                    request,
+                    format!("{} themes, and {active} is the one showing", themes.len()),
+                    rows,
+                    json!({ "themes": value }),
+                )
+            }
+            "show" => {
+                let named = request.text("theme");
+                let theme = match &named {
+                    Some(wanted) => match self.plugins.theme(wanted) {
+                        Some(theme) => theme,
+                        None => return self.no_such_theme(request, wanted),
+                    },
+                    None => crate::theme::active(),
+                };
+                let mut colours = serde_json::Map::new();
+                for role in crate::theme::Palette::NAMES {
+                    if let Some(colour) = theme.palette.get(role) {
+                        colours.insert((*role).to_owned(), Value::String(Self::hex_colour(colour)));
+                    }
+                }
+                let syntax = theme.syntax.as_ref().map(|scheme| {
+                    let mut named = serde_json::Map::new();
+                    for token in quill_core::Token::ALL {
+                        if let Some(colour) = scheme.colour(token) {
+                            named.insert(
+                                token.name().to_owned(),
+                                Value::String(format!("#{:02X}{:02X}{:02X}", colour.r, colour.g, colour.b)),
+                            );
+                        }
+                    }
+                    Value::Object(named)
+                });
+                let rows: Vec<String> = crate::theme::Palette::NAMES
+                    .iter()
+                    .filter_map(|role| theme.palette.get(role).map(|colour| format!("{role:<18}{}", Self::hex_colour(colour))))
+                    .collect();
+                lines(
+                    request,
+                    format!("{} \u{2014} {} icons, {}", theme.name, theme.icons.name(), match theme.syntax.is_some() {
+                        true => "and it colours the tokens",
+                        false => "and each language plugin colours its own files",
+                    }),
+                    rows,
+                    json!({
+                        "key": theme.key,
+                        "name": theme.name,
+                        "plugin": theme.plugin,
+                        "dark": theme.dark,
+                        "icons": theme.icons.name(),
+                        "colours": Value::Object(colours),
+                        "syntax": syntax,
+                    }),
+                )
+            }
+            "set" => {
+                let Some(wanted) = request.text("theme") else {
+                    return no(request, code::USAGE, "Say which theme.");
+                };
+                let Some(theme) = self.plugins.theme(&wanted) else {
+                    return self.no_such_theme(request, &wanted);
+                };
+                // Every refusal happens before anything is changed, so a command line with a good theme
+                // and a bad accent in it leaves the window exactly as it was rather than half applied.
+                // That is the rule `unknown_argument_refusal` keeps for the whole command surface.
+                let mut settings = self.settings.clone();
+                // Quill's own is remembered as an empty setting rather than as its key, so a settings file
+                // that has never chosen a theme goes on saying nothing — `terminal.shell`'s rule.
+                settings.theme = match theme.key == crate::theme::Theme::quill_dark().key {
+                    true => String::new(),
+                    false => theme.key.clone(),
+                };
+                if let Some(accent) = request.text("accent") {
+                    let accent = accent.trim();
+                    if accent.eq_ignore_ascii_case("none") {
+                        settings.accent = String::new();
+                    } else if crate::services::plugins::colour(accent).is_some() {
+                        settings.accent = accent.to_uppercase();
+                    } else {
+                        return no(
+                            request,
+                            code::USAGE,
+                            format!("{accent} is not a colour. Write one as #RRGGBB, or `none` for the theme's own."),
+                        );
+                    }
+                }
+                if let Some(icons) = request.text("icons") {
+                    let icons = icons.trim();
+                    if icons.eq_ignore_ascii_case("follow") {
+                        settings.icons = String::new();
+                    } else if let Some(set) = crate::theme::IconSet::parse(icons) {
+                        settings.icons = set.name().to_owned();
+                    } else {
+                        return no(
+                            request,
+                            code::USAGE,
+                            format!(
+                                "There is no icon set called {icons}. Quill draws {}, or `follow` for whichever the theme names.",
+                                crate::services::plugins::ICON_SETS.join(" and ")
+                            ),
+                        );
+                    }
+                }
+                // Down the window's own way in, so a theme chosen from the command line, one chosen in
+                // Settings and one set through `settings set` are the same change — and the file is
+                // written on the same terms as every other setting.
+                self.set_settings(settings);
+                ok(
+                    request,
+                    format!("The window is painted in {}", theme.name),
+                    json!({
+                        "key": theme.key,
+                        "name": theme.name,
+                        "icons": crate::theme::active().icons.name(),
+                        "accent": match self.settings.accent.is_empty() {
+                            true => Value::Null,
+                            false => Value::String(self.settings.accent.clone()),
+                        },
+                    }),
+                )
+            }
+            _ => no(request, code::UNKNOWN_COMMAND, format!("There is no theme command called {verb}.")),
+        }
+    }
+
+    /// A colour written the way a manifest and the settings file write one, which is what a caller reads
+    /// back and puts into `theme set --accent`.
+    fn hex_colour(colour: egui::Color32) -> String {
+        format!("#{:02X}{:02X}{:02X}", colour.r(), colour.g(), colour.b())
+    }
+
+    /// A refusal that says what there is, rather than only that this is not one of them.
+    fn no_such_theme(&self, request: &Request, wanted: &str) -> Outcome {
+        let names: Vec<String> =
+            self.plugins.themes().into_iter().map(|theme| theme.name).collect();
+        no(
+            request,
+            code::NOT_FOUND,
+            format!("There is no theme called {wanted}. There is {}.", names.join(", ")),
+        )
     }
 
     // --------------------------------------------------------------------------------- the plugins
@@ -7026,6 +7284,31 @@ const SETTINGS: &[SettingKey] = &[
         help: "How opaque the window is. Below 1 the desktop shows through.",
     },
     SettingKey {
+        name: "appearance.theme",
+        accepts: "a theme's key or its name; `theme list` names them, and empty is Quill Dark",
+        help: "What every colour in the window is. A theme that names the nine token colours also colours code, in every language at once.",
+    },
+    SettingKey {
+        name: "appearance.accent",
+        accepts: "#RRGGBB, or empty for the theme's own",
+        help: "One colour for everything the accent means: the caret, the open tab, an open folder.",
+    },
+    SettingKey {
+        name: "appearance.icons",
+        accepts: "material, classic, or empty for whichever the theme names",
+        help: "Which drawn marks the rail buttons and the explorer's folder arrow use.",
+    },
+    SettingKey {
+        name: "appearance.ui.font.family",
+        accepts: "a family this machine has, or empty for the editor's",
+        help: "The family the window's own text is set in: the menus, the rail and the status bar.",
+    },
+    SettingKey {
+        name: "appearance.ui.font.size",
+        accepts: "8 to 24",
+        help: "The point size the window's own text is set in. The editing area keeps its own.",
+    },
+    SettingKey {
         name: "terminal.font.size",
         accepts: "6 to 48",
         help: "The point size the terminal sets its grid in.",
@@ -7113,6 +7396,11 @@ fn fresh_value(name: &str, fresh: &crate::settings::Settings) -> String {
         "appearance.font.family" => fresh.font_family.clone(),
         "appearance.font.size" => format!("{:.0}", fresh.font_size),
         "appearance.background.opacity" => format!("{:.3}", fresh.opacity),
+        "appearance.theme" => fresh.theme.clone(),
+        "appearance.accent" => fresh.accent.clone(),
+        "appearance.icons" => fresh.icons.clone(),
+        "appearance.ui.font.family" => fresh.ui_font_family.clone(),
+        "appearance.ui.font.size" => format!("{:.1}", fresh.ui_font_size),
         "terminal.font.size" => format!("{:.0}", fresh.terminal_font_size),
         "terminal.shell" => fresh.terminal_shell.clone(),
         "editor.line_numbers" => fresh.line_numbers.to_string(),

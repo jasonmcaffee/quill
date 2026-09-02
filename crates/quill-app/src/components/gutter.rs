@@ -123,8 +123,8 @@ pub enum Change {
 impl Change {
     fn color(self) -> Color32 {
         match self {
-            Change::Added => color::GIT_ADDED,
-            Change::Modified => color::GIT_MODIFIED,
+            Change::Added => color::git_added(),
+            Change::Modified => color::git_modified(),
         }
     }
 }
@@ -484,7 +484,7 @@ fn draw_arrow(ui: &mut egui::Ui, centre: Pos2, paragraph: usize, collapsed: bool
         format!("Collapse block at line {}", paragraph + 1)
     };
     let response = ui.interact(area, ui.id().with(("fold", paragraph)), Sense::click());
-    let tint = if collapsed || response.hovered() { color::TEXT_CONTROL } else { color::TEXT_FAINT };
+    let tint = if collapsed || response.hovered() { color::text_control() } else { color::text_faint() };
     icon::disclosure(ui.painter(), centre, !collapsed, tint);
     response.widget_info(|| {
         egui::WidgetInfo::selected(egui::WidgetType::Button, true, collapsed, &name)
@@ -524,7 +524,7 @@ fn draw_breakpoint(
     if stopped {
         // The execution point's own mark, drawn behind the dot so a breakpoint that is also where
         // the program stopped still reads as a breakpoint. IntelliJ's arrow, drawn.
-        execution_arrow(ui.painter(), centre, color::ACCENT);
+        execution_arrow(ui.painter(), centre, color::accent());
     }
     if let Some(mark) = mark {
         // Both hollow, because both mean the program will not stop here — but they are not the same
@@ -533,8 +533,8 @@ fn draw_breakpoint(
         // honoured, so its ring is at full strength. §6.2's "dimmed hollow" and "hollow with a quiet
         // ring", which are two states rather than one.
         let tint = match mark.enabled {
-            true => color::BREAKPOINT,
-            false => color::BREAKPOINT.gamma_multiply(0.45),
+            true => color::breakpoint(),
+            false => color::breakpoint().gamma_multiply(0.45),
         };
         icon::breakpoint(ui.painter(), centre, mark.is_filled(), tint);
         if mark.conditional {
@@ -556,7 +556,7 @@ fn draw_breakpoint(
     // A hovered row with nothing on it shows where the dot would go, which is how a person finds a
     // control that is otherwise invisible until it is used — VS Code's own hint.
     if response.hovered() && mark.is_none() {
-        icon::breakpoint(ui.painter(), centre, false, color::BREAKPOINT.gamma_multiply(0.45));
+        icon::breakpoint(ui.painter(), centre, false, color::breakpoint().gamma_multiply(0.45));
     }
     response.widget_info(|| {
         egui::WidgetInfo::selected(egui::WidgetType::Button, true, mark.is_some(), &name)
@@ -592,7 +592,7 @@ fn draw_number(
     current: bool,
     size: f32,
 ) {
-    let tint = if current { color::TEXT_CONTROL } else { color::TEXT_FAINT };
+    let tint = if current { color::text_control() } else { color::text_faint() };
     let galley =
         ui.painter().layout_no_wrap(number.to_string(), egui::FontId::monospace(size), tint);
     ui.painter().galley(
@@ -628,7 +628,7 @@ fn draw_blame(
         Pos2::new(column.left(), row.top()),
         Vec2::new(column.width() - 4.0, row.height()),
     );
-    let tint = mix(color::BLAME_OLD, color::BLAME_NEW, entry.age);
+    let tint = mix(color::blame_old(), color::blame_new(), entry.age);
     ui.painter().rect_filled(cell, CornerRadius::ZERO, tint);
 
     let name = format!("Blame: {} {}", entry.date, entry.author);
@@ -643,14 +643,14 @@ fn draw_blame(
     // The cell is the whole row — it is a background and has to meet the cell above it — but its
     // words are centred on the letters beside them, like every other mark in the gutter.
     let font = egui::FontId::proportional(size);
-    let date = ui.painter().layout_no_wrap(entry.date.clone(), font.clone(), color::TEXT_STRONG);
+    let date = ui.painter().layout_no_wrap(entry.date.clone(), font.clone(), color::text_strong());
     let y = band.center() - date.size().y / 2.0;
-    ui.painter().galley(Pos2::new(cell.left() + 6.0, y), date.clone(), color::TEXT_STRONG);
-    let author = ui.painter().layout_no_wrap(entry.author.clone(), font, color::TEXT_STRONG);
+    ui.painter().galley(Pos2::new(cell.left() + 6.0, y), date.clone(), color::text_strong());
+    let author = ui.painter().layout_no_wrap(entry.author.clone(), font, color::text_strong());
     ui.painter().galley(
         Pos2::new(cell.left() + 12.0 + date.size().x, y),
         author,
-        color::TEXT_STRONG,
+        color::text_strong(),
     );
 }
 
@@ -827,11 +827,11 @@ mod tests {
 
     #[test]
     fn the_blame_tint_runs_from_the_oldest_colour_to_the_newest() {
-        assert_eq!(mix(color::BLAME_OLD, color::BLAME_NEW, 0.0), color::BLAME_OLD);
-        assert_eq!(mix(color::BLAME_OLD, color::BLAME_NEW, 1.0), color::BLAME_NEW);
-        let middle = mix(color::BLAME_OLD, color::BLAME_NEW, 0.5);
-        assert!(middle.r() > color::BLAME_OLD.r() && middle.r() < color::BLAME_NEW.r());
+        assert_eq!(mix(color::blame_old(), color::blame_new(), 0.0), color::blame_old());
+        assert_eq!(mix(color::blame_old(), color::blame_new(), 1.0), color::blame_new());
+        let middle = mix(color::blame_old(), color::blame_new(), 0.5);
+        assert!(middle.r() > color::blame_old().r() && middle.r() < color::blame_new().r());
         // Out of range is clamped rather than producing a colour that is not on the line.
-        assert_eq!(mix(color::BLAME_OLD, color::BLAME_NEW, 2.0), color::BLAME_NEW);
+        assert_eq!(mix(color::blame_old(), color::blame_new(), 2.0), color::blame_new());
     }
 }

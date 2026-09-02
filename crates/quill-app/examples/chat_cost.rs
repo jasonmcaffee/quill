@@ -52,12 +52,12 @@ fn main() {
     let family = "Arial".to_owned();
     let size = 14.4;
     let colours = Colors {
-        text: color::TEXT_CONTROL,
-        strong: color::TEXT_STRONG,
-        code: color::GIT_ADDED,
-        link: color::ACCENT,
-        quiet: color::TEXT_DIM,
-        rule: color::DIVIDER,
+        text: color::text_control(),
+        strong: color::text_strong(),
+        code: color::git_added(),
+        link: color::accent(),
+        quiet: color::text_dim(),
+        rule: color::divider(),
     };
 
     println!("A conversation of {messages} messages in a pane {width} x {height} points.");
@@ -171,7 +171,7 @@ fn main() {
 /// point of the culling.
 fn draw_a_conversation(chrome: &Chrome, area: Rect, messages: usize) {
     let panel = area.shrink(8.0);
-    chrome.raised(panel, 18.0, Fill::Solid(color::EXPLORER), Lift::Small);
+    chrome.raised(panel, 18.0, Fill::Solid(color::explorer()), Lift::Small);
     let inner = panel.shrink(10.0);
     let body = Rect::from_min_max(
         Pos2::new(inner.left(), inner.top() + 36.0),
@@ -187,8 +187,8 @@ fn draw_a_conversation(chrome: &Chrome, area: Rect, messages: usize) {
         };
         let rect = Rect::from_min_size(Pos2::new(body.left(), top), Vec2::new(body.width() * 0.9, tall));
         match index % 2 {
-            0 => chrome.raised(rect, 14.0, Fill::Solid(color::CODE_PANEL), Lift::Small),
-            _ => chrome.sunken(rect, 14.0, color::CODE_PANEL, Lift::Small),
+            0 => chrome.raised(rect, 14.0, Fill::Solid(color::code_panel()), Lift::Small),
+            _ => chrome.sunken(rect, 14.0, color::code_panel(), Lift::Small),
         }
         top += tall + 12.0;
         index += 1;
@@ -196,10 +196,10 @@ fn draw_a_conversation(chrome: &Chrome, area: Rect, messages: usize) {
     chrome.unclip();
     // The composer: the pill, the prompt well, and the gradient disc with its glow.
     let pill = Rect::from_center_size(Pos2::new(inner.center().x, inner.bottom() - 76.0), Vec2::new(86.0, 28.0));
-    chrome.sunken(pill, 14.0, color::FIELD, Lift::Small);
+    chrome.sunken(pill, 14.0, color::field(), Lift::Small);
     let well = Rect::from_min_max(Pos2::new(inner.left(), inner.bottom() - 48.0), inner.max);
-    chrome.sunken(well, 18.0, color::FIELD, Lift::Medium);
+    chrome.sunken(well, 18.0, color::field(), Lift::Medium);
     let disc = Rect::from_center_size(Pos2::new(well.right() - 21.0, well.center().y), Vec2::splat(32.0));
-    chrome.glow(disc, 16.0, color::BOARD_ACCENT.gamma_multiply(0.45), 7.0);
-    chrome.disc(disc.center(), 16.0, Fill::diagonal(disc, color::BOARD_ACCENT, color::ACCENT));
+    chrome.glow(disc, 16.0, color::board_accent().gamma_multiply(0.45), 7.0);
+    chrome.disc(disc.center(), 16.0, Fill::diagonal(disc, color::board_accent(), color::accent()));
 }

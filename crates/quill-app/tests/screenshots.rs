@@ -4584,6 +4584,189 @@ fn the_plugins_page_lists_the_ones_that_ship_with_quill() {
     harness.snapshot(shot("plugins_page"));
 }
 
+/// `task-1776`. The theme page lists what can be chosen, with each theme's own colours beside it, so
+/// the choice is made by looking rather than by choosing a name and then seeing what happened.
+#[test]
+fn the_theme_page_lists_every_theme_with_the_colours_it_is_made_of() {
+    let mut harness = harness("");
+    harness.state_mut().settings_window.open();
+    harness.state_mut().settings_window.page = quill_app::settings::Page::Theme;
+    harness.run();
+    harness.run();
+    for name in ["Quill Dark", "Islands Dracula Colorful", "Material Deep Ocean", "Monokai Pro", "One Dark"] {
+        harness.get_by_label(name);
+    }
+    harness.get_by_label("Icon set");
+    harness.get_by_label("The theme's own");
+    harness.snapshot(shot("settings_theme_page"));
+}
+
+/// Choosing a theme repaints the whole window — the editing area, the rail, the explorer, the tabs and
+/// the status bar — and recolours the code with the theme's own nine token colours.
+#[test]
+fn a_theme_repaints_the_window_and_recolours_the_code() {
+    let mut harness = harness_in(&sample_folder());
+    let opened = run(&mut harness, "tab open program.rs");
+    assert!(opened.ok, "{}", opened.message);
+    harness.run();
+    harness.run();
+    let before = harness.state().settings.theme.clone();
+    assert!(before.is_empty(), "a window that has chosen nothing says nothing");
+
+    // The file is coloured before the theme is chosen, in the Rust plugin's own Dracula.
+    let keyword_at = harness
+        .state()
+        .document()
+        .text()
+        .to_string()
+        .find("fn ")
+        .expect("the sample program starts with a function");
+    assert_eq!(
+        harness.state().document().chars().style_at(keyword_at).color,
+        quill_core::Color::rgb(0xFF, 0x79, 0xC6),
+        "Dracula's pink, from the Rust plugin's own scheme"
+    );
+
+    let reply = run(&mut harness, "theme set \"Monokai Pro\"");
+    assert!(reply.ok, "{}", reply.message);
+    harness.run();
+    assert_eq!(harness.state().settings.theme, "themes-bundle-1/monokai-pro");
+    assert_eq!(
+        quill_app::theme::color::editor(),
+        egui::Color32::from_rgb(0x2D, 0x2A, 0x2E),
+        "the palette followed"
+    );
+    // **The document itself, not the theme value.** A theme that changed the scheme but left every open
+    // file coloured in the one before it is what the review on `task-1776` found, and asserting on
+    // `theme::active().syntax` would not have caught it: `colour_the_file` is asked once a revision.
+    assert_eq!(
+        harness.state().document().chars().style_at(keyword_at).color,
+        quill_core::Color::rgb(0xFF, 0x61, 0x88),
+        "and the file that was already open was coloured again in Monokai's"
+    );
+    harness.snapshot(shot("themed_window"));
+}
+
+/// A theme is named on the command line by what is on the screen, and a name nothing answers to says
+/// what there is rather than only that this was not one of them.
+#[test]
+fn a_theme_is_set_by_name_and_an_unknown_one_says_what_there_is() {
+    let mut harness = harness("");
+    let reply = run(&mut harness, "theme set Material Deep Ocean");
+    assert!(reply.ok, "{}", reply.message);
+    assert_eq!(harness.state().settings.theme, "themes-bundle-1/deep-ocean");
+
+    let reply = run(&mut harness, "theme set Solarized");
+    assert!(!reply.ok);
+    assert!(reply.message.contains("Monokai Pro"), "it lists them: {}", reply.message);
+
+    // `settings set` is the other way in, and it is the same change: `apply_the_theme` is the one place
+    // a theme becomes one.
+    let reply = run(&mut harness, "settings set appearance.theme themes-bundle-1/dracula");
+    assert!(reply.ok, "{}", reply.message);
+    harness.run();
+    assert_eq!(
+        quill_app::theme::color::accent(),
+        egui::Color32::from_rgb(0xFF, 0x79, 0xC6),
+        "the two routes land in the same place"
+    );
+}
+
+/// The accent is one colour over whatever the theme said, and it reaches the roles that **are** the
+/// accent rather than every role that happens to be blue.
+#[test]
+fn an_accent_is_set_over_the_theme_and_cleared_back_to_it() {
+    let mut harness = harness("");
+    run(&mut harness, "theme set quill/dark --accent #FF79C6");
+    harness.run();
+    assert_eq!(quill_app::theme::color::accent(), egui::Color32::from_rgb(0xFF, 0x79, 0xC6));
+    assert_eq!(quill_app::theme::color::folder_open(), egui::Color32::from_rgb(0xFF, 0x79, 0xC6));
+    assert_eq!(
+        quill_app::theme::color::editor(),
+        egui::Color32::from_rgb(0x1A, 0x1F, 0x26),
+        "and nothing that is merely blue moved"
+    );
+
+    run(&mut harness, "theme set quill/dark --accent none");
+    harness.run();
+    assert_eq!(quill_app::theme::color::accent(), egui::Color32::from_rgb(0x48, 0x9F, 0xF8));
+
+    let reply = run(&mut harness, "theme set quill/dark --accent puce");
+    assert!(!reply.ok);
+    assert!(reply.message.contains("#RRGGBB"), "{}", reply.message);
+}
+
+/// Switching the themes plugin off puts the window back to Quill's own in the same frame, which is
+/// `Plugins::renders`' rule applied to colour.
+#[test]
+fn switching_the_themes_plugin_off_puts_the_window_back() {
+    let mut harness = harness("");
+    run(&mut harness, "theme set \"Material Palenight\"");
+    harness.run();
+    assert_eq!(quill_app::theme::color::editor(), egui::Color32::from_rgb(0x29, 0x2D, 0x3E));
+
+    run(&mut harness, "plugins disable themes-bundle-1");
+    harness.run();
+    assert_eq!(
+        quill_app::theme::color::editor(),
+        egui::Color32::from_rgb(0x1A, 0x1F, 0x26),
+        "back to Quill Dark rather than left in a palette nothing can name"
+    );
+    // The setting is left alone, so switching the plugin back on brings the theme back with it.
+    assert_eq!(harness.state().settings.theme, "themes-bundle-1/palenight");
+    run(&mut harness, "plugins enable themes-bundle-1");
+    harness.run();
+    assert_eq!(quill_app::theme::color::editor(), egui::Color32::from_rgb(0x29, 0x2D, 0x3E));
+}
+
+/// The icon set follows the theme unless the settings name one, and the explorer's arrow is what it
+/// is most visible in.
+#[test]
+fn the_icon_set_follows_the_theme_and_the_setting_wins() {
+    let mut harness = harness("");
+    assert_eq!(
+        quill_app::theme::icons(),
+        quill_app::theme::IconSet::Material,
+        "a window comes up in the improved marks"
+    );
+
+    run(&mut harness, "theme set \"One Dark\"");
+    harness.run();
+    assert_eq!(quill_app::theme::icons(), quill_app::theme::IconSet::Classic, "One Dark names them");
+
+    run(&mut harness, "theme set \"One Dark\" --icons material");
+    harness.run();
+    assert_eq!(quill_app::theme::icons(), quill_app::theme::IconSet::Material, "and the setting wins");
+
+    run(&mut harness, "theme set \"One Dark\" --icons follow");
+    harness.run();
+    assert_eq!(quill_app::theme::icons(), quill_app::theme::IconSet::Classic, "and follow gives it back");
+}
+
+/// `theme show` answers with the whole palette by name, so an agent can read a colour without a
+/// screenshot, and `theme list` says which one is showing.
+#[test]
+fn theme_list_and_show_answer_in_a_payload_proportionate_to_the_question() {
+    let mut harness = harness("");
+    let listed = did(&mut harness, "theme list");
+    let themes = listed["themes"].as_array().expect("a list of themes");
+    assert_eq!(themes.len(), 6, "Quill's own and the bundle's five");
+    assert_eq!(themes[0]["key"], "quill/dark");
+    assert_eq!(themes[0]["active"], true);
+    assert!(themes[0]["colours"]["accent"].is_string(), "six colours a theme is recognised by");
+    assert!(themes[0]["colours"].as_object().expect("an object").len() <= 6, "not the whole palette");
+
+    let shown = did(&mut harness, "theme show \"Monokai Pro\"");
+    assert_eq!(shown["icons"], "material");
+    assert_eq!(shown["colours"]["editor"], "#2D2A2E");
+    assert_eq!(shown["syntax"]["keyword"], "#FF6188");
+    assert_eq!(
+        shown["colours"].as_object().expect("an object").len(),
+        quill_app::theme::Palette::NAMES.len(),
+        "the whole palette, by the names a manifest sets"
+    );
+}
+
 
 /// Run the window until `ready` is true, or give up.
 ///
@@ -6820,6 +7003,11 @@ const SETTINGS_HELP: &[&str] = &[
     "The family the editor sets text in.",
     "The point size the editor sets text in, in every tab.",
     "How opaque the window is. Below 1 the desktop shows through.",
+    "What every colour in the window is. A theme that names the nine token colours also colours code, in every language at once.",
+    "One colour for everything the accent means: the caret, the open tab, an open folder.",
+    "Which drawn marks the rail buttons and the explorer's folder arrow use.",
+    "The family the window's own text is set in: the menus, the rail and the status bar.",
+    "The point size the window's own text is set in. The editing area keeps its own.",
     "The point size the terminal sets its grid in.",
     "What each terminal tab runs. Empty means PowerShell on Windows and $SHELL elsewhere.",
     "Whether the editing area has a column of line numbers.",

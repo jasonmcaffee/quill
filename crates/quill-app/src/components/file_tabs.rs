@@ -128,7 +128,7 @@ fn tab_width(ui: &egui::Ui, tab: &TabView) -> f32 {
     let galley = ui.painter().layout_no_wrap(
         tab.name.clone(),
         egui::FontId::proportional(12.0),
-        color::TEXT_CONTROL,
+        color::text_control(),
     );
     // The marker, the gap after it, the name, the gap before the cross, and the cross.
     PADDING + 8.0 + 8.0 + galley.size().x + 8.0 + 14.0 + PADDING
@@ -150,10 +150,10 @@ pub fn show(
 ) -> TabsOutcome {
     let mut outcome = TabsOutcome::default();
     let painter = ui.painter_at(area);
-    painter.rect_filled(area, CornerRadius::ZERO, crate::theme::faded(color::TOOLBAR, opacity));
+    painter.rect_filled(area, CornerRadius::ZERO, crate::theme::faded(color::toolbar(), opacity));
     painter.line_segment(
         [Pos2::new(area.left(), area.bottom()), Pos2::new(area.right(), area.bottom())],
-        Stroke::new(1.0, color::DIVIDER),
+        Stroke::new(1.0, color::divider()),
     );
 
     let widths: Vec<f32> = tabs.iter().map(|tab| tab_width(ui, tab)).collect();
@@ -235,10 +235,10 @@ fn draw_tab(
     }
     let painter = ui.painter();
     if active {
-        painter.rect_filled(rect, CornerRadius::ZERO, color::SELECTED_ROW);
+        painter.rect_filled(rect, CornerRadius::ZERO, color::selected_row());
         // The accent line, quiet in a pane that has not got the keyboard, so which pane is being
         // typed into can be seen at a glance.
-        let line = if at.focused { color::ACCENT } else { color::ACCENT.gamma_multiply(0.35) };
+        let line = if at.focused { color::accent() } else { color::accent().gamma_multiply(0.35) };
         painter.rect_filled(
             Rect::from_min_size(
                 Pos2::new(rect.left(), rect.bottom() - UNDERLINE),
@@ -248,17 +248,17 @@ fn draw_tab(
             line,
         );
     } else if response.hovered() {
-        painter.rect_filled(rect, CornerRadius::ZERO, color::CONTROL);
+        painter.rect_filled(rect, CornerRadius::ZERO, color::control());
     }
     // A tab being carried is outlined, so it is clear which one is in the air. The insertion mark
     // that says where it would land is drawn by the window, because only the window knows which
     // strip the pointer has ended up over.
     if response.dragged() {
-        painter.rect_filled(rect, CornerRadius::ZERO, color::CONTROL);
+        painter.rect_filled(rect, CornerRadius::ZERO, color::control());
         painter.rect_stroke(
             rect.shrink(1.0),
             CornerRadius::same(3),
-            Stroke::new(1.0, color::ACCENT),
+            Stroke::new(1.0, color::accent()),
             egui::StrokeKind::Inside,
         );
     }
@@ -281,7 +281,7 @@ fn draw_tab(
         }
     }
 
-    let tint = if active { color::TEXT_STRONG } else { color::TEXT_CONTROL };
+    let tint = if active { color::text_strong() } else { color::text_control() };
     // A transient tab is drawn faintly rather than in italic: egui has no italic face for the
     // family Quill installs, and a fake slant is worse than a change of weight.
     let tint = if tab.transient { tint.gamma_multiply(0.75) } else { tint };
@@ -299,13 +299,13 @@ fn draw_tab(
         Vec2::splat(16.0),
     );
     if tab.modified && !response.hovered() {
-        painter.circle_filled(shut.center(), 3.5, color::UNSAVED);
+        painter.circle_filled(shut.center(), 3.5, color::unsaved());
     } else {
         let shut_name = format!("Close {}", tab.name);
         let shut_response = ui
             .interact(shut, ui.id().with(("file-tab-close", at.pane, index)), Sense::click())
             .on_hover_text(&shut_name);
-        icon::cross(&ui.painter(), shut.center(), color::TEXT_DIM);
+        icon::cross(&ui.painter(), shut.center(), color::text_dim());
         shut_response.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &shut_name)
         });
@@ -354,7 +354,7 @@ pub fn insertion_mark(painter: &egui::Painter, strip: &Strip, position: usize) {
     painter.rect_filled(
         Rect::from_min_size(Pos2::new(x - 1.0, strip.area.top() + 3.0), Vec2::new(2.0, strip.area.height() - 6.0)),
         CornerRadius::same(1),
-        color::ACCENT,
+        color::accent(),
     );
 }
 

@@ -196,7 +196,7 @@ fn how_wide(ui: &egui::Ui, hover: &HoverValue, message: Option<&str>) -> f32 {
     let name_font = egui::FontId::monospace(11.5);
     let kind_font = egui::FontId::monospace(10.5);
     let measure = |text: String, font: egui::FontId| {
-        ui.painter().layout_no_wrap(text, font, color::TEXT).size().x
+        ui.painter().layout_no_wrap(text, font, color::text()).size().x
     };
     if let Some(said) = message {
         let wanted = measure(said.to_owned(), name_font) + PADDING * 2.0 + 24.0;
@@ -221,8 +221,8 @@ fn frame(ui: &egui::Ui, area: Rect) {
     ui.painter().rect(
         area,
         CornerRadius::same(size::CONTROL_CORNER),
-        color::MENU,
-        Stroke::new(1.0, color::CONTROL_BORDER),
+        color::menu(),
+        Stroke::new(1.0, color::control_border()),
         egui::StrokeKind::Inside,
     );
 }
@@ -232,12 +232,12 @@ fn sentence(ui: &egui::Ui, area: Rect, said: &str) {
     let galley = ui.painter().layout_no_wrap(
         said.to_owned(),
         egui::FontId::monospace(11.5),
-        color::TEXT_DIM,
+        color::text_dim(),
     );
     ui.painter().galley(
         Pos2::new(area.left() + PADDING + 12.0, area.center().y - galley.size().y / 2.0),
         galley,
-        color::TEXT_DIM,
+        color::text_dim(),
     );
 }
 

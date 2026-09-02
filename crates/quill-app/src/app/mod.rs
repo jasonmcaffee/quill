@@ -719,6 +719,10 @@ pub struct QuillApp {
     mermaid_scenes: MermaidScenes,
     /// Set when the theme has been applied, which has to happen once the context exists.
     themed: bool,
+    /// The interface scale egui was last told about, so [`Self::apply_the_theme`] can tell a settings
+    /// change that moved it from one that did not. egui keeps its own copy of the text sizes, so this is
+    /// the only way to know whether they are already right.
+    interface_scale: f32,
     /// The family the toolbar uses for its bold B. It is the real bold face once [`Self::prepare`] has
     /// installed it, and the ordinary one before that, because asking egui for a family it has not been
     /// given panics.
@@ -1017,6 +1021,7 @@ impl QuillApp {
             preview_images: PreviewImages::new(),
             mermaid_scenes: MermaidScenes::new(),
             themed: false,
+            interface_scale: 1.0,
             bold_family: egui::FontFamily::Proportional,
             context: None,
             last_focus: Focus::Editor,
@@ -1119,6 +1124,11 @@ impl QuillApp {
     /// effect at the start of the next frame, and asking for a font family that has not been bound yet
     /// panics inside egui.
     pub fn prepare(&mut self, ctx: &egui::Context) {
+        // The active theme is this **thread's**, and cargo reuses a thread for the next test, so a window
+        // starts from Quill's own rather than from whatever the last window on this thread was painted
+        // in. In the released binary this is a window's first frame and there is nothing to reset;
+        // `use_store` reads the settings and applies the chosen theme a moment later.
+        theme::activate(theme::Theme::quill_dark());
         theme::apply(ctx);
         self.themed = true;
         // What the plugins contribute, read from their manifests. Here rather than only in
@@ -1191,6 +1201,10 @@ impl QuillApp {
             self.write_settings();
         }
         self.set_the_font_everywhere();
+        // The theme after the plugins, because the theme this file names may be one of theirs, and after
+        // the font because the interface font falls back to the editor's family.
+        self.apply_the_theme();
+        self.install_the_interface_font();
     }
 
     /// Read what was left open in this project, put it back, and remember it from then on.
@@ -1466,7 +1480,7 @@ impl QuillApp {
     /// The alpha is what makes the desktop visible through the window. It is applied to the background
     /// only; text is painted separately at full alpha.
     pub fn background(&self) -> Color32 {
-        theme::faded(color::EDITOR, self.settings.opacity)
+        theme::faded(color::editor(), self.settings.opacity)
     }
 
     // ------------------------------------------------------------------- the marked passages
@@ -4408,7 +4422,7 @@ impl QuillApp {
             self.files.at_mut(index).coloured_revision = Some(revision);
             return;
         };
-        let base = quill_core::Color::rgb(color::TEXT.r(), color::TEXT.g(), color::TEXT.b());
+        let base = quill_core::Color::rgb(color::text().r(), color::text().g(), color::text().b());
         let text = self.files.at(index).document.text().to_string();
         if text.len() > Self::COLOUR_LIMIT {
             self.message = Some(format!(
@@ -4418,7 +4432,7 @@ impl QuillApp {
             self.files.at_mut(index).coloured_revision = Some(revision);
             return;
         }
-        let theme = plugin.theme.clone();
+        let theme = crate::services::plugins::scheme_of(plugin);
         // **One** reading of the file, answering two questions. Colouring it and reading it for the
         // blocks that could be collapsed both want `syntax::scan` over the same text at the same
         // revision, and a second pass was worth 2.5 ms a keystroke on the largest file in this
@@ -4481,6 +4495,7 @@ impl QuillApp {
             let Some(inside) = self.plugins.for_language(&region.language) else {
                 continue;
             };
+            let inside_theme = crate::services::plugins::scheme_of(inside);
             let start = region.range.start;
             quill_core::syntax::scan(&text[region.range.clone()], &inside.grammar, |range, token| {
                 let shifted = range.start + start..range.end + start;
@@ -4490,7 +4505,7 @@ impl QuillApp {
                     _ => {}
                 }
                 if token != quill_core::Token::Text {
-                    if let Some(colour) = inside.theme.colour(token) {
+                    if let Some(colour) = inside_theme.colour(token) {
                         spans.push((shifted, colour));
                     }
                 }
@@ -5706,26 +5721,26 @@ impl QuillApp {
         let base = quill_core::CharStyle {
             family: self.settings.font_family.clone(),
             size: self.document().active_style().size,
-            color: quill_core::Color::rgb(color::TEXT.r(), color::TEXT.g(), color::TEXT.b()),
+            color: quill_core::Color::rgb(color::text().r(), color::text().g(), color::text().b()),
             ..quill_core::CharStyle::default()
         };
         let colors = quill_core::PreviewColors {
             text: quill_core::Color::rgb(
-                color::TEXT_STRONG.r(),
-                color::TEXT_STRONG.g(),
-                color::TEXT_STRONG.b(),
+                color::text_strong().r(),
+                color::text_strong().g(),
+                color::text_strong().b(),
             ),
             code: quill_core::Color::rgb(0x7E, 0xD3, 0x9B),
-            link: quill_core::Color::rgb(color::ACCENT.r(), color::ACCENT.g(), color::ACCENT.b()),
+            link: quill_core::Color::rgb(color::accent().r(), color::accent().g(), color::accent().b()),
             quiet: quill_core::Color::rgb(
-                color::TEXT_DIM.r(),
-                color::TEXT_DIM.g(),
-                color::TEXT_DIM.b(),
+                color::text_dim().r(),
+                color::text_dim().g(),
+                color::text_dim().b(),
             ),
             rule: quill_core::Color::rgb(
-                color::DIVIDER.r(),
-                color::DIVIDER.g(),
-                color::DIVIDER.b(),
+                color::divider().r(),
+                color::divider().g(),
+                color::divider().b(),
             ),
         };
         let mono = self.renderer.monospaced_family();
@@ -5923,6 +5938,10 @@ impl QuillApp {
         // is still offered, so checking the tabs before the rebuild would check them against the old answer.
         self.refresh_the_plugins();
         self.close_any_plugin_tabs_that_have_gone();
+        // And the theme, for the same reason: a themes plugin switched off takes its palettes with it, so
+        // the window falls back to Quill's own in this frame rather than staying in colours nothing in the
+        // Settings list can name.
+        self.apply_the_theme();
     }
 
     /// Close a plugin's tab when its plugin has gone, which is what switching one off does.
@@ -6103,7 +6122,7 @@ impl QuillApp {
         ui.painter().rect_filled(
             full,
             CornerRadius::same(size::WINDOW_CORNER),
-            theme::faded(color::EDITOR, self.settings.opacity),
+            theme::faded(color::editor(), self.settings.opacity),
         );
 
         let title_rect = Rect::from_min_size(full.min, Vec2::new(full.width(), size::TITLE_BAR));
@@ -7180,12 +7199,116 @@ impl QuillApp {
         {
             self.set_the_font_everywhere();
         }
+        // The theme follows its four settings. Asked on every settings change rather than only when one
+        // of the four moved, for the reason `reconcile_mcp` records beside itself: a list of the settings
+        // that have to remember to say so is a list whose next entry is the one that forgot.
+        self.apply_the_theme();
+        // The interface's own family is bound into egui rather than read at drawing time, so it is
+        // installed again when it moves — and only then, because `set_fonts` throws away the glyph atlas.
+        // The editor's family counts as a move, because an empty `ui_font_family` means "the editor's":
+        // without this, changing the editor's font would leave the menus in the family it had before.
+        if self.settings.ui_font_family != before.ui_font_family
+            || (self.settings.ui_font_family.trim().is_empty()
+                && self.settings.font_family != before.font_family)
+        {
+            self.install_the_interface_font();
+        }
         // The MCP endpoint follows its three settings. It is asked on every settings change rather
         // than only when one of the three moved, because `Hosted::reconcile` answers "nothing
         // changed" in two comparisons and a list of the settings that have to remember to tell it
         // is a list whose next entry will be the one that forgot.
         self.reconcile_mcp();
         self.unsaved_settings = true;
+    }
+
+    /// Paint this window in the theme the settings name, and tell egui about it.
+    ///
+    /// **The one place a theme becomes a change**, which is `run_action`'s rule and `run_cli`'s: the
+    /// Settings page, `theme set`, `settings set appearance.theme` and switching a theme plugin off all
+    /// come here, so none of them can leave the two halves — the palette Quill draws with and the copy
+    /// egui keeps in its style — half done.
+    ///
+    /// A theme whose plugin is switched off, uninstalled or failing to parse is not in `Plugins::themes`,
+    /// so this falls back to Quill's own rather than leaving the window in a palette nothing can name.
+    /// That is `Plugins::renders`' rule applied to colour: switching a plugin off withdraws what it
+    /// contributed in the same frame.
+    pub(crate) fn apply_the_theme(&mut self) {
+        let wanted = match self.settings.theme.trim().is_empty() {
+            true => theme::Theme::quill_dark(),
+            false => self
+                .plugins
+                .theme(&self.settings.theme)
+                .unwrap_or_else(theme::Theme::quill_dark),
+        };
+        let wanted = match self.settings.accent_colour() {
+            Some(accent) => wanted.with_accent(accent),
+            None => wanted,
+        };
+        // The setting wins over the theme's own choice, and `Follow the theme` is an empty setting rather
+        // than a third value — the rule `terminal_shell` and `appearance.theme` both keep.
+        let wanted = match self.settings.icon_set() {
+            Some(set) => theme::Theme { icons: set, ..wanted },
+            None => wanted,
+        };
+        // Nothing to do when the answer is the one already showing, which it is on every settings change
+        // that was not about colour. Asking always and acting only on a difference is `reconcile_mcp`'s
+        // own shape, and it is what keeps this off the list of settings that have to remember to say so —
+        // and, since a theme change asks for a repaint, off the list of things that could keep an idle
+        // window awake.
+        if theme::active() == wanted && self.interface_scale == self.settings.interface_scale() {
+            return;
+        }
+        self.interface_scale = self.settings.interface_scale();
+        theme::activate(wanted);
+        // **Everything that holds a colour it has already worked out is thrown away**, and only here,
+        // because this is the one point at which the answer to "what colour is that" changed.
+        //
+        // `colour_the_file` is asked once a *revision* rather than once a frame, a preview is laid out
+        // with its colours baked into the glyphs, and a Mermaid scene is built through
+        // `mermaid_scene::theme`, which reads the palette. Without this, choosing a theme repainted the
+        // window's furniture and left every open document, every preview and every diagram in the
+        // colours they were built in until they were typed in — which the review on `task-1776` found.
+        //
+        // Every open file rather than the one showing, which is the rule `set_plugin_enabled` already
+        // keeps for exactly these caches: a theme is a setting for the window, and with panes there is
+        // more than one file being drawn.
+        for file in self.files.iter_mut() {
+            file.coloured_revision = None;
+            file.cached.preview = None;
+            file.cached.preview_diagrams.clear();
+            file.cached.stale = true;
+        }
+        self.mermaid_scenes.forget();
+        if let Some(context) = &self.context {
+            theme::apply_scaled(context, self.interface_scale);
+            context.request_repaint();
+        }
+    }
+
+    /// Bind the family the window's own text is set in, which is the editor's until somebody chooses one.
+    ///
+    /// Separate from `set_the_font_everywhere`, which changes the **document**. This one calls
+    /// `Context::set_fonts`, which throws away the glyph atlas and takes effect at the start of the next
+    /// frame, so it is called when the family moves rather than on every settings change.
+    pub(crate) fn install_the_interface_font(&mut self) {
+        let Some(context) = self.context.clone() else {
+            return;
+        };
+        let family = match self.settings.ui_font_family.trim().is_empty() {
+            true => self.settings.font_family.clone(),
+            false => self.settings.ui_font_family.clone(),
+        };
+        let family = match family.is_empty() {
+            true => self.renderer.default_family(),
+            false => family,
+        };
+        let regular = self.renderer.face_bytes(&family, false);
+        let bold = self.renderer.face_bytes(&family, true);
+        let has_bold = bold.is_some();
+        theme::install_fonts(&context, &family, regular, bold);
+        if has_bold {
+            self.bold_family = egui::FontFamily::Name(theme::BOLD_FAMILY.into());
+        }
     }
 
     /// Whether this window is hosting an MCP endpoint right now.
@@ -7741,7 +7864,7 @@ impl QuillApp {
                     name: file.name(),
                     modified: file.document.is_modified(),
                     transient: file.transient,
-                    marker: file.path().map(theme::file_marker).unwrap_or(color::FILE_TEXT),
+                    marker: file.path().map(theme::file_marker).unwrap_or(color::file_text()),
                     icon,
                 }
             })
@@ -8630,7 +8753,7 @@ impl QuillApp {
             self.preview_layout(),
             origin,
             self.files.active().preview_selection.range(),
-            color::TEXT_SELECTION,
+            color::text_selection(),
             2.0,
         );
         editor_view::paint_text(&painter_ui, &self.renderer, self.preview_layout(), origin);
@@ -8736,7 +8859,7 @@ impl QuillApp {
             if rect.bottom() < clip.top() || rect.top() > clip.bottom() {
                 continue;
             }
-            ui.painter().rect_filled(rect, 4.0, color::CODE_PANEL);
+            ui.painter().rect_filled(rect, 4.0, color::code_panel());
         }
     }
 
@@ -8758,7 +8881,7 @@ impl QuillApp {
             if span.start >= bytes.end {
                 break;
             }
-            editor_view::paint_behind(ui, layout, origin, span.clone(), color::CODE_CHIP, 3.0);
+            editor_view::paint_behind(ui, layout, origin, span.clone(), color::code_chip(), 3.0);
         }
     }
 
@@ -8796,9 +8919,9 @@ impl QuillApp {
                     let galley = painter.layout_no_wrap(
                         words,
                         egui::FontId::proportional(13.0),
-                        color::TEXT_DIM,
+                        color::text_dim(),
                     );
-                    painter.galley(at, galley, color::TEXT_DIM);
+                    painter.galley(at, galley, color::text_dim());
                 }
             }
         }
@@ -9372,8 +9495,8 @@ impl QuillApp {
             self.layout(),
             origin,
             editor_view::PaintStyle {
-                selection: color::TEXT_SELECTION,
-                caret: color::ACCENT,
+                selection: color::text_selection(),
+                caret: color::accent(),
                 show_caret: has_keyboard,
                 underline: symbol.word.clone(),
                 execution_point,
@@ -9559,11 +9682,11 @@ fn line_number_in_file(path: &Path, offset: usize) -> usize {
 
 fn git_colour(state: quill_git::State) -> Color32 {
     match state {
-        quill_git::State::Untracked => color::GIT_UNTRACKED,
-        quill_git::State::Added | quill_git::State::Copied => color::GIT_ADDED,
-        quill_git::State::Unmerged => color::CLOSE,
-        quill_git::State::Ignored | quill_git::State::Unchanged => color::TEXT_FAINT.gamma_multiply(0.7),
-        _ => color::GIT_MODIFIED,
+        quill_git::State::Untracked => color::git_untracked(),
+        quill_git::State::Added | quill_git::State::Copied => color::git_added(),
+        quill_git::State::Unmerged => color::close(),
+        quill_git::State::Ignored | quill_git::State::Unchanged => color::text_faint().gamma_multiply(0.7),
+        _ => color::git_modified(),
     }
 }
 
@@ -9642,11 +9765,12 @@ impl quill_core::CodeHighlighter for PluginHighlighter<'_> {
         let Some(plugin) = self.plugins.for_language(language) else {
             return Vec::new();
         };
+        let scheme = crate::services::plugins::scheme_of(plugin);
         if !plugin.grammar.markup {
             return quill_core::syntax::highlight(code, &plugin.grammar)
                 .into_iter()
                 .filter_map(|(range, token)| {
-                    plugin.theme.colour(token).map(|colour| (range, colour))
+                    scheme.colour(token).map(|colour| (range, colour))
                 })
                 .collect();
         }
@@ -9658,7 +9782,7 @@ impl quill_core::CodeHighlighter for PluginHighlighter<'_> {
         let mut embedded: Vec<quill_core::syntax::Embedded> = Vec::new();
         quill_core::syntax::scan_with_embedded(code, &plugin.grammar, &mut embedded, |range, token| {
             if token != quill_core::Token::Text {
-                if let Some(colour) = plugin.theme.colour(token) {
+                if let Some(colour) = scheme.colour(token) {
                     spans.push((range, colour));
                 }
             }
@@ -9667,10 +9791,11 @@ impl quill_core::CodeHighlighter for PluginHighlighter<'_> {
             let Some(inside) = self.plugins.for_language(&region.language) else {
                 continue;
             };
+            let inside_theme = crate::services::plugins::scheme_of(inside);
             let start = region.range.start;
             quill_core::syntax::scan(&code[region.range.clone()], &inside.grammar, |range, token| {
                 if token != quill_core::Token::Text {
-                    if let Some(colour) = inside.theme.colour(token) {
+                    if let Some(colour) = inside_theme.colour(token) {
                         spans.push((range.start + start..range.end + start, colour));
                     }
                 }

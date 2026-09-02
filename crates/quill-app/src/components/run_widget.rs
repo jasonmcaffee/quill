@@ -211,7 +211,7 @@ pub fn show(ui: &mut egui::Ui, area: Rect, state: &WidgetState) -> Option<Action
 /// One of the widget's square buttons: hovered fill, a drawn icon, a plain name.
 ///
 /// `green` tints the icon with the colour that means "this starts something", which is IntelliJ's
-/// own colour for the same button and is `theme::color::GIT_ADDED` here — the palette is closed,
+/// own colour for the same button and is `theme::color::git_added()` here — the palette is closed,
 /// and that is the green in it.
 fn square_button(
     ui: &mut egui::Ui,
@@ -224,9 +224,9 @@ fn square_button(
         .interact(area, ui.id().with(("run-widget", name)), Sense::click())
         .on_hover_text(name);
     if response.hovered() {
-        ui.painter().rect_filled(area, CornerRadius::same(size::CONTROL_CORNER), color::CONTROL);
+        ui.painter().rect_filled(area, CornerRadius::same(size::CONTROL_CORNER), color::control());
     }
-    let tint = if green { color::GIT_ADDED } else { color::TEXT_CONTROL };
+    let tint = if green { color::git_added() } else { color::text_control() };
     draw(ui.painter(), area.center(), tint);
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), name)
@@ -246,7 +246,7 @@ fn flyout(ui: &mut egui::Ui, state: &WidgetState) -> Option<Action> {
     if state.rows.is_empty() {
         ui.add_space(4.0);
         ui.label(
-            egui::RichText::new("  No run configurations yet.").size(11.5).color(color::TEXT_FAINT),
+            egui::RichText::new("  No run configurations yet.").size(11.5).color(color::text_faint()),
         );
         ui.add_space(4.0);
     }
@@ -277,19 +277,19 @@ fn configuration_row(ui: &mut egui::Ui, row: &Row, selected: bool) -> Option<Act
     let play_response =
         ui.interact(play, ui.id().with(("run-row-play", &row.name)), Sense::click());
     if response.hovered() || play_response.hovered() {
-        ui.painter().rect_filled(rect, CornerRadius::same(4), color::SELECTED_ROW);
+        ui.painter().rect_filled(rect, CornerRadius::same(4), color::selected_row());
     }
     let painter = ui.painter();
     let mut left = rect.left() + 8.0;
     if row.running {
-        icon::state_dot(painter, Pos2::new(left + 4.0, rect.center().y), color::GIT_ADDED);
+        icon::state_dot(painter, Pos2::new(left + 4.0, rect.center().y), color::git_added());
     }
     left += 14.0;
     // A temporary and a suggestion are drawn in the quiet colour, the way an occurrence inside a
     // comment is listed in the references modal: they are offered rather than kept.
     let tint = match row.origin {
-        Origin::Permanent => color::TEXT_CONTROL,
-        Origin::Temporary | Origin::Suggested => color::TEXT_DIM,
+        Origin::Permanent => color::text_control(),
+        Origin::Temporary | Origin::Suggested => color::text_dim(),
     };
     let galley = painter.layout_no_wrap(row.name.clone(), egui::FontId::proportional(12.5), tint);
     painter.galley(Pos2::new(left, rect.center().y - galley.size().y / 2.0), galley, tint);
@@ -297,9 +297,9 @@ fn configuration_row(ui: &mut egui::Ui, row: &Row, selected: bool) -> Option<Act
     // right hand end of a menu row is what every menu in the world draws to mean "this opens a
     // submenu", and this one means the opposite: it is a button that runs the row it is on.
     if play_response.hovered() {
-        painter.rect_filled(play, CornerRadius::same(4), color::CONTROL);
+        painter.rect_filled(play, CornerRadius::same(4), color::control());
     }
-    icon::run_scaled(painter, play.center(), color::GIT_ADDED, 0.78);
+    icon::run_scaled(painter, play.center(), color::git_added(), 0.78);
     let name = row.name.clone();
     response.widget_info(move || {
         egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, name.clone())

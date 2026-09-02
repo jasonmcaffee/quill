@@ -58,7 +58,7 @@ pub fn show(ui: &mut egui::Ui, line: Rect, id: &str, axis: Axis) -> Drag {
     }
 
     // The line itself, brighter while it is being pointed at so it is clear it can be moved.
-    let colour = if active { color::ACCENT } else { color::DIVIDER };
+    let colour = if active { color::accent() } else { color::divider() };
     let drawn = if active {
         match axis {
             Axis::Upright => Rect::from_center_size(
@@ -90,7 +90,7 @@ pub fn show(ui: &mut egui::Ui, line: Rect, id: &str, axis: Axis) -> Drag {
 
 /// Draw a plain divider with nothing draggable about it.
 pub fn line(painter: &egui::Painter, from: Pos2, to: Pos2) {
-    painter.line_segment([from, to], Stroke::new(1.0, color::DIVIDER));
+    painter.line_segment([from, to], Stroke::new(1.0, color::divider()));
 }
 
 #[cfg(test)]

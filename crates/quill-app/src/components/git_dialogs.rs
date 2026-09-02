@@ -282,12 +282,12 @@ fn reset(
             ui.painter().rect_filled(
                 row.shrink2(Vec2::new(0.0, 1.0)),
                 egui::CornerRadius::same(5),
-                color::SELECTED_ROW,
+                color::selected_row(),
             );
         }
-        let tint = if chosen { color::TEXT_STRONG } else { color::TEXT_CONTROL };
+        let tint = if chosen { color::text_strong() } else { color::text_control() };
         let x = modal::label(ui.painter(), row, row.left() + 10.0, mode.name(), tint, 12.5);
-        modal::label(ui.painter(), row, x + 14.0, mode.description(), color::TEXT_FAINT, 11.0);
+        modal::label(ui.painter(), row, x + 14.0, mode.description(), color::text_faint(), 11.0);
         response.widget_info(|| {
             egui::WidgetInfo::selected(egui::WidgetType::RadioButton, true, chosen, mode.name())
         });
@@ -336,7 +336,7 @@ fn branch_list(
             let is_current = branch.current;
             let upstream = branch.upstream.clone().unwrap_or_default();
             let response = modal::row(ui, &branch.name, &branch.name, is_current, |painter, row| {
-                let tint = if is_current { color::TEXT_STRONG } else { color::TEXT_CONTROL };
+                let tint = if is_current { color::text_strong() } else { color::text_control() };
                 let x = modal::label(painter, row, row.left() + 16.0, &name, tint, 12.5);
                 let note = if is_current {
                     "checked out".to_owned()
@@ -348,7 +348,7 @@ fn branch_list(
                     String::new()
                 };
                 if !note.is_empty() {
-                    modal::label(painter, row, x + 14.0, &note, color::TEXT_FAINT, 11.0);
+                    modal::label(painter, row, x + 14.0, &note, color::text_faint(), 11.0);
                 }
             });
             if response.clicked() {
@@ -384,13 +384,13 @@ fn history_list(
             let date = commit.date.clone();
             let refs = commit.refs.clone();
             let response = modal::row(ui, &commit.hash, &commit.subject, false, |painter, row| {
-                let mut x = modal::label(painter, row, row.left() + 12.0, &short, color::ACCENT, 11.5);
+                let mut x = modal::label(painter, row, row.left() + 12.0, &short, color::accent(), 11.5);
                 if !refs.is_empty() {
-                    x = modal::label(painter, row, x + 10.0, &refs, color::GIT_ADDED, 10.5);
+                    x = modal::label(painter, row, x + 10.0, &refs, color::git_added(), 10.5);
                 }
-                x = modal::label(painter, row, x + 12.0, &subject, color::TEXT_CONTROL, 12.0);
-                x = modal::label(painter, row, x + 16.0, &author, color::TEXT_DIM, 11.0);
-                modal::label(painter, row, x + 10.0, &date, color::TEXT_FAINT, 11.0);
+                x = modal::label(painter, row, x + 12.0, &subject, color::text_control(), 12.0);
+                x = modal::label(painter, row, x + 16.0, &author, color::text_dim(), 11.0);
+                modal::label(painter, row, x + 10.0, &date, color::text_faint(), 11.0);
             });
             if response.clicked() {
                 outcome.show_commit = Some(commit.hash.clone());
@@ -398,7 +398,7 @@ fn history_list(
         }
         if history.is_empty() {
             ui.add_space(8.0);
-            ui.label(egui::RichText::new("  No commits yet.").size(11.5).color(color::TEXT_FAINT));
+            ui.label(egui::RichText::new("  No commits yet.").size(11.5).color(color::text_faint()));
         }
     });
     if modal::footer(ui, area, &[("CLOSE", true)]).is_some() {
@@ -424,8 +424,8 @@ fn remote_list(
             let name = remote.name.clone();
             let url = remote.url.clone();
             let response = modal::row(ui, &remote.name, &remote.name, false, |painter, row| {
-                let x = modal::label(painter, row, row.left() + 16.0, &name, color::TEXT_STRONG, 12.5);
-                modal::label(painter, row, x + 16.0, &url, color::TEXT_FAINT, 11.0);
+                let x = modal::label(painter, row, row.left() + 16.0, &name, color::text_strong(), 12.5);
+                modal::label(painter, row, x + 16.0, &url, color::text_faint(), 11.0);
             });
             if response.clicked() {
                 chosen = Some(remote.name.clone());
@@ -433,7 +433,7 @@ fn remote_list(
         }
         if remotes.is_empty() {
             ui.add_space(8.0);
-            ui.label(egui::RichText::new("  No remotes.").size(11.5).color(color::TEXT_FAINT));
+            ui.label(egui::RichText::new("  No remotes.").size(11.5).color(color::text_faint()));
         }
     });
     let mut pen = modal::section(ui, body, list.bottom() + 8.0, "Add a remote");
@@ -457,8 +457,8 @@ fn chooser(ui: &mut egui::Ui, area: Rect, id: &str, branches: &[Branch], target:
     ui.painter().rect(
         area,
         egui::CornerRadius::same(6),
-        color::EXPLORER_FOOTER,
-        egui::Stroke::new(1.0, color::DIVIDER),
+        color::explorer_footer(),
+        egui::Stroke::new(1.0, color::divider()),
         egui::StrokeKind::Inside,
     );
     let inner = area.shrink(4.0);
@@ -469,7 +469,7 @@ fn chooser(ui: &mut egui::Ui, area: Rect, id: &str, branches: &[Branch], target:
             let chosen = *target == branch.name;
             let name = branch.name.clone();
             let response = modal::row(ui, &branch.name, &branch.name, chosen, |painter, row| {
-                let tint = if chosen { color::TEXT_STRONG } else { color::TEXT_CONTROL };
+                let tint = if chosen { color::text_strong() } else { color::text_control() };
                 modal::label(painter, row, row.left() + 16.0, &name, tint, 12.5);
             });
             if response.clicked() {
@@ -482,7 +482,7 @@ fn chooser(ui: &mut egui::Ui, area: Rect, id: &str, branches: &[Branch], target:
 /// A label at the left and a field beside it, which most of these dialogs are made of.
 fn named_field(ui: &mut egui::Ui, body: Rect, top: f32, name: &str, value: &mut String) -> f32 {
     let row = row_at(body, top);
-    modal::label(ui.painter(), row, row.left(), name, color::TEXT_CONTROL, 12.5);
+    modal::label(ui.painter(), row, row.left(), name, color::text_control(), 12.5);
     let field = Rect::from_min_size(
         Pos2::new(row.left() + 110.0, row.top()),
         Vec2::new((row.width() - 110.0).max(120.0), 26.0),
