@@ -1496,7 +1496,11 @@ impl QuillApp {
             has_selection: !self.document().selection().is_empty(),
             recent: self.recent.clone(),
             view_mode: self.view_mode(),
-            can_preview: file_kind::preview_applies(self.document().path()),
+            // The same question the text tools ask, so the `View` menu and the title bar cannot come to
+            // different answers about the tab that is showing — which is what `file_kind`'s two
+            // functions exist to prevent.
+            can_preview: !self.showing_a_plugins_tab()
+                && file_kind::preview_applies(self.document().path()),
             preview_kind: file_kind::preview_kind(self.document().path()),
             explorer_visible: self.explorer_visible,
             editor_visible: self.editor_visible,
@@ -3513,6 +3517,16 @@ impl QuillApp {
         self.unsaved_settings = true;
     }
 
+    /// Whether the tab that is showing belongs to a plugin rather than holding a file.
+    ///
+    /// One question, asked by the title bar's text tools and by the `View` menu, so the two cannot
+    /// disagree about it. A plugin tab is a `Document` with no path — the picture precedent, followed
+    /// exactly — and `services::file_kind` reads a document with no path as unsaved prose, which is
+    /// right for a new file and wrong for a board.
+    pub fn showing_a_plugins_tab(&self) -> bool {
+        self.files.active().plugin.is_some()
+    }
+
     /// Open a plugin's own tab in the editing area, or show it if it is already open.
     ///
     /// A contributed tab is a `Document` with a `PluginTab` beside it, which is exactly what a picture
@@ -4351,7 +4365,16 @@ impl QuillApp {
         match &self.context {
             Some(context) => {
                 let context = context.clone();
-                Arc::new(move || context.request_repaint())
+                // Through `services::wake`, so a wake that arrives while the run loop has stopped
+                // reading repaint requests goes by the route that gets through instead. `task-28`
+                // measured what the bare `request_repaint` cost: a ticket's agent printed its banner,
+                // this waker fired, the request was dropped, no frame was drawn for forty-one seconds,
+                // and the handoff line — which is typed from `AgentTasks::pump`, on a frame — was never
+                // typed at all. That module says what the two routes are and when each is used.
+                Arc::new(move || {
+                    let context = context.clone();
+                    crate::services::wake::from_a_worker_thread(move || context.request_repaint());
+                })
             }
             None => Arc::new(|| {}),
         }
@@ -5850,6 +5873,9 @@ impl QuillApp {
         hold_the_keyboard(ui);
         // Always ask to be woken again. See `HEARTBEAT`.
         ui.ctx().request_repaint_after(HEARTBEAT);
+        // Once a frame and nowhere else, so a worker thread can tell an idle window from a stopped one
+        // without anybody having to remember to report it. `services::wake` says what it is for.
+        crate::services::wake::a_frame_was_drawn();
         // Every open plugin gets a turn, twice over. Once a frame it is asked to catch up with whatever it
         // owns that is not drawing — for Agent-Tasks that is reading its terminals and sending a queued
         // handoff, which must not wait for somebody to look at the board. And once every `PLUGIN_TICK` it
@@ -5871,7 +5897,15 @@ impl QuillApp {
         // own. How much room they want depends on the open file, and the title bar leaves exactly that
         // much clear — but the bar's own height never changes, so switching from a `.md` file to a
         // `.rs` one no longer moves the tabs and the editing area up and down by forty four points.
-        let tools_width = text_tools::width(self.document().path());
+        // **Nothing at all while a plugin's tab is showing.** A plugin tab is a `Document` with no path,
+        // which `file_kind` reads as an unsaved prose file — so the `F` button and the three view modes
+        // were drawn over the Agent-Tasks board, offering the Markdown parser's reading of a document
+        // there is none of. That is the absent-control rule: a control that can never apply to what is
+        // showing is not drawn, and a board has no font, no bold and no preview.
+        let tools_width = match self.showing_a_plugins_tab() {
+            true => 0.0,
+            false => text_tools::width(self.document().path()),
+        };
         // The run widget takes the right hand end and the text tools sit in front of it, so the play
         // and the bug are in the same place whatever file is open — `task-1693`. How much room each
         // wants is worked out first, because the tools have to know where the run widget starts.
@@ -6020,9 +6054,45 @@ impl QuillApp {
                         bottom: pane.group == crate::services::plugins::RailGroup::Bottom,
                         key: self.plugin_ui.pane_key(slot)?,
                         slot,
+                        opens: activity_bar::Opens::Pane,
                     })
                 })
                 .collect();
+            // And one per tab a plugin contributed, after the panes, so the board's button lands under
+            // the chat pane's — which is where `task-28` asks for it. A tab had no button at all before
+            // and could only be reached from the `Plugins` menu.
+            let tab_buttons: Vec<activity_bar::PluginButton> = self
+                .plugin_ui
+                .surfaces()
+                .tabs
+                .iter()
+                .map(|surface| {
+                    let key = surface.key(&surface.what.id);
+                    activity_bar::PluginButton {
+                        // **Not the tab's own label.** A plugin that contributes a tab usually names its
+                        // menu the same thing, so a button called `Agent-Tasks` would be the second
+                        // control of that name in the window and a test asking for one would find two —
+                        // which is exactly what happened. `Terminal tile`, `Run tile` and
+                        // `Version Control` are the same rule already applied in the rail below.
+                        label: format!("{} tab", surface.what.label),
+                        icon: surface.what.icon.clone(),
+                        // Lit when that tab is the one showing, which is what the pill means for every
+                        // other button in the rail.
+                        on: self
+                            .files
+                            .active()
+                            .plugin
+                            .as_ref()
+                            .is_some_and(|open| open.key == key),
+                        bottom: false,
+                        key,
+                        slot: 0,
+                        opens: activity_bar::Opens::Tab,
+                    }
+                })
+                .collect();
+            let plugin_buttons: Vec<activity_bar::PluginButton> =
+                plugin_buttons.into_iter().chain(tab_buttons).collect();
             let rail = {
                 let mut rail_ui = ui.new_child(egui::UiBuilder::new().max_rect(rail_rect));
                 activity_bar::show_with(&mut rail_ui, rail_rect, state, opacity, &plugin_buttons)

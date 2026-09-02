@@ -53,3 +53,85 @@ fn the_run_loop_now(repaint: impl FnOnce() + Send + 'static) {
     // less than what the ordinary nudge does.
     repaint();
 }
+
+/// How long with no frame before a wake from a worker thread stops being a repaint request.
+///
+/// The same half second the control channel uses, and for the same reason: it is long enough that an
+/// ordinary idle window is never escalated and short enough that nothing waits on a lost wake.
+const ESCALATE: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// When the last frame began, as milliseconds since [`STARTED`], or zero for none yet.
+static LAST_FRAME_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// What [`LAST_FRAME_MS`] is measured against.
+static STARTED: std::sync::LazyLock<std::time::Instant> =
+    std::sync::LazyLock::new(std::time::Instant::now);
+
+/// Note that a frame has begun, so [`from_a_worker_thread`] can tell an idle window from a stopped one.
+///
+/// Called from `QuillApp::ui` and nowhere else, which is `follow_the_open_file`'s rule: a list of the
+/// places that have to say "a frame happened" is a list whose next entry will be the one that forgot.
+/// `services::control` keeps a count of its own because its timeout sentence needs the queue depth
+/// beside it, and it is fed from `Server::take` at the top of the same frame.
+pub fn a_frame_was_drawn() {
+    let since = STARTED.elapsed().as_millis().min(u64::MAX as u128) as u64;
+    LAST_FRAME_MS.store(since.max(1), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// How long ago the last frame was, or nothing when none has been drawn.
+fn since_the_last_frame() -> Option<std::time::Duration> {
+    let last = LAST_FRAME_MS.load(std::sync::atomic::Ordering::Relaxed);
+    if last == 0 {
+        return None;
+    }
+    Some(STARTED.elapsed().saturating_sub(std::time::Duration::from_millis(last)))
+}
+
+/// Ask for a frame from a thread that is not the main one, escalating once asking has stopped working.
+///
+/// **This is the wake every worker thread in the window uses**, and it is a repaint request until the
+/// window has plainly stopped drawing. `services::control` reached this conclusion first and kept it to
+/// itself; `task-28` measured what that cost everything else. A ticket's agent printed its banner, the
+/// session's reader thread asked for a repaint, the request was dropped — which is what the module
+/// comment above records — and no frame was drawn for forty-one seconds. The handoff line waiting for
+/// that agent's prompt is typed from `AgentTasks::pump`, which runs **on a frame**, so a wake that does
+/// not arrive is a ticket whose agent sits at its banner for ever while the board says it is being
+/// worked on. Nothing on the screen said why, and a person watching an agent is exactly a person who is
+/// not touching the window.
+///
+/// `None` — no frame ever drawn — is not escalated, for the reason `control::escalation_is_due` gives:
+/// a window that has not drawn its first frame is starting up, and the repaint being asked for is what
+/// it is waiting for.
+pub fn from_a_worker_thread(repaint: impl Fn() + Send + Sync + 'static) {
+    if since_the_last_frame().is_some_and(|silent| silent >= ESCALATE) {
+        the_run_loop(move || repaint());
+        return;
+    }
+    repaint();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_wake_escalates_only_once_nothing_has_been_drawn_for_long_enough() {
+        // The decision, which is what a test with no run loop can assert. Whether a run loop wakes is
+        // not.
+        let due = |since: Option<std::time::Duration>| {
+            since.is_some_and(|silent| silent >= ESCALATE)
+        };
+        assert!(!due(None), "a window that has drawn nothing yet is starting up");
+        assert!(!due(Some(ESCALATE - std::time::Duration::from_millis(1))));
+        assert!(due(Some(ESCALATE)));
+        assert!(due(Some(std::time::Duration::from_secs(41))), "what task-28 measured");
+    }
+
+    #[test]
+    fn a_frame_moves_the_clock_off_never() {
+        assert_eq!(LAST_FRAME_MS.load(std::sync::atomic::Ordering::Relaxed), 0, "nothing drawn yet");
+        a_frame_was_drawn();
+        let since = since_the_last_frame().expect("a frame has been drawn");
+        assert!(since < ESCALATE, "a frame just drawn is not silence: {since:?}");
+    }
+}

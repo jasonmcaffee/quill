@@ -6414,10 +6414,21 @@ impl QuillApp {
                 let Some(command) = request.text("command") else {
                     return no(request, code::USAGE, "Say which command. `plugins show` lists them.");
                 };
-                let arguments: Vec<String> = request
-                    .text("arguments")
-                    .map(|rest| rest.split_whitespace().map(str::to_owned).collect())
-                    .unwrap_or_default();
+                // **Split on spaces only, and do not collapse runs of them.** `split_whitespace` threw
+                // away every newline and every repeated space before the plugin saw them, and the
+                // provider's own `rest` closure joins the words back with single spaces — so a comment
+                // holding a markdown document arrived as one line. Markdown block structure is line
+                // based, so a heading swallowed the whole body, and no list, table, fence or quote could
+                // survive. An agent asked to post one found it and said so on the ticket rather than
+                // being able to do it.
+                //
+                // A run of n spaces becomes n-1 empty words here and n spaces again when `rest` rejoins
+                // them, so indentation is exact rather than nearly right — which is what a nested list
+                // needs. Newlines and tabs are inside the words and are not touched at all. The ends are
+                // trimmed of spaces so a line with a trailing one does not produce an empty argument,
+                // and newlines at the ends are kept because they are the caller's text.
+                let arguments: Vec<String> =
+                    request.text("arguments").map(plugin_arguments).unwrap_or_default();
                 match self.run_plugin_command(&id, &command, &arguments) {
                     Ok(answer) => {
                         let said = match answer.message.is_empty() {
@@ -7054,6 +7065,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_plugin_argument_line_keeps_the_newlines_and_the_indentation_a_body_needs() {
+        // The words a command reads still come out as words.
+        assert_eq!(plugin_arguments("task-4 --as claude hello".to_owned()), vec![
+            "task-4", "--as", "claude", "hello"
+        ]);
+        // And a body survives being taken apart and put back together by the provider's `rest`, which
+        // joins with a single space. That round trip is the thing that has to hold.
+        let body = "## Heading\n\n- one\n  - nested\n\n| a | b |\n| --- | --- |\n\n```rust\nfn main() {}\n```";
+        let line = format!("task-4 --as claude {body}");
+        let words = plugin_arguments(line);
+        assert_eq!(words[0], "task-4");
+        assert_eq!(words[2], "claude");
+        assert_eq!(words[3..].join(" "), body, "the body comes back byte for byte");
+        assert_eq!(plugin_arguments("   ".to_owned()), Vec::<String>::new());
+    }
+
+    #[test]
     fn a_command_line_is_split_the_way_a_shell_splits_one() {
         assert_eq!(split_line("tab open README.md"), vec!["tab", "open", "README.md"]);
         assert_eq!(
@@ -7120,6 +7148,28 @@ fn contributes(plugin: &crate::services::plugins::Plugin) -> Vec<String> {
         found.push("language".to_owned());
     }
     found
+}
+
+/// The words of a `plugins run` argument line, with everything a body needs left intact.
+///
+/// **Split on spaces only, and runs of them are not collapsed.** `split_whitespace` threw away every
+/// newline and every repeated space before the plugin saw them, and a provider's own `rest` closure
+/// joins the words back with single spaces — so a comment holding a markdown document arrived as one
+/// line. Markdown block structure is line based, so a heading swallowed the whole body, and no list,
+/// table, fence or blockquote could survive. An agent asked to post one found this and wrote the
+/// diagnosis on the ticket, because there was no way round it from the command line.
+///
+/// A run of n spaces becomes n-1 empty words here and n spaces again when the provider rejoins them, so
+/// indentation comes back exactly rather than nearly — which is what a nested list needs. Newlines and
+/// tabs sit inside the words and are not touched. The ends are trimmed of spaces so a line with a
+/// trailing one does not produce an empty argument, and newlines at the ends are kept because they are
+/// the caller's own text.
+fn plugin_arguments(line: String) -> Vec<String> {
+    let trimmed = line.trim_matches(' ');
+    match trimmed.is_empty() {
+        true => Vec::new(),
+        false => trimmed.split(' ').map(str::to_owned).collect(),
+    }
 }
 
 /// The action a plugin's own entry name stands for, or `None` when the name is not one of theirs.

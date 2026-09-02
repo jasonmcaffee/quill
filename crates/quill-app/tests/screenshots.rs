@@ -12630,6 +12630,42 @@ fn the_ticket_modal_holds_every_section_the_browser_board_has() {
 }
 
 
+/// `Enter` while typing in a ticket does not close it.
+///
+/// `task-28`: pressing `Enter` in the description or the comment box shut the modal, because the footer
+/// took `Enter` as its own primary press and this modal's last button is `Close`. Its body holds a
+/// multiline description and two fields that post on `Enter`, so `Enter` belongs to the body — the commit
+/// panel's exception, reached for the same reason. `Escape` still closes it, and so does the button.
+#[test]
+fn enter_while_typing_in_a_ticket_does_not_close_it() {
+    let mut harness = harness("");
+    did(&mut harness, "plugins tab agent-tasks/board --open");
+    did(&mut harness, "plugins run agent-tasks new-task Something to work on");
+    did(&mut harness, "plugins run agent-tasks close");
+    did(&mut harness, "plugins run agent-tasks open task-1");
+    harness.run();
+    assert!(
+        harness.query_all_by_label_contains("Post comment").count() > 0,
+        "the modal is open to begin with"
+    );
+    for _ in 0..3 {
+        harness.key_press(egui::Key::Enter);
+        harness.run();
+    }
+    assert!(
+        harness.query_all_by_label_contains("Post comment").count() > 0,
+        "Enter is the body's, so the ticket is still open after three presses"
+    );
+    // And the ways out still work.
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+    assert_eq!(
+        harness.query_all_by_label_contains("Post comment").count(),
+        0,
+        "Escape still closes it, which `modal::show` owns for every dialog"
+    );
+}
+
 #[test]
 fn a_ticket_in_full_as_a_modal() {
     let mut harness = harness("");

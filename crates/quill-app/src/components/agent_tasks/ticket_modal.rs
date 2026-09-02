@@ -28,16 +28,34 @@ use crate::services::agent_tasks::{clock, AgentTasks, Field, EFFORTS};
 use crate::services::plugin_ui::{Look, Request};
 
 /// How large the modal asks to be. Wide enough for two columns and the terminal under the description.
-/// How big the modal asks to be at the default font size.
+/// How much of the window's width and height the modal leaves clear down each side.
 ///
-/// Read through [`size`], so a window set to 48 point text asks for a modal that can hold 48 point text.
-/// `modal::show` clamps whatever is asked for to the window, so asking for more than there is costs nothing.
-pub const WIDTH_AT_DEFAULT: f32 = 1080.0;
-pub const HEIGHT_AT_DEFAULT: f32 = 720.0;
+/// **Five per cent, so the ticket is nearly the whole window.** It asked for a fixed 1080 by 720 before,
+/// which on a large display was a small panel in the middle of a lot of dimmed background — and a ticket
+/// is where the description is written, the todos are read and the agent's terminal is watched, which is
+/// the most crowded thing on this board. Every other modal in Quill keeps its fixed size: they are a
+/// question and two buttons, and a confirmation stretched across a display would be worse, not better.
+const MARGIN_SHARE: f32 = 0.05;
+
+/// The smallest it will ask for, whatever the window is.
+///
+/// A window dragged down to a few hundred points would otherwise ask for a modal too small to hold the
+/// two columns, and `modal::fit` already clamps anything larger than the window, so a floor above the
+/// window's own size costs nothing and reads correctly at every size in between.
+const SMALLEST_WIDTH: f32 = 720.0;
+const SMALLEST_HEIGHT: f32 = 520.0;
 
 /// How big the modal asks to be in this window.
-pub fn size(look: &Look<'_>) -> (f32, f32) {
-    (WIDTH_AT_DEFAULT * look.scale(), HEIGHT_AT_DEFAULT * look.scale())
+///
+/// The window rather than the font size: the amount of room a ticket needs is the amount of room there
+/// is. `look.scale()` still decides how tall the things *inside* it are, which is what a window set to
+/// 48 point text needs.
+pub fn size(ctx: &egui::Context, _look: &Look<'_>) -> (f32, f32) {
+    let window = ctx.content_rect().size();
+    (
+        (window.x * (1.0 - MARGIN_SHARE * 2.0)).max(SMALLEST_WIDTH.min(window.x)),
+        (window.y * (1.0 - MARGIN_SHARE * 2.0)).max(SMALLEST_HEIGHT.min(window.y)),
+    )
 }
 
 /// How wide the column of fields down the right is, and the width below which it is dropped.
@@ -52,6 +70,10 @@ const PAD: f32 = 14.0;
 const FIELD: f32 = 46.0;
 /// How tall the comments section is: its count, two comments, the box and its two buttons.
 const COMMENTS_AT_DEFAULT: f32 = 176.0;
+/// How much of the room left under the description the agent's terminal takes, and its two bounds.
+const TERMINAL_SHARE: f32 = 0.34;
+const TERMINAL_SMALLEST: f32 = 200.0;
+const TERMINAL_LARGEST: f32 = 560.0;
 /// How much of a one column modal the fields take, when the dialog is too narrow for two columns.
 const FIELDS_ALONE_AT_DEFAULT: f32 = 330.0;
 
@@ -72,7 +94,7 @@ pub fn show(board: &mut AgentTasks, ctx: &egui::Context, look: &Look<'_>) -> Out
     // A ticket nobody has named yet is a new one, and the footer says so: `Discard` deletes the row rather than
     // closing the modal, because `+ Add Task` created it before anybody typed.
     let new = board.detail().is_new;
-    let (width, height) = size(look);
+    let (width, height) = size(ctx, look);
     let (inner, should_close) = modal::show(ctx, "agent-tasks-ticket", width, height, |ui, area| {
         contents(board, ui, area, look, &task, new)
     });
@@ -139,11 +161,14 @@ fn contents(
         true => &[("Discard", true), ("Done", true)],
         false => &[("Close", true)],
     };
-    // `footer` rather than `footer_confirmed_by`: this modal's body holds a multiline description and two fields
-    // that post on `Enter`, so a footer that took `Enter` as its own would close the modal while somebody was
-    // typing into it — and in the same frame as posting a todo. `Escape` still closes it, which `modal::show`
-    // owns and every dialog in Quill shares.
-    if let Some(pressed) = modal::footer(ui, footer, buttons) {
+    // **`Confirm::CommandEnter`, because this modal's body owns `Enter`.** The comment here used to say
+    // that and the code said the opposite: `modal::footer` *is* the `Confirm::Enter` one, so pressing
+    // `Enter` while typing a description or a comment closed the ticket — in the same frame as posting
+    // the comment, so the words went in and the modal went away. It is the commit panel's exception,
+    // reached for the same reason: a multiline field is a field where `Enter` is a new line, and a new
+    // line is what a person pressing it there means. `Escape` still closes it, which `modal::show` owns
+    // and every dialog in Quill shares.
+    if let Some(pressed) = modal::footer_confirmed_by(ui, footer, buttons, modal::Confirm::CommandEnter) {
         match (new, pressed) {
             (true, 0) => match board.discard_the_ticket() {
                 Ok(()) => outcome.closed = true,
@@ -209,9 +234,16 @@ fn left_column(
         false => {
             let todos = board.detail().todos.len() as f32;
             let wanted = todos * look.row_height + look.row_height + 8.0;
+            // **A share of the room rather than a fixed 140 points.** That fixed height was about six
+            // lines of an agent's terminal, which is not enough to read what it is doing — the one
+            // question somebody opens a running ticket to answer — and it stayed six lines however
+            // large the modal grew. A third of what is left, floored so it is never worse than it was
+            // and capped so a very tall window does not leave the description a strip.
+            let terminal = (room * TERMINAL_SHARE)
+                .clamp(TERMINAL_SMALLEST * look.scale(), TERMINAL_LARGEST * look.scale());
             (
                 wanted.clamp(look.row_height * 2.0, 130.0 * look.scale()),
-                140.0 * look.scale(),
+                terminal,
                 COMMENTS_AT_DEFAULT * look.scale(),
             )
         }

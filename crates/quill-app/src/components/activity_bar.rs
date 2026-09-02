@@ -82,10 +82,27 @@ pub struct PluginButton {
     pub on: bool,
     /// Which of the rail's two groups it is in.
     pub bottom: bool,
-    /// The pane's `<plugin id>/<pane id>`, which is what the action carries.
+    /// The pane's `<plugin id>/<pane id>`, or a tab's own key, which is what the action carries.
     pub key: String,
     /// Which dock slot it is, so a right click opens the right panel's menu.
     pub slot: usize,
+    /// What pressing it opens.
+    pub opens: Opens,
+}
+
+/// Whether a plugin's rail button opens a docked pane or a tab in the editing area.
+///
+/// **A tab needs a button too**, which it did not have: the rail was built from the panes alone, so
+/// Agent-Tasks — which contributes a tab rather than a pane, because a board needs the whole editing
+/// area and not a 420 point column — could only be reached from the `Plugins` menu. `task-28` asks for
+/// it on the rail under the chat icon, which is where a `top` group button lands.
+///
+/// A tab has no side and no dock slot, so a right click on one opens **no** menu: there is nothing to
+/// move it to, which is the same reason the `Version Control` and `Editing Area` buttons open none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Opens {
+    Pane,
+    Tab,
 }
 
 /// What the rail reported this frame.
@@ -263,9 +280,13 @@ pub fn show_with(
         }
         let pressed = rail_button(ui, centre, &button.label, pane_icon(&button.icon), button.on, true);
         if pressed.clicked {
-            outcome.chosen = Some(Action::PluginPane { pane: button.key.clone() });
+            outcome.chosen = Some(match button.opens {
+                Opens::Pane => Action::PluginPane { pane: button.key.clone() },
+                Opens::Tab => Action::PluginTab { tab: button.key.clone() },
+            });
         }
-        if let Some(at) = pressed.menu {
+        // A tab has no side to be moved to, so no menu. See [`Opens`].
+        if let (Some(at), Opens::Pane) = (pressed.menu, button.opens) {
             outcome.menu = Some((at, crate::app::dock::Panel::Plugin(button.slot as u8)));
         }
     }

@@ -608,6 +608,10 @@ pub struct TicketTerminal {
     /// An agent whose prompt animates — a cycling tip, a spinner — never goes quiet, so a rule that waited
     /// only for quiet would wait for ever. See [`TicketTerminal::the_prompt_is_ready`].
     give_up_at: std::time::Instant,
+    /// When the return for a line already written is due, or `None` when nothing is owed one.
+    ///
+    /// See [`TicketTerminal::type_line`] for why the return is a write of its own.
+    submit_at: Option<std::time::Instant>,
     /// How much the session had written the last time it was looked at, so "it printed something" is a
     /// comparison rather than a reading of the screen.
     written: usize,
@@ -630,6 +634,29 @@ const PROMPT_SETTLES_AFTER: std::time::Duration = std::time::Duration::from_mill
 ///
 /// Generous, because the cost of waiting is a slow handoff and the cost of not waiting is a lost one.
 const PROMPT_CEILING: std::time::Duration = std::time::Duration::from_secs(45);
+
+/// The variables that name the Claude Code session a program was started *from*.
+///
+/// Cleared for a ticket's agent, because that agent is a conversation of its own — see the comment
+/// beside the use. Named one at a time rather than by a prefix, so a variable somebody's own profile
+/// sets for a reason is not swept up with them.
+const AGENT_SESSION_MARKERS: &[&str] = &[
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDECODE",
+];
+
+/// How long after a line is written its return is pressed.
+///
+/// Far enough apart that the terminal user interface reads two separate arrivals rather than one burst.
+/// Measured against a real `claude`: written together, a 900 character handoff became
+/// `❯ [Pasted text #1 +1 lines]` and was never sent. A quarter of a second is longer than any paste
+/// debounce and short enough that nobody watching the ticket sees a pause.
+const SUBMIT_AFTER: std::time::Duration = std::time::Duration::from_millis(250);
 
 impl std::fmt::Debug for TicketTerminal {
     /// Written by hand because `quill_terminal::Session` holds a channel and a thread and has no
@@ -668,13 +695,29 @@ impl TicketTerminal {
         } else if self.quiet_since.is_none() {
             self.quiet_since = Some(std::time::Instant::now());
         }
-        let waiting = !self.pending.is_empty();
-        if waiting && self.the_prompt_is_ready() {
-            for line in std::mem::take(&mut self.pending) {
-                self.type_line(&line);
-            }
+        // The return owed for a line already written, first: nothing else may be typed into a prompt
+        // that has not been sent, or the two would go as one message.
+        if self.submit_at.is_some_and(|due| std::time::Instant::now() >= due) {
+            self.submit_at = None;
+            self.session.send(b"\r".to_vec());
+        }
+        // Then **one** line, not all of them, because each needs its own return after it.
+        let waiting = !self.pending.is_empty() || self.submit_at.is_some();
+        if self.submit_at.is_none() && !self.pending.is_empty() && self.the_prompt_is_ready() {
+            let line = self.pending.remove(0);
+            self.type_line(&line);
         }
         printed || waiting
+    }
+
+    /// Whether a line is still waiting for the agent's prompt, which is what `terminal` reports.
+    pub fn waiting(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
+    /// [`Self::the_prompt_is_ready`], for the `terminal` command to report.
+    pub fn prompt_is_ready(&self) -> bool {
+        self.the_prompt_is_ready()
     }
 
     /// Whether the agent is at a prompt that will take what is typed into it.
@@ -698,20 +741,34 @@ impl TicketTerminal {
             && self.quiet_since.is_some_and(|since| now.duration_since(since) >= PROMPT_SETTLES_AFTER)
     }
 
-    /// Type a line and press return, now.
+    /// Write a line into the agent, and press return a beat later.
+    ///
+    /// **The return is a second write, and that is the whole of why anything works.** Both used to go out
+    /// together, and measured against a real `claude` the prompt then read
+    /// `❯ [Pasted text #1 +1 lines]` and sat there: a burst that arrives in one read is a *paste* to a
+    /// terminal user interface, and a paste whose bytes include the terminator is a multi-line paste,
+    /// which claude keeps as an attachment for the person to submit rather than submitting itself. So the
+    /// handoff was typed, correctly, into a prompt that never sent it — `queued` said false,
+    /// `prompt_ready` said true, the board said the ticket was being worked on, and the agent had been
+    /// handed nothing. Nothing on the screen said why, which is what the `terminal` command is for.
+    ///
+    /// Written apart by [`SUBMIT_AFTER`] the return arrives as its own keystroke, which is what a person
+    /// pasting a prompt and pressing Enter does.
     pub fn type_line(&mut self, line: &str) {
         self.session.send(line.as_bytes().to_vec());
-        self.session.send(b"\r".to_vec());
+        self.submit_at = Some(std::time::Instant::now() + SUBMIT_AFTER);
     }
 
-    /// Send a line, or queue it behind the handoff when the prompt is not ready yet.
+    /// Send a line, or queue it when the prompt is not ready or a return is still owed.
     ///
     /// Answers whether it was queued. An agent that has just been started has not drawn its prompt, and
     /// characters typed before it does go nowhere, so a line written straight in would look sent and would
     /// not be. Everything waits in one queue, in the order it was asked for, which is also what keeps a
-    /// comment from arriving before the handoff that says which ticket it is about.
+    /// comment from arriving before the handoff that says which ticket it is about — and now also what
+    /// keeps a second line from being written into a prompt whose return has not gone yet, which would
+    /// send the two as one message.
     pub fn queue(&mut self, line: &str) -> bool {
-        match self.pending.is_empty() {
+        match self.pending.is_empty() && self.submit_at.is_none() && self.the_prompt_is_ready() {
             true => {
                 self.type_line(line);
                 false
@@ -1149,6 +1206,18 @@ impl AgentTasks {
                 // is that profile read once, so a ticket's agent runs with what a command typed in
                 // the terminal tile runs with.
                 let mut environment = crate::services::login_shell::for_a_child();
+                // **A ticket's agent is a new conversation, so nothing naming another one may reach
+                // it.** A Quill started from a terminal that was itself running Claude Code has that
+                // session's markers in its environment, and they are inherited: measured on a real
+                // window, the ticket's agent said `Transcript saving is off — inherited
+                // CLAUDE_CODE_...`, wrote no transcript of its own, and showed the parent's
+                // conversation instead of the ticket it had been handed — so the session id on the row
+                // named nothing and `Resume session` had nothing to resume. Cleared rather than unset,
+                // because `SessionSettings::env` is laid *over* what this process has and an empty value
+                // is what both agents read as absent.
+                for named in AGENT_SESSION_MARKERS {
+                    environment.push(((*named).to_owned(), String::new()));
+                }
                 environment.push((
                     "QUILL_AGENT_TASKS".to_owned(),
                     self.configuration.database_path().display().to_string(),
@@ -1185,6 +1254,7 @@ impl AgentTasks {
             pending,
             ready_at: std::time::Instant::now() + agent::ready_after(agent_kind),
             give_up_at: std::time::Instant::now() + PROMPT_CEILING,
+            submit_at: None,
             written: 0,
             has_printed: false,
             quiet_since: None,
@@ -2430,6 +2500,34 @@ impl UiProvider for AgentTasks {
                 self.refresh()?;
                 Ok(Answer::said(format!("{} heard from", task.key)))
             }
+            // **What a person can see in the ticket, read back as data.** The modal draws the agent's
+            // terminal and nothing could read it, so the only way to find out why a started ticket was
+            // doing nothing was to take a screenshot of the window and look at the picture. That is the
+            // parity rule broken in the one place it was most needed: an agent watching a ticket, and a
+            // person diagnosing one from a terminal, both have to be able to read what the agent wrote.
+            // It also says whether the handoff is still waiting, which is the state that turns "nothing
+            // is happening" into a sentence.
+            "terminal" => {
+                let task = self.by_key(argument(0))?;
+                let tail = argument(1).parse::<usize>().ok();
+                let Some(terminal) = self.terminal_for(task.id) else {
+                    return Ok(Answer::said(format!("{} has no terminal", task.key))
+                        .with(json!({"task": task.key, "terminal": false})));
+                };
+                let text = terminal.session.written_text(tail.or(Some(TAIL_LINES)));
+                let waiting = terminal.waiting();
+                Ok(Answer::said(text.clone()).with(json!({
+                    "task": task.key,
+                    "terminal": true,
+                    "running": terminal.session.is_running(),
+                    "session": terminal.session_id,
+                    // The two that say why nothing is happening: a line still queued, and whether the
+                    // prompt is thought ready for it.
+                    "queued": waiting,
+                    "prompt_ready": terminal.prompt_is_ready(),
+                    "text": text,
+                })))
+            }
             "start" => self.start(argument(0)),
             "resume" => self.resume(argument(0)),
             "send" => {
@@ -2554,6 +2652,11 @@ impl UiProvider for AgentTasks {
             ("start", "Launch the ticket's agent and hand the ticket over."),
             ("resume", "Bring back a retired session without changing the ticket's lane."),
             ("send", "Type a line into a ticket's agent."),
+            (
+                "terminal",
+                "What a ticket's agent has written, with whether a line is still queued for its prompt. \
+                 `terminal task-1 40` for the last forty lines.",
+            ),
             ("interrupt", "Send Ctrl+C to a ticket's agent."),
             ("stop", "Close a ticket's terminal."),
             ("search", "Tickets whose key, title or description holds the query."),

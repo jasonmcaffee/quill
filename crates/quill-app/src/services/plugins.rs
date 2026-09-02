@@ -230,6 +230,8 @@ pub struct PaneContribution {
 pub struct TabContribution {
     pub id: String,
     pub label: String,
+    /// Which drawn icon its button in the rail uses, from `activity_bar::pane_icon`'s list.
+    pub icon: String,
 }
 
 /// One row of a plugin's menu: something to do, a separator, or a menu inside a menu.
@@ -1045,13 +1047,18 @@ fn pane(values: &Values) -> Result<Option<PaneContribution>, String> {
     }))
 }
 
-/// `tab.*`: a tab in the editing area, which is opened from a menu rather than by opening a file.
+/// `tab.*`: a tab in the editing area, opened from a menu, from its button in the rail, or by an action.
 fn tab(values: &Values) -> Option<TabContribution> {
     let id = word(values, "tab.id")?;
     Some(TabContribution {
         label: word(values, "tab.label")
             .or_else(|| word(values, "plugin.name"))
             .unwrap_or_else(|| id.clone()),
+        // The same drawn icons `pane.icon` names, from the same list, because a button in the rail is a
+        // button in the rail whether it opens a pane or a tab. A tab that names none gets `board`, which
+        // is what `activity_bar::pane_icon` falls back to anyway — said here as well so the manifest can
+        // be read without knowing that.
+        icon: word(values, "tab.icon").unwrap_or_else(|| "board".to_owned()),
         id,
     })
 }
