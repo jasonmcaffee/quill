@@ -40,6 +40,29 @@ impl Values {
         self.0.insert(name.to_owned(), value.into());
     }
 
+    /// Take a name out, so the file no longer holds it.
+    ///
+    /// **What a setting that has gone back to its default needs**, and it is not the same as setting it
+    /// to an empty string: several settings here mean "whatever this Quill's own default is" by having
+    /// no line at all — `terminal.shell`, `appearance.theme`, `appearance.icons` — and an empty line
+    /// would read as a shell called nothing. Saving merges over the file that is already there
+    /// (`settings::save_with`), so without this a value that was cleared would stay in the file and come
+    /// back at the next start. See [`Values::set_or_clear`].
+    pub fn remove(&mut self, name: &str) {
+        self.0.remove(name);
+    }
+
+    /// Write a value, or take the name out when it is empty.
+    ///
+    /// One function rather than an `if` at each of the seven places that mean "empty is the default", so
+    /// a later one cannot forget the second half and leave a setting that cannot be un-chosen.
+    pub fn set_or_clear(&mut self, name: &str, value: &str) {
+        match value.is_empty() {
+            true => self.remove(name),
+            false => self.set(name, value.to_owned()),
+        }
+    }
+
     pub fn text(&self, name: &str) -> Option<&str> {
         self.0.get(name).map(String::as_str)
     }

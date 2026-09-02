@@ -554,32 +554,23 @@ impl Settings {
     }
 
     pub fn write_into(&self, values: &mut Values) {
-        if !self.font_family.is_empty() {
-            values.set("appearance.font.family", self.font_family.clone());
-        }
+        // **A setting that has gone back to its default is taken out of the file, not left in it.**
+        // Seven of these mean "whatever this Quill's own default is" by having *no line at all* — a
+        // blank `terminal.shell` would read as a shell called nothing, and a blank `appearance.theme`
+        // as a theme called nothing — and `settings::save_with` merges over the file that is already
+        // there. Written with an `if !is_empty` alone, a value that was cleared stayed in the file and
+        // came back at the next start: choosing Monokai Pro and then choosing Quill Dark again would
+        // have come up in Monokai Pro tomorrow, and `Follow the theme` and `The theme's own` are
+        // first-class choices on the Theme page rather than corners. Found by driving a real window.
+        values.set_or_clear("appearance.font.family", &self.font_family);
         values.set("appearance.font.size", format!("{:.0}", self.font_size));
         values.set("appearance.background.opacity", format!("{:.3}", self.opacity));
         values.set("terminal.font.size", format!("{:.0}", self.terminal_font_size));
-        // Written only once it has been chosen, so the file does not name a shell on every machine it
-        // is copied to. An empty line would read as a shell called nothing.
-        if !self.terminal_shell.is_empty() {
-            values.set("terminal.shell", self.terminal_shell.clone());
-        }
-        // The four written only once they have been chosen, exactly as the shell and the adapters are: a
-        // file that names nothing asks for this Quill's own default, and a blank line would read as a
-        // theme called nothing.
-        if !self.theme.is_empty() {
-            values.set("appearance.theme", self.theme.clone());
-        }
-        if !self.accent.is_empty() {
-            values.set("appearance.accent", self.accent.clone());
-        }
-        if !self.icons.is_empty() {
-            values.set("appearance.icons", self.icons.clone());
-        }
-        if !self.ui_font_family.is_empty() {
-            values.set("appearance.ui.font.family", self.ui_font_family.clone());
-        }
+        values.set_or_clear("terminal.shell", &self.terminal_shell);
+        values.set_or_clear("appearance.theme", &self.theme);
+        values.set_or_clear("appearance.accent", &self.accent);
+        values.set_or_clear("appearance.icons", &self.icons);
+        values.set_or_clear("appearance.ui.font.family", &self.ui_font_family);
         values.set("appearance.ui.font.size", format!("{:.1}", self.ui_font_size));
         values.set("editor.line_numbers", if self.line_numbers { "true" } else { "false" });
         values.set("editor.suggestions", self.suggestions.name());
@@ -589,9 +580,11 @@ impl Settings {
         values.set("mcp.port", self.mcp_port.to_string());
         values.set("mcp.tools", self.mcp_tools.name());
         // Written only once one has been chosen, exactly as the shell is, so a settings file does
-        // not name a path that exists on one machine and not on the next.
-        for (name, path) in &self.debug_adapters {
-            values.set(&format!("debug.{name}"), path.clone());
+        // not name a path that exists on one machine and not on the next — and taken out again when it
+        // is cleared, for the reason at the top of this function. The list is walked rather than the
+        // vec, because an adapter that was cleared is not in the vec at all.
+        for name in crate::services::plugins::DEBUGGERS {
+            values.set_or_clear(&format!("debug.{name}"), self.debug_adapter(name).unwrap_or_default());
         }
     }
 
@@ -1066,6 +1059,43 @@ mod tests {
         let mut values = Values::new();
         settings.write_into(&mut values);
         assert_eq!(Settings::read_from(&values), settings);
+    }
+
+    /// A setting cleared back to its default is **taken out of the file**, not left in it.
+    ///
+    /// `settings::save_with` merges over what is already there, so a value that was only ever written
+    /// when non-empty came back at the next start: choosing a theme and then choosing Quill Dark again
+    /// would have come up in the first theme tomorrow. Found by driving a real window.
+    #[test]
+    fn a_setting_put_back_to_its_default_is_taken_out_of_the_file() {
+        let mut values = Values::new();
+        let mut chosen = Settings::new();
+        chosen.theme = "themes-bundle-1/monokai-pro".to_owned();
+        chosen.accent = "#FF79C6".to_owned();
+        chosen.icons = "classic".to_owned();
+        chosen.terminal_shell = "cmd.exe".to_owned();
+        chosen.ui_font_family = "Segoe UI".to_owned();
+        chosen.debug_adapters.push(("lldb".to_owned(), r"C:\tools\codelldb.exe".to_owned()));
+        chosen.write_into(&mut values);
+        assert_eq!(values.text("appearance.theme"), Some("themes-bundle-1/monokai-pro"));
+        assert_eq!(values.text("debug.lldb"), Some(r"C:\tools\codelldb.exe"));
+
+        // And now put every one of them back to what a Quill that has never been run has.
+        Settings::new().write_into(&mut values);
+        for name in [
+            "appearance.theme",
+            "appearance.accent",
+            "appearance.icons",
+            "appearance.ui.font.family",
+            "appearance.font.family",
+            "terminal.shell",
+            "debug.lldb",
+            "debug.node",
+        ] {
+            assert_eq!(values.text(name), None, "{name} should be gone from the file");
+        }
+        // Read back, the file asks for the defaults rather than for what was chosen before.
+        assert_eq!(Settings::read_from(&values), Settings::new());
     }
 
     /// The adapter paths follow `terminal.shell`'s rule exactly: nothing is written until one has
