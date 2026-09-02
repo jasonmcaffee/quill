@@ -235,6 +235,36 @@ impl Client {
     }
 }
 
+/// Which library does the TLS handshake, and which certificates it trusts.
+///
+/// **The provider is named rather than left to the default, and it is not a preference.** `ureq`'s
+/// default TLS provider is Rustls whether or not the feature is on, and asking for an `https` URL
+/// with the Rustls feature off **panics inside the transport** — not an error, a panic, on the worker
+/// thread. Every request to a hosted API would have ended the request that way, and it took a
+/// screenshot test driving a tool round to find it. See `tasks/task-1767-agent-chat-tdd.md` §3.1 for
+/// why `native-tls` is what is compiled in: it is schannel on Windows and Security.framework on
+/// macOS, so Quill trusts what the machine trusts.
+///
+/// **The roots have to be named too, and for a while that sentence was not true.** Naming
+/// `native-tls` says which library does the handshake and says nothing about which certificates it
+/// trusts. `ureq`'s default is `RootCerts::WebPki`, which is Mozilla's bundled list, and for
+/// `native-tls` that list is installed with `disable_built_in_roots(true)` — so the machine's own
+/// store is switched off. A certificate signed by a root an employer put in the System keychain then
+/// fails with `native-tls: The certificate was not trusted.`, which is measured rather than reasoned
+/// about: an internal Anthropic gateway on a private chain answered `curl` on this machine and
+/// refused the pane. `PlatformVerifier` is the whole of the fix, and it is `quill-git`'s argument for
+/// shelling out to the machine's real git made about a certificate store instead of a credential
+/// helper.
+///
+/// It is a function rather than four lines inside `run` so that a test can read back what was asked
+/// for. Neither half can be asserted from a scripted server on loopback, which speaks no TLS at all.
+pub fn tls_config() -> ureq::tls::TlsConfig {
+    ureq::tls::TlsConfig::builder()
+        .provider(ureq::tls::TlsProvider::NativeTls)
+        .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+        .build()
+}
+
 /// Make the request and push what comes back. Runs on the worker thread.
 ///
 /// Split out from the closure so that a test can drive the whole of it — a real socket, a real
@@ -268,18 +298,7 @@ pub fn run(
         })
     };
     let config = ureq::Agent::config_builder()
-        // **Named rather than left to the default, and it is not a preference.** `ureq`'s default TLS
-        // provider is Rustls whether or not the feature is on, and asking for an `https` URL with the
-        // Rustls feature off **panics inside the transport** — not an error, a panic, on the worker
-        // thread. Every request to a hosted API would have ended the request that way, and it took a
-        // screenshot test driving a tool round to find it. See `tasks/task-1767-agent-chat-tdd.md` §3.1
-        // for why `native-tls` is what is compiled in: it is schannel on Windows and
-        // Security.framework on macOS, so Quill trusts what the machine trusts.
-        .tls_config(
-            ureq::tls::TlsConfig::builder()
-                .provider(ureq::tls::TlsProvider::NativeTls)
-                .build(),
-        )
+        .tls_config(tls_config())
         // **Without this a 401 is an `Err` with no body**, and the body is the whole of what the
         // server had to say — which is what `quill-git`'s rule about never inventing an error
         // message requires be shown.
@@ -737,6 +756,27 @@ data: [DONE]\n\n";
         let replies = against(&format!("https://{address}/v1/messages"), Wire::Anthropic, true);
         assert_eq!(replies.len(), 1);
         assert!(matches!(&replies[0], Reply::Failed(_)), "{replies:?}");
+    }
+
+    #[test]
+    fn the_certificates_trusted_are_the_machine_s_own_rather_than_a_bundled_list() {
+        // `ureq`'s default is `RootCerts::WebPki`, which for `native-tls` means Mozilla's list
+        // installed with the machine's own store switched off — so a certificate signed by a root an
+        // employer put in the System keychain came back as `The certificate was not trusted.` while
+        // `curl` on the same machine reached the same address. There is nothing on loopback that can
+        // show that, because a scripted server here speaks no TLS, so what is asserted is what was
+        // asked for.
+        let config = tls_config();
+        assert!(
+            matches!(config.provider(), ureq::tls::TlsProvider::NativeTls),
+            "{:?}",
+            config.provider()
+        );
+        assert!(
+            matches!(config.root_certs(), ureq::tls::RootCerts::PlatformVerifier),
+            "{:?}",
+            config.root_certs()
+        );
     }
 
     #[test]
