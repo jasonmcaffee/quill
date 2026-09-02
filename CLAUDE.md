@@ -2362,8 +2362,16 @@ a panel not to be showing, and `dock::regions` already gives the room to whateve
 pane is not a fifth kind of layout with its own arithmetic to get wrong; it is the layout there already
 is, with one thing switched on and the rest switched off — and the dividers, the rail's lit buttons,
 `panel list` and the drop bands all report the truth without being told. What has to be remembered is
-what *was* showing, which is `app::Maximised`, and it is not written to the settings file: a window that
-opened maximised with no memory of what it was hiding would be one somebody reassembles by hand.
+what *was* showing, which is `app::Maximised`.
+
+**And it is what the project remembers, not what is on the screen.** `project_state` writes which panels are
+showing into the project's own `.quill` on every frame, so a window closed with a pane maximised would have
+opened next time with the editing area and the terminal hidden and no `Maximised` left to say why — the
+review of this ticket found it. `was_showing` is the one function that answers "showing, as far as a project
+is concerned", and it answers with the memory whenever there is one. **A toggle inside a maximise ends it**
+for the same reason: hiding the maximised pane left a body with nothing in it at all, so every route that
+shows or hides a panel calls `leave_the_maximised_pane` first, and `settling_the_maximise` is what stops the
+maximise ending itself while it is putting the panels away.
 
 The handle is the same one a panel is dragged by, so `components::dock::Grab` gained `twice`. The
 explorer's project row reports into the same `Grab`, because the row is added *after* the handle and
