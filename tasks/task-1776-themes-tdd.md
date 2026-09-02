@@ -57,8 +57,8 @@ Quill's `theme::icon` already half has: every icon is drawn from numbers and tin
 
 Three things, and only the first is hard.
 
-**The palette is forty-three `const`s.** `theme::color` is the whole list of colours Quill draws
-with, the style guide says so, and every one of them is a compile-time constant read at 689 places in
+**The palette is forty `const`s.** `theme::color` is the whole list of colours Quill draws
+with, the style guide says so, and every one of them is a compile-time constant read at 725 places in
 56 files. A constant cannot be themed. Nothing else about the change matters until that is dealt
 with, and §3 is entirely about it.
 
@@ -84,9 +84,9 @@ flowchart LR
     P["services::plugins<br/>parse -> Vec&lt;Theme&gt;"]
     T["theme::Theme<br/>palette + syntax + icons"]
     A["theme::activate()<br/>thread-local Active"]
-    C["theme::color::editor()<br/>…43 accessors"]
+    C["theme::color::editor()<br/>…40 accessors"]
     S["theme::apply(ctx)<br/>egui visuals"]
-    I["theme::icon::&lt;name&gt;(set, …)"]
+    I["theme::icon::&lt;name&gt;(…)"]
   end
   subgraph Read["Everything that draws"]
     W["56 components"]
@@ -98,7 +98,7 @@ flowchart LR
   SET["settings.conf<br/>appearance.theme<br/>appearance.accent<br/>appearance.icons"] --> A
 ```
 
-### 3.1 One value, forty-three accessors
+### 3.1 One value, forty accessors
 
 `theme::Palette` gains one field per name the style guide's table already lists, and
 `theme::color::EDITOR` becomes `theme::color::editor()`. The names, the order and every doc comment
@@ -114,11 +114,11 @@ pub mod color {
 }
 ```
 
-689 call sites gain `()` and a lower-case spelling. That is a large diff and a boring one: it is a
+725 call sites in 52 files gain `()` and a lower-case spelling. That is a large diff and a boring one: it is a
 single regular expression, and the compiler finds every site it missed. It is done in one commit of
 its own so that the interesting commits are readable.
 
-**Why not thread a `&Palette` through instead.** Because it is the same 689 edits *plus* a new
+**Why not thread a `&Palette` through instead.** Because it is the same 725 edits *plus* a new
 parameter on several hundred function signatures, and because a component that already takes a
 rectangle and returns what happened would gain a second thing it has to be handed before it can draw
 a divider. `services::plugin_ui::Palette` — the value a plugin's provider is handed — stays exactly
@@ -136,7 +136,7 @@ A window is one thread. A second window is a **second process** — `services::l
 runs `current_exe` — so there is no case in the shipped binary where two themes are wanted in one
 process, and a process-global would have been correct for the product.
 
-It would have been wrong for the tests. `crates/quill-app/tests/screenshots.rs` holds 169 accepted
+It would have been wrong for the tests. `crates/quill-app/tests/screenshots.rs` holds 448 accepted
 pictures and cargo runs them in parallel on one process; a test that switched a global theme would
 change the colours of whatever other tests were mid-frame, and the failure would move around between
 runs. Thread-local, a theme chosen in one test cannot reach another's picture, and the four theme
@@ -144,7 +144,7 @@ tests need no lock, no serial attribute and no ordering.
 
 It is also the fastest of the three shapes. A colour is read thousands of times a frame; a
 `RefCell` borrow returning one `Color32` costs a counter check and a four-byte copy, where a
-`RwLock` costs an atomic pair and a `Cell<Palette>` copies all 43 colours to read one.
+`RwLock` costs an atomic pair and a `Cell<Palette>` copies all 40 colours to read one.
 
 The one thing it demands is that nothing paints off the UI thread, and nothing does: the four
 background workers (`quill_git::Worker`, `text_search`, `symbol_index`, the DAP thread) hold no
@@ -210,27 +210,37 @@ tinted at the point of use and the point of use now reads the theme.
 
 | Set | What it is |
 |---|---|
-| `quill` | the marks that ship today, unchanged |
-| `material` | new: heavier, rounder, filled where the Quill one is a stroke, in the manner of Atom Material Icons |
+| `classic` | the marks that shipped, unchanged, and still selectable — One Dark names it |
+| `material` | **the default**: heavier, rounder, filled where the classic one is a stroke, in the manner of Atom Material Icons |
+
+**`material` is the default**, and that is the ticket rather than a preference: it asks for the marks
+on the rail and the explorer's arrow to be *improved*, not merely to become choosable. A seam that
+left the default where it was would have answered half of it. `classic` is kept and selectable, which
+is what makes this a **set** rather than a redrawing — One Dark names it, because One Dark's own
+IntelliJ icons are the IDE's rather than Material's.
 
 The `material` set covers exactly the marks the ticket names, and the boundary is written down rather
 than left to be discovered:
 
-- **the rail** — `folder`, `editing_area`, `branch`, `terminal`, `run`, `bug`, `board`, `chat`
-- **the explorer** — `disclosure` and a folder mark that the `quill` set does not draw at all
-- **the small controls that sit beside them** — `magnifier`, `collapse`, `plus`, `cross`, `tick`
+- **the rail** — `folder`, `editing_area`, `branch`, `terminal`, `bug`, `board`, `chat`
+- **the explorer** — `disclosure`, and a folder mark that the `classic` set does not draw at all
 
-Everything else — the alignment marks, undo and redo, the debugger's five steps, the symbol kinds,
-the colour wheel — has one drawing, asks for no second one, and is themed by §4.1. A set with no
-drawing for a mark falls through to the `quill` one, so adding a third set later is adding the four
-shapes it wants to differ on rather than fifty.
+Everything else — `run` and `stop`, the alignment marks, undo and redo, the debugger's five steps,
+the symbol kinds, the magnifier, the colour wheel — has one drawing, asks for no second one, and is
+themed by §4.1. Fifty marks redrawn twice would be fifty chances to make one of them worse. A set with
+no drawing for a mark falls through to the `classic` one, so adding a third set later is adding the
+four shapes it wants to differ on rather than fifty.
 
 **The disclosure arrow is the one the ticket calls out, and it is the clearest case for the split.**
 Today it is a solid triangle, seven points across, and it is the same triangle rotated. IntelliJ,
 VS Code and every Material icon set draw a **chevron** — two strokes meeting at a point — because a
 stroke reads as an affordance and a filled triangle reads as a bullet. The `material` set draws a
-1.5 point chevron with round caps, and the `quill` set keeps the triangle so that 169 accepted
-pictures do not all move on a change nobody asked them to make.
+1.6 point chevron with round caps; the `classic` set keeps the triangle for anybody who preferred it.
+
+**Nothing in a set is painted in the background.** An icon is drawn over four grounds — the rail, the
+rail's own pill when its pane is open, a menu row and a flyout — so a shape knocked out of a fill by
+painting it in `color::editor()` would be right in one place and wrong in the other three. Where the
+design sheet knocked a shape out, the Rust uses a stroke and a fill in the one colour instead.
 
 ### 4.3 Where the artwork comes from
 
@@ -241,10 +251,20 @@ record for the file-type icons; it produces a 1024-square PNG. A rail button is 
 drawn in three different colours, so the PNG cannot *be* the button — but it is a far better thing to
 draw against than an opinion, and it is what a designer would have handed over.
 
-So: one generated sheet per set, kept in `design/`, and `design/icons.md` records the prompt, the
-endpoint and the two commands beside it, exactly as the plugin icons do. The Rust is then measured
-against the sheet, and the sheet is the thing that changes when the design changes — which is the
-split `design/` and `tests/snapshots` already are.
+So: two generated sheets — the rail's eight and the explorer's six — kept in
+`_agent_output/task-1776-themes/`, with `design/icons.md` recording the prompt, the endpoint and the
+commands that make them again, exactly as the plugin icons do. The Rust is then measured against the
+sheets.
+
+**Two things the sheets taught, and one they got wrong**, which is the whole argument for using them:
+
+- the **editing area** came back as *two slabs side by side* rather than the panel-with-a-tab that
+  had been drawn first, and it is better — Quill's editing area *is* a row of panes, where a panel
+  with a tab could as easily have meant the explorer;
+- the **board** came back with a header bar over its columns, without which it is a bar chart;
+- and the **git branch** came back as an X with four dots, which says nothing about git, so the mark
+  drawn instead is the ordinary three-commit fork at the set's weight. The parts of a reference that
+  are better than what you would have drawn are copied, and the parts that are not are not.
 
 The **file-type icons** in `plugins/*/icon.png` are pictures and stay pictures; they are unaffected.
 
@@ -267,6 +287,9 @@ reads `menu.submenu.<id>.submenu.<other>`, so no new parsing.
 plugin.id   = themes-bundle-1
 plugin.kind = theme
 
+# The order they are listed in Settings, which is the manifest's rather than alphabetical.
+themes = dracula, palenight, deep-ocean, monokai-pro, one-dark
+
 theme.dracula.name         = Islands Dracula Colorful
 theme.dracula.dark         = true
 theme.dracula.icons        = material
@@ -274,20 +297,21 @@ theme.dracula.icons        = material
 theme.dracula.ui.editor       = #282A36
 theme.dracula.ui.accent       = #FF79C6
 theme.dracula.ui.selected_row = #44475A
+theme.dracula.ui.folder_open  = #FF79C6
 # …every name in theme::color, in snake case. Any that is left out keeps Quill Dark's.
 
 theme.dracula.syntax.keyword = #FF79C6
 theme.dracula.syntax.comment = #98AFFF
 # …the nine tokens. All nine or none: eight would half-recolour a file.
-
-theme.dracula.icon.folder      = #FFB86C
-theme.dracula.icon.folder_open = #FF79C6
 ```
 
-Three properties of that shape are deliberate:
+Four properties of that shape are deliberate:
 
+- **One namespace sets every role.** The icon colours are `ui.folder` and `ui.icon_active` rather
+  than an `icon.` group of their own: they are roles in the same closed list as `editor` and
+  `accent`, and a second prefix writing the same fields would be two answers to one question.
 - **A name that is left out inherits.** That is IntelliJ's `parentTheme` in one line, and it is what
-  keeps a manifest to the thirty colours that matter instead of forty-three.
+  keeps a manifest to the thirty colours that matter instead of forty.
 - **A name Quill does not have is refused**, with the list, like every other checked key. A theme
   quietly missing a colour it thought it set is the failure this avoids.
 - **The manifest still names no code.** `icons = material` names a drawing that shipped in the
@@ -297,7 +321,7 @@ Three properties of that shape are deliberate:
 The rule in `services/plugin_ui.rs` — *"There is deliberately no way for a **manifest** to add
 one \[a colour]"* — is about a **plugin's pane**, and it is unchanged: a `ui` plugin still cannot
 name a colour. What a `theme` plugin does is say what the closed list of names *means*, for the whole
-window at once, which is the opposite of a pane inventing a forty-fourth grey.
+window at once, which is the opposite of a pane inventing a forty-first grey.
 
 ### 5.3 Light themes are refused, and the reason is written down rather than implied
 
@@ -305,7 +329,7 @@ window at once, which is the opposite of a pane inventing a forty-fourth grey.
 IntelliJ themes on this machine are dark, and because a light theme is not a palette swap here: the
 window is drawn on a transparent ground so the desktop shows through, the elevation recipe in
 `vello_canvas` is *"the pale half is the surface lifted and the dark half is black at an alpha"*,
-and 169 accepted pictures are judged against a dark ground. Naming the seam and leaving it closed is
+and 448 accepted pictures are judged against a dark ground. Naming the seam and leaving it closed is
 what `plugin.kind` itself did, and it is honest in a way that shipping a light theme nobody had
 looked at every screen in would not be.
 
@@ -347,9 +371,8 @@ Font, Background and Plugin panes. IntelliJ separates them too.
 the setting Material Theme UI is best known for, `components::color_wheel` is already in the binary,
 and it costs one `Option<Color32>` applied after the theme is read.
 
-**Icons** offers `Follow the theme`, `quill` and `material`. Following is the default, so choosing a
-theme brings its icons with it and a person who wants the old triangles under a new palette can say
-so.
+**Icons** offers `Follow the theme`, `Material` and `Classic`. Following is the default, so choosing a
+theme brings its icons with it and a person who wants the old triangles under a new palette can say so.
 
 **Interface font** is the one genuinely new piece of plumbing. `theme::install_fonts` binds the
 *editor's* family into egui's proportional stack today, so the interface font is the editor font and
@@ -395,8 +418,8 @@ an agent that cannot discover a thing uses `bash` instead.
 
 | Command | Answers |
 |---|---|
-| `theme list` | every theme: key, name, the plugin it came from, dark, its five headline colours, and which is active |
-| `theme show [key]` | one theme in full — all forty-three roles, the nine token colours, the icon set. The active one when the argument is left out |
+| `theme list` | every theme: key, name, the plugin it came from, dark, its six headline colours, and which is active |
+| `theme show [key]` | one theme in full — all forty roles, the nine token colours, the icon set. The active one when the argument is left out |
 | `theme set <key>` | switch. Takes the full `plugin/theme` key or an unambiguous name, the way a sprint is named by its name |
 
 `settings set appearance.theme` reaches the same code, because `run_cli` is the one place a command
@@ -409,8 +432,8 @@ courtesy.
 | Option | Why not |
 |---|---|
 | **A theme is a `.theme.json` read at the IntelliJ schema** | It would let his real theme files be dropped straight in, which is genuinely attractive. It costs a JSON dependency in `quill-app`, and the schema is 400 lines of Swing component keys — `ComboBox.ArrowButton.nonEditableBackground` — of which Quill has an analogue for about twenty. Quill would be pretending to read a format it mostly ignores. The numbers are copied instead, once, with the file each came from named. |
-| **Thread the `Palette` through every component** | The same 689 edits plus a parameter on several hundred signatures, and a component that draws a divider would need to be handed the window's state to do it. |
-| **A process-global palette behind a `RwLock`** | Correct for the product, wrong for the tests: 169 screenshot tests run in parallel in one process and a theme test would recolour whatever else was mid-frame. |
+| **Thread the `Palette` through every component** | The same 725 edits plus a parameter on several hundred signatures, and a component that draws a divider would need to be handed the window's state to do it. |
+| **A process-global palette behind a `RwLock`** | Correct for the product, wrong for the tests: 448 screenshot tests run in parallel in one process and a theme test would recolour whatever else was mid-frame. |
 | **Bitmap icons generated by Krea 2, shipped per theme** | Refused by the style guide with its reasons already written: an icon is drawn in three colours depending on state and at any zoom, and a picture is one colour at one size. `task-1657` refused the same offer for the `F` button. The generated sheet becomes the design instead. |
 | **Keep the token colours in the language plugins and let a theme override each one** | Five copies of Dracula stay five copies, and a sixth language arrives with a sixth. The theme owning the scheme is what IntelliJ does and is why a scheme can be switched at all. |
 | **Ship a light theme in bundle 1** | §5.3. |
@@ -423,39 +446,54 @@ does.
 
 **Reading a manifest** — `services::plugins::tests`
 
-1. `a_theme_plugin_carries_several_themes` — the bundle's own manifest parses to five themes, in
-   order, each with a key, a name and a palette.
+1. `a_theme_plugin_carries_several_themes` — the bundle's own manifest parses to five themes, in the
+   manifest's order, each with a key, a name and a palette; and `Dracula Colorful`'s **blue** comment
+   is asserted by number, because that is the one thing a theme called Dracula is likely to be wrong
+   about.
 2. `a_theme_inherits_every_colour_it_does_not_name` — a two-line theme differs from Quill Dark in
    exactly the one role it set.
-3. `a_theme_naming_a_colour_quill_does_not_have_is_refused` — with the name in the message.
-4. `a_light_theme_is_refused_with_a_reason` — §5.3.
-5. `a_theme_naming_an_icon_set_this_version_has_not_got_is_refused` — with the list.
-6. `the_older_plugins_ask_for_none_of_what_themes_added` — the seventh time this test is written, and
-   what proves the eight plugins that shipped before are byte-identical in behaviour.
+3. `a_theme_manifest_is_refused_rather_than_half_loaded` — seven refusals in one test, each asserted
+   on what the message *says*: a role Quill has not got (and the list), `dark = false`, an icon set
+   this version has not got (and the list), eight of the nine token colours (and which are missing), a
+   value that is not a colour, a `theme.<id>.` group nothing lists, and an empty `themes` line.
+4. `every_role_the_palette_has_can_be_named_in_a_manifest` — built from `Palette::NAMES`, so a role
+   added later is one the bundle can set without this test being taught its name.
+5. `switching_a_theme_plugin_off_withdraws_its_themes` — six themes become one.
+6. `a_theme_is_found_by_its_key_or_by_its_name` — whatever the case.
+7. `the_older_plugins_ask_for_none_of_what_themes_added` — the seventh time this test is written, and
+   what proves the eight plugins that shipped before are unchanged in behaviour.
 
 **Activating one** — `theme::tests`
 
-7. `quill_dark_is_exactly_what_shipped` — all forty-three accessors against the old constants. This
-   is the test that makes the 689-site rewrite safe.
-8. `a_theme_reaches_every_accessor` — activate Monokai Pro, assert `color::editor()`,
-   `color::accent()` and four others are its numbers, then reset and assert they are back.
-9. `an_accent_setting_wins_over_the_theme` — and clearing it goes back to the theme's.
-10. `switching_the_plugin_off_falls_back_to_quill_dark` — in the same frame.
-11. `a_theme_with_no_syntax_colours_leaves_the_plugins_alone` — the default path, asserted rather
-    than assumed.
-12. `the_active_theme_does_not_leak_between_threads` — two threads, two themes, both read their own.
+8. `quill_dark_is_exactly_what_shipped` — the accessors against the old constants, including the five
+   icon roles against the colours the rail was already passing. This is the test that makes the
+   725-site rewrite safe.
+9. `a_derived_colour_follows_the_one_it_is_defined_as` — a breakpoint is the close button's red, and
+   changing that red moves it.
+10. `a_theme_reaches_every_accessor` — activate a theme, read its numbers back, reset, read the
+    originals back.
+11. `every_role_is_readable_and_writable_by_name` — the whole of `Palette::NAMES`, and a name Quill
+    has not got answers with nothing rather than with a wrong role.
+12. `an_accent_reaches_everything_that_means_the_accent` — including the wash behind a stopped line,
+    which keeps its own alpha.
+13. `the_active_theme_does_not_leak_between_threads` — two threads, two themes, both read their own.
+14. `an_icon_set_is_named_the_way_the_settings_file_writes_it`.
 
 **Driving the window** — `tests/screenshots.rs`, real windows through `run_cli`
 
-13. `theme_list_names_every_theme_and_which_is_active`
-14. `theme_set_changes_the_window` — `theme set monokai-pro`, then a screenshot: `themed_window.png`.
-15. `theme_set_by_name_finds_it` — `theme set "Deep Ocean"`.
-16. `theme_set_unknown_says_what_there_is` — a refusal that lists them.
-17. `settings_set_appearance_theme_is_the_same_path` — the two routes leave identical state.
-18. `the_theme_page_lists_them` — `settings_theme_page.png`.
-19. `the_explorer_arrow_follows_the_icon_set` — `explorer_material_icons.png` beside the existing
-    `explorer.png`.
-20. `every_command_is_offered_as_a_tool_in_both_shapes` and the documentation test — both already
+15. `the_theme_page_lists_every_theme_with_the_colours_it_is_made_of` — `settings_theme_page.png`.
+16. `a_theme_repaints_the_window_and_recolours_the_code` — `themed_window.png`, a real `.rs` file open,
+    so the picture is evidence that the scheme moved off the language plugin.
+17. `a_theme_is_set_by_name_and_an_unknown_one_says_what_there_is` — and `settings set
+    appearance.theme` lands in the same place.
+18. `an_accent_is_set_over_the_theme_and_cleared_back_to_it`.
+19. `switching_the_themes_plugin_off_puts_the_window_back` — and switching it on brings the theme back,
+    because the setting was left alone.
+20. `the_icon_set_follows_the_theme_and_the_setting_wins`.
+21. `theme_list_and_show_answer_in_a_payload_proportionate_to_the_question` — `list` gives six colours
+    a theme and `show` gives the whole palette, which is `CLAUDE.md`'s rule about what an agent is
+    handed.
+22. `every_command_is_offered_as_a_tool_in_both_shapes` and the documentation test — both already
     exist and both fail until §8 is written down.
 
 **Looked at, not only diffed.** Every new or changed snapshot is opened and judged before it is
@@ -467,7 +505,17 @@ accepted, which is what `UPDATE_SNAPSHOTS=1` means here.
 - **Editor line height** — §6.
 - **A theme editor in the window.** Themes are files; `plugins install` already writes a bundled
   plugin out so it can be edited by hand, and `plugins reload` reads it back with no restart. A
-  colour picker per role is forty-three colour wheels and a file format Quill would then own.
+  colour picker per role is forty colour wheels and a file format Quill would then own. The accent is
+  the exception, and it is one setting rather than an editor.
+- **The four highlight colours.** They stay Quill's own under every theme. A mark carries the colour
+  it was made in, in a file beside the project, so if the four defaults moved with the theme a
+  document marked under one theme and read under another would show four colours the menu no longer
+  offers. The style guide already calls a highlight somebody's own mark rather than part of the
+  window.
+- **`execution_point` as a role.** It is the one colour whose alpha carries meaning, and every other
+  role is written `#RRGGBB`. A manifest that set it in the same three bytes would have painted an
+  **opaque** band over the line the debugger stopped on and hidden the code under it, so it is derived
+  from the accent instead — which is also what somebody choosing a pink theme means.
 - **Per-language colour scheme overrides.** IntelliJ has them; nothing here needs them, and the nine
   tokens are already the whole of what Quill's tokeniser distinguishes.
 - **Theming the terminal's sixteen ANSI colours.** `quill_terminal::Palette` is a different palette

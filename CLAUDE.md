@@ -588,6 +588,54 @@ test asks for `Todos` and the drawing is what shouts. And a sprint or an epic is
 line **by its name**, because that is what is on the screen: `split_off_a_name` takes the longest run of
 arguments that names one, so `sprint-rename August 2nd Half September` needs no id.
 
+## A colour is a question, and the list of names is still closed
+
+`task-1776` asks for themes, and the thing in the way was that `theme::color` was forty `const`s read
+at **689 places in 56 files**. A constant cannot be themed, so each name became a function over the
+active theme — `color::editor()` rather than `color::EDITOR` — and everything the style guide says
+about the palette is still true. **A theme says what a name means; it cannot add a name.**
+
+The list lives once, in the `palette!` invocation in `theme/mod.rs`, and the struct, the default
+theme, the names a manifest may set, the reader, the writer and the forty accessors are generated
+from it. Writing them out would be five places to forget a name. Four colours are **derived** rather
+than roles — `breakpoint()` is the close button's red, `attached()` is git's added green — and
+`execution_point()` is derived for a sharper reason: it is the one colour whose alpha carries
+meaning, so a role a manifest set as `#RRGGBB` would have painted an **opaque** band over the line
+the debugger stopped on and hidden the code.
+
+**The active theme is thread-local, and that is about the tests rather than the product.** A window
+is one thread and a second window is a second process, so a process-global would have been right for
+the shipped binary. It would have been wrong for `tests/screenshots.rs`: 448 tests run in parallel in
+one process, and a test that switched a global theme would recolour whatever else was mid-frame.
+`QuillApp::prepare` resets the thread to Quill Dark, because cargo hands the same thread to the next
+test.
+
+**`plugin.kind = theme` is the third value, widened in the open with a check** — one plugin carries
+several themes, a role it does not name inherits Quill Dark's (IntelliJ's `parentTheme` in one line),
+a role Quill has not got is refused with the list, and eight of the nine token colours is refused
+because that would leave one line of code drawn in two schemes at once. Light is refused too, with the
+reason written down rather than implied: the window is drawn on a transparent ground, the depth recipe
+in `vello_canvas` lifts a surface and shadows it with black, and 448 accepted pictures are judged
+against a dark ground.
+
+**The colour scheme moved off the language plugins.** Rust, JavaScript, TypeScript, CSS and HTML each
+carried their own copy of Dracula — five copies, and a sixth language would have arrived with a sixth.
+`plugins::scheme_of` answers with the theme's nine if it names them and the plugin's own otherwise, and
+**Quill Dark names none**, so a Quill nobody has chosen a theme in colours every file exactly as it did
+before.
+
+`themes-bundle-1` is five dark themes whose every number was read out of the IntelliJ plugin jars on
+this machine — Islands Dracula Colorful (the one switched on), Material Palenight, Material Deep Ocean,
+Monokai Pro and One Dark. `tasks/task-1776-themes-tdd.md` §1 says which file each came from.
+
+**Icons are themeable in two ways and neither is a bitmap.** Five icon roles joined the palette, each
+defaulting to the colour that was already being passed, so all fifty drawn marks follow the theme with
+nothing having moved. On top of that `theme::IconSet` has two members: `classic` is what shipped, and
+`material` — filled, rounder, a **chevron** disclosure and a folder mark in the explorer — is the
+default, because the ticket asked for the defaults to be *improved* rather than merely to become
+choosable. `design/icons.md` records how the material set was designed against two Krea 2 sheets, and
+which mark on them was rejected.
+
 ## The look is written down, and a new control is measured against it
 
 `design/style-guide.md` says what a control in Quill is built from: the palette is closed, a list row
@@ -2953,6 +3001,8 @@ trade that away to be a shade nearer a screenshot.
 - `README.md` — what Quill is and how to run it.
 - `documentation/overview.md` — what Quill looks like: a capture of each part of the window, over a real desktop.
 - `design/style-guide.md` — how a control in Quill is built, and what the baselines are.
+- `design/icons.md` — how the `material` icon set was designed: the two Krea 2 sheets, the prompts
+  that made them, what was measured off each mark, and the one the sheet got wrong.
 - `tasks/quill-ide-tdd.md` — the line numbers, the tabs, the explorer's menu, git and the plugins:
   what was chosen, what was rejected and why.
 - `tasks/quill-technical-design-document.md` — the editor: the options that were considered, what was
@@ -3045,6 +3095,12 @@ trade that away to be a shade nearer a screenshot.
   third that was left out, why the client is `ureq` over the machine's own TLS and where a key lives
   on a platform with no keychain, what a tool call is and why it is Quill's own catalogue, and the
   eight things deliberately left out.
+- `tasks/task-1776-themes-tdd.md` — themes: which IntelliJ themes are actually installed on this
+  machine and what was read out of their jars, why forty constants had to become forty functions and
+  why the active theme is thread-local rather than global, the manifest a `plugin.kind = theme` reads
+  and the four things it refuses, why the colour scheme moved off the language plugins, the two icon
+  sets and the one colour that could not be a role, and the two things left out with the reason for
+  each.
 - `tasks/task-1697-panel-docking-tdd.md` — dragging a panel to an edge of the window: why the three
   Rust docking crates are the wrong shape for a window that is measured against an image, the two
   drop-target mechanics and why the edge band wins, why the highlight is the layout rather than a
