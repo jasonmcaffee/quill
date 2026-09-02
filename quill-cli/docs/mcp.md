@@ -56,8 +56,8 @@ that permits tools by name — Claude Code does — can only say "may open tabs,
 
 ```sh
 $ quill-cli mcp tools --count
-grouped     22 tools    60936 bytes   15234 tokens (roughly)
-every      147 tools   144153 bytes   36038 tokens (roughly)
+grouped     24 tools    67367 bytes   16841 tokens (roughly)
+every      164 tools   164980 bytes   41245 tokens (roughly)
 ```
 
 Argument names are generated from the catalogue. Kebab-case is canonical, but the MCP resolver

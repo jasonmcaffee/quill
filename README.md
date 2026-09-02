@@ -5,8 +5,9 @@ with folders that expand in place, a terminal along the bottom with tabs, and it
 through its background while the text stays solid.
 
 It is also, now, an editor you can write code in: line numbers down the left, a tab for each open
-file, a right click menu on the explorer, git in full, and plugins that colour CSS, HTML, JavaScript,
-TypeScript, Rust and Mermaid.
+file, a right click menu on the explorer, git in full, plugins that colour CSS, HTML, JavaScript,
+TypeScript, Rust and Mermaid, and themes — five of them, taken from the IntelliJ ones, each repainting
+the whole window and the code in it.
 
 HTML can open as a rendered tab too. `File -> Open Web Address...` accepts HTTP and HTTPS addresses,
 and an HTML file in the explorer has `Open in Browser -> Tab`. Local pages keep working CSS, scripts,
@@ -212,6 +213,17 @@ pages down the left under their headings, and the chosen page on the right.
   the last of those the window really does fade, but towards white rather than towards the desktop.
   Section 9.2 of `tasks/quill-technical-design-document.md` records how each was measured and what was
   rejected.
+- `Appearance & Behavior -> Appearance -> Interface` sets the family and the size the **window's own**
+  text is drawn in — the menus, the rail, the explorer and the status bar. Empty means the editor's
+  family, which is what the interface has always been set in, so a settings file that names nothing is
+  drawn exactly as it always was. It is separate from the font above because a large document and a
+  compact window is a reasonable thing to want.
+- `Appearance & Behavior -> Theme` is the theme, the accent and the icon set. A theme says what every
+  colour in Quill's own palette means, and one that names the nine token colours also colours code, in
+  every language at once. `Themes Bundle 1` ships five: Islands Dracula Colorful, Material Palenight,
+  Material Deep Ocean, Monokai Pro and One Dark. The accent is one colour over whatever the theme
+  chose, and the icon set is which drawn marks the rail and the explorer's folder arrow use — `material`
+  by default, or `classic` for the ones Quill shipped with. `quill-cli theme list` says what there is.
 - `Editor -> Editor -> Gutter` shows or hides the line numbers.
 - `Plugins` is the marketplace and what is installed.
 - `Tools -> Terminal` sets which program a terminal tab runs and the size the terminal draws its grid
@@ -643,10 +655,13 @@ answers both of those and costs a runtime plus a host interface that has to be d
 documented before the first plugin can be written. For "colour these keywords", both are a great deal
 of risk bought for nothing.
 
-So the seam is named now and left empty. `plugin.kind` is read and checked, and a manifest saying
-anything but `language` is refused **with a message** rather than half-loaded. That is the line a
-later version widens, the day a plugin wants to *do* something — run a formatter, talk to a language
-server, add a tool window. It should not be widened quietly.
+So the seam is named, and widened in the open. `plugin.kind` is read and checked, and a manifest naming
+a kind this version does not run is refused **with a message** rather than half-loaded. It has three
+values: `language` describes a file type, `ui` contributes a pane, a tab, a menu and a Settings page
+that are drawn by code which shipped in the binary, and `theme` says what every colour in Quill's own
+palette means. Each of the two additions came with a check and a test rather than quietly, which is
+the whole value of the field — and it is still the line a later version widens again, the day a plugin
+wants to *do* something: run a formatter, talk to a language server, add a tool window.
 
 ### The manifest
 
@@ -657,7 +672,7 @@ editor. A list is comma separated, a flag is `true` or `false`, and a colour is 
 | Key | What it is |
 |---|---|
 | `plugin.id` | the name of its folder, and how it is switched off. Required. |
-| `plugin.kind` | `language`. Anything else is refused. |
+| `plugin.kind` | `language`, `ui` or `theme`. Anything else is refused with the list. |
 | `plugin.name`, `.version`, `.vendor`, `.description` | what `Settings -> Plugins` shows. |
 | `plugin.limitations` | what it does not do. Every bundled plugin has one, and it is worth reading before wondering why a regular expression is coloured as division. |
 | `language.extensions` | the extensions it claims, with or without the dot. Empty is refused, because nothing would ever use it. |
@@ -676,7 +691,18 @@ editor. A list is comma separated, a flag is `true` or `false`, and a colour is 
 | `language.raw_text` | the elements of a markup language whose contents are not markup, as `element` or `element=language`. An entry that names a language is a raw text element and one that names none is an escapable one, so a character reference is read inside `<title>` and not inside `<script>`. |
 | `language.renders` | the built-in renderer this language's files are drawn with. |
 | `theme.name` | what the colour scheme is called. |
-| `theme.keyword`, `.builtin`, `.function`, `.type`, `.string`, `.number`, `.comment`, `.operator`, `.text` | one colour a token. A token with no colour is left as ordinary text. |
+| `theme.keyword`, `.builtin`, `.function`, `.type`, `.string`, `.number`, `.comment`, `.operator`, `.text` | one colour a token. A token with no colour is left as ordinary text. This is a `language` plugin's own scheme, and it is what colours its files until a **theme** that names all nine is chosen. |
+
+A `plugin.kind = theme` manifest reads a different set, and one plugin carries several themes:
+
+| Key | What it is |
+|---|---|
+| `themes` | the ids it carries, in the order Settings lists them. A group nothing lists is refused, and so is an empty line. |
+| `theme.<id>.name` | what a person reads in the list. Required. |
+| `theme.<id>.dark` | true unless it says otherwise. False is refused: this version draws dark themes only, and the reason is in `tasks/task-1776-themes-tdd.md` §5.3. |
+| `theme.<id>.icons` | which drawn icon set the rail and the explorer use — `material` or `classic`, checked against `plugins::ICON_SETS`. |
+| `theme.<id>.ui.<role>` | one colour a role, by the names in `theme::color` — `ui.editor`, `ui.accent`, `ui.folder_open`. A role that is not named keeps Quill Dark's, and a role Quill has not got is refused with the list. |
+| `theme.<id>.syntax.<token>` | the nine token colours, which then colour every language at once. **All nine or none**: eight would leave one line of code drawn in two schemes. |
 
 The three keys `word_characters`, `types` and `hex_colors` are **off unless a manifest names them**,
 so no plugin written before they existed changes by a pixel. All three arrived with the CSS plugin,
@@ -693,9 +719,10 @@ why a word-list plugin could not read HTML at all.
 
 ### Where plugins come from, and in what order
 
-Six ship inside the binary: JavaScript, TypeScript, Rust, CSS, HTML and Mermaid. They are bundled so
-that a Quill that has just been installed colours a `.rs` file the first time it opens one, and so
-that the marketplace has something in it with no network involved.
+Nine ship inside the binary: six languages — JavaScript, TypeScript, Rust, CSS, HTML and Mermaid —
+two that draw, Agent-Tasks and Agent-Chat, and one that carries themes, Themes Bundle 1. They are
+bundled so that a Quill that has just been installed colours a `.rs` file the first time it opens one,
+and so that the marketplace has something in it with no network involved.
 
 `Plugins::load` reads those first, then every folder under `<settings folder>/plugins`. **A plugin on
 disk shadows a bundled one with the same id**, so a bundled plugin can be corrected by hand without
