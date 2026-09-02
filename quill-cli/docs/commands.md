@@ -1331,7 +1331,7 @@ quill-cli panel zoom <panel> [factor]
 Make everything in a panel bigger or smaller, which is what Ctrl/Cmd and the wheel over it does. The explorer and a pane a plugin contributed carry a multiplier of their own; the terminal, run and debug tiles are character grids and their zoom is the terminal's font size, so a zoom there walks `settings set terminal.font.size` and both say the same number.
 
 - `panel` — explorer, terminal, run, debug, or a contributed pane's <plugin>/<pane>.
-- `factor` — How much bigger than usual, between 0.5 and 3. Left out, it says what the panel is at now; `reset` puts it back to 1.
+- `factor` (optional) — How much bigger than usual, between 0.5 and 3. Left out, it says what the panel is at now; `reset` puts it back to 1.
 
 ```sh
 quill-cli panel zoom explorer 1.35
@@ -2467,9 +2467,9 @@ The font families this machine has that the editor can be set to.
 quill-cli settings fonts --json
 ```
 
-## plugins — the languages Quill colours
+## plugins — the languages Quill colours, and the panes it draws
 
-A plugin describes a language: its extensions, its keywords and a colour per kind of token. Nothing in one is executed and nothing is fetched over a network.
+A plugin is a folder of data. A `language` one describes a language: its extensions, its keywords and a colour per kind of token. A `ui` one names code that shipped in the binary and says what it contributes — a pane, a tab, a menu, a Settings page — which is how the Agent-Tasks board, the Agent-Chat pane and the Database explorer are reached. Nothing in a plugin is executed and nothing is fetched over a network.
 
 ### plugins list
 
@@ -2477,7 +2477,7 @@ A plugin describes a language: its extensions, its keywords and a colour per kin
 quill-cli plugins list
 ```
 
-The language plugins Quill has, which of them are switched on, and what each one claims. They ship with Quill; nothing is fetched.
+The plugins Quill has, which of them are switched on, and what each one claims: a language it colours, or a pane, a tab, a menu and a Settings page it contributes. They ship with Quill; nothing is fetched.
 
 ```sh
 quill-cli plugins list --json
@@ -2603,6 +2603,8 @@ Run one of a plugin's own commands, down the same path its menu entry and its bu
 quill-cli plugins run agent-tasks board --json
 quill-cli plugins run agent-tasks new-task Rewrite the importer
 quill-cli plugins run agent-tasks start task-27
+quill-cli plugins run database tables public --json
+quill-cli plugins run database query select count(*) from member
 ```
 
 ### plugins view

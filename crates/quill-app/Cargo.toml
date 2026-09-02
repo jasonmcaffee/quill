@@ -23,6 +23,10 @@ quill-terminal.workspace = true
 # The Agent-Chat plugin's half with no window in it: the endpoints, the two wire shapes, the
 # server-sent-event framing, the conversation and the thread a request runs on.
 quill-chat.workspace = true
+# The Database plugin's half with no window in it: the PostgreSQL wire protocol, SQLite, the values a
+# grid draws, and the thread a query runs on. See `tasks/task-1777-database-plugin-tdd.md` §2 for why
+# the PostgreSQL client is written here rather than taken from `tokio-postgres`.
+quill-db.workspace = true
 # The catalogue of command line commands and the wire format, shared with the client so that the
 # two cannot come to disagree about what a command is called. It brings no window with it.
 quill-cli.workspace = true

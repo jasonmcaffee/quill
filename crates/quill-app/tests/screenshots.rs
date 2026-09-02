@@ -13799,3 +13799,344 @@ fn enter_in_the_composer_sends_and_shift_enter_does_not() {
         "the refusal ate the draft: {after}"
     );
 }
+
+// ---------------------------------------------------------------------------------- the Database plugin
+//
+// Every one of these drives a **real SQLite file** built in a temporary folder. A PostgreSQL server
+// cannot be assumed on the machine running a test — `crates/quill-db/tests/scripted_server.rs` is
+// where the wire protocol is tested against a server made of fixed bytes, and
+// `cargo run -p quill-db --example connect` is how the real one is. This is the layer above both:
+// the window, driven the way a person drives it, with the answers coming from a real engine rather
+// than from a stub.
+
+/// A database file with something in it, in a folder named after the test that asked for it.
+///
+/// A fixture only one test uses may be written each time and the name is what keeps them apart, which
+/// is `git_folder(name)`'s own rule.
+fn a_database_file(name: &str) -> std::path::PathBuf {
+    // **No process id in the name**, unlike the plugin's own tests: a data source draws where it
+    // points, so a folder that changed between runs would put a different string in an accepted
+    // image every time. The test's own name is what keeps two of these apart, which is the rule
+    // `git_folder(name)` already follows.
+    let folder = std::env::temp_dir().join(format!("quill-database-shot-{name}"));
+    let _ = std::fs::create_dir_all(&folder);
+    let file = folder.join("library.db");
+    let _ = std::fs::remove_file(&file);
+    let connection = rusqlite::Connection::open(&file).expect("a database");
+    connection
+        .execute_batch(
+            "create table album (id integer primary key, title text not null, year integer, note text);
+             insert into album (title, year, note) values
+               ('Kind of Blue', 1959, null),
+               ('A Love Supreme', 1965, ''),
+               ('Bitches Brew', 1970, 'double'),
+               ('Agharta', 1975, 'live');
+             create table tag (album_id integer, tag text);
+             insert into tag values (1, 'jazz'), (2, 'jazz'), (3, 'fusion');
+             create view album_tags as select a.title, t.tag from album a join tag t on t.album_id = a.id;",
+        )
+        .expect("a schema");
+    file
+}
+
+/// A window with the Database plugin pointed at one, writable, with the tree showing.
+fn a_database(name: &str) -> Harness<'static, QuillApp> {
+    let file = a_database_file(name);
+    let mut harness = harness("");
+    did(&mut harness, &format!("plugins run database add-source library {}", file.display()));
+    // Made writable, because a data source is read only until somebody says otherwise and half of
+    // these tests are about changing rows.
+    did(&mut harness, "plugins run database read-only library off");
+    did(&mut harness, "plugins pane database/explorer --show");
+    harness.run();
+    harness
+}
+
+/// Step until the plugin has nothing outstanding, or give up.
+///
+/// `Harness::run` gives the window four steps to go quiet and panics otherwise, which is right for a
+/// settled window and wrong while a worker thread is still answering — the rule `task-1654` wrote
+/// down for the loops that wait on git, wearing a different hat.
+fn until_the_database_settles(harness: &mut Harness<'static, QuillApp>) {
+    for _ in 0..400 {
+        harness.step();
+        let view = did_while_waiting(harness, "plugins view database");
+        let busy = view["sources"]
+            .as_array()
+            .map(|sources| sources.iter().any(|source| source["busy"] == serde_json::json!(true)))
+            .unwrap_or(false);
+        if !busy {
+            harness.step();
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("the database plugin is still busy after four hundred frames");
+}
+
+/// The ticket's shape, as data: a tree in a pane, a workspace in a tab, a menu and a Settings page.
+#[test]
+fn the_database_plugin_contributes_a_pane_a_tab_a_menu_and_a_page() {
+    use quill_app::app::dock::{Panel, Side};
+    let mut harness = harness("");
+    let listed = did(&mut harness, "plugins list");
+    let plugins = listed["plugins"].as_array().expect("the plugins");
+    let database =
+        plugins.iter().find(|plugin| plugin["id"] == "database").expect("the database plugin");
+    assert_eq!(database["kind"], "ui");
+    assert_eq!(database["provider"], "database");
+    let contributes: Vec<&str> = database["contributes"]
+        .as_array()
+        .expect("what it adds")
+        .iter()
+        .filter_map(|it| it.as_str())
+        .collect();
+    assert_eq!(contributes, ["pane", "tab", "menu", "settings page"]);
+
+    // The rail has a button for the pane, and the pane docks where the manifest says.
+    let slot = harness
+        .state()
+        .plugin_ui
+        .slot_of("database/explorer")
+        .expect("the tree's pane is in a slot");
+    assert!(harness.get_all_by_label("Database").count() > 0, "the rail draws a button for it");
+    let shown = did(&mut harness, "plugins pane database/explorer --show");
+    assert_eq!(shown["showing"], true);
+    assert_eq!(shown["side"], "right", "where IntelliJ docks its Database tool window");
+    let moved = did(&mut harness, "plugins pane database/explorer --side left");
+    assert_eq!(moved["side"], "left");
+    assert_eq!(side_of(&harness, Panel::Plugin(slot as u8)), Side::Left);
+    did(&mut harness, "plugins pane database/explorer --side right");
+
+    // And the workspace opens as a tab in the editing area, closed the way a file tab is.
+    let opened = did(&mut harness, "plugins tab database/workspace --open");
+    assert_eq!(opened["open"], true);
+    did(&mut harness, "plugins tab database/workspace --close");
+
+    // The SQL language plugin ships beside it, so a `.sql` file is coloured whether or not anybody
+    // opens the pane.
+    let sql = plugins.iter().find(|plugin| plugin["id"] == "sql").expect("the sql plugin");
+    assert_eq!(sql["kind"], "language");
+    assert!(sql["extensions"]
+        .as_array()
+        .expect("its extensions")
+        .contains(&serde_json::json!("sql")));
+}
+
+/// The tree reads one level at a time, which is how a database with four thousand tables stays usable.
+#[test]
+fn the_database_tree_reads_a_source_one_level_at_a_time() {
+    let mut harness = a_database("tree");
+    // Nothing is connected until something asks, which is the laziness the plugin contract describes.
+    let before = did(&mut harness, "plugins view database");
+    assert_eq!(before["sources"][0]["connected"], false);
+
+    // Opened the way a person opens it — by pressing the rows — one level per press.
+    harness.get_by_label("library").click();
+    until_the_database_settles(&mut harness);
+    let connected = did(&mut harness, "plugins view database");
+    assert_eq!(connected["sources"][0]["connected"], true, "pressing the row opened the connection");
+    assert_eq!(connected["tree"][0]["schemas"], serde_json::json!(["main"]));
+    assert!(
+        connected["tree"][0]["items"].as_array().is_some_and(Vec::is_empty),
+        "nothing under a schema until the schema is opened: {connected}"
+    );
+
+    harness.get_by_label("main").click();
+    until_the_database_settles(&mut harness);
+    let opened = did(&mut harness, "plugins view database");
+    let named: Vec<&str> = opened["tree"][0]["items"][0]["items"]
+        .as_array()
+        .expect("the items of the schema")
+        .iter()
+        .filter_map(|item| item["name"].as_str())
+        .collect();
+    assert!(named.contains(&"album") && named.contains(&"tag") && named.contains(&"album_tags"), "{named:?}");
+
+    // The folders and then one table's columns, which is the fourth level and the last.
+    harness.get_by_label("tables").click();
+    until_the_database_settles(&mut harness);
+    harness.get_by_label("album").click();
+    until_the_database_settles(&mut harness);
+    assert_eq!(did(&mut harness, "plugins view database")["chosen_row"]["name"], "album");
+    harness.snapshot(shot("database_tree").as_str());
+}
+
+/// A table opens in the workspace with its rows, its row numbers and its key column marked.
+#[test]
+fn a_table_opens_in_the_workspace_with_its_rows() {
+    let mut harness = a_database("grid");
+    did(&mut harness, "plugins run database tables main");
+    did(&mut harness, "plugins run database open main.album");
+    until_the_database_settles(&mut harness);
+    let page = did(&mut harness, "plugins run database result");
+    assert_eq!(page["kind"], "grid");
+    assert_eq!(page["table"], "album");
+    assert_eq!(page["key"], serde_json::json!(["id"]));
+    assert_eq!(page["editable"], true);
+    assert_eq!(page["rows"]["count"], 4);
+    // A NULL and an empty string are different values and the grid keeps them apart all the way from
+    // the engine, which is the fault `quill_db::Value` exists to keep out of a grid.
+    assert_eq!(page["rows"]["rows"][0][3], serde_json::Value::Null);
+    assert_eq!(page["rows"]["rows"][1][3], serde_json::json!(""));
+    harness.snapshot(shot("database_grid").as_str());
+}
+
+/// A view's rows belong to the tables underneath it, so the grid is read only and says why.
+#[test]
+fn a_view_is_drawn_read_only_with_the_reason_where_the_buttons_were() {
+    let mut harness = a_database("view");
+    did(&mut harness, "plugins run database tables main");
+    did(&mut harness, "plugins run database open main.album_tags");
+    until_the_database_settles(&mut harness);
+    let page = did(&mut harness, "plugins run database result");
+    assert_eq!(page["editable"], false);
+    let why = page["why_not_editable"].as_str().unwrap_or_default();
+    assert!(why.contains("view"), "{why}");
+    // And an agent asking to change one is refused with the same sentence, rather than quietly
+    // recording a change that could never be written.
+    // `failed` rather than `usage`: the command was written correctly and the *state* refuses it,
+    // which is the distinction `quill-cli`'s two codes already draw.
+    assert_eq!(refused(&mut harness, "plugins run database set 1 tag rock"), "failed");
+}
+
+/// A console runs a statement and the result comes back under it.
+#[test]
+fn a_console_runs_a_statement_and_shows_what_came_back() {
+    let mut harness = a_database("console");
+    did_while_waiting(&mut harness, "plugins run database console library");
+    did_while_waiting(&mut harness, "plugins run database query select title, year from album order by year");
+    until_the_database_settles(&mut harness);
+    let state = did(&mut harness, "plugins run database state");
+    assert_eq!(state["running"], false);
+    let result = did(&mut harness, "plugins run database result");
+    assert_eq!(result["kind"], "console");
+    assert_eq!(result["result"]["count"], 4);
+    assert_eq!(result["result"]["rows"][0][0], "Kind of Blue");
+    harness.snapshot(shot("database_console").as_str());
+}
+
+/// A statement that returns no rows fills `Output` rather than a grid, with its own count.
+#[test]
+fn a_statement_that_returns_no_rows_fills_the_output_tab() {
+    let mut harness = a_database("output");
+    did_while_waiting(&mut harness, "plugins run database console library");
+    // No quoted literal in the statement: the command line takes the quotes off, which is right for
+    // every other command and is why a value with spaces in it belongs in the grid rather than here.
+    did_while_waiting(&mut harness, "plugins run database query update album set year = 2000 where id = 1");
+    until_the_database_settles(&mut harness);
+    let result = did(&mut harness, "plugins run database result");
+    assert!(result["result"].is_null(), "no grid for a statement that returned no rows");
+    let output: Vec<&str> = result["output"]
+        .as_array()
+        .expect("output")
+        .iter()
+        .filter_map(|line| line.as_str())
+        .collect();
+    assert!(output.iter().any(|line| line.contains("1 rows")), "{output:?}");
+}
+
+/// A statement that will not run comes back as the engine's own words rather than as a summary.
+#[test]
+fn a_failing_statement_is_reported_in_the_engines_own_words() {
+    let mut harness = a_database("failing");
+    did_while_waiting(&mut harness, "plugins run database console library");
+    did_while_waiting(&mut harness, "plugins run database query select * from nothing_like_this");
+    until_the_database_settles(&mut harness);
+    let result = did(&mut harness, "plugins run database result");
+    let failure = result["failure"].as_str().unwrap_or_else(|| panic!("a failure: {result}"));
+    assert!(failure.contains("nothing_like_this"), "{failure}");
+    // And the connection is still usable, which is the point of reading a statement through to the
+    // end: one bad statement in a console must not cost the session.
+    did_while_waiting(&mut harness, "plugins run database query select 1");
+    until_the_database_settles(&mut harness);
+    assert_eq!(did(&mut harness, "plugins run database result")["result"]["count"], 1);
+}
+
+/// An edit is pending until it is submitted, and then the file on disk really changes.
+#[test]
+fn an_edit_is_pending_until_it_is_submitted_and_the_file_changes() {
+    let file = a_database_file("submit");
+    let mut harness = harness("");
+    did(&mut harness, &format!("plugins run database add-source library {}", file.display()));
+    did(&mut harness, "plugins run database read-only library off");
+    did(&mut harness, "plugins tab database/workspace --open");
+    did(&mut harness, "plugins run database tables main");
+    did(&mut harness, "plugins run database open main.album");
+    until_the_database_settles(&mut harness);
+
+    did(&mut harness, "plugins run database set 1 title Kind of Green");
+    let pending = did(&mut harness, "plugins run database pending");
+    let statements = pending.as_array().expect("the statements");
+    assert_eq!(statements.len(), 1);
+    let sql = statements[0]["sql"].as_str().expect("the sql");
+    assert!(sql.starts_with("UPDATE \"album\" SET \"title\" = ?1 WHERE \"id\" = ?2"), "{sql}");
+    // The value is **bound**, not pasted into the statement, which is what makes an awkward value a
+    // non-event rather than a fault.
+    assert!(!sql.contains("Kind of Green"));
+    harness.snapshot(shot("database_pending").as_str());
+
+    did(&mut harness, "plugins run database submit");
+    until_the_database_settles(&mut harness);
+    // Read back through a connection of its own, so this is the file rather than a cache.
+    let connection = rusqlite::Connection::open(&file).expect("opened");
+    let title: String = connection
+        .query_row("select title from album where id = 1", [], |row| row.get(0))
+        .expect("a row");
+    assert_eq!(title, "Kind of Green");
+}
+
+/// A read-only data source refuses a write before anything is sent, and says which switch allows it.
+#[test]
+fn a_read_only_data_source_refuses_a_write_before_anything_is_sent() {
+    let file = a_database_file("guard");
+    let mut harness = harness("");
+    // Not made writable: a data source is read only until somebody says otherwise, which is the
+    // opposite of IntelliJ and is deliberate.
+    did(&mut harness, &format!("plugins run database add-source library {}", file.display()));
+    did_while_waiting(&mut harness, "plugins run database console library");
+    assert_eq!(refused(&mut harness, "plugins run database query delete from album"), "failed");
+    let view = did(&mut harness, "plugins view database");
+    assert_eq!(view["sources"][0]["read_only"], true);
+    // Nothing was sent, so the rows are all still there.
+    let connection = rusqlite::Connection::open(&file).expect("opened");
+    let count: i64 =
+        connection.query_row("select count(*) from album", [], |row| row.get(0)).expect("a row");
+    assert_eq!(count, 4);
+}
+
+/// The New Data Source dialog, which is IntelliJ's General tab cut to what applies.
+#[test]
+fn the_new_data_source_dialog() {
+    let mut harness = harness("");
+    // The menu entry and the command are one path: `add-source` with nothing said opens the dialog,
+    // and `add-source <name> <url>` adds one without it.
+    did(&mut harness, "plugins run database add-source");
+    harness.run();
+    harness.snapshot(shot("database_source_dialog").as_str());
+}
+
+/// The Settings page: where each data source points, and where its password is — never what it is.
+///
+/// **A PostgreSQL source rather than the SQLite one every other test here uses**, and that is about
+/// the picture rather than about the page: a SQLite data source draws the path of its file, and the
+/// only paths available to a test are a temporary folder that differs between machines and between
+/// runs — which is a screenshot that can never match twice. `postgres://…@localhost:5432/library`
+/// says the same thing on every machine, and it is the case this page is really about anyway, since
+/// it is the one that has a password to name a place for.
+#[test]
+fn the_database_settings_page_says_where_a_password_is_and_never_what_it_is() {
+    let mut harness = harness("");
+    did(
+        &mut harness,
+        "plugins run database add-source library postgres://postgres@localhost:5432/library QUILL_DB_LIBRARY",
+    );
+    did(&mut harness, "action run settings");
+    harness.run();
+    harness.get_all_by_label("Database").last().expect("the Settings row").click();
+    harness.run();
+    // Nothing on this page is the password, and the page says where it is instead.
+    let view = did(&mut harness, "plugins view database");
+    assert_eq!(view["sources"][0]["password"], "environment QUILL_DB_LIBRARY");
+    harness.snapshot(shot("database_settings").as_str());
+}

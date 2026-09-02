@@ -311,6 +311,8 @@ pub fn pane_icon(name: &str) -> fn(&egui::Painter, Pos2, egui::Color32) {
         "plus" => icon::plus,
         "image" => icon::image,
         "chat" => icon::chat,
+        "database" => icon::database,
+        "table" => icon::table,
         _ => icon::board,
     }
 }
@@ -377,5 +379,29 @@ mod tests {
         // The button starts where the window's own left resize grip stops, so the two never overlap.
         let left = crate::components::resize_edges::EDGE;
         assert!(left + BUTTON <= size::ACTIVITY_BAR, "the button has to fit clear of the resize grip");
+    }
+}
+
+#[cfg(test)]
+mod icon_tests {
+    use super::pane_icon;
+    use crate::services::plugins::PANE_ICONS;
+    use crate::theme::icon;
+
+    #[test]
+    fn every_named_icon_is_actually_drawn_rather_than_falling_back_to_the_board() {
+        // The registry and the drawing are two lists, and a name added to one and not the other is a
+        // rail button that quietly draws the wrong picture — which is what happened the first time
+        // `database` and `table` were added, and it is invisible in every test that does not open the
+        // image. This is that check as an assertion.
+        let fallback = pane_icon("nothing-like-this") as usize;
+        assert_eq!(fallback, icon::board as usize, "the fallback is still the board");
+        for name in PANE_ICONS {
+            let drawn = pane_icon(name) as usize;
+            if *name == "board" {
+                continue;
+            }
+            assert_ne!(drawn, fallback, "`{name}` is in PANE_ICONS with no drawing behind it");
+        }
     }
 }

@@ -860,3 +860,92 @@ pub fn board(painter: &egui::Painter, centre: Pos2, color: Color32) {
         );
     }
 }
+
+/// A database: the cylinder every tool in the world draws for one.
+///
+/// Drawn rather than lettered, which is the rule `design/style-guide.md` sets for every icon here: a
+/// drawn icon takes the tint it is given, so it follows the rail's three states and the window's
+/// colours rather than carrying a colour of its own. Three bands, because two read as a coin and four
+/// as a stack of plates at sixteen points.
+pub fn database(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    let half_width = 5.5;
+    let top = centre.y - 6.0;
+    let bottom = centre.y + 4.5;
+    // The top ellipse, drawn as a squashed circle: `egui` has no ellipse, so it is a short polyline
+    // round one, which at this size is indistinguishable and takes the tint.
+    for band in 0..3 {
+        let y = top + band as f32 * 4.0;
+        let points: Vec<Pos2> = (0..=16)
+            .map(|step| {
+                let angle = std::f32::consts::PI * step as f32 / 16.0;
+                Pos2::new(centre.x - half_width * angle.cos(), y + 1.9 * angle.sin())
+            })
+            .collect();
+        painter.add(egui::Shape::line(points, Stroke::new(1.3, color)));
+    }
+    // The closing curve of the top, so the first band reads as an ellipse rather than a smile.
+    let over: Vec<Pos2> = (0..=16)
+        .map(|step| {
+            let angle = std::f32::consts::PI * step as f32 / 16.0;
+            Pos2::new(centre.x + half_width * angle.cos(), top - 1.9 * angle.sin())
+        })
+        .collect();
+    painter.add(egui::Shape::line(over, Stroke::new(1.3, color)));
+    // The two sides.
+    for side in [-1.0_f32, 1.0] {
+        painter.line_segment(
+            [Pos2::new(centre.x + side * half_width, top), Pos2::new(centre.x + side * half_width, bottom - 2.0)],
+            Stroke::new(1.3, color),
+        );
+    }
+}
+
+/// A table: a grid with a heavier first row, which is what a header is.
+pub fn table(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    let rect = Rect::from_center_size(centre, egui::Vec2::new(13.0, 11.0));
+    painter.rect_stroke(rect, CornerRadius::same(2), Stroke::new(1.2, color), egui::StrokeKind::Inside);
+    // The header rule, heavier than the rest, which is what tells a table from a window.
+    let header = rect.top() + 3.5;
+    painter.line_segment(
+        [Pos2::new(rect.left(), header), Pos2::new(rect.right(), header)],
+        Stroke::new(1.4, color),
+    );
+    painter.line_segment(
+        [Pos2::new(rect.left(), header + 3.5), Pos2::new(rect.right(), header + 3.5)],
+        Stroke::new(1.0, color),
+    );
+    let column = rect.left() + rect.width() * 0.45;
+    painter.line_segment(
+        [Pos2::new(column, rect.top()), Pos2::new(column, rect.bottom())],
+        Stroke::new(1.0, color),
+    );
+}
+
+/// An undo arrow, in the shape every icon button takes.
+///
+/// `undo_redo` already draws one and takes a direction; this is that with the direction bound, so it
+/// can be passed to `controls::icon_button`, which takes a plain `fn(&Painter, Pos2, Color32)`.
+pub fn undo(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    undo_redo(painter, centre, false, color);
+}
+
+/// A key, which is what marks the column a row is addressed by.
+///
+/// A tick was tried first and read as "this one is selected", which in a tree whose chosen row is
+/// already a pill is exactly the wrong thing to say. A key says what the mark means without a
+/// tooltip, which is what an icon is for.
+pub fn key(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    let bow = Pos2::new(centre.x - 3.5, centre.y - 1.5);
+    painter.circle_stroke(bow, 2.6, Stroke::new(1.3, color));
+    // The shaft, running up and to the right out of the bow.
+    let end = Pos2::new(centre.x + 4.5, centre.y - 4.0);
+    painter.line_segment([Pos2::new(bow.x + 1.8, bow.y - 1.4), end], Stroke::new(1.3, color));
+    // Two teeth on the underside of it.
+    for along in [0.45_f32, 0.75] {
+        let at = Pos2::new(
+            bow.x + 1.8 + (end.x - bow.x - 1.8) * along,
+            bow.y - 1.4 + (end.y - bow.y + 1.4) * along,
+        );
+        painter.line_segment([at, Pos2::new(at.x + 1.6, at.y + 2.4)], Stroke::new(1.3, color));
+    }
+}

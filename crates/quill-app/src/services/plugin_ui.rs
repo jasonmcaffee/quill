@@ -661,6 +661,7 @@ pub fn provider(name: &str) -> Option<Box<dyn UiProvider>> {
     match name {
         "agent-tasks" => Some(Box::new(crate::services::agent_tasks::AgentTasks::new())),
         "agent-chat" => Some(Box::new(crate::services::agent_chat::AgentChat::new())),
+        "database" => Some(Box::new(crate::services::database::DatabaseExplorer::new())),
         _ => None,
     }
 }

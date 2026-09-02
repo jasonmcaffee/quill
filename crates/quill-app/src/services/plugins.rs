@@ -104,7 +104,7 @@ pub const DEBUGGERS: &[&str] = &["lldb", "node"];
 /// is a pane, where it docks, what its button looks like and what its menu holds; the drawing shipped
 /// with the binary. So the most a manifest can do is name a provider that is already here, visibly,
 /// and nothing in a plugin is executed.
-pub const UI_PROVIDERS: &[&str] = &["agent-tasks", "agent-chat"];
+pub const UI_PROVIDERS: &[&str] = &["agent-tasks", "agent-chat", "database"];
 
 /// The renderers a plugin's `ui.chrome` may name for the decoration `egui` cannot draw.
 ///
@@ -125,6 +125,7 @@ pub const CHROME: &[&str] = &["vello"];
 /// is worse than a manifest that was refused with the list of icons in the message.
 pub const PANE_ICONS: &[&str] = &[
     "board", "folder", "terminal", "run", "bug", "clock", "branch", "tick", "plus", "image", "chat",
+    "database", "table",
 ];
 
 /// The conditions a `pane.applies` may name.
@@ -1402,6 +1403,15 @@ pub mod bundled {
         // built. It has no icon of its own for the same reason: its rail button is `pane.icon`,
         // which `theme::icon` draws, so it follows the window's colours and the pointer's opacity.
         ("agent-chat", include_str!("../../plugins/agent-chat/plugin.conf"), None),
+        // The Database plugin, and the SQL language its console is coloured through. Two plugins
+        // rather than one, because a `.sql` file is coloured whether or not anybody opens the
+        // database pane — see `plugins/sql/plugin.conf`.
+        ("database", include_str!("../../plugins/database/plugin.conf"), None),
+        (
+            "sql",
+            include_str!("../../plugins/sql/plugin.conf"),
+            Some(include_bytes!("../../plugins/sql/icon.png")),
+        ),
         (
             "mermaid",
             include_str!("../../plugins/mermaid/plugin.conf"),
@@ -1773,26 +1783,33 @@ language.extensions = .aa
         // Agent-Tasks contributes a tab and no pane, which `task-28` asked for: a board narrow enough
         // to need sideways scrolling to see its second lane is a board nobody reads. Agent-Chat
         // contributes a pane and no tab, which `task-1767` asked for: a conversation is a column.
-        assert_eq!(surfaces.panes.len(), 1, "one plugin asks for a pane today");
+        // Agent-Chat contributes a pane and no tab and Database contributes both, which is what each
+        // ticket asked for: a conversation is a column, a board is a page, and a database is a tree
+        // down one side with its consoles and grids in the middle.
+        assert_eq!(surfaces.panes.len(), 2, "two plugins ask for a pane");
         assert!(surfaces.pane("agent-chat/chat").is_some());
+        assert!(surfaces.pane("database/explorer").is_some());
         assert!(surfaces.pane("agent-tasks/board").is_none());
         assert!(surfaces.pane("agent-chat/nothing").is_none());
-        assert_eq!(surfaces.tabs.len(), 1, "one plugin asks for a tab today");
+        assert_eq!(surfaces.tabs.len(), 2, "two plugins ask for a tab");
         assert_eq!(surfaces.tabs[0].plugin, "agent-tasks");
         assert_eq!(surfaces.tabs[0].provider, "agent-tasks");
         assert_eq!(surfaces.tabs[0].key("board"), "agent-tasks/board");
         assert!(surfaces.tab("agent-tasks/board").is_some());
-        assert_eq!(surfaces.menus.len(), 2);
-        assert_eq!(surfaces.pages.len(), 2);
+        assert!(surfaces.tab("database/workspace").is_some());
+        assert_eq!(surfaces.menus.len(), 3);
+        assert_eq!(surfaces.pages.len(), 3);
         // Switching one off withdraws every contribution of that plugin at once, which is the rule
         // `Plugins::renders` already keeps for a Mermaid diagram: the window asks before it draws.
         plugins.set_enabled(None, "agent-tasks", false);
         plugins.set_enabled(None, "agent-chat", false);
+        plugins.set_enabled(None, "database", false);
         assert!(plugins.surfaces().is_empty(), "a plugin that is off contributes nothing");
         plugins.set_enabled(None, "agent-tasks", true);
         plugins.set_enabled(None, "agent-chat", true);
-        assert_eq!(plugins.surfaces().tabs.len(), 1, "and switching it back on is one frame too");
-        assert_eq!(plugins.surfaces().panes.len(), 1);
+        plugins.set_enabled(None, "database", true);
+        assert_eq!(plugins.surfaces().tabs.len(), 2, "and switching it back on is one frame too");
+        assert_eq!(plugins.surfaces().panes.len(), 2);
     }
 
     #[test]
@@ -1861,10 +1878,14 @@ language.extensions = .aa
     #[test]
     fn the_older_plugins_ask_for_none_of_what_css_added() {
         // The three keys are opt-in, which is what keeps a `.ts` file coloured exactly as it was.
-        // HTML is the one plugin besides CSS to read a hyphen as a letter, so it is the one the
-        // loop lets through; `the_html_plugin_reads_the_two_things_markup_needs` checks what it asks for.
+        // Three plugins are let through and each says why in its own manifest: CSS reads a hyphen as a
+        // letter and a `#ff0000` as a number, HTML reads a hyphen as a letter, and SQL uses the third
+        // word list for its type names — `int`, `timestamptz` and the rest are neither keywords nor
+        // functions, and colouring them as identifiers made a `CREATE TABLE` read as a list of column
+        // names with nothing to tell the two halves apart.
         let (plugins, _) = Plugins::load(None);
-        for plugin in plugins.all().iter().filter(|plugin| plugin.id != "css" && plugin.id != "html") {
+        let older = |id: &str| id != "css" && id != "html" && id != "sql";
+        for plugin in plugins.all().iter().filter(|plugin| older(&plugin.id)) {
             assert!(plugin.grammar.word_characters.is_empty(), "{}", plugin.id);
             assert!(!plugin.grammar.hex_colors, "{}", plugin.id);
             assert!(plugin.grammar.types.is_empty(), "{}", plugin.id);

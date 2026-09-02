@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/quill-core", "crates/quill-chat", "crates/quill-dap", "crates/quill-git", "crates/quill-terminal", "crates/quill-app", "quill-cli"]
+members = ["crates/quill-core", "crates/quill-chat", "crates/quill-db", "crates/quill-dap", "crates/quill-git", "crates/quill-terminal", "crates/quill-app", "quill-cli"]
 
 [workspace.package]
 version = "0.30.0"
@@ -11,6 +11,7 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 quill-core = { path = "crates/quill-core" }
 quill-chat = { path = "crates/quill-chat" }
+quill-db = { path = "crates/quill-db" }
 quill-dap = { path = "crates/quill-dap" }
 quill-git = { path = "crates/quill-git" }
 quill-terminal = { path = "crates/quill-terminal" }
@@ -26,7 +27,10 @@ unicode-segmentation = "1.13"
 # to install, no server to be running and no port: the board is one file. See
 # `tasks/agent-tasks-plugin-tdd.md` for why this rather than the PostgreSQL the application being
 # replaced needs. Nothing is fetched at run time, which is the rule the whole repository keeps.
-rusqlite = { version = "0.32", features = ["bundled"] }
+# `column_decltype` is added by the Database plugin: it is a pure feature flag with no dependency
+# behind it, and it is what lets a result grid name the type of each column rather than leaving every
+# one blank. Features are additive, so the Agent-Tasks board is unchanged by it.
+rusqlite = { version = "0.32", features = ["bundled", "column_decltype"] }
 # The control channel speaks JSON, one object a line. Written by hand rather than with the derive
 # macros: nothing here is a Rust type going over the wire, it is a small open protocol another
 # language has to be able to speak, so the values are built and read as values.
@@ -47,6 +51,17 @@ serde_json = "1.0"
 # cookie, and the bodies are built and read as `serde_json::Value`s by hand — the rule
 # `services::control` already keeps for the control channel.
 ureq = { version = "3.4", default-features = false, features = ["native-tls"] }
+# The Database plugin's client, and the four crates it needs that are not already in the tree by
+# another route. `sha2` arrives through `wry`, `base64` through `alacritty_terminal`, `native-tls`
+# through `ureq` and `getrandom` through several — so naming them here costs nothing new, and the
+# whole PostgreSQL client adds `hmac` and `md-5`. See `tasks/task-1777-database-plugin-tdd.md` §2.1
+# for the count and for why `tokio-postgres` was refused.
+sha2 = "0.10"
+hmac = "0.12"
+md-5 = "0.10"
+base64 = "0.22"
+getrandom = "0.3"
+native-tls = "0.2"
 url = "2.5"
 percent-encoding = "2.3"
 mime_guess = "2.0"

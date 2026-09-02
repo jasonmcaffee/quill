@@ -125,6 +125,7 @@ first time, exactly as the Windows installer script installs Inno Setup.
 | `quill-terminal` | The terminal: the session over a pseudoterminal, the screen the painter reads, the colour palette, the key encoding, the mouse reports, and which shell to start and in what folder. | Any user interface dependency, for the same reason. |
 | `quill-git` | Reading and changing a git repository: the status, blame, the log, diffs, branches, and every operation on the Git menu, plus the thread they run on. | Any user interface dependency, and any decision about what a dialog looks like. Its tests build real repositories in a temporary folder and ask git what happened. |
 | `quill-dap` | The Debug Adapter Protocol: the `Content-Length` framing, the typed messages, the session state machine, and the thread an adapter is spoken to on. | Any user interface dependency, and any knowledge of *which* adapter to start — where `lldb-dap` lives on this machine is knowledge about the machine, and it lives in `quill-app`. Its tests run against scripted adapters with no process. |
+| `quill-db` | Reading and changing a database: the PostgreSQL v3 wire protocol, SCRAM-SHA-256, SQLite through `rusqlite`, the values a grid draws, the statements a pending change becomes, and the thread a query runs on. | Any user interface dependency. Its tests run with no window and, for the PostgreSQL half, against a scripted server on `127.0.0.1:0` replaying fixed bytes. |
 | `quill-app` | The window: drawing, input, real fonts, the settings on disk, the menus, and the plugin registry. | Editor behaviour, terminal emulation or git plumbing. Those belong in the crates above. |
 | `quill-cli` | The command line: the catalogue of commands, the wire format, and the client program. It lives in `quill-cli/` beside its own documentation rather than under `crates/`, because the two are read together. | Anything that depends on `quill-app`. The dependency points one way, so the client stays a small program with no window, no graphics card and no fonts behind it. |
 
@@ -587,6 +588,83 @@ the case a person reads — `paint_label` and `label` are that split, and a disc
 test asks for `Todos` and the drawing is what shouts. And a sprint or an epic is named on the command
 line **by its name**, because that is what is on the screen: `split_off_a_name` takes the longest run of
 arguments that names one, so `sprint-rename August 2nd Half September` needs no id.
+
+## A database is spoken to by hand, and a row is only editable if it can be addressed
+
+`task-1777` asks for "a plugin with ui that allows us to see dbs, write queries, update rows, etc
+similar to IntelliJ db ui", with PostgreSQL and SQLite. `tasks/task-1777-database-plugin-tdd.md` is
+the design and `_agent_output/task-1777-database-plugin/intellij/` is what it was measured against —
+JetBrains' own screenshots of the Database tool window, the query console and the data editor,
+downloaded rather than remembered.
+
+**IntelliJ's database support is three surfaces, not one**, and they map onto contributions the plugin
+manifest already offers: the tool window is the **pane**, and the query console and the data editor
+are two kinds of page inside the one **tab**. One tab holding its own strip is the honest answer to a
+manifest that offers one `tab.id`, and it is the shape the Services tool window has anyway.
+
+**The PostgreSQL client is written here, in `crates/quill-db`, and that is a decision worth keeping.**
+`postgres` 0.19 is a blocking façade over `tokio-postgres`: it builds a Tokio runtime and runs the
+connection on it, and Quill has no runtime on purpose — the workspace `Cargo.toml` says in as many
+words that "a runtime added for one pane would be a second concurrency model in a program that has
+one". Shelling out to `psql` is not `quill-git`'s situation either: `git` is on this machine because
+the person uses git, `psql` is not necessarily on a machine whose *server* is elsewhere, and its
+output is a report meant for a person rather than a format designed to be parsed. So the wire protocol
+is spoken here, arranged as `quill-dap` speaks DAP and `quill-chat` speaks server-sent events, with a
+**scripted server** on `127.0.0.1:0` behind its tests. Counted rather than guessed, that costs **two
+crates** — `hmac` and `md-5` — because `sha2`, `base64`, `native-tls` and `getrandom` are already in
+the tree by another route. `tokio-postgres` is roughly fifty.
+
+**SCRAM-SHA-256 is the first thing written, not the last**, because the server on this machine is
+17.2 with `password_encryption = scram-sha-256` and an MD5-only client could not connect to it at all.
+The server's own signature is verified: ignoring `v=` throws away the half of SCRAM that proves the
+*server* knew the password. The arithmetic is pinned to RFC 7677's published vector, and the scripted
+server checks the client's proof by the **inverse** of the way the client made it — recovering
+`ClientKey` and hashing it — so it is a test of the client rather than a recording played back.
+
+**A row can only be changed if it can be addressed, and there is no fallback.** A grid is editable
+when its rows came from one table with a primary key, or a SQLite table with a `rowid`; otherwise the
+Add, Delete and Submit buttons are **absent** with one line saying why. The alternative — an `UPDATE`
+matching on every column — quietly changes two identical rows, and it is the reason a console result
+is never editable at all. Changes stay pending, the preview shows the **actual statements** from the
+same call Submit makes, and Submit is one transaction in which every value is a **bound parameter**,
+so a value containing a quote, a newline or a backslash is a non-event. An `UPDATE` reporting zero
+rows rolls the whole thing back: it means the row moved underneath, and reporting that as a success is
+how an edit is silently lost.
+
+**No password is ever written down.** A data source names an environment variable, or a keychain entry
+on the platforms that have one, or holds one typed into the dialog that is gone when the window
+closes — which is `services::agent_tasks::keychain`'s rule and Agent-Chat's. There is deliberately no
+way to give Quill a password on the command line: it would be in a shell history, a process list and
+a log, which is three copies of a secret. A URL with a password in it is **refused** with a sentence
+saying where one goes instead, because that is the one door through which a secret could reach a
+settings file unnoticed.
+
+**A new data source is read only, which is the opposite of IntelliJ and is deliberate.** One added in
+a hurry points at something real, and clearing a tick box is much cheaper than the first `UPDATE`
+nobody meant. The guarantee is the **server's** — `SET SESSION CHARACTERISTICS AS TRANSACTION READ
+ONLY`, and `SQLITE_OPEN_READONLY` — rather than a parser in Quill, which also hides the controls. A
+console statement that changes rows is confirmed once before it is sent; a *command* is not, because
+an agent cannot press a button in a modal and a command that can never finish is worse than no
+confirmation at all.
+
+**Three faults this found in work that had already shipped**, each invisible to every passing test:
+
+- **`Look::colouring_with` had no caller.** The seam that colours a fenced block through the plugin
+  claiming its language was built and never plugged in, so **Agent-Chat's fenced code had been drawing
+  in one flat colour since `task-1767`**. It is wired in the three places a plugin's `Look` is built.
+- **`plugins::PANE_ICONS` and `activity_bar::pane_icon` are two lists**, and a name in one and not the
+  other silently falls back to the board icon. `every_named_icon_is_actually_drawn...` is the test.
+- **`rusqlite`'s default flags include `SQLITE_OPEN_CREATE`**, so a mistyped path made an empty
+  database and the tree showed a data source with nothing in it. It is opened, never created.
+
+`quill-cli plugins run database …` is the agent's half — `sources`, `add-source`, `password`,
+`connect`, `schemas`, `tables`, `columns`, `ddl`, `open`, `console`, `query`, `state`, `result`,
+`page`, `filter`, `sort`, `set`, `add-row`, `delete-row`, `pending`, `submit`, `read-only`, `confirm`
+— and `plugins view database` answers the whole plugin as data. **`query` does not wait**, for the
+reason Agent-Chat's `send` does not: `UiProvider::command` runs inside a frame.
+
+`cargo run -p quill-db --example connect -- <url> <PASSWORD_VARIABLE>` is how the real server is
+checked by hand, because a scripted server is evidence about the protocol rather than about a server.
 
 ## The look is written down, and a new control is measured against it
 
@@ -3079,6 +3157,11 @@ trade that away to be a shade nearer a screenshot.
 - `tasks/quill-mermaid-plugin-tdd.md` — Mermaid: the four ways of drawing it that were weighed and why
   Quill writes its own, what each of the twenty types becomes on the screen, which ten are named
   rather than drawn, and what `language.renders` buys.
+- `tasks/task-1777-database-plugin-tdd.md` — the Database plugin: which third of IntelliJ's database
+  tools is worth copying and why the other two thirds are not, the four ways of talking to PostgreSQL
+  that were weighed and the crate count that decided it, SCRAM-SHA-256 and the two older
+  authentications, why every value arrives as text, the rule that a row can only be changed if it can
+  be addressed, where a password is and is not, and the fifteen things deliberately left out.
 - `tasks/quill-cli-tdd.md` — the command line: the transports that were weighed, the command surface,
   the wire format, what the token is and is not worth, and how the 97% was to be measured.
 - `tasks/mcp-issues.md` — what was seen driving a window through the MCP tools, measured on a real

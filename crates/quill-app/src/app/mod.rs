@@ -3471,9 +3471,17 @@ impl QuillApp {
             let chrome = self.chrome_for(&plugin);
             // The pane's own zoom, which is `task-1771`'s: every pane is zoomable, and a pane a plugin
             // contributed has no font size of its own to walk, so it has a multiplier instead.
+            // **The colouring a plugin draws a fenced block or a SQL console with.** `quill-core` holds
+            // no plugin registry, so it asks through `CodeHighlighter` and the window answers with the
+            // same two calls `colour_the_file` makes for a source file — which is what makes a fence of
+            // Rust in an answer look like a `.rs` file, and a statement in a query console look like a
+            // `.sql` one. `Look::colouring_with` had no caller at all until now, so both were drawing
+            // in one flat colour: the seam was built and never plugged in.
+            let highlighter = PluginHighlighter { plugins: &self.plugins };
             let look = crate::services::plugin_ui::Look::of(&self.settings, &self.renderer)
                 .zoomed_by(self.panes.zoom_of(panel))
                 .holding_the_keyboard(matches!(self.focus, Focus::Plugin))
+                .colouring_with(&highlighter)
                 .drawing_into(&chrome);
             let rect = body;
             match problem {
@@ -3553,8 +3561,16 @@ impl QuillApp {
             // is drawn on a decoration canvas and the modal was not: every well, every field and every
             // button on it fell back to the flat form.
             let chrome = self.chrome_for(&plugin);
+            // **The colouring a plugin draws a fenced block or a SQL console with.** `quill-core` holds
+            // no plugin registry, so it asks through `CodeHighlighter` and the window answers with the
+            // same two calls `colour_the_file` makes for a source file — which is what makes a fence of
+            // Rust in an answer look like a `.rs` file, and a statement in a query console look like a
+            // `.sql` one. `Look::colouring_with` had no caller at all until now, so both were drawing
+            // in one flat colour: the seam was built and never plugged in.
+            let highlighter = PluginHighlighter { plugins: &self.plugins };
             let look = crate::services::plugin_ui::Look::of(&self.settings, &self.renderer)
                 .holding_the_keyboard(matches!(self.focus, Focus::Plugin))
+                .colouring_with(&highlighter)
                 .drawing_into(&chrome);
             if let Some(provider) = self.plugin_ui.provider(&plugin) {
                 let (wanted, _closed) = provider.modal(ui.ctx(), &look);
@@ -8446,8 +8462,16 @@ impl QuillApp {
         let slot = ui.painter().add(egui::Shape::Noop);
         let chrome = self.chrome_for(&tab.plugin);
         let asked = {
+            // **The colouring a plugin draws a fenced block or a SQL console with.** `quill-core` holds
+            // no plugin registry, so it asks through `CodeHighlighter` and the window answers with the
+            // same two calls `colour_the_file` makes for a source file — which is what makes a fence of
+            // Rust in an answer look like a `.rs` file, and a statement in a query console look like a
+            // `.sql` one. `Look::colouring_with` had no caller at all until now, so both were drawing
+            // in one flat colour: the seam was built and never plugged in.
+            let highlighter = PluginHighlighter { plugins: &self.plugins };
             let look = crate::services::plugin_ui::Look::of(&self.settings, &self.renderer)
                 .holding_the_keyboard(matches!(self.focus, Focus::Plugin))
+                .colouring_with(&highlighter)
                 .drawing_into(&chrome);
             match self.plugin_ui.problem_with(&tab.plugin) {
                 Some(problem) => {

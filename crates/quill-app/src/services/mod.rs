@@ -11,6 +11,8 @@ pub mod breakpoint_store;
 pub mod browser;
 pub mod control;
 pub mod crash_log;
+// The Database plugin: the data sources, the connections, the tree and the pages.
+pub mod database;
 pub mod debuggers;
 pub mod file_clipboard;
 pub mod file_kind;
