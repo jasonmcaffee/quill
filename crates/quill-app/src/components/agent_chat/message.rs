@@ -332,6 +332,13 @@ fn bubble(ui: &mut egui::Ui, look: &Look<'_>, rect: Rect, mine: bool) {
         },
     };
     if look.chrome.is_recording() {
+        // **The squared corner is the shape, not a patch over it.** `Chrome` used to take one radius, so
+        // this squared the corner by painting a flat rectangle of `board_card` across it — flat, so it
+        // carried none of the inset shadow the rest of the bubble has, and it read as a lighter block
+        // sitting proud of the top left of every answer. `task-1771` reported exactly that. Four radii go
+        // down to `vello_cpu` now and the corner is drawn once, in the same pass as the shadows, which is
+        // the only way the two can agree.
+        let corners = crate::services::vello_canvas::Corners::from(corners);
         match mine {
             // **Raised for the person, pressed for the model**, at `Lift::Medium` rather than
             // `Lift::Small`: the reference's shadow pairs are broad and soft, and at `Small` a bubble
@@ -339,39 +346,11 @@ fn bubble(ui: &mut egui::Ui, look: &Look<'_>, rect: Rect, mine: bool) {
             // than neumorphic.
             true => look
                 .chrome
-                .raised(rect, radius, Fill::Solid(look.palette.board_card), Lift::Medium),
+                .raised(rect, corners, Fill::Solid(look.palette.board_card), Lift::Medium),
             false => look
                 .chrome
-                .sunken(rect, radius, look.palette.board_card, Lift::Medium),
+                .sunken(rect, corners, look.palette.board_card, Lift::Medium),
         }
-        // **The corner nearest its own side, really squared.** `Chrome` takes one radius rather than
-        // four, so the corner is squared by filling it: a patch of the same colour, square on the two
-        // outer edges and following the bubble's curve on the two inner ones. The first version
-        // painted a *transparent* rectangle there, which of course changed nothing and left all four
-        // corners round — which is what the accepted image showed.
-        let corner = Rect::from_min_size(
-            match mine {
-                true => Pos2::new(rect.right() - radius, rect.top()),
-                false => Pos2::new(rect.left(), rect.top()),
-            },
-            Vec2::splat(radius),
-        );
-        ui.painter().rect_filled(
-            corner,
-            CornerRadius {
-                nw: match mine {
-                    true => 0,
-                    false => squared,
-                },
-                ne: match mine {
-                    true => squared,
-                    false => 0,
-                },
-                sw: 0,
-                se: 0,
-            },
-            look.palette.board_card,
-        );
     } else {
         ui.painter().rect(
             rect,

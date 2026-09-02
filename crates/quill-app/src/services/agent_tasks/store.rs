@@ -841,6 +841,178 @@ impl Store {
         })
     }
 
+    /// Every ticket in one sprint, in the order the board draws them.
+    ///
+    /// The Backlog view groups by sprint, which is what the page this board is modelled on does, so it asks
+    /// for one group at a time rather than reading every ticket and sorting them here.
+    pub fn tasks_of_sprint(&self, sprint: i64) -> Result<Vec<Task>, String> {
+        let sql = format!("{TASK_COLUMNS} WHERE t.sprint_id = ?1 ORDER BY t.position, t.id");
+        self.tasks_by(&sql, params![sprint])
+    }
+
+    /// Move one ticket into a sprint, or out of every sprint and into the backlog.
+    ///
+    /// **It goes to the foot of the lane it is already in**, rather than keeping a position that belonged to
+    /// a different list: two sprints each number their tickets from zero, so a ticket carrying position 3
+    /// into a sprint that has one would be drawn in the middle of nothing. That is the rule `move_task`
+    /// already keeps for a ticket dragged between lanes.
+    pub fn set_sprint_of(&self, id: i64, sprint: Option<i64>, now: &str) -> Result<(), String> {
+        self.in_transaction(|| {
+            let status: String = self
+                .connection
+                .query_row("SELECT status FROM task WHERE id = ?1", params![id], |row| row.get(0))
+                .map_err(|problem| format!("the ticket could not be read: {problem}"))?;
+            let position: i64 = self
+                .connection
+                .query_row(
+                    "SELECT COALESCE(MAX(position), -1) + 1 FROM task                      WHERE status = ?1 AND sprint_id IS ?2",
+                    params![status, sprint],
+                    |row| row.get(0),
+                )
+                .map_err(|problem| format!("the ticket's place could not be worked out: {problem}"))?;
+            self.connection
+                .execute(
+                    "UPDATE task SET sprint_id = ?2, position = ?3, updated_at = ?4 WHERE id = ?1",
+                    params![id, sprint, position, now],
+                )
+                .map_err(|problem| format!("the ticket could not be moved: {problem}"))?;
+            Ok(())
+        })
+    }
+
+    /// Make one sprint the active one, standing the previous one down.
+    ///
+    /// One sprint is active at a time — the board draws that one — so this is two statements in one
+    /// transaction rather than a caller remembering to run both.
+    pub fn make_sprint_active(&self, id: i64) -> Result<(), String> {
+        self.in_transaction(|| {
+            self.connection
+                .execute("UPDATE sprint SET status = 'planned' WHERE status = 'active'", [])
+                .map_err(|problem| format!("the previous sprint could not stand down: {problem}"))?;
+            self.connection
+                .execute("UPDATE sprint SET status = 'active' WHERE id = ?1", params![id])
+                .map_err(|problem| format!("the sprint could not be made active: {problem}"))?;
+            Ok(())
+        })
+    }
+
+    /// Close a sprint, and put whatever was not finished back in the backlog.
+    ///
+    /// **Unfinished means anything not in Agent Done**, which is the rule the browser board states in the
+    /// question it asks before doing it. A completed sprint is a record of what was finished in it, so a
+    /// ticket left in New would otherwise be filed under a fortnight it was not worked in and would never be
+    /// seen again — the Completed view is read-only.
+    pub fn complete_sprint(&self, id: i64, now: &str) -> Result<usize, String> {
+        self.in_transaction(|| {
+            let unfinished: Vec<i64> = {
+                let mut statement = self.prepared(
+                    "SELECT id FROM task WHERE sprint_id = ?1 AND status <> 'agent_done'",
+                )?;
+                let rows = statement
+                    .query_map(params![id], |row| row.get(0))
+                    .map_err(|problem| format!("the sprint's tickets could not be read: {problem}"))?;
+                rows.collect::<Result<Vec<i64>, _>>()
+                    .map_err(|problem| format!("a ticket could not be read: {problem}"))?
+            };
+            for task in &unfinished {
+                self.connection
+                    .execute(
+                        "UPDATE task SET sprint_id = NULL, updated_at = ?2 WHERE id = ?1",
+                        params![task, now],
+                    )
+                    .map_err(|problem| format!("a ticket could not go back to the backlog: {problem}"))?;
+            }
+            self.connection
+                .execute("UPDATE sprint SET status = 'completed' WHERE id = ?1", params![id])
+                .map_err(|problem| format!("the sprint could not be completed: {problem}"))?;
+            Ok(unfinished.len())
+        })
+    }
+
+    /// Rename a sprint.
+    pub fn rename_sprint(&self, id: i64, name: &str) -> Result<(), String> {
+        self.connection
+            .execute("UPDATE sprint SET name = ?2 WHERE id = ?1", params![id, name])
+            .map(|_| ())
+            .map_err(|problem| format!("the sprint could not be renamed: {problem}"))
+    }
+
+    /// Take a sprint away. Its tickets go back to the backlog rather than with it.
+    ///
+    /// **Nothing on this board deletes a ticket as a side effect of deleting something else.** A sprint is
+    /// a fortnight somebody named; the work in it is the work, and it outlives the name.
+    pub fn delete_sprint(&self, id: i64, now: &str) -> Result<(), String> {
+        self.in_transaction(|| {
+            self.connection
+                .execute(
+                    "UPDATE task SET sprint_id = NULL, updated_at = ?2 WHERE sprint_id = ?1",
+                    params![id, now],
+                )
+                .map_err(|problem| format!("its tickets could not go back to the backlog: {problem}"))?;
+            self.connection
+                .execute("DELETE FROM sprint WHERE id = ?1", params![id])
+                .map_err(|problem| format!("the sprint could not be deleted: {problem}"))?;
+            Ok(())
+        })
+    }
+
+    /// Rename an epic, recolour it, or both. A `None` leaves that half alone.
+    pub fn edit_epic(&self, id: i64, name: Option<&str>, color: Option<&str>) -> Result<(), String> {
+        if let Some(name) = name {
+            self.connection
+                .execute("UPDATE task_epic SET name = ?2 WHERE id = ?1", params![id, name])
+                .map_err(|problem| format!("the epic could not be renamed: {problem}"))?;
+        }
+        if let Some(color) = color {
+            self.connection
+                .execute("UPDATE task_epic SET color = ?2 WHERE id = ?1", params![id, color])
+                .map_err(|problem| format!("the epic could not be recoloured: {problem}"))?;
+        }
+        Ok(())
+    }
+
+    /// Take an epic away. Its tickets keep existing with no epic, which is what the browser board does.
+    pub fn delete_epic(&self, id: i64, now: &str) -> Result<(), String> {
+        self.in_transaction(|| {
+            self.connection
+                .execute(
+                    "UPDATE task SET epic_id = NULL, updated_at = ?2 WHERE epic_id = ?1",
+                    params![id, now],
+                )
+                .map_err(|problem| format!("its tickets could not be freed of it: {problem}"))?;
+            self.connection
+                .execute("DELETE FROM task_epic WHERE id = ?1", params![id])
+                .map_err(|problem| format!("the epic could not be deleted: {problem}"))?;
+            Ok(())
+        })
+    }
+
+    /// How many tickets name each epic, by epic id.
+    ///
+    /// Counted in the database rather than by walking the board, because the Epics view shows a count for
+    /// every epic and the board holds only the active sprint's tickets — an epic used entirely in the
+    /// backlog would otherwise read as zero.
+    pub fn epic_counts(&self) -> Result<Vec<(i64, i64)>, String> {
+        let mut statement =
+            self.prepared("SELECT epic_id, COUNT(*) FROM task WHERE epic_id IS NOT NULL GROUP BY epic_id")?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|problem| format!("the epics could not be counted: {problem}"))?;
+        rows.collect::<Result<Vec<(i64, i64)>, _>>()
+            .map_err(|problem| format!("an epic count could not be read: {problem}"))
+    }
+
+    /// How many tickets are in each sprint, by sprint id.
+    pub fn sprint_counts(&self) -> Result<Vec<(i64, i64)>, String> {
+        let mut statement = self
+            .prepared("SELECT sprint_id, COUNT(*) FROM task WHERE sprint_id IS NOT NULL GROUP BY sprint_id")?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|problem| format!("the sprints could not be counted: {problem}"))?;
+        rows.collect::<Result<Vec<(i64, i64)>, _>>()
+            .map_err(|problem| format!("a sprint count could not be read: {problem}"))
+    }
+
     /// The schedules, in the order they run.
     pub fn schedules(&self) -> Result<Vec<Schedule>, String> {
         let mut statement = self.prepared(

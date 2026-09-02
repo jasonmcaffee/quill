@@ -6,7 +6,7 @@ use egui::{CornerRadius, Pos2, Rect, Vec2};
 
 use super::{card, text};
 use crate::services::agent_tasks::model::Status;
-use crate::services::agent_tasks::{board as arithmetic, AgentTasks, View};
+use crate::services::agent_tasks::{board as arithmetic, AgentTasks};
 use crate::services::plugin_ui::{Look, Request};
 
 /// How wide a lane is when there is room, how narrow it is squeezed to before the board starts
@@ -654,93 +654,8 @@ fn header(ui: &mut egui::Ui, look: &Look<'_>, lane: Rect, status: Status, count:
     );
 }
 
-/// The Backlog and Completed views: one column of cards rather than four.
-pub fn listing(
-    board: &mut AgentTasks,
-    ui: &mut egui::Ui,
-    look: &Look<'_>,
-    area: Rect,
-    view: View,
-) -> Vec<Request> {
-    let mut requests = Vec::new();
-    // How many there are and how far the listing is scrolled, before it is read: the scroll changes the
-    // provider and the read borrows it, which is the same three pass order the lanes follow.
-    let held = board.listing(view).len();
-    let content = held as f32 * (card::height(look) + card::GAP);
-    let down = board.listing_scroll(ui, area, (content - (area.height() - PAD * 2.0)).max(0.0));
-    // Read when the view was chosen rather than here: a query inside the draw is the one thing the design
-    // says the board never does.
-    let tasks = board.listing(view);
-    if tasks.is_empty() {
-        text(
-            ui.painter(),
-            area.min + Vec2::new(PAD, PAD),
-            "Nothing here",
-            look.font_size,
-            look.palette.text_dim,
-        );
-        return requests;
-    }
-    let snapshot = board.board();
-    let mut listing_ui = ui.new_child(egui::UiBuilder::new().max_rect(area));
-    listing_ui.set_clip_rect(area);
-    let mut to_open = None;
-    for (row, task) in tasks.iter().enumerate() {
-        let top = area.min.y + PAD + row as f32 * (card::height(look) + card::GAP) - down;
-        if top + card::height(look) < area.min.y || top > area.max.y {
-            continue;
-        }
-        let at = Rect::from_min_size(
-            Pos2::new(area.min.x + PAD, top),
-            Vec2::new((area.width() - PAD * 2.0).min(LANE), card::height(look)),
-        );
-        if card::show(&mut listing_ui, look, at, task, snapshot, false, live_for(board, task)).open {
-            to_open = Some(task.id);
-        }
-    }
-    if let Some(id) = to_open {
-        if let Err(problem) = board.open_the_modal(id) {
-            requests.push(Request::Message(problem));
-        }
-    }
-    requests
-}
-
-/// The Epics view: one row an epic, with its colour.
-pub fn epics(board: &mut AgentTasks, ui: &mut egui::Ui, look: &Look<'_>, area: Rect) -> Vec<Request> {
-    let painter = ui.painter().clone();
-    let epics = board.board().epics.clone();
-    if epics.is_empty() {
-        text(
-            &painter,
-            area.min + Vec2::splat(PAD),
-            "No epics yet. `plugin run agent-tasks new-epic <name>` makes one.",
-            look.font_size,
-            look.palette.text_dim,
-        );
-        return Vec::new();
-    }
-    let content = epics.len() as f32 * look.row_height;
-    let down = board.listing_scroll(ui, area, (content - (area.height() - PAD * 2.0)).max(0.0));
-    for (row, epic) in epics.iter().enumerate() {
-        let top = area.min.y + PAD + row as f32 * look.row_height - down;
-        if top + look.row_height < area.min.y || top > area.max.y {
-            continue;
-        }
-        if let Some(colour) = crate::services::plugins::colour(&epic.color) {
-            painter.circle_filled(
-                Pos2::new(area.min.x + PAD + 6.0, top + look.row_height / 2.0),
-                5.0,
-                egui::Color32::from_rgb(colour.r, colour.g, colour.b),
-            );
-        }
-        text(
-            &painter,
-            Pos2::new(area.min.x + PAD + 20.0, top + look.row_height / 2.0 - look.font_size / 2.0),
-            &epic.name,
-            look.font_size,
-            look.palette.text,
-        );
-    }
-    Vec::new()
-}
+// **The two listings that used to live here are gone.** `listing` drew the Backlog and the Completed views
+// as one flat column of the same cards the lanes hold, and `epics` drew a coloured dot beside a name.
+// `task-1771` asked for both to be what the page this board is modelled on has - groups by sprint, rows
+// rather than cards, drag and drop between them, and epics you can rename, recolour and delete - which is
+// enough of its own thing to be its own file: `components::agent_tasks::listings`.

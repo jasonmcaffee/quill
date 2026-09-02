@@ -86,6 +86,62 @@ pub enum Lift {
     Large,
 }
 
+/// How round each corner of a surface is.
+///
+/// **One radius was not enough, and the shape it could not draw was being faked.** A chat bubble squares
+/// off the corner nearest whoever said it — `.messageWrapper`'s `border-top-left-radius: 6px` — and with
+/// only one radius here that corner was squared by painting a *flat* patch of the surface's own colour over
+/// it with `egui`. Flat, so it missed the inset shadow the rest of the bubble has, which is exactly what
+/// `task-1771` reports as "odd blocks at the top left of the agent response": a lighter square sitting proud
+/// of the bubble it was supposed to be part of.
+///
+/// `From<f32>` so every existing caller goes on passing one number and means all four, which is what the
+/// board's lanes, cards, wells and buttons all want.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Corners {
+    pub nw: f32,
+    pub ne: f32,
+    pub se: f32,
+    pub sw: f32,
+}
+
+impl Corners {
+    /// All four the same.
+    pub fn all(radius: f32) -> Self {
+        Self { nw: radius, ne: radius, se: radius, sw: radius }
+    }
+
+    /// The one number a **shadow** is drawn with.
+    ///
+    /// `vello_cpu`'s `fill_blurred_rounded_rect` takes a single radius and there is no per-corner form of
+    /// it. That costs nothing worth having: a shadow is a Gaussian several points wide, and nine points of
+    /// difference on one corner of it is not visible. The surface itself — the edge a person actually
+    /// reads — is drawn from all four.
+    fn representative(self) -> f32 {
+        (self.nw + self.ne + self.se + self.sw) / 4.0
+    }
+
+}
+
+impl From<f32> for Corners {
+    fn from(radius: f32) -> Self {
+        Self::all(radius)
+    }
+}
+
+/// The four radii of an `egui::CornerRadius`, so the flat form of a control and its decorated form are
+/// written once and cannot disagree about which corner is squared.
+impl From<egui::CornerRadius> for Corners {
+    fn from(corners: egui::CornerRadius) -> Self {
+        Self {
+            nw: f32::from(corners.nw),
+            ne: f32::from(corners.ne),
+            se: f32::from(corners.se),
+            sw: f32::from(corners.sw),
+        }
+    }
+}
+
 impl Lift {
     /// How far outside its own edge a raised surface's shadow reaches.
     ///
@@ -166,7 +222,10 @@ impl Fill {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Decor {
     /// A rounded rectangle. The whole of a lane, a card, a button and a well.
-    Rect { rect: Rect, radius: f32, fill: Fill },
+    ///
+    /// Four radii rather than one, because a chat bubble squares off the corner nearest whoever said it.
+    /// See [`Corners`].
+    Rect { rect: Rect, corners: Corners, fill: Fill },
     /// A Gaussian blur of a rounded rectangle, outside the shape or inside it.
     ///
     /// `inset` is `vello_cpu`'s own `invert` argument, whose documentation says in as many words that it
@@ -184,7 +243,7 @@ pub enum Decor {
     /// elevation affordable: a raised surface's shadow is only ever seen in the band around it, and drawing
     /// the whole blurred rectangle underneath an opaque surface was measured at 3.3 ms **a lane** — a
     /// Gaussian evaluated over a third of a million pixels that are then painted over. See §9 of the design.
-    Clip { rect: Rect, radius: f32, outside: bool, bound: Rect },
+    Clip { rect: Rect, corners: Corners, outside: bool, bound: Rect },
     Unclip,
 }
 
@@ -210,6 +269,12 @@ impl Hash for Decor {
         fn colour(value: Color32, into: &mut impl Hasher) {
             value.to_array().hash(into);
         }
+        fn corners(value: Corners, into: &mut impl Hasher) {
+            f(value.nw, into);
+            f(value.ne, into);
+            f(value.se, into);
+            f(value.sw, into);
+        }
         fn fill(value: Fill, into: &mut impl Hasher) {
             match value {
                 Fill::Solid(one) => {
@@ -227,9 +292,9 @@ impl Hash for Decor {
         }
         std::mem::discriminant(self).hash(into);
         match *self {
-            Self::Rect { rect: area, radius, fill: value } => {
+            Self::Rect { rect: area, corners: round, fill: value } => {
                 rect(area, into);
-                f(radius, into);
+                corners(round, into);
                 fill(value, into);
             }
             Self::Shadow { rect: area, radius, blur, colour: tone, inset } => {
@@ -256,9 +321,9 @@ impl Hash for Decor {
                 f(width, into);
                 colour(tone, into);
             }
-            Self::Clip { rect: area, radius, outside, bound } => {
+            Self::Clip { rect: area, corners: round, outside, bound } => {
                 rect(area, into);
-                f(radius, into);
+                corners(round, into);
                 outside.hash(into);
                 rect(bound, into);
             }
@@ -333,8 +398,8 @@ impl Chrome {
     }
 
     /// A rounded rectangle with no depth at all.
-    pub fn rect(&self, rect: Rect, radius: f32, fill: Fill) {
-        self.push(Decor::Rect { rect, radius, fill });
+    pub fn rect(&self, rect: Rect, radius: impl Into<Corners>, fill: Fill) {
+        self.push(Decor::Rect { rect, corners: radius.into(), fill });
     }
 
     /// A surface standing above the one behind it: a lane, a card, a button.
@@ -344,13 +409,15 @@ impl Chrome {
     /// The pale tone is the surface **lifted**, not white — which is what the dark-mode stylesheet says
     /// itself, that "in dark neumorphism the 'light' highlight is a lifted gray (not white)" — so no
     /// elevation ever introduces a hue and the palette stays closed.
-    pub fn raised(&self, rect: Rect, radius: f32, fill: Fill, lift: Lift) {
+    pub fn raised(&self, rect: Rect, radius: impl Into<Corners>, fill: Fill, lift: Lift) {
+        let corners = radius.into();
+        let radius = corners.representative();
         let (offset, blur) = lift.raised();
         // **The pair is cut to the band around the shape**, which is the whole of what makes elevation
         // affordable. The surface is opaque and is painted over its own shadows, so every pixel of blur
         // inside it is computed and then thrown away; on a lane 328 by 812 that is a third of a million
         // pixels of Gaussian, twice, and it measured 3.3 ms a lane. Clipped, only the band is evaluated.
-        self.push(Decor::Clip { rect, radius, outside: true, bound: rect.expand(lift.reach()) });
+        self.push(Decor::Clip { rect, corners, outside: true, bound: rect.expand(lift.reach()) });
         self.push(Decor::Shadow {
             rect: rect.translate(Vec2::splat(offset)),
             radius,
@@ -366,7 +433,7 @@ impl Chrome {
             inset: false,
         });
         self.push(Decor::Unclip);
-        self.push(Decor::Rect { rect, radius, fill });
+        self.push(Decor::Rect { rect, corners, fill });
     }
 
     /// A surface pressed into the one behind it: a well, a field, a count chip, the round `K` button.
@@ -378,10 +445,12 @@ impl Chrome {
     /// paints the *complement* of the blur: opaque everywhere outside the rectangle, fading to nothing
     /// inside it. Unclipped, a well would therefore wash its own colour across the whole pane. CSS clips an
     /// inset shadow to the border box for the same reason, and this is that rule made explicit.
-    pub fn sunken(&self, rect: Rect, radius: f32, fill: Color32, depth: Lift) {
+    pub fn sunken(&self, rect: Rect, radius: impl Into<Corners>, fill: Color32, depth: Lift) {
+        let corners = radius.into();
+        let radius = corners.representative();
         let (offset, blur) = depth.sunken();
-        self.push(Decor::Rect { rect, radius, fill: Fill::Solid(fill) });
-        self.push(Decor::Clip { rect, radius, outside: false, bound: rect });
+        self.push(Decor::Rect { rect, corners, fill: Fill::Solid(fill) });
+        self.push(Decor::Clip { rect, corners, outside: false, bound: rect });
         self.push(Decor::Shadow {
             rect: rect.translate(Vec2::splat(offset)),
             radius,
@@ -427,8 +496,8 @@ impl Chrome {
     /// The one thing on the board that `egui` cannot do at all: its clip rectangle is axis-aligned and
     /// square, so a card scrolled to the bottom of a lane pokes its own square corner out of the lane's
     /// curve.
-    pub fn clip(&self, rect: Rect, radius: f32) {
-        self.push(Decor::Clip { rect, radius, outside: false, bound: rect });
+    pub fn clip(&self, rect: Rect, radius: impl Into<Corners>) {
+        self.push(Decor::Clip { rect, corners: radius.into(), outside: false, bound: rect });
     }
 
     pub fn unclip(&self) {
@@ -667,9 +736,9 @@ impl Canvas {
 
     fn draw(&mut self, item: Decor, clips: &mut usize) {
         match item {
-            Decor::Rect { rect, radius, fill } => {
+            Decor::Rect { rect, corners, fill } => {
                 self.set_fill(fill);
-                self.context.fill_path(&rounded(rect, radius));
+                self.context.fill_path(&rounded(rect, corners));
             }
             Decor::Shadow { rect, radius, blur, colour, inset } => {
                 self.context.set_paint(colour_of(colour));
@@ -694,18 +763,18 @@ impl Canvas {
                 path.line_to(Point::new(f64::from(to.x), f64::from(to.y)));
                 self.context.stroke_path(&path);
             }
-            Decor::Clip { rect, radius, outside, bound } => {
+            Decor::Clip { rect, corners, outside, bound } => {
                 // `push_clip_path` rather than `push_clip_layer`: a clip **layer** renders its contents into
                 // a layer of their own and composites them, and nothing here needs that. A clip **path** is
                 // intersected while the strips are generated, so a tile outside it costs nothing at all —
                 // which is what makes the shadow band cheap rather than merely correct.
                 let (path, rule) = match outside {
-                    false => (rounded(rect, radius), FillRule::NonZero),
+                    false => (rounded(rect, corners), FillRule::NonZero),
                     // Everything within `bound` and outside the shape: two subpaths read even-odd, which is
                     // the frame a raised surface's shadow is drawn in.
                     true => {
-                        let mut path = rounded(bound, 0.0);
-                        path.extend(rounded(rect, radius));
+                        let mut path = rounded(bound, Corners::all(0.0));
+                        path.extend(rounded(rect, corners));
                         (path, FillRule::EvenOdd)
                     }
                 };
@@ -762,9 +831,22 @@ fn box_of(rect: Rect) -> vello_cpu::kurbo::Rect {
     )
 }
 
-fn rounded(rect: Rect, radius: f32) -> BezPath {
-    let radius = f64::from(radius).min(f64::from(rect.width().min(rect.height())) / 2.0).max(0.0);
-    RoundedRect::from_rect(box_of(rect), radius).to_path(0.1)
+/// The path of a rounded rectangle, with each corner its own radius.
+///
+/// Every radius is clamped to half the shorter side for the reason the single-radius form already was: a
+/// radius larger than that describes an arc that overruns the side it is on, and `kurbo` draws a shape
+/// nobody asked for rather than refusing. Clamped **independently**, which is what makes a bubble with one
+/// five point corner and three fourteen point ones legal at every width.
+fn rounded(rect: Rect, corners: Corners) -> BezPath {
+    let most = f64::from(rect.width().min(rect.height())) / 2.0;
+    let one = |radius: f32| f64::from(radius).clamp(0.0, most.max(0.0));
+    let radii = vello_cpu::kurbo::RoundedRectRadii::new(
+        one(corners.nw),
+        one(corners.ne),
+        one(corners.se),
+        one(corners.sw),
+    );
+    RoundedRect::from_rect(box_of(rect), radii).to_path(0.1)
 }
 
 /// The rectangle everything in `items` fits inside, shadows and all.
@@ -894,7 +976,23 @@ mod tests {
         assert!(dark.min.x > pale.min.x && dark.min.y > pale.min.y);
         assert!(matches!(items[3], Decor::Unclip));
         // And the surface last and unclipped, or the thing the shadows belong to would not be drawn at all.
-        assert!(matches!(items[4], Decor::Rect { radius, .. } if radius == 14.0));
+        assert!(matches!(items[4], Decor::Rect { corners, .. } if corners == Corners::all(14.0)));
+    }
+
+    #[test]
+    fn a_corner_of_its_own_is_kept_all_the_way_to_the_shape() {
+        // `task-1771`: a chat bubble squares off the corner nearest whoever said it, and that used to be
+        // faked with a flat patch painted over the decoration because `Chrome` took one radius. It takes
+        // four, so the squared corner reaches the surface **and** the clip the shadows are cut to — which
+        // is what stops the patch being needed at all.
+        let chrome = Chrome::recording();
+        let shape = Corners { nw: 5.0, ne: 14.0, se: 14.0, sw: 14.0 };
+        chrome.sunken(rect(0.0, 0.0, 120.0, 40.0), shape, Color32::from_rgb(0x20, 0x25, 0x2E), Lift::Medium);
+        let items = chrome.take();
+        assert!(matches!(items[0], Decor::Rect { corners, .. } if corners == shape));
+        assert!(matches!(items[1], Decor::Clip { corners, .. } if corners == shape));
+        // A shadow is a Gaussian and takes one number, which is the four averaged. See `Corners`.
+        assert!(matches!(items[2], Decor::Shadow { radius, .. } if (radius - 11.75).abs() < 0.01));
     }
 
     #[test]

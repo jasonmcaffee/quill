@@ -78,6 +78,12 @@ pub struct TabsOutcome {
     pub dragging: Option<(usize, Pos2)>,
     /// The drag ended on this frame.
     pub dropped: bool,
+    /// The empty part of the strip, past the last tab, was double clicked.
+    ///
+    /// `task-1771` asks that two presses at the top of a pane fill the window with it. Every other pane in
+    /// Quill has a header to press; the editing area has this strip, and the part of it no tab wanted is
+    /// exactly what a panel's own drag handle is left with. See `components::dock::handle`.
+    pub twice_on_the_empty_part: bool,
     /// Where this strip drew itself and each of its tabs, so the window can say which strip a
     /// pointer is over and where between two tabs it fell.
     pub strip: Strip,
@@ -152,6 +158,15 @@ pub fn show(
 
     let widths: Vec<f32> = tabs.iter().map(|tab| tab_width(ui, tab)).collect();
     let offset = shift(&widths, active, area.width());
+
+    // **Over the whole strip, and added first, so it is left with exactly the part no tab wanted.** egui
+    // gives a pointer to the *last* widget that asked for it, so a widget added before the tabs is one the
+    // tabs take back wherever they are — which is the order `components::dock::handle` documents and the
+    // reason a panel's own header can be both a handle and a row of buttons. Two presses here fill the
+    // window with the editing area: `task-1771` asks for that at the top of every pane, and this strip is
+    // what the editing area has instead of a header.
+    let empty = ui.interact(area, ui.id().with(("tab-strip-empty", pane)), Sense::CLICK);
+    outcome.twice_on_the_empty_part = empty.double_clicked();
 
     let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(area));
     inner.set_clip_rect(ui.painter().clip_rect().intersect(area));

@@ -101,6 +101,27 @@ pub struct View<'a> {
     /// for: they move the explorer's own cursor without opening anything, so nothing else would.
     pub reveal_selected: bool,
     pub opacity: f32,
+    /// How much bigger or smaller than its usual size the panel draws everything in it.
+    ///
+    /// `task-1771`: every pane is zoomable with `Ctrl`/`Cmd` and the wheel, and the explorer has no font
+    /// size of its own to walk - its rows, its indents and its lettering are the style guide's numbers - so
+    /// its zoom is a multiplier over all of them. One number reaches every measurement in this file through
+    /// [`View::at`], which is what stops half of the panel scaling and half of it staying put.
+    pub zoom: f32,
+    /// Where to put the list this frame, in points from the top of the rows.
+    ///
+    /// `None` on nearly every frame. It is set on the frame after a zoom, so that the row the pointer was
+    /// over is still under the pointer at the new size - the rule `task-1672` wrote for the editing area,
+    /// applied to a list. The window works it out, because the window is what knows where the pointer was
+    /// and what the zoom was before it changed; this component only obeys.
+    pub scroll_to: Option<f32>,
+}
+
+impl View<'_> {
+    /// `points` at this panel's zoom.
+    fn at(&self, points: f32) -> f32 {
+        points * self.zoom
+    }
 }
 
 /// What the user did in the explorer.
@@ -131,6 +152,10 @@ pub struct ExplorerOutcome {
     /// True while a row is in the air, which is the one moment the window must not read the tree
     /// again — the entries under the drag would be rebuilt out from under it.
     pub dragging: bool,
+    /// How far down the rows the list is, in points, after this frame.
+    ///
+    /// Read back so the window can work out where to put it after a zoom - see `View::scroll_to`.
+    pub scroll: f32,
     /// The panel itself is being carried to another edge of the window, or its heading was right
     /// clicked — `task-1697`. The heading is the handle, which is what the ask calls "the top bar".
     pub grab: crate::components::dock::Grab,
@@ -165,12 +190,12 @@ pub fn show(
     // last widget that asked for it. See `components::dock`.
     outcome.grab = crate::components::dock::handle(
         ui,
-        Rect::from_min_max(area.min, Pos2::new(area.right(), area.top() + 36.0)),
+        Rect::from_min_max(area.min, Pos2::new(area.right(), area.top() + view.at(36.0))),
         crate::app::dock::Panel::Explorer,
     );
 
     // The heading: the folder's name in small letter spaced capitals, then the button that hides the panel.
-    let heading_y = area.top() + 22.0;
+    let heading_y = area.top() + view.at(22.0);
     let name = tree
         .root()
         .file_name()
@@ -178,10 +203,10 @@ pub fn show(
         .unwrap_or_else(|| tree.root().display().to_string());
     // Letters are spaced out by hand, because egui has no letter spacing setting.
     let spaced: String = name.chars().flat_map(|c| [c, ' ']).collect();
-    let font = egui::FontId::proportional(10.5);
+    let font = egui::FontId::proportional(view.at(10.5));
     // The heading has to stop before the button on the right. A long folder name is cut short with an
     // ellipsis rather than run underneath it.
-    let available = area.width() - 16.0 - 46.0;
+    let available = area.width() - view.at(16.0) - view.at(46.0);
     let mut heading = spaced.trim_end().to_owned();
     let mut galley = painter.layout_no_wrap(heading.clone(), font.clone(), color::TEXT_DIM);
     while galley.size().x > available && heading.chars().count() > 1 {
@@ -195,7 +220,7 @@ pub fn show(
         );
     }
     painter.galley(
-        Pos2::new(area.left() + 16.0, heading_y - galley.size().y / 2.0),
+        Pos2::new(area.left() + view.at(16.0), heading_y - galley.size().y / 2.0),
         galley,
         color::TEXT_DIM,
     );
@@ -206,8 +231,8 @@ pub fn show(
     // there is nothing to open or close about the root, which is always shown. It is a drop target,
     // though, because moving something back to the top of the project has to be possible.
     let heading_hit = Rect::from_min_max(
-        Pos2::new(area.left(), area.top() + 8.0),
-        Pos2::new(area.right() - 34.0, area.top() + 36.0),
+        Pos2::new(area.left(), area.top() + view.at(8.0)),
+        Pos2::new(area.right() - view.at(34.0), area.top() + view.at(36.0)),
     );
     let heading_response =
         ui.interact(heading_hit, ui.id().with("explorer-heading"), Sense::click());
@@ -223,6 +248,14 @@ pub fn show(
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
         .unwrap_or_else(|| tree.root().display().to_string());
+    // **The project's own row answers the double click too.** `task-1771` asks for two presses "anywhere
+    // in the top of a pane", and the heading is added *after* the drag handle - so egui gives it the
+    // pointer over the words, and the handle is left with a sliver at the very top and the space beside the
+    // button. Reported into the same `Grab` the handle fills, so the window still has one thing to read and
+    // there is no second path for it to disagree with.
+    if heading_response.double_clicked() {
+        outcome.grab.twice = true;
+    }
     heading_response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Label, ui.is_enabled(), &project)
     });
@@ -232,14 +265,14 @@ pub fn show(
     // Making a file is on the right click menu, which the project's name now opens too.
     {
         let name = "Hide the explorer";
-        let centre = Pos2::new(area.right() - 18.0, heading_y);
-        let hit = Rect::from_center_size(centre, Vec2::splat(22.0));
+        let centre = Pos2::new(area.right() - view.at(18.0), heading_y);
+        let hit = Rect::from_center_size(centre, Vec2::splat(view.at(22.0)));
         let response =
             ui.interact(hit, ui.id().with(("explorer-button", name)), Sense::click()).on_hover_text(name);
         if response.hovered() {
             painter.rect_filled(hit, CornerRadius::same(4), color::CONTROL);
         }
-        icon::collapse(&painter, centre, color::TEXT_DIM);
+        icon::collapse_at(&painter, centre, color::TEXT_DIM, view.zoom);
         response.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), name)
         });
@@ -250,8 +283,8 @@ pub fn show(
 
     // The filter box.
     let filter_rect = Rect::from_min_size(
-        Pos2::new(area.left() + 12.0, area.top() + 36.0),
-        Vec2::new(area.width() - 24.0, 24.0),
+        Pos2::new(area.left() + view.at(12.0), area.top() + view.at(36.0)),
+        Vec2::new(area.width() - view.at(24.0), view.at(24.0)),
     );
     painter.rect(
         filter_rect,
@@ -260,12 +293,28 @@ pub fn show(
         Stroke::new(1.0, color::DIVIDER),
         egui::StrokeKind::Inside,
     );
-    icon::magnifier(&painter, Pos2::new(filter_rect.left() + 13.0, filter_rect.center().y), color::TEXT_FAINT);
-    let text_rect = crate::components::controls::field_text_rect(ui, filter_rect, 26.0);
+    icon::magnifier_at(
+        &painter,
+        Pos2::new(filter_rect.left() + view.at(13.0), filter_rect.center().y),
+        color::TEXT_FAINT,
+        view.zoom,
+    );
+    let text_rect = crate::components::controls::field_text_rect(ui, filter_rect, view.at(26.0));
+    // The size the box would set text in, zoomed. Asked of the style rather than written down, so at a
+    // zoom of one the filter box is exactly the box it was before `task-1771` — which is a promise a
+    // screenshot test keeps and which a number chosen here would have quietly broken.
+    let typed = ui
+        .style()
+        .text_styles
+        .get(&egui::TextStyle::Body)
+        .map(|font| font.size)
+        .unwrap_or(12.0)
+        * view.zoom;
     let mut field = ui.new_child(egui::UiBuilder::new().max_rect(text_rect));
     let response = field.add(
         egui::TextEdit::singleline(filter)
-            .hint_text(egui::RichText::new("Filter files").color(color::TEXT_FAINT))
+            .hint_text(egui::RichText::new("Filter files").color(color::TEXT_FAINT).size(typed))
+            .font(egui::FontId::proportional(typed))
             .frame(egui::Frame::NONE)
             .desired_width(text_rect.width())
             .text_color(color::TEXT_CONTROL),
@@ -276,8 +325,8 @@ pub fn show(
     });
 
     // The rows: either the tree, or a flat list of what matches the filter.
-    let list_top = filter_rect.bottom() + 12.0;
-    let footer_top = area.bottom() - size::EXPLORER_FOOTER;
+    let list_top = filter_rect.bottom() + view.at(12.0);
+    let footer_top = area.bottom() - view.at(size::EXPLORER_FOOTER);
     let list_rect = Rect::from_min_max(Pos2::new(area.left(), list_top), Pos2::new(area.right(), footer_top));
     let filtering = !filter.trim().is_empty();
 
@@ -289,13 +338,19 @@ pub fn show(
 
     let mut list = ui.new_child(egui::UiBuilder::new().max_rect(list_rect));
     list.set_clip_rect(list_rect);
-    egui::ScrollArea::vertical().id_salt("explorer-rows").show(&mut list, |ui| {
+    let mut rows_area = egui::ScrollArea::vertical().id_salt("explorer-rows");
+    if let Some(offset) = view.scroll_to {
+        rows_area = rows_area.vertical_scroll_offset(offset.max(0.0));
+    }
+    let scrolled = rows_area.show(&mut list, |ui| {
         if filtering {
             let matches = tree.matching(filter);
             if matches.is_empty() {
-                ui.add_space(6.0);
+                ui.add_space(view.at(6.0));
                 ui.label(
-                    egui::RichText::new("  No file matches").size(11.5).color(color::TEXT_FAINT),
+                    egui::RichText::new("  No file matches")
+                        .size(view.at(11.5))
+                        .color(color::TEXT_FAINT),
                 );
             }
             for path in matches {
@@ -325,22 +380,22 @@ pub fn show(
             // space above the first drawn row and below the last is added back, so the scroll bar still
             // describes the whole tree.
             let rows = tree.rows();
-            let visible = visible_rows(ui, rows.len());
+            let visible = visible_rows(ui, rows.len(), view.at(size::ROW));
             // A reveal has to work for a row that is not being drawn, which is the one thing
             // virtualisation takes away: `folder_row` and `file_row` scroll to their own rectangle, and a
             // row that was never drawn has none. So the scroll is asked for here as well, from the row's
             // place in the list, which is known whether or not it is on screen.
             if let Some(index) = revealed_row(&rows, view) {
-                let top = ui.cursor().top() + index as f32 * size::ROW;
+                let top = ui.cursor().top() + index as f32 * view.at(size::ROW);
                 ui.scroll_to_rect(
                     Rect::from_min_size(
                         Pos2::new(ui.clip_rect().left(), top),
-                        Vec2::new(1.0, size::ROW),
+                        Vec2::new(1.0, view.at(size::ROW)),
                     ),
                     None,
                 );
             }
-            ui.add_space(visible.start as f32 * size::ROW);
+            ui.add_space(visible.start as f32 * view.at(size::ROW));
             for row in &rows[visible.clone()] {
                 if row.entry.is_directory {
                     let clicked = folder_row(ui, &row.entry, row.depth, view);
@@ -368,13 +423,14 @@ pub fn show(
                     clicked.apply(&mut outcome, &row.entry.path, false);
                 }
             }
-            ui.add_space((rows.len() - visible.end) as f32 * size::ROW);
+            ui.add_space((rows.len() - visible.end) as f32 * view.at(size::ROW));
         }
         if let Some(error) = &tree.last_error {
-            ui.add_space(6.0);
-            ui.label(egui::RichText::new(error).size(11.0).color(color::CLOSE));
+            ui.add_space(view.at(6.0));
+            ui.label(egui::RichText::new(error).size(view.at(11.0)).color(color::CLOSE));
         }
     });
+    outcome.scroll = scrolled.state.offset.y;
 
     // The empty space below the last row. `task-1693` asks that a right click there open the same
     // menu, so that a file or a folder can be made from anywhere in the panel rather than only from
@@ -455,9 +511,10 @@ pub fn show(
     if view.unsaved {
         text = format!("{text}  \u{00B7}  1 unsaved");
     }
-    let galley = painter.layout_no_wrap(text, egui::FontId::proportional(10.5), color::TEXT_DIM);
+    let galley =
+        painter.layout_no_wrap(text, egui::FontId::proportional(view.at(10.5)), color::TEXT_DIM);
     painter.galley(
-        Pos2::new(footer.left() + 16.0, footer.center().y - galley.size().y / 2.0),
+        Pos2::new(footer.left() + view.at(16.0), footer.center().y - galley.size().y / 2.0),
         galley,
         color::TEXT_DIM,
     );
@@ -601,10 +658,10 @@ fn folder_row(
     view: View,
 ) -> RowClick {
     let name = &entry.name;
-    let row = allocate_row(ui);
+    let row = allocate_row(ui, view.at(size::ROW));
     let response =
         ui.interact(row, ui.id().with(("folder", name, depth)), Sense::click_and_drag());
-    let pill = row.shrink2(Vec2::new(8.0, 1.0));
+    let pill = row.shrink2(Vec2::new(view.at(8.0), 1.0));
     let selected = view.selected == Some(entry.path.as_path());
     if selected && view.reveal_selected {
         ui.scroll_to_rect(row, None);
@@ -622,15 +679,21 @@ fn folder_row(
             egui::StrokeKind::Inside,
         );
     }
-    let x = row.left() + 16.0 + depth as f32 * size::INDENT;
-    icon::disclosure(ui.painter(), Pos2::new(x, row.center().y), entry.expanded, color::TEXT_DIM);
+    let x = row.left() + view.at(16.0) + depth as f32 * view.at(size::INDENT);
+    icon::disclosure_at(
+        ui.painter(),
+        Pos2::new(x, row.center().y),
+        entry.expanded,
+        color::TEXT_DIM,
+        view.zoom,
+    );
     let galley = ui.painter().layout_no_wrap(
         name.to_owned(),
-        egui::FontId::proportional(12.5),
+        egui::FontId::proportional(view.at(12.5)),
         color::TEXT_CONTROL,
     );
     ui.painter().galley(
-        Pos2::new(x + 12.0, row.center().y - galley.size().y / 2.0),
+        Pos2::new(x + view.at(12.0), row.center().y - galley.size().y / 2.0),
         galley,
         color::TEXT_CONTROL,
     );
@@ -652,7 +715,7 @@ fn file_row(
     decoration: Decoration,
 ) -> RowClick {
     let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-    let row = allocate_row(ui);
+    let row = allocate_row(ui, view.at(size::ROW));
     // A file Quill cannot open is drawn dimmed and does not open on a click, so the tree says what is
     // in the folder without pretending everything in it can be opened. It still takes a right click
     // and can still be carried: renaming a picture, or moving one, has nothing to do with whether
@@ -670,7 +733,7 @@ fn file_row(
         // move. See the note at the top of this file.
         ui.scroll_to_rect(row, None);
     }
-    let pill = row.shrink2(Vec2::new(8.0, 1.0));
+    let pill = row.shrink2(Vec2::new(view.at(8.0), 1.0));
     // The pill is the file that is **showing**. The explorer's own cursor gets the quieter fill the
     // hover already uses, so two rows are never drawn as though both were open — `task-1693`, and
     // the note at the top of this file.
@@ -689,19 +752,22 @@ fn file_row(
             egui::StrokeKind::Inside,
         );
     }
-    let x = row.left() + 16.0 + depth as f32 * size::INDENT;
+    let x = row.left() + view.at(16.0) + depth as f32 * view.at(size::INDENT);
     match &decoration.icon {
         // A file whose plugin gives it a picture gets the picture in place of the square.
         Some(icon) => crate::services::icons::draw(
             ui.painter(),
-            Pos2::new(x + 4.0, row.center().y),
+            Pos2::new(x + view.at(4.0), row.center().y),
             icon,
         ),
         None => {
             let marker =
                 if openable { file_marker(path) } else { color::TEXT_FAINT.gamma_multiply(0.45) };
             ui.painter().rect_filled(
-                Rect::from_center_size(Pos2::new(x + 4.0, row.center().y), Vec2::splat(8.0)),
+                Rect::from_center_size(
+                    Pos2::new(x + view.at(4.0), row.center().y),
+                    Vec2::splat(view.at(8.0)),
+                ),
                 CornerRadius::same(2),
                 marker,
             );
@@ -719,14 +785,18 @@ fn file_row(
         color::TEXT_FAINT.gamma_multiply(0.7)
     };
     let galley =
-        ui.painter().layout_no_wrap(name.clone(), egui::FontId::proportional(12.5), tint);
+        ui.painter().layout_no_wrap(name.clone(), egui::FontId::proportional(view.at(12.5)), tint);
     ui.painter().galley(
-        Pos2::new(x + 16.0, row.center().y - galley.size().y / 2.0),
+        Pos2::new(x + view.at(16.0), row.center().y - galley.size().y / 2.0),
         galley,
         tint,
     );
     if open && view.unsaved {
-        ui.painter().circle_filled(Pos2::new(pill.right() - 12.0, row.center().y), 3.5, color::UNSAVED);
+        ui.painter().circle_filled(
+            Pos2::new(pill.right() - view.at(12.0), row.center().y),
+            view.at(3.5),
+            color::UNSAVED,
+        );
     }
     response.widget_info(|| {
         egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), open, &name)
@@ -745,12 +815,13 @@ fn file_row(
 ///
 /// One row either side of the visible band, so a row half off the top or the bottom edge is drawn rather
 /// than appearing as the list is scrolled.
-fn visible_rows(ui: &egui::Ui, total: usize) -> std::ops::Range<usize> {
+fn visible_rows(ui: &egui::Ui, total: usize, row: f32) -> std::ops::Range<usize> {
     let top = ui.cursor().top();
     let clip = ui.clip_rect();
-    let first = ((clip.top() - top) / size::ROW).floor().max(0.0) as usize;
+    let row = row.max(1.0);
+    let first = ((clip.top() - top) / row).floor().max(0.0) as usize;
     let first = first.saturating_sub(1).min(total);
-    let count = (clip.height() / size::ROW).ceil() as usize + 2;
+    let count = (clip.height() / row).ceil() as usize + 2;
     first..(first + count).min(total)
 }
 
@@ -771,8 +842,8 @@ fn revealed_row(
     rows.iter().position(|row| row.entry.path == wanted)
 }
 
-fn allocate_row(ui: &mut egui::Ui) -> Rect {
+fn allocate_row(ui: &mut egui::Ui, height: f32) -> Rect {
     let width = ui.available_width();
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, size::ROW), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
     rect
 }

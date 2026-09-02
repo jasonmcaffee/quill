@@ -206,6 +206,19 @@ impl Side {
     pub fn is_a_strip(self) -> bool {
         !self.is_a_column()
     }
+
+    /// The side facing this one across the window.
+    ///
+    /// Which is who a divider takes room **from** when there is no editing area between the two — see
+    /// [`fill_the_depth`] and `QuillApp::move_a_divider_with_no_editor`.
+    pub fn opposite(self) -> Side {
+        match self {
+            Side::Left => Side::Right,
+            Side::Right => Side::Left,
+            Side::Top => Side::Bottom,
+            Side::Bottom => Side::Top,
+        }
+    }
 }
 
 /// Which side each panel is on, and where in that side.

@@ -88,13 +88,13 @@ pub fn pane(chat: &mut AgentChat, ui: &mut egui::Ui, look: &Look<'_>) -> Vec<Req
     // The pointer's own answer to a picture dropped on the pane. `egui` collects what the window
     // manager handed over, and a path that is a picture is attached exactly as the `+` would attach
     // it — which is the third way in the ticket's own list, after the button and the clipboard.
-    for path in dropped_pictures(ui) {
+    for path in dropped_pictures(ui, area) {
         acts.push(Act::Dropped(path));
     }
     // **A paste is claimed before the pane loop reads it**, which is the one-frame ordering the
-    // Markdown preview's own copy already uses. `egui` turns Ctrl/Cmd+V into `Event::Paste` with the
-    // clipboard's *text*; a picture is not text, so it arrives as an empty paste and the window is
-    // asked for the picture instead.
+    // Markdown preview's own copy already uses. What `egui` reports of Ctrl/Cmd+V when the clipboard
+    // holds a picture rather than text is nothing at all, so the chord is read off the key going back
+    // up and the window is asked for the picture - see `pasting`.
     if pasting(ui) {
         acts.push(Act::Paste);
     }
@@ -342,8 +342,12 @@ fn conversation(parts: &mut Parts<'_>, ui: &mut egui::Ui, look: &Look<'_>, area:
         // What stickiness will not do is go *back* to the bottom once somebody has scrolled away, and
         // sending, opening a conversation and starting a new one all have to.
         scroller = scroller.vertical_scroll_offset(f32::MAX);
+    } else if let Some(offset) = parts.state.scroll_to.take() {
+        // A zoom moved everything, so the point that was under the pointer is put back under it. The same
+        // one-shot shape, worked out by `AgentChat::zoomed`. `task-1771`.
+        scroller = scroller.vertical_scroll_offset(offset.max(0.0));
     }
-    scroller.show(&mut body, |ui| {
+    let scrolled = scroller.show(&mut body, |ui| {
         let width = area.width();
         for one in &session.chat.messages {
             // A tool result is the copy that goes back up the wire; it is drawn inside the block
@@ -365,6 +369,8 @@ fn conversation(parts: &mut Parts<'_>, ui: &mut egui::Ui, look: &Look<'_>, area:
             ui.add_space(GAP * look.scale());
         }
     });
+    // Where the conversation was left, so a zoom can put it back where it was. See `PaneState::scrolled`.
+    parts.state.scrolled = scrolled.state.offset.y;
     look.chrome.unclip();
     acts
 }
@@ -736,18 +742,51 @@ fn apply(chat: &mut AgentChat, acts: Vec<Act>) -> Vec<Request> {
 /// Whether the composer was pasted into this frame.
 ///
 /// Only while a field in this pane has the keyboard, so a paste meant for the editing area is not
-/// taken. `Event::Paste` is what `egui` makes of Ctrl/Cmd+V; a picture on the clipboard is not text
-/// and arrives as an empty one, which is exactly the case worth asking the window about.
+/// taken.
+///
+/// **It is the key going back up that says so, and it took reading `egui-winit` to find out why.**
+/// This used to watch for an *empty* `egui::Event::Paste`, on the reasoning that a picture is not text
+/// and would therefore arrive as a paste with nothing in it. `egui-winit` does not do that. Its
+/// `on_keyboard_input` recognises the paste chord, reads the clipboard's **text**, and pushes
+/// `Event::Paste` only `if !contents.is_empty()` — then returns, so the `V` key press is swallowed as
+/// well. With a picture on the clipboard `get_text()` fails outright and the frame carries **no event
+/// at all**. So the condition that was being watched for could never once have happened, and pasting a
+/// picture into this pane has never worked. `task-1771`.
+///
+/// The `return` is only taken while the key is **down**. The release comes back through the ordinary
+/// path as `Event::Key { key: V, pressed: false, modifiers }`, with the modifier still held, which is
+/// the one report of the chord that reaches Quill. Asking the window for a picture on the way up is a
+/// keystroke late and nobody can tell; a clipboard with no picture on it answers `None` and nothing
+/// happens, which is what makes it safe to ask after an ordinary text paste as well.
 fn pasting(ui: &egui::Ui) -> bool {
     if !crate::app::text_box_has_the_keyboard(ui.ctx()) {
         return false;
     }
-    ui.ctx().input(|input| {
-        input
-            .events
-            .iter()
-            .any(|event| matches!(event, egui::Event::Paste(text) if text.is_empty()))
+    ui.ctx().input(|input| is_a_paste_chord(&input.events))
+}
+
+/// Whether this frame's events carry the paste chord as Quill can actually see it.
+///
+/// Its own function so a test can hold the two event shapes side by side: the one that was being
+/// watched for and never arrives, and the one that does.
+fn is_a_paste_chord(events: &[egui::Event]) -> bool {
+    events.iter().any(|event| {
+        matches!(
+            event,
+            egui::Event::Key { key: egui::Key::V, pressed: false, modifiers, .. }
+                if modifiers.command
+        )
     })
+}
+
+/// Whether a file the window manager dropped belongs to the pane at `area`.
+///
+/// `None` means the platform reported no pointer through the drag, which Windows does not: a file is
+/// carried over a window through OLE and no cursor movement is sent at all, so `egui` can still be
+/// holding a position from before the drag started. Nothing else in Quill reads `dropped_files`, so a
+/// drop nobody can place belongs here rather than nowhere.
+fn belongs_here(pointer: Option<Pos2>, area: Rect) -> bool {
+    pointer.is_none_or(|at| area.contains(at))
 }
 
 /// Every picture the window manager dropped on this pane this frame.
@@ -755,8 +794,18 @@ fn pasting(ui: &egui::Ui) -> bool {
 /// `egui` collects what was dropped and hands over a path; a file that is not a picture is left
 /// alone rather than refused, because a drag that landed on the wrong pane should do nothing rather
 /// than say something.
-fn dropped_pictures(ui: &egui::Ui) -> Vec<std::path::PathBuf> {
-    if !ui.rect_contains_pointer(ui.available_rect_before_wrap()) {
+///
+/// **`area` is the pane's own rectangle, taken before anything was drawn in it.** It used to ask the `Ui`
+/// for what was left, which is a different rectangle by the time the composer has been laid out.
+///
+/// **A drop with no pointer is this pane's.** Windows carries a file over a window through OLE, which
+/// reports no cursor movement at all, so `egui` can be holding a position from before the drag began — and
+/// gating on it silently threw the picture away. Nothing else in Quill reads `dropped_files`, so a drop
+/// whose position is not known belongs here rather than nowhere.
+fn dropped_pictures(ui: &egui::Ui, area: Rect) -> Vec<std::path::PathBuf> {
+    let pointer =
+        ui.ctx().input(|input| input.pointer.hover_pos().or_else(|| input.pointer.latest_pos()));
+    if !belongs_here(pointer, area) {
         return Vec::new();
     }
     ui.ctx().input(|input| {
@@ -793,6 +842,39 @@ fn pick_a_picture() -> Option<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `task-1771`: pasting a picture into the composer had never worked, and this is why.
+    #[test]
+    fn a_paste_is_seen_on_the_key_going_up_and_never_as_an_empty_paste_event() {
+        let chord = |pressed: bool, command: bool| egui::Event::Key {
+            key: egui::Key::V,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: egui::Modifiers { command, ..Default::default() },
+        };
+        // What this used to watch for. `egui-winit` pushes `Event::Paste` only when the clipboard held
+        // **text**, so with a picture on it the frame carries nothing at all — and the condition below is
+        // one no window ever satisfies.
+        assert!(!is_a_paste_chord(&[egui::Event::Paste(String::new())]));
+        // The press is swallowed by the same early return that reads the clipboard.
+        assert!(!is_a_paste_chord(&[chord(true, true)]));
+        // The release is not, and the modifier is still down on it. This is the one report that arrives.
+        assert!(is_a_paste_chord(&[chord(false, true)]));
+        // A `V` with nothing held is a letter somebody typed.
+        assert!(!is_a_paste_chord(&[chord(false, false)]));
+    }
+
+    /// A drop the platform cannot place is this pane's, because nothing else in Quill wants one.
+    #[test]
+    fn a_drop_with_no_pointer_still_lands_on_the_pane() {
+        let area = Rect::from_min_size(Pos2::new(100.0, 40.0), Vec2::new(400.0, 600.0));
+        assert!(belongs_here(Some(Pos2::new(200.0, 300.0)), area), "over the pane");
+        assert!(!belongs_here(Some(Pos2::new(20.0, 300.0)), area), "over something else");
+        // Windows carries a file through OLE and sends no cursor movement, so the last position `egui`
+        // holds can be from before the drag began. Refusing there threw the picture away silently.
+        assert!(belongs_here(None, area), "nowhere in particular");
+    }
 
     #[test]
     fn the_starter_chips_are_about_what_quill_is() {

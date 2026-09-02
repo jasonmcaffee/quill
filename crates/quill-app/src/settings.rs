@@ -67,12 +67,23 @@ pub const RUN_WIDTH_MIN: f32 = TERMINAL_WIDTH_MIN;
 pub const DEBUG_WIDTH: f32 = 520.0;
 pub const DEBUG_WIDTH_MIN: f32 = 300.0;
 
-/// The widest any panel but the explorer may be dragged.
+/// The widest a panel read out of the settings file is believed.
 ///
-/// The explorer keeps [`EXPLORER_MAX`], which is the number it has always had; the tiles are allowed
-/// more, because a terminal or a stack trace read down the side of the window is a thing somebody
-/// really does want half the width for.
-pub const PANEL_MAX_WIDTH: f32 = 900.0;
+/// **Not a limit on dragging any more.** It was 900 points and it was one, and `task-1771` reported the
+/// consequence in the one place it bites hardest: with the editing area hidden, the Agent-Chat pane
+/// stopped widening part way across a window that had nothing else in it. A number chosen here cannot
+/// know how wide somebody's display is or what they have put away, and the layout already refuses to
+/// give a panel more than there is — [`Panes::resize`] clamps against the room, and `dock::regions` shares
+/// out what is left. So the drag is bounded by the window and by nothing else, which is what "as wide as I
+/// want" means.
+///
+/// What is left is a sanity bound on a **hand edited or corrupted** settings file, so a width of ten
+/// thousand does not have to be dragged back from. It is above any display this runs on, so nobody who
+/// dragged a panel there can lose the size they chose.
+///
+/// The explorer keeps [`EXPLORER_MAX`], which is the number it has always had: it is a list of file names
+/// rather than a document, its own tests pin that number, and nothing in the ticket asks for it to change.
+pub const PANEL_MAX_WIDTH: f32 = 8192.0;
 
 /// How opaque the background is when Quill starts. Not fully opaque, so the transparency is visible
 /// without opening the settings. The design shows 83 per cent.
@@ -106,6 +117,52 @@ pub fn step_font_size(from: f32, up: bool) -> f32 {
         FONT_SIZES.iter().rev().copied().find(|size| *size < from - 0.01)
     };
     next.unwrap_or(if up { FONT_SIZES[FONT_SIZES.len() - 1] } else { FONT_SIZES[0] })
+}
+
+/// The zoom levels a pane that has no font size of its own steps through.
+///
+/// `task-1771` asks that **every** pane be zoomable, not only the editing area. Two of them already have
+/// a point size a person chooses — the editor's font and the terminal's — and a zoom there walks that
+/// setting, so there is one number saying how big the text is rather than a setting and a multiplier that
+/// can disagree. The explorer and a pane a plugin contributed have no such setting, so their zoom is a
+/// multiplier over everything they draw, and this is the ladder it walks.
+///
+/// It steps by about a sixth, which is the same feel as [`FONT_SIZES`] does around the default: 16 to 20
+/// is a quarter, 13 to 16 is a fifth. Both ends are far enough out to be useless and are there so that
+/// nobody finds a wheel that stops working — a fifth of normal is unreadable and three times it is a
+/// heading, and one notch always moves.
+pub const ZOOMS: &[f32] = &[0.5, 0.6, 0.7, 0.85, 1.0, 1.15, 1.35, 1.6, 1.9, 2.25, 2.65, 3.0];
+pub const MIN_ZOOM: f32 = 0.5;
+pub const MAX_ZOOM: f32 = 3.0;
+/// What a pane is zoomed to until somebody changes it, and what `Reset Font Size` puts it back to.
+pub const DEFAULT_ZOOM: f32 = 1.0;
+
+/// The next terminal font size up or down the list the Settings window offers for it.
+///
+/// Its own list, because the terminal's is not the editor's: [`TERMINAL_FONT_SIZES`] stops at twenty,
+/// which is a very large character grid, where the editor goes to sixty-four. `task-1771` makes the wheel
+/// over a terminal walk this, so the tile's zoom and the number in Settings are one thing.
+pub fn step_terminal_font_size(from: f32, up: bool) -> f32 {
+    let next = if up {
+        TERMINAL_FONT_SIZES.iter().copied().find(|size| *size > from + 0.01)
+    } else {
+        TERMINAL_FONT_SIZES.iter().rev().copied().find(|size| *size < from - 0.01)
+    };
+    next.unwrap_or(if up {
+        TERMINAL_FONT_SIZES[TERMINAL_FONT_SIZES.len() - 1]
+    } else {
+        TERMINAL_FONT_SIZES[0]
+    })
+}
+
+/// The next zoom up or down [`ZOOMS`], by the rule [`step_font_size`] follows for the font sizes.
+pub fn step_zoom(from: f32, up: bool) -> f32 {
+    let next = if up {
+        ZOOMS.iter().copied().find(|zoom| *zoom > from + 0.001)
+    } else {
+        ZOOMS.iter().rev().copied().find(|zoom| *zoom < from - 0.001)
+    };
+    next.unwrap_or(if up { MAX_ZOOM } else { MIN_ZOOM })
 }
 
 /// Whether the completion popup appears without being asked for.
@@ -518,6 +575,15 @@ pub struct Panes {
     pub debug_height: f32,
     /// How wide the debug tile is as a column.
     pub debug_width: f32,
+    /// How much bigger or smaller the explorer draws everything in it than it does by default.
+    ///
+    /// `task-1771`: every pane is zoomable with `Ctrl`/`Cmd` and the wheel. The explorer has no font size
+    /// of its own — its rows, its indents and its lettering are the style guide's numbers — so its zoom is
+    /// a multiplier over all of them rather than a second point size. See [`ZOOMS`].
+    pub explorer_zoom: f32,
+    /// The same for each pane a plugin contributed, by slot. It reaches the pane through `Look::scale`, so
+    /// a provider that already scales with the editor's font gets this for nothing.
+    pub plugin_zooms: [f32; crate::app::dock::PLUGIN_PANES],
     /// How wide and how tall each pane a plugin contributed is, by slot.
     ///
     /// Two arrays for the same reason the four panels have two numbers each: one number cannot be both a
@@ -556,6 +622,8 @@ impl Panes {
             run_width: RUN_WIDTH,
             debug_height: DEBUG_HEIGHT,
             debug_width: DEBUG_WIDTH,
+            explorer_zoom: DEFAULT_ZOOM,
+            plugin_zooms: [DEFAULT_ZOOM; crate::app::dock::PLUGIN_PANES],
             plugin_widths: [PLUGIN_PANE_WIDTH; crate::app::dock::PLUGIN_PANES],
             plugin_heights: [PLUGIN_PANE_HEIGHT; crate::app::dock::PLUGIN_PANES],
             dock: crate::app::dock::Layout::new(),
@@ -583,6 +651,9 @@ impl Panes {
             if let Some(height) = values.number(&format!("panes.{key}.height")) {
                 panes.plugin_heights[slot] = height.max(PLUGIN_PANE_MIN_HEIGHT);
             }
+            if let Some(zoom) = values.number(&format!("panes.{key}.zoom")) {
+                panes.plugin_zooms[slot] = zoom.clamp(MIN_ZOOM, MAX_ZOOM);
+            }
         }
         panes.dock = crate::app::dock::Layout::read_from_with(values, plugin_panes);
         panes
@@ -592,6 +663,9 @@ impl Panes {
         let mut panes = Self::new();
         if let Some(width) = values.number("panes.explorer.width") {
             panes.explorer_width = width.clamp(EXPLORER_MIN, EXPLORER_MAX);
+        }
+        if let Some(zoom) = values.number("panes.explorer.zoom") {
+            panes.explorer_zoom = zoom.clamp(MIN_ZOOM, MAX_ZOOM);
         }
         if let Some(height) = values.number("panes.terminal.height") {
             panes.terminal_height = height.max(TERMINAL_MIN);
@@ -641,6 +715,7 @@ impl Panes {
     pub fn write_into_with(&self, values: &mut Values, plugin_panes: &[String]) {
         self.write_built_in(values);
         for (slot, key) in plugin_panes.iter().enumerate().take(crate::app::dock::PLUGIN_PANES) {
+            values.set(&format!("panes.{key}.zoom"), format!("{:.2}", self.plugin_zooms[slot]));
             values.set(&format!("panes.{key}.width"), format!("{:.0}", self.plugin_widths[slot]));
             values.set(&format!("panes.{key}.height"), format!("{:.0}", self.plugin_heights[slot]));
         }
@@ -649,6 +724,7 @@ impl Panes {
 
     fn write_built_in(&self, values: &mut Values) {
         values.set("panes.explorer.width", format!("{:.0}", self.explorer_width));
+        values.set("panes.explorer.zoom", format!("{:.2}", self.explorer_zoom));
         values.set("panes.terminal.height", format!("{:.0}", self.terminal_height));
         values.set("panes.run.height", format!("{:.0}", self.run_height));
         values.set("panes.debug.height", format!("{:.0}", self.debug_height));
@@ -720,6 +796,35 @@ impl Panes {
         }
     }
 
+    /// How much bigger or smaller this panel draws everything in it.
+    ///
+    /// **One for the explorer and one a plugin pane, and 1.0 for the three tiles**, because a tile's zoom is
+    /// the terminal's own font size — the one number the Settings window shows for it — and a multiplier on
+    /// top of that would be a second way of saying the same thing. See [`ZOOMS`] and
+    /// `QuillApp::zoom_the_panel`.
+    pub fn zoom_of(&self, panel: crate::app::dock::Panel) -> f32 {
+        use crate::app::dock::Panel;
+        match panel {
+            Panel::Explorer => self.explorer_zoom,
+            Panel::Plugin(slot) => self.plugin_zooms[(slot as usize).min(self.plugin_zooms.len() - 1)],
+            _ => DEFAULT_ZOOM,
+        }
+    }
+
+    /// Set it, clamped to the ladder's own ends. Does nothing for a panel whose zoom is a font size.
+    pub fn set_zoom_of(&mut self, panel: crate::app::dock::Panel, zoom: f32) {
+        use crate::app::dock::Panel;
+        let zoom = zoom.clamp(MIN_ZOOM, MAX_ZOOM);
+        match panel {
+            Panel::Explorer => self.explorer_zoom = zoom,
+            Panel::Plugin(slot) => {
+                let at = (slot as usize).min(self.plugin_zooms.len() - 1);
+                self.plugin_zooms[at] = zoom;
+            }
+            _ => {}
+        }
+    }
+
     pub fn min_width_of(&self, panel: crate::app::dock::Panel) -> f32 {
         use crate::app::dock::Panel;
         match panel {
@@ -731,11 +836,15 @@ impl Panes {
         }
     }
 
+    /// The widest this panel may be dragged, before the room there actually is is taken into account.
+    ///
+    /// Unbounded for everything but the explorer — see [`PANEL_MAX_WIDTH`]. `resize` takes the smaller of
+    /// this and the room, so an unbounded panel is one bounded by the window, which is the honest limit.
     pub fn max_width_of(&self, panel: crate::app::dock::Panel) -> f32 {
         use crate::app::dock::Panel;
         match panel {
             Panel::Explorer => EXPLORER_MAX,
-            _ => PANEL_MAX_WIDTH,
+            _ => f32::INFINITY,
         }
     }
 
@@ -970,6 +1079,8 @@ mod tests {
             // slot no plugin is in keeps its default, because there is no pane whose size to record.
             plugin_widths: [420.0, 300.0, PLUGIN_PANE_WIDTH, PLUGIN_PANE_WIDTH],
             plugin_heights: [280.0, 260.0, PLUGIN_PANE_HEIGHT, PLUGIN_PANE_HEIGHT],
+            plugin_zooms: [1.35, 0.85, DEFAULT_ZOOM, DEFAULT_ZOOM],
+            explorer_zoom: 1.15,
             explorer_width: 320.0,
             explorer_height: 220.0,
             terminal_height: 400.0,
@@ -1000,6 +1111,10 @@ mod tests {
         let read = Panes::read_from_with(&values, &swapped);
         assert_eq!(read.plugin_widths[0], 300.0, "chat's pane kept chat's width");
         assert_eq!(read.plugin_widths[1], 420.0, "and the board kept the board's");
+        // And so does its zoom, which is `task-1771`'s per-pane one: it follows the pane rather than the
+        // slot, exactly as the two measurements do.
+        assert_eq!(read.plugin_zooms[0], 0.85);
+        assert_eq!(read.plugin_zooms[1], 1.35);
     }
 
     #[test]

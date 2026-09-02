@@ -253,14 +253,19 @@ fn shrink_to_fit(image: egui::ColorImage, limit: usize) -> egui::ColorImage {
 /// screenshot tool put there has no format at all until something writes one, and PNG is the format
 /// both APIs take and the one that does not lose anything.
 ///
-/// A refusal rather than nothing when the clipboard holds text, or a file, or is empty — a plugin
-/// that asked has to be able to say why nothing happened.
+/// **`null` rather than a refusal when there is no picture there at all**, and that changed with
+/// `task-1771`. It used to answer "there is no picture on the clipboard", on the understanding that this
+/// was only ever asked after a paste that carried nothing — but the only report of the paste chord that
+/// reaches Quill is the key going back up (see `agent_chat::pasting`), which arrives after an ordinary
+/// **text** paste too. Refusing there would put "there is no picture on the clipboard" under the composer
+/// every time somebody pasted a sentence into it. Nothing to attach is not a fault; a picture that is
+/// there and cannot be read still is, and still says so.
 pub fn from_the_clipboard() -> Result<serde_json::Value, String> {
     let mut clipboard = arboard::Clipboard::new()
         .map_err(|problem| format!("the clipboard could not be opened: {problem}"))?;
-    let held = clipboard
-        .get_image()
-        .map_err(|_| "there is no picture on the clipboard.".to_owned())?;
+    let Ok(held) = clipboard.get_image() else {
+        return Ok(serde_json::Value::Null);
+    };
     let width = held.width as u32;
     let height = held.height as u32;
     let buffer = image::RgbaImage::from_raw(width, height, held.bytes.into_owned())

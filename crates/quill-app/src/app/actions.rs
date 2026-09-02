@@ -88,6 +88,8 @@ pub enum Action {
     /// **It can never leave an empty window**: hiding it with no panel showing shows the explorer as well, and
     /// hiding the last panel while it is hidden brings it back. See `QuillApp::run_action`.
     ToggleEditor,
+    /// Fill the window with the pane that holds the keyboard, and put everything back. `task-1771`.
+    ToggleMaximisedPane,
     /// Show or hide the column of line numbers down the left of the editing area.
     ToggleLineNumbers,
     /// Set the editor's text one size larger, or one smaller, walking the sizes the Settings window
@@ -849,6 +851,8 @@ pub struct MenuState {
     pub explorer_visible: bool,
     /// Whether the editing area is showing, so `View` says `Hide Editor` or `Show Editor`. `task-28`.
     pub editor_visible: bool,
+    /// Whether one pane is filling the window, which is what makes the entry read `Restore Pane`.
+    pub maximised: bool,
     /// Which edge each panel is docked to, so a panel's own menu can tick the side it is already on
     /// — `task-1697`. The whole arrangement rather than four sides, because it is one value the
     /// window already holds and its `Default` is the arrangement Quill ships with.
@@ -1531,6 +1535,15 @@ fn view_menu(state: &MenuState) -> Menu {
             Entry::item(
                 if state.line_numbers { "Hide Line Numbers" } else { "Show Line Numbers" },
                 Action::ToggleLineNumbers,
+            ),
+            // Two presses at the top of a pane do the same thing, which is what `task-1771` asks for; this
+            // is the entry that gives it a name, a key and - because `actions::menus` is walked to build
+            // the command line - an agent. Escape is what puts it back, and is not a shortcut here because
+            // Escape already means several things and a menu equivalent would claim it from all of them.
+            Entry::with_shortcut(
+                if state.maximised { "Restore Pane" } else { "Maximise Pane" },
+                Action::ToggleMaximisedPane,
+                Shortcut::command_shift(egui::Key::M),
             ),
             Entry::Separator,
             // The editor's font size, on the keyboard as it is in every other editor. They are menu

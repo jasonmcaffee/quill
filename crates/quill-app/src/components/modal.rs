@@ -344,24 +344,49 @@ fn edges_and_corners(area: Rect) -> [(&'static str, (i32, i32), Rect, egui::Curs
 /// it looks like something that can be moved. Neither is added here: [`show`] adds the drag strip
 /// before the contents so that this function's close cross sits over it.
 pub fn header(ui: &mut egui::Ui, area: Rect, title: &str) -> bool {
+    header_of(ui, area, None, title)
+}
+
+/// The same, with a **key** in front of the title.
+///
+/// `task-1771` asks for the ticket modal to read like the page it is modelled on, and that page's header is
+/// `task-1766` in a dim monospaced face and then the ticket's title beside it. Everything else about a
+/// modal's header — the ground, the cross, the drag handle, the name a test finds it by — is unchanged, so
+/// this is one dialog carrying one extra word rather than a second kind of header.
+pub fn header_of(ui: &mut egui::Ui, area: Rect, key: Option<&str>, title: &str) -> bool {
     let bar = Rect::from_min_size(area.min, Vec2::new(area.width(), HEADER));
     let painter = ui.painter_at(area);
     painter.rect_filled(bar, CornerRadius { nw: 10, ne: 10, sw: 0, se: 0 }, color::TITLE_BAR);
-    let galley =
-        painter.layout_no_wrap(title.to_owned(), egui::FontId::proportional(13.0), color::TEXT_STRONG);
+    let mut pen = area.left() + 20.0;
+    if let Some(key) = key {
+        let said =
+            painter.layout_no_wrap(key.to_owned(), egui::FontId::monospace(12.0), color::TEXT_DIM);
+        painter.galley(Pos2::new(pen, bar.center().y - said.size().y / 2.0), said.clone(), color::TEXT_DIM);
+        pen += said.size().x + 14.0;
+    }
+    // **Bold only when there is a key in front of it.** A dialog's title is one short phrase and has always
+    // been set in the regular face; a ticket's is the ticket's own name, sitting after its key, and there the
+    // weight is what separates the two. So the ten dialogs are unchanged and the one that asked for this gets
+    // what it asked for.
+    let face = match key.is_some() {
+        true => egui::FontId::new(13.0, egui::FontFamily::Name(crate::theme::BOLD_FAMILY.into())),
+        false => egui::FontId::proportional(13.0),
+    };
+    let galley = painter.layout_no_wrap(title.to_owned(), face, color::TEXT_STRONG);
     let width = galley.size().x;
     painter.galley(
-        Pos2::new(area.left() + 20.0, bar.center().y - galley.size().y / 2.0),
+        Pos2::new(pen, bar.center().y - galley.size().y / 2.0),
         galley,
         color::TEXT_STRONG,
     );
+    let title_at = pen;
     // The title is **named** as well as drawn, so a test and assistive technology can say which modal is open.
     // Every control in Quill has a plain name and a test finds one by it; a modal's title is what says which of
     // the ten it is, and painted text alone is invisible to both. The drag handle is added after this and takes
     // the presses, so naming it costs the header nothing.
     let named = ui.interact(
         Rect::from_min_size(
-            Pos2::new(area.left() + 20.0, bar.center().y - 8.0),
+            Pos2::new(title_at, bar.center().y - 8.0),
             Vec2::new(width, 16.0),
         ),
         ui.id().with(("modal-title", title)),

@@ -11,363 +11,12 @@ use crate::services::agent_tasks::{clock, AgentTasks};
 use crate::services::plugin_ui::{Look, Request};
 use crate::theme::icon;
 
-const PAD: f32 = 10.0;
-/// How tall the strip holding the back arrow, the key and the buttons is.
-const HEADER: f32 = 34.0;
-/// How tall the terminal is when a ticket has one.
-const TERMINAL: f32 = 220.0;
-
-/// Draw the open ticket. `beside` is true in the tab, where the lanes are showing to the left.
-pub fn show(
-    board: &mut AgentTasks,
-    ui: &mut egui::Ui,
-    look: &Look<'_>,
-    area: Rect,
-    beside: bool,
-) -> Vec<Request> {
-    let mut requests = Vec::new();
-    let Some(task) = board.detail().task.clone() else {
-        return requests;
-    };
-    let painter = ui.painter().clone();
-    ui.painter().rect_filled(area, 0, look.ground(look.palette.panel));
-    // The three buttons every ticket has, and how wide they are together. A 420 point pane cannot hold
-    // them beside the key and the lane, so when there is not room they go on a row of their own rather
-    // than being drawn over the words next to them.
-    // **Only the one that applies.** Drawing all three meant two controls that could not do anything and
-    // reported an error when pressed, which is what Quill's absent-rather-than-dimmed rule exists to prevent.
-    let running = board.terminal_for(task.id).is_some_and(|terminal| terminal.session.is_running());
-    let buttons: Vec<(&str, &str, f32)> = if running {
-        vec![("Stop", "stop", 52.0)]
-    } else if task.session_id.is_some() && crate::services::agent_tasks::agent::can_resume(task.assignee) {
-        vec![("Resume session", "resume", 108.0), ("Start", "start", 58.0)]
-    } else {
-        vec![("Start", "start", 58.0)]
-    };
-    let buttons_width: f32 = buttons.iter().map(|(_, _, width)| width + 6.0).sum();
-    let key_width = 150.0;
-    let two_rows = area.width() < key_width + buttons_width + PAD * 2.0;
-    let header_height = match two_rows {
-        true => HEADER * 2.0,
-        false => HEADER,
-    };
-    let header = Rect::from_min_size(area.min, Vec2::new(area.width(), header_height));
-    let mut pen = area.min.x + PAD;
-    let first_row = header.min.y + HEADER / 2.0;
-    // A back arrow rather than a close cross: in the pane the detail replaced the lanes, so going back
-    // is what the control does.
-    if !beside {
-        let back = Rect::from_min_size(Pos2::new(pen, first_row - 11.0), Vec2::splat(22.0));
-        if crate::components::controls::icon_button(ui, back, "Back to the lanes", icon::collapse) {
-            board.close_detail();
-            return requests;
-        }
-        pen += 28.0;
-    }
-    pen += text(
-        &painter,
-        Pos2::new(pen, first_row - look.font_size / 2.0),
-        &task.key,
-        look.font_size,
-        look.palette.text_dim,
-    );
-    pen += 10.0;
-    text(
-        &painter,
-        Pos2::new(pen, first_row - look.font_size / 2.0),
-        task.status.label(),
-        look.font_size - 1.5,
-        look.palette.text_dim,
-    );
-    // Right aligned on the first row when they fit, and left aligned on a second row when they do not, so
-    // they are in the same place on every ticket at a given width.
-    let (mut button_x, button_y) = match two_rows {
-        true => (area.min.x + PAD, header.min.y + HEADER + 5.0),
-        false => (area.max.x - PAD - buttons_width, header.min.y + 5.0),
-    };
-    for (label, command, width) in buttons {
-        let at = Rect::from_min_size(Pos2::new(button_x, button_y), Vec2::new(width, 24.0));
-        if crate::components::controls::choice_button(ui, at, label, false) {
-            match board.command_now(command, std::slice::from_ref(&task.key)) {
-                Ok(answer) if !answer.message.is_empty() => {
-                    requests.push(Request::Message(answer.message))
-                }
-                Ok(_) => {}
-                Err(problem) => requests.push(Request::Message(problem)),
-            }
-            requests.push(Request::Repaint);
-        }
-        button_x += width + 6.0;
-    }
-    ui.painter().rect_filled(
-        Rect::from_min_max(Pos2::new(area.min.x, header.max.y - 1.0), Pos2::new(area.max.x, header.max.y)),
-        0,
-        look.palette.divider,
-    );
-    let mut pen_y = header.max.y + PAD;
-    // The title is a field, and it **saves as it is typed**, which is what makes `+ Add task` able to create
-    // the row first and let somebody name it after: the row exists from the moment the editor opens. Painting
-    // it as text was a board on which a ticket could be created and never named.
-    let title_at = Rect::from_min_size(
-        Pos2::new(area.min.x + PAD, pen_y),
-        Vec2::new(area.width() - PAD * 2.0, look.font_size + 14.0),
-    );
-    let mut title = board.detail().title_draft.clone();
-    let response = ui.put(
-        crate::components::controls::field_text_rect(ui, title_at, 4.0),
-        egui::TextEdit::singleline(&mut title)
-            .frame(egui::Frame::NONE)
-            .hint_text(egui::RichText::new("Untitled").color(look.palette.text_faint))
-            .font(egui::FontId::proportional(look.font_size + 3.0))
-            .text_color(look.palette.text_strong),
-    );
-    if response.changed() {
-        board.detail_mut().title_draft = title;
-        if let Err(problem) = board.save_the_title() {
-            requests.push(Request::Message(problem));
-        }
-    }
-    pen_y = title_at.max.y + 4.0;
-    // The description, drawn as the text it is. A markdown preview of it belongs in the tab where there
-    // is room; in a 420 point column the source is what fits, and it is what a person edits anyway.
-    if !task.description.trim().is_empty() {
-        let galley = painter.layout(
-            task.description.clone(),
-            egui::FontId::proportional(look.font_size - 0.5),
-            look.palette.text,
-            area.width() - PAD * 2.0,
-        );
-        // **Clipped to the room it was given, not merely counted as if it were.** The pen advanced by at most
-        // 140 points while the whole galley was painted, so a description of any length drew through the todos,
-        // the terminal and the comment box under it.
-        let height = galley.size().y.min(140.0);
-        let block = Rect::from_min_size(
-            Pos2::new(area.min.x + PAD, pen_y),
-            Vec2::new(area.width() - PAD * 2.0, height),
-        );
-        painter.with_clip_rect(block).galley(block.min, galley, look.palette.text);
-        pen_y += height + 12.0;
-    }
-    let terminal_height = match board.terminal_for(task.id).is_some() {
-        true => TERMINAL,
-        false => 0.0,
-    };
-    let lists = Rect::from_min_max(
-        Pos2::new(area.min.x, pen_y),
-        Pos2::new(area.max.x, area.max.y - terminal_height),
-    );
-    requests.extend(todos_and_comments(board, ui, look, lists, &task));
-    if terminal_height > 0.0 {
-        let at = Rect::from_min_max(Pos2::new(area.min.x, lists.max.y), area.max);
-        requests.extend(terminal(board, ui, look, at, task.id, board.terminal_focused));
-    }
-    requests
-}
-
-/// The todos, then the comments, in whatever room is left.
-pub(crate) fn todos_and_comments(
-    board: &mut AgentTasks,
-    ui: &mut egui::Ui,
-    look: &Look<'_>,
-    area: Rect,
-    task: &crate::services::agent_tasks::model::Task,
-) -> Vec<Request> {
-    let mut requests = Vec::new();
-    let painter = ui.painter().clone();
-    let mut pen_y = area.min.y;
-    let todos = board.detail().todos.clone();
-    if !todos.is_empty() {
-        text(
-            &painter,
-            Pos2::new(area.min.x + PAD, pen_y),
-            &format!("Todos {}/{}", task.todo_done_count, task.todo_count),
-            look.font_size - 1.5,
-            look.palette.text_dim,
-        );
-        pen_y += look.row_height;
-        let mut toggled = None;
-        for todo in &todos {
-            if pen_y + look.row_height > area.max.y - 60.0 {
-                break;
-            }
-            let box_at = Rect::from_min_size(
-                Pos2::new(area.min.x + PAD, pen_y + 4.0),
-                Vec2::splat(14.0),
-            );
-            let response = ui.interact(
-                box_at.expand(3.0),
-                ui.id().with(("agent-tasks-todo", todo.id)),
-                Sense::click(),
-            );
-            // **Named, and named as a tick box.** These are drawn rather than made from `egui::Checkbox`, so
-            // nothing published a role or a label and a screen reader met an unnamed clickable region on every
-            // todo. The name is the todo's own text, which is what tells one from another; `push_id` only makes
-            // the internal id unique and does nothing for the name.
-            let said = todo.text.clone();
-            let ticked = todo.done;
-            response.widget_info(|| {
-                egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), ticked, said.clone())
-            });
-            painter.rect(
-                box_at,
-                CornerRadius::same(3),
-                match todo.done {
-                    true => look.palette.accent,
-                    false => look.palette.field,
-                },
-                egui::Stroke::new(1.0, look.palette.control_border),
-                egui::StrokeKind::Inside,
-            );
-            if todo.done {
-                icon::tick(&painter, box_at.center(), look.palette.text_strong);
-            }
-            if response.clicked() {
-                toggled = Some((todo.id, !todo.done));
-            }
-            let tint = match todo.done {
-                true => look.palette.text_dim,
-                false => look.palette.text,
-            };
-            clipped(
-                &painter,
-                Pos2::new(area.min.x + PAD + 22.0, pen_y + 2.0),
-                &todo.text,
-                look.font_size - 0.5,
-                tint,
-                area.width() - PAD * 2.0 - 26.0,
-                1,
-            );
-            pen_y += look.row_height;
-        }
-        if let Some((id, done)) = toggled {
-            if let Err(problem) = board.set_todo(id, done) {
-                requests.push(Request::Message(problem));
-            }
-        }
-        pen_y += 6.0;
-    }
-    // A box that adds a todo. Return posts it, which is the one gesture a list of things to do needs.
-    if pen_y + look.row_height < area.max.y - 40.0 {
-        let at = Rect::from_min_size(
-            Pos2::new(area.min.x + PAD, pen_y),
-            Vec2::new(area.width() - PAD * 2.0, look.row_height),
-        );
-        painter.rect(
-            at,
-            CornerRadius::same(look.corner_radius as u8),
-            look.palette.field,
-            egui::Stroke::new(1.0, look.palette.control_border),
-            egui::StrokeKind::Inside,
-        );
-        let mut draft = board.detail().todo_draft.clone();
-        let response = ui.put(
-            crate::components::controls::field_text_rect(ui, at, 8.0),
-            egui::TextEdit::singleline(&mut draft)
-                .frame(egui::Frame::NONE)
-                .hint_text(egui::RichText::new("Add a todo").color(look.palette.text_faint))
-                .font(egui::FontId::proportional(look.font_size - 0.5))
-                .text_color(look.palette.text),
-        );
-        if response.changed() {
-            board.detail_mut().todo_draft = draft.clone();
-        }
-        if super::enter_was_used_and_pressed(ui, &response) {
-            if let Err(problem) = board.post_the_todo() {
-                requests.push(Request::Message(problem));
-            }
-            response.request_focus();
-        }
-        pen_y = at.max.y + 8.0;
-    }
-    let comments = board.detail().comments.clone();
-    if !comments.is_empty() && pen_y < area.max.y - 40.0 {
-        text(
-            &painter,
-            Pos2::new(area.min.x + PAD, pen_y),
-            &super::card::plural(comments.len() as i64, "comment"),
-            look.font_size - 1.5,
-            look.palette.text_dim,
-        );
-        pen_y += look.row_height;
-        let now = clock::now();
-        for comment in comments.iter().rev() {
-            if pen_y + 40.0 > area.max.y {
-                break;
-            }
-            let heading = format!(
-                "{} · {}",
-                comment.author.name(),
-                clock::relative(&comment.created_at, &now)
-            );
-            text(
-                &painter,
-                Pos2::new(area.min.x + PAD, pen_y),
-                &heading,
-                look.font_size - 2.5,
-                look.palette.text_faint,
-            );
-            pen_y += look.font_size + 2.0;
-            let galley = painter.layout(
-                comment.body.clone(),
-                egui::FontId::proportional(look.font_size - 1.0),
-                look.palette.text_control,
-                area.width() - PAD * 2.0,
-            );
-            // Clipped, for the reason the description above is: the pen stops at 72 points and the drawing has
-            // to stop with it.
-            let height = galley.size().y.min(72.0);
-            let block = Rect::from_min_size(
-                Pos2::new(area.min.x + PAD, pen_y),
-                Vec2::new(area.width() - PAD * 2.0, height),
-            );
-            painter.with_clip_rect(block).galley(block.min, galley, look.palette.text_control);
-            pen_y += height + 8.0;
-        }
-    }
-    // The comment box, at the foot of what is left. Two buttons rather than one, because posting a comment on
-    // the board and sending it to the agent are two different things and the difference matters: the second
-    // one types it into a terminal, and resumes a retired session first.
-    let box_height = look.row_height + 30.0;
-    if pen_y + box_height < area.max.y {
-        let at = Rect::from_min_size(
-            Pos2::new(area.min.x + PAD, area.max.y - box_height),
-            Vec2::new(area.width() - PAD * 2.0, look.row_height),
-        );
-        painter.rect(
-            at,
-            CornerRadius::same(look.corner_radius as u8),
-            look.palette.field,
-            egui::Stroke::new(1.0, look.palette.control_border),
-            egui::StrokeKind::Inside,
-        );
-        let mut draft = board.detail().draft.clone();
-        let response = ui.put(
-            crate::components::controls::field_text_rect(ui, at, 8.0),
-            egui::TextEdit::singleline(&mut draft)
-                .frame(egui::Frame::NONE)
-                .hint_text(egui::RichText::new("Comment").color(look.palette.text_faint))
-                .font(egui::FontId::proportional(look.font_size - 0.5))
-                .text_color(look.palette.text),
-        );
-        if response.changed() {
-            board.detail_mut().draft = draft;
-        }
-        let buttons_y = at.max.y + 4.0;
-        let post = Rect::from_min_size(Pos2::new(at.min.x, buttons_y), Vec2::new(64.0, 22.0));
-        let send = Rect::from_min_size(Pos2::new(at.min.x + 70.0, buttons_y), Vec2::new(120.0, 22.0));
-        let posting = crate::components::controls::choice_button(ui, post, "Post", false)
-            || super::enter_was_used_and_pressed(ui, &response);
-        let sending = crate::components::controls::choice_button(ui, send, "Send to agent", false);
-        if posting || sending {
-            match board.post_the_comment(sending) {
-                Ok(said) if !said.is_empty() => requests.push(Request::Message(said)),
-                Ok(_) => {}
-                Err(problem) => requests.push(Request::Message(problem)),
-            }
-        }
-    }
-    requests
-}
+// **The in-place ticket is gone.** This file used to draw a whole ticket inside the board's own rectangle —
+// the pane's narrow column, and the right hand half of the tab — and `task-1771` asked for that to stop: a
+// ticket is the modal and nothing else, so a board that split itself in two the moment an agent read a
+// ticket is a board that rearranged itself under somebody's hands. `show` and `todos_and_comments` went
+// with it, along with the three measurements only they used. What is left is what the modal lays out, which
+// was always shared between the two and is now called from one place.
 
 /// The ticket's own terminal: the real one.
 ///
@@ -558,37 +207,54 @@ pub(crate) fn todo_rows(
 
 /// The terminal, with the header the browser board puts over it: the word, whether it is attached, and the
 /// button that hands the conversation back when it is not.
+/// `heading` says whether to draw a row naming the section. The ticket modal draws its own — a disclosure
+/// that folds the terminal away, with the ticket's key and whether it is live in it — so it asks for none,
+/// and the grid takes the whole rectangle. `task-1771`: one heading, not two under each other.
 pub(crate) fn terminal_section(
     board: &mut AgentTasks,
     ui: &mut egui::Ui,
     area: Rect,
     look: &Look<'_>,
     task: &crate::services::agent_tasks::model::Task,
+    heading: bool,
 ) -> Vec<Request> {
     let mut requests = Vec::new();
     let painter = ui.painter().clone();
-    let head = Rect::from_min_size(area.min, Vec2::new(area.width(), 22.0));
     let attached = board.terminal_for(task.id).is_some_and(|terminal| terminal.session.is_running());
-    let mut pen = head.min.x;
-    pen += text(&painter, Pos2::new(pen, head.min.y), "Terminal", look.font_size - 1.5, look.palette.text_dim);
-    let (said, tint) = match attached {
-        true => ("attached", look.palette.added),
-        false => ("detached", look.palette.text_faint),
-    };
-    text(&painter, Pos2::new(pen + 8.0, head.min.y), said, look.font_size - 2.0, tint);
-    // Only a ticket that already has a session gets a button here. Starting an agent is Start work's job, so
-    // there is no second control that does it.
-    if !attached && task.session_id.is_some() {
-        let at = Rect::from_min_size(Pos2::new(area.max.x - 110.0, head.min.y - 3.0), Vec2::new(110.0, 22.0));
-        if crate::components::controls::choice_button(ui, at, "Resume session", false) {
-            match board.command_now("resume", std::slice::from_ref(&task.key)) {
-                Ok(answer) if !answer.message.is_empty() => requests.push(Request::Message(answer.message)),
-                Ok(_) => {}
-                Err(problem) => requests.push(Request::Message(problem)),
+    let mut top = area.min.y;
+    if heading {
+        let head = Rect::from_min_size(area.min, Vec2::new(area.width(), 22.0));
+        let mut pen = head.min.x;
+        pen += text(
+            &painter,
+            Pos2::new(pen, head.min.y),
+            "Terminal",
+            look.font_size - 1.5,
+            look.palette.text_dim,
+        );
+        let (said, tint) = match attached {
+            true => ("attached", look.palette.added),
+            false => ("detached", look.palette.text_faint),
+        };
+        text(&painter, Pos2::new(pen + 8.0, head.min.y), said, look.font_size - 2.0, tint);
+        // Only a ticket that already has a session gets a button here. Starting an agent is Start work's
+        // job, so there is no second control that does it.
+        if !attached && task.session_id.is_some() {
+            let at =
+                Rect::from_min_size(Pos2::new(area.max.x - 110.0, head.min.y - 3.0), Vec2::new(110.0, 22.0));
+            if crate::components::controls::choice_button(ui, at, "Resume session", false) {
+                match board.command_now("resume", std::slice::from_ref(&task.key)) {
+                    Ok(answer) if !answer.message.is_empty() => {
+                        requests.push(Request::Message(answer.message))
+                    }
+                    Ok(_) => {}
+                    Err(problem) => requests.push(Request::Message(problem)),
+                }
             }
         }
+        top = head.max.y + 2.0;
     }
-    let grid = Rect::from_min_max(Pos2::new(area.min.x, head.max.y + 2.0), area.max);
+    let grid = Rect::from_min_max(Pos2::new(area.min.x, top), area.max);
     requests.extend(terminal(board, ui, look, grid, task.id, board.terminal_focused));
     requests
 }
@@ -604,17 +270,10 @@ pub(crate) fn comment_section(
     let painter = ui.painter().clone();
     let comments = board.detail().comments.clone();
     let box_height = look.row_height + 30.0;
-    let mut pen = area.min.y;
-    // The count, and then whatever room is left above the box. A section too short to hold both used to draw the
-    // count through the buttons under it.
-    text(
-        &painter,
-        Pos2::new(area.min.x, pen),
-        &super::card::plural(comments.len() as i64, "comment"),
-        look.font_size - 1.5,
-        look.palette.text_dim,
-    );
-    pen += look.font_size + 6.0;
+    // **No count line.** The heading above this section carries it — `COMMENTS \u{b7} 3` — and a section that
+    // said how many comments it held immediately under a heading that said the same thing was one fact drawn
+    // twice, in a column where every point of height is being argued over. `task-1771`.
+    let pen = area.min.y;
     let room_for_comments = area.max.y - box_height - 6.0;
     let editing = board.detail().editing_comment;
     let mut edited = board.detail().comment_edit.clone();

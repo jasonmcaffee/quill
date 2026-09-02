@@ -413,7 +413,16 @@ mod tests {
         });
         std::fs::write(&program, b"").expect("a file that stands in for a program");
         let path = joined(&[&folder.to_string_lossy()]);
-        assert_eq!(look_up("quill-test-agent", &path).as_deref(), Some(program.as_path()));
+        // **Compared without case, because the extension comes from `PATHEXT` and its case is the
+        // machine's.** On Windows `look_up` completes a bare name from that variable, so on a box whose
+        // `PATHEXT` reads `.EXE` it answers `quill-test-agent.EXE` for the very file written here as
+        // `.exe` - which the file system finds, and which an equality on the spelling does not.
+        let found = look_up("quill-test-agent", &path).expect("the program is found");
+        assert_eq!(
+            found.to_string_lossy().to_lowercase(),
+            program.to_string_lossy().to_lowercase(),
+            "the file that was written is the file that was found"
+        );
         assert!(look_up("quill-no-such-agent", &path).is_none());
         assert!(look_up("", &path).is_none(), "an empty name is not a program");
     }

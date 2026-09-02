@@ -311,6 +311,30 @@ pub enum Focus {
     Plugin,
 }
 
+/// The one pane a window is showing, while a pane is maximised.
+///
+/// `task-1771`: *"I should be able to double click anywhere in the top of a pane to get it to maximize,
+/// then Esc or double click to put it back to the size it was."*
+///
+/// **Maximising is putting everything else away, and that is the whole of it.** Quill already has a way for
+/// a panel not to be showing, and `dock::regions` already gives the room to whatever is left — hiding the
+/// editing area gives it to the panels, and one panel on one side fills the window. So a maximised pane is
+/// not a fifth kind of layout with its own arithmetic to get wrong; it is the layout there already is, with
+/// one thing switched on and the rest switched off, and everything downstream of that — the dividers, the
+/// rail's lit buttons, `panel list`, the drop bands — reports the truth without being told.
+///
+/// What has to be remembered is therefore what was showing, so that Escape can put it back. It is not
+/// written to the settings file: a window that opened maximised with no memory of what it was hiding would
+/// be a window somebody has to reassemble by hand.
+#[derive(Debug, Clone, PartialEq)]
+struct Maximised {
+    /// The pane that is showing. `None` means the editing area, which is not a panel.
+    pane: Option<dock::Panel>,
+    /// What was showing before, in `dock::Panel::index` order, and whether the editing area was.
+    editor: bool,
+    panels: [bool; dock::SLOTS],
+}
+
 /// A tab being carried by the pointer.
 ///
 /// `task-1673` asks for IntelliJ's two: rearranging the tabs in a pane, and dragging a tab from one
@@ -632,6 +656,31 @@ pub struct QuillApp {
     /// it, which is settled at the end of the frame — a pinch with the pointer over the explorer or
     /// the terminal still zooms the pane a person is typing into.
     zoom_offered_to_the_keyboard: bool,
+    /// How far down its rows the explorer was left, and where to put it back on the next frame.
+    ///
+    /// `task-1771` makes every pane zoomable, and a zoom that does not keep the row under the pointer
+    /// still is a zoom you have to scroll back from - which is the complaint `task-1672` answered for the
+    /// editing area. A list is easier than a document: its content scales with its zoom, so the point at
+    /// `offset + above` lands at `(offset + above) * ratio`. The correction is worked out here, because the
+    /// window is what knows where the pointer was and what the zoom was before it changed, and it is applied
+    /// on the **next** frame for the reason the editing area's own anchor is: the rows have not been laid
+    /// out at the new size yet.
+    explorer_scroll: f32,
+    explorer_scroll_to: Option<f32>,
+    /// Which plugin asked for the keyboard, while `focus` is `Focus::Plugin`.
+    ///
+    /// `Focus` says a plugin has the keys and cannot say **which**, because a plugin's pane is not a
+    /// variant of it. `task-1771` needs the difference: `Ctrl` and plus zooms the pane a person is working
+    /// in, and with two contributed panes open there is no other way to tell them apart.
+    plugin_with_the_keyboard: Option<String>,
+    /// The pane filling the window, and what was showing before it did. See [`Maximised`].
+    maximised: Option<Maximised>,
+    /// Set by a double click on the empty part of a tab strip, acted on once the pane loop is over.
+    ///
+    /// After the loop for the reason every other decision about the panes is: maximising changes what is
+    /// showing, and a pane changing that while the row of them is being walked would be the loop editing
+    /// what it is walking.
+    maximise_wanted: bool,
     /// True while the Markdown preview holds the selection that `Copy` means.
     ///
     /// The preview must never take the keyboard: in the side-by-side view the source is being typed
@@ -938,6 +987,11 @@ impl QuillApp {
             zoom_pending: 1.0,
             zoom_taken: false,
             zoom_offered_to_the_keyboard: false,
+            explorer_scroll: 0.0,
+            explorer_scroll_to: None,
+            plugin_with_the_keyboard: None,
+            maximised: None,
+            maximise_wanted: false,
             reading_preview: false,
             preview_images: PreviewImages::new(),
             mermaid_scenes: MermaidScenes::new(),
@@ -1504,6 +1558,7 @@ impl QuillApp {
             preview_kind: file_kind::preview_kind(self.document().path()),
             explorer_visible: self.explorer_visible,
             editor_visible: self.editor_visible,
+            maximised: self.maximised.is_some(),
             dock: self.panes.dock,
             line_numbers: self.settings.line_numbers,
             terminal_visible: self.terminal.visible,
@@ -1753,6 +1808,12 @@ impl QuillApp {
                     self.editor_visible = true;
                 }
             }
+            // The pane holding the keyboard, or the editing area when it is the one holding it. Which is
+            // the same question the zoom keys ask, and it is asked in one place. `task-1771`.
+            Action::ToggleMaximisedPane => {
+                let pane = self.the_pane_the_keys_zoom();
+                self.toggle_maximised(pane);
+            }
             Action::ToggleEditor => {
                 let hiding = self.editor_visible;
                 self.editor_visible = !self.editor_visible;
@@ -1766,27 +1827,40 @@ impl QuillApp {
                 self.settings.line_numbers = !self.settings.line_numbers;
                 self.unsaved_settings = true;
             }
-            Action::ChangeFontSize { larger } => {
+            // **The keys zoom whatever has them.** `task-1771` asks for every pane to be zoomable, and a
+            // shortcut that meant "make the editor's font bigger" while somebody was working in the file
+            // tree would be a shortcut that does nothing where they are looking. Which pane that is comes
+            // from `Focus`, which is the one value in the window that says who holds the keyboard.
+            Action::ChangeFontSize { larger } => match self.the_pane_the_keys_zoom() {
+                Some(panel) => self.step_the_zoom_of(panel, if larger { 1 } else { -1 }, None),
                 // On a tab showing a picture the same keys zoom the picture. `task-1658` asks for
                 // control and plus to zoom an image, and one shortcut meaning "make what I am looking
                 // at bigger" is what a person expects of it.
-                let area = self.editor_area.size();
-                match self.files.active_mut().picture.as_mut() {
-                    Some(picture) => picture.step_zoom(larger, area),
-                    None => {
-                        // About the caret, which is what a person zooming with the keyboard is
-                        // looking at. `task-1672`.
-                        self.anchor_the_view_at_the_caret();
-                        self.set_font_size(settings::step_font_size(self.settings.font_size, larger))
+                None => {
+                    let area = self.editor_area.size();
+                    match self.files.active_mut().picture.as_mut() {
+                        Some(picture) => picture.step_zoom(larger, area),
+                        None => {
+                            // About the caret, which is what a person zooming with the keyboard is
+                            // looking at. `task-1672`.
+                            self.anchor_the_view_at_the_caret();
+                            self.set_font_size(settings::step_font_size(
+                                self.settings.font_size,
+                                larger,
+                            ))
+                        }
                     }
                 }
-            }
-            Action::ResetFontSize => match self.files.active_mut().picture.as_mut() {
-                Some(picture) => picture.fit(),
-                None => {
-                    self.anchor_the_view_at_the_caret();
-                    self.set_font_size(settings::DEFAULT_FONT_SIZE)
-                }
+            },
+            Action::ResetFontSize => match self.the_pane_the_keys_zoom() {
+                Some(panel) => self.reset_the_zoom_of(panel),
+                None => match self.files.active_mut().picture.as_mut() {
+                    Some(picture) => picture.fit(),
+                    None => {
+                        self.anchor_the_view_at_the_caret();
+                        self.set_font_size(settings::DEFAULT_FONT_SIZE)
+                    }
+                },
             },
             Action::ToggleTerminal => {
                 let showing = !self.terminal.visible;
@@ -3225,6 +3299,20 @@ impl QuillApp {
         self.panel_rects.of(panel)
     }
 
+    /// Everything below the title bar and right of the rail: the room every panel and the editing area
+    /// are laid out inside. What `dock::regions` is given.
+    pub fn panes_area(&self) -> Rect {
+        self.panes_area
+    }
+
+    /// Where one pane's strip of tabs drew itself on the last frame.
+    ///
+    /// For a test that has to press the part of it no tab wanted, which is where two presses fill the
+    /// window with the editing area. `Rect::NOTHING` for a pane that is not there.
+    pub fn tab_strip_for_tests(&self, pane: usize) -> Rect {
+        self.tab_strips.get(pane).map(|strip| strip.area).unwrap_or(Rect::NOTHING)
+    }
+
     pub fn panel_area(&self, panel: dock::Panel) -> Rect {
         let rect = self.panel_rects.of(panel);
         if rect.width() > 1.0 && rect.height() > 1.0 {
@@ -3321,7 +3409,10 @@ impl QuillApp {
             // borrowed by the `Look` the providers are drawing with.
             let shape = pane_ui.painter().add(egui::Shape::Noop);
             let chrome = self.chrome_for(&plugin);
+            // The pane's own zoom, which is `task-1771`'s: every pane is zoomable, and a pane a plugin
+            // contributed has no font size of its own to walk, so it has a multiplier instead.
             let look = crate::services::plugin_ui::Look::of(&self.settings, &self.renderer)
+                .zoomed_by(self.panes.zoom_of(panel))
                 .holding_the_keyboard(matches!(self.focus, Focus::Plugin))
                 .drawing_into(&chrome);
             let rect = body;
@@ -3368,6 +3459,16 @@ impl QuillApp {
         for (panel, grab) in grabs {
             self.note_a_panel_grab(panel, grab);
         }
+        // And the zoom, for the same reason: it changes the settings, and the loop is holding a borrow of
+        // the renderer and of every provider for the whole of itself. `task-1771`.
+        for slot in 0..self.plugin_ui.pane_count() {
+            if !self.plugin_ui.is_visible(slot) {
+                continue;
+            }
+            let panel = dock::Panel::Plugin(slot as u8);
+            let rect = self.panel_rects.of(panel);
+            self.zoom_over_a_panel(ui, panel, rect);
+        }
         if let Some(key) = closing {
             self.show_the_plugin_pane(&key, false);
         }
@@ -3376,16 +3477,47 @@ impl QuillApp {
 
     /// Draw whatever modal each open plugin has, and act on what it asked for.
     fn show_the_plugin_modals(&mut self, ui: &mut egui::Ui) {
-        let look = crate::services::plugin_ui::Look::of(&self.settings, &self.renderer)
-            .holding_the_keyboard(matches!(self.focus, Focus::Plugin));
         let mut asked: Vec<(String, crate::services::plugin_ui::Request)> = Vec::new();
+        // What each modal recorded, rasterised after the loop for the reason a pane's is: the canvases are
+        // `self`'s and a provider is drawing with a borrow of `self` until the iteration ends.
+        let mut chromes: Vec<(
+            crate::services::plugin_ui::ChromeSlot,
+            crate::services::vello_canvas::Chrome,
+        )> = Vec::new();
         for plugin in self.plugin_ui.surfaces().plugins() {
             if !self.plugin_ui.is_open(&plugin) {
                 continue;
             }
+            // **A modal gets the same depth its pane does.** `task-1771` reports the ticket as "plain, not
+            // much effort", and the reason it looked plain beside the board it opens from is that the board
+            // is drawn on a decoration canvas and the modal was not: every well, every field and every
+            // button on it fell back to the flat form.
+            let chrome = self.chrome_for(&plugin);
+            let look = crate::services::plugin_ui::Look::of(&self.settings, &self.renderer)
+                .holding_the_keyboard(matches!(self.focus, Focus::Plugin))
+                .drawing_into(&chrome);
             if let Some(provider) = self.plugin_ui.provider(&plugin) {
                 let (wanted, _closed) = provider.modal(ui.ctx(), &look);
                 asked.extend(wanted.into_iter().map(|request| (plugin.clone(), request)));
+                if let Some(slot) = provider.take_the_modals_canvas() {
+                    drop(look);
+                    chromes.push((slot, chrome));
+                    continue;
+                }
+            }
+            drop(look);
+        }
+        for (slot, chrome) in &chromes {
+            let items = chrome.take();
+            if items.is_empty() {
+                continue;
+            }
+            if let Some((texture, drawn)) =
+                self.canvases.texture_for(ui.ctx(), slot.id, slot.area, &items)
+            {
+                let uv = Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0));
+                slot.painter
+                    .set(slot.shape, egui::Shape::image(texture, drawn, uv, egui::Color32::WHITE));
             }
         }
         for (plugin, request) in asked {
@@ -3468,6 +3600,7 @@ impl QuillApp {
                     true => Focus::Plugin,
                     false => Focus::Editor,
                 };
+                self.plugin_with_the_keyboard = taking.then(|| plugin.to_owned());
                 if let Some(provider) = self.plugin_ui.provider(plugin) {
                     provider.keyboard(taking);
                 }
@@ -5871,6 +6004,20 @@ impl QuillApp {
         // Before any button is drawn, so that on the very first frame the focus is here and not on the
         // first thing in the title bar.
         hold_the_keyboard(ui);
+        // Escape puts a maximised pane back, which is the other half of `task-1771`'s double click. Here,
+        // before anything reads the frame's keys, and **consumed** rather than merely read: Escape already
+        // means "give the keyboard back" to the explorer and "leave the terminal", and a key that did two
+        // things at once would be worse than one that did neither. Nothing while a modal or a text box has
+        // the keys, because there Escape is theirs.
+        if self.maximised.is_some()
+            && !a_modal_has_the_keyboard(ui.ctx())
+            && !text_box_has_the_keyboard(ui.ctx())
+            && ui.input_mut(|input| {
+                input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
+            })
+        {
+            self.restore_the_maximised_pane();
+        }
         // Always ask to be woken again. See `HEARTBEAT`.
         ui.ctx().request_repaint_after(HEARTBEAT);
         // Once a frame and nowhere else, so a worker thread can tell an idle window from a stopped one
@@ -6194,6 +6341,8 @@ impl QuillApp {
                         reveal,
                         reveal_selected,
                         opacity: self.settings.opacity,
+                        zoom: self.panes.zoom_of(dock::Panel::Explorer),
+                        scroll_to: self.explorer_scroll_to.take(),
                     },
                     &decorate,
                 )
@@ -6229,6 +6378,10 @@ impl QuillApp {
                 self.explorer_visible = false;
             }
             self.dragging_a_row = explorer_outcome.dragging;
+            // Where the list was left, so a zoom can put the row under the pointer back under it on the
+            // next frame. See `keep_the_place_through_a_panels_zoom`.
+            self.explorer_scroll = explorer_outcome.scroll;
+            self.zoom_over_a_panel(ui, dock::Panel::Explorer, explorer_rect);
             self.note_a_panel_grab(dock::Panel::Explorer, explorer_outcome.grab);
             if let Some((at, path, directory)) = explorer_outcome.context_menu {
                 let aimed = match explorer_outcome.menu_over_empty_space {
@@ -6302,14 +6455,6 @@ impl QuillApp {
         // The value tooltip, drawn from the geometry the pane recorded, after the loop for exactly
         // the reason above. `task-1696`.
         self.show_the_value_tooltip(ui);
-        // A gesture nobody was pointing at belongs to the pane being typed into. Here rather than
-        // in the loop, because a pane earlier in the row must not take a gesture aimed at one
-        // later in it, and which pane the pointer is over is not known until they are all drawn.
-        if !self.zoom_taken && self.zoom_offered_to_the_keyboard {
-            self.zoom_taken = true;
-            self.zoom_the_text(ui, 0.0);
-        }
-
         // The dividers between the panes, added after every pane for the reason
         // `components::splitter` records: the editing area takes drags over the whole of its
         // rectangle, so a divider added earlier sits underneath one and never sees the pointer.
@@ -6449,6 +6594,7 @@ impl QuillApp {
                     self.settings.opacity,
                 )
             };
+            self.zoom_over_a_panel(ui, dock::Panel::Terminal, terminal_rect);
             self.note_a_panel_grab(dock::Panel::Terminal, panel_outcome.grab);
             if panel_outcome.take_focus {
                 self.focus = Focus::Terminal;
@@ -6493,6 +6639,7 @@ impl QuillApp {
                     self.settings.opacity,
                 )
             };
+            self.zoom_over_a_panel(ui, dock::Panel::Run, run_rect_tile);
             self.note_a_panel_grab(dock::Panel::Run, panel_outcome.grab);
             if panel_outcome.take_focus {
                 self.focus = Focus::Terminal;
@@ -6534,8 +6681,26 @@ impl QuillApp {
                 let DebugSplit { panel, debug } = split_the_debug(self);
                 debug_panel::show(&mut panel_ui, debug_rect, panel, debug, &idle, opacity)
             };
+            self.zoom_over_a_panel(ui, dock::Panel::Debug, debug_rect);
             self.note_a_panel_grab(dock::Panel::Debug, outcome.grab);
             self.act_on_the_debug_tile(outcome, ui.ctx());
+        }
+
+        // Two presses on the empty part of a tab strip. After every pane has been drawn, because it changes
+        // what is showing and the pane loop is what reads that.
+        if std::mem::take(&mut self.maximise_wanted) {
+            self.toggle_maximised(None);
+        }
+
+        // A gesture nobody was pointing at belongs to the pane being typed into. Here rather than in the
+        // pane loop, because a pane earlier in the row must not take a gesture aimed at one later in it,
+        // and which pane the pointer is over is not known until they are all drawn. **After every panel**
+        // and not merely after the editing area, which is `task-1771`: the explorer, the tiles and a
+        // plugin's pane all claim a gesture the pointer is over now, and settling this in the middle of
+        // the frame gave the editing area a wheel turned over the terminal.
+        if !self.zoom_taken && self.zoom_offered_to_the_keyboard {
+            self.zoom_taken = true;
+            self.zoom_the_text(ui, 0.0);
         }
 
         // One divider a panel, along the edge that faces the editing area. Added once every panel
@@ -7003,9 +7168,33 @@ impl QuillApp {
     /// What comes out is written to the settings file once the pointer is up rather than on every
     /// frame, by the rule `ui` already keeps for a dragged divider.
     fn zoom_the_text(&mut self, ui: &egui::Ui, above: f32) {
+        let steps = self.zoom_steps(ui);
+        if steps == 0 {
+            return;
+        }
+        // Counted first and taken afterwards, so the point that is to stay put is read off the
+        // layout as it is now — before `set_font_size` marks it stale — however many sizes one
+        // frame of the gesture turns out to be worth.
+        self.anchor_the_view(above);
+        for _ in 0..steps.abs() {
+            self.set_font_size(settings::step_font_size(self.settings.font_size, steps > 0));
+        }
+    }
+
+    /// How many whole steps this frame's gesture is worth, and nothing else.
+    ///
+    /// Split out from [`Self::zoom_the_text`] because `task-1771` makes **every** pane zoomable and what
+    /// one step means differs by pane: a size off the Settings window's list for the editing area and for a
+    /// terminal, a multiplier for the explorer and for a pane a plugin contributed. The accumulation is the
+    /// same for all of them and lives here, once, so a wheel turned the same distance is worth the same
+    /// number of steps wherever the pointer happens to be.
+    ///
+    /// Called at most once a frame, by whichever pane claimed the gesture — which is what `zoom_taken` is
+    /// for. Calling it twice would spend the same notch twice.
+    fn zoom_steps(&mut self, ui: &egui::Ui) -> i32 {
         let gesture = ui.input(|input| input.zoom_delta());
         if (gesture - 1.0).abs() < f32::EPSILON {
-            return;
+            return 0;
         }
         self.zoom_pending *= gesture;
         let mut steps = 0i32;
@@ -7017,16 +7206,244 @@ impl QuillApp {
             self.zoom_pending *= ZOOM_STEP;
             steps -= 1;
         }
+        steps
+    }
+
+    /// A pinch, or the wheel with the zoom modifier held, over a panel that is not the editing area.
+    ///
+    /// `task-1771`: *"we want every pane (file panel, folders, terminal, agent chat, agent tasks, etc) to
+    /// be zoomable with Ctrl/Cmd + or Ctrl/Cmd scroll wheel."* The claim is the editing area's own — the
+    /// pointer decides whose the gesture is, and the first pane to find the pointer inside itself takes it
+    /// — so a wheel turned over the explorer cannot also step the editor's font, which is the fault
+    /// `zoom_taken` was written for in the first place.
+    ///
+    /// The pointer is asked for as `hover_pos().or(latest_pos())` for the reason the editing area records:
+    /// `egui` reports no pointer at all on a frame whose only input is a wheel event, so a gesture gated on
+    /// the hover alone is a gesture thrown away.
+    fn zoom_over_a_panel(&mut self, ui: &egui::Ui, panel: dock::Panel, area: Rect) {
+        if self.zoom_taken || area.width() < 1.0 || area.height() < 1.0 {
+            return;
+        }
+        let Some(at) = ui
+            .input(|input| input.pointer.hover_pos().or_else(|| input.pointer.latest_pos()))
+            .filter(|at| area.contains(*at))
+        else {
+            return;
+        };
+        self.zoom_taken = true;
+        let steps = self.zoom_steps(ui);
         if steps == 0 {
             return;
         }
-        // Counted first and taken afterwards, so the point that is to stay put is read off the
-        // layout as it is now — before `set_font_size` marks it stale — however many sizes one
-        // frame of the gesture turns out to be worth.
-        self.anchor_the_view(above);
-        for _ in 0..steps.abs() {
-            self.set_font_size(settings::step_font_size(self.settings.font_size, steps > 0));
+        self.step_the_zoom_of(panel, steps, Some(at.y - area.top()));
+    }
+
+    /// Take `steps` off or on to what `panel` is drawn at.
+    ///
+    /// **Where a panel already has a point size a person chooses, the zoom walks that setting.** The three
+    /// tiles are character grids drawn at `terminal.font.size`, which the Settings window offers a list for,
+    /// so the wheel walks that list: one number says how big a terminal is rather than a setting and a
+    /// multiplier that can disagree. The explorer and a contributed pane have no such number, so theirs is a
+    /// multiplier over everything they draw — `settings::ZOOMS`.
+    ///
+    /// `above` is how far below the top of the panel the pointer was, when there was one. A list's content
+    /// scales with its zoom, so the point at `offset + above` moves to `(offset + above) * ratio`; putting
+    /// it back under the pointer is one subtraction. Only the explorer keeps its scroll where the window can
+    /// reach it; a provider is told the ratio instead and corrects its own, which is what `UiProvider::zoomed`
+    /// is for.
+    fn step_the_zoom_of(&mut self, panel: dock::Panel, steps: i32, above: Option<f32>) {
+        let up = steps > 0;
+        match panel {
+            dock::Panel::Terminal | dock::Panel::Run | dock::Panel::Debug => {
+                let mut size = self.settings.terminal_font_size;
+                for _ in 0..steps.abs() {
+                    size = settings::step_terminal_font_size(size, up);
+                }
+                if (size - self.settings.terminal_font_size).abs() < 0.01 {
+                    return;
+                }
+                self.settings.terminal_font_size = size;
+                self.unsaved_settings = true;
+            }
+            dock::Panel::Explorer | dock::Panel::Plugin(_) => {
+                let was = self.panes.zoom_of(panel);
+                let mut zoom = was;
+                for _ in 0..steps.abs() {
+                    zoom = settings::step_zoom(zoom, up);
+                }
+                if (zoom - was).abs() < 0.001 {
+                    return;
+                }
+                self.panes.set_zoom_of(panel, zoom);
+                self.unsaved_settings = true;
+                self.keep_the_place_through_a_panels_zoom(panel, zoom / was, above);
+            }
         }
+        if let Some(context) = &self.context {
+            context.request_repaint();
+        }
+    }
+
+    /// Put the point the pointer was over back under the pointer, at the panel's new size.
+    fn keep_the_place_through_a_panels_zoom(
+        &mut self,
+        panel: dock::Panel,
+        ratio: f32,
+        above: Option<f32>,
+    ) {
+        let Some(above) = above else {
+            return;
+        };
+        match panel {
+            dock::Panel::Explorer => {
+                // The rows start below the heading and the filter box, which do not scroll; `above` is
+                // measured from the top of the panel, so anything above the list anchors the first row,
+                // which is the honest answer for a pointer that was over the filter box.
+                let into_the_list = (above - self.explorer_scroll_offset_to_the_rows()).max(0.0);
+                let put = (self.explorer_scroll + into_the_list) * ratio - into_the_list;
+                self.explorer_scroll_to = Some(put.max(0.0));
+            }
+            dock::Panel::Plugin(slot) => {
+                let above = (above - crate::components::agent_tasks::PANE_HEADER).max(0.0);
+                if let Some(plugin) = self.plugin_ui.plugin_of(slot as usize) {
+                    if let Some(provider) = self.plugin_ui.provider(&plugin) {
+                        provider.zoomed(ratio, above);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Fill the window with one pane, or put back what was showing before one did.
+    ///
+    /// `pane` is `None` for the editing area. Toggling the pane that is already maximised restores;
+    /// toggling a different one maximises that one instead, keeping the same memory of what to restore, so
+    /// double clicking your way round the window never loses the arrangement you started from.
+    ///
+    /// Public because the menu, the command line and a double click on a header all reach it, which is the
+    /// one-action-one-place rule `run_action` keeps.
+    pub fn toggle_maximised(&mut self, pane: Option<dock::Panel>) {
+        match self.maximised.take() {
+            // The same one again: put everything back where it was.
+            Some(was) if was.pane == pane => {
+                self.editor_visible = was.editor;
+                for panel in dock::Panel::all(self.plugin_ui.pane_count()) {
+                    self.show_a_panel(panel, was.panels[panel.index()]);
+                }
+                // With nothing showing at all — which a window can be left in only by putting the last
+                // panel away while the editing area was hidden — the editing area comes back, which is the
+                // promise `Action::ToggleEditor` already makes.
+                if !self.editor_visible && !self.anything_is_showing_in_the_panes() {
+                    self.editor_visible = true;
+                }
+            }
+            // A different one, or none: this pane fills the window and the memory is kept.
+            was => {
+                let remembered = was.unwrap_or_else(|| Maximised {
+                    pane,
+                    editor: self.editor_visible,
+                    panels: self.panels_showing(),
+                });
+                for panel in dock::Panel::all(self.plugin_ui.pane_count()) {
+                    self.show_a_panel(panel, pane == Some(panel));
+                }
+                self.editor_visible = pane.is_none();
+                self.maximised = Some(Maximised { pane, ..remembered });
+            }
+        }
+    }
+
+    /// Put the window back the way it was, if a pane is filling it. What `Escape` means.
+    ///
+    /// Answers whether it did anything, because `Escape` has other meanings and the one that acts has to
+    /// be the only one that acts.
+    pub fn restore_the_maximised_pane(&mut self) -> bool {
+        let Some(was) = self.maximised.as_ref().map(|was| was.pane) else {
+            return false;
+        };
+        self.toggle_maximised(was);
+        true
+    }
+
+    /// Which pane is filling the window, for a test and for `panel list`.
+    pub fn maximised_pane(&self) -> Option<Option<dock::Panel>> {
+        self.maximised.as_ref().map(|was| was.pane)
+    }
+
+    /// Show or hide one panel, whichever kind it is.
+    ///
+    /// The four have their own flags and a contributed pane has a registry, so "put this panel away" was
+    /// four `match` arms written out wherever it was needed. One function, so maximising cannot forget a
+    /// kind of panel the day a fifth is added — the compiler names it here.
+    fn show_a_panel(&mut self, panel: dock::Panel, showing: bool) {
+        match panel {
+            dock::Panel::Explorer => self.explorer_visible = showing,
+            dock::Panel::Terminal => self.show_the_terminal_tile(showing),
+            dock::Panel::Run => self.show_the_run_tile(showing),
+            dock::Panel::Debug => self.show_the_debug_tile(showing),
+            dock::Panel::Plugin(slot) => {
+                if let Some(key) = self.plugin_ui.pane_key(slot as usize) {
+                    self.show_the_plugin_pane(&key, showing);
+                }
+            }
+        }
+    }
+
+    /// Which panel the zoom keys are about, or `None` when they are about the editing area.
+    ///
+    /// `Focus` is the one value that says who holds the keyboard, so it is the one thing asked. Two cases
+    /// are worth writing down. The three tiles share `terminal.font.size`, so it does not matter which of
+    /// them `Focus::Terminal` meant — they all answer with the same setting. And a plugin showing as a
+    /// **tab** is in the editing area, drawn at the editor's own font, so it is not a panel and the keys
+    /// go where they always went; only a contributed **pane** answers here.
+    fn the_pane_the_keys_zoom(&self) -> Option<dock::Panel> {
+        // **A picture is the one exception, and it is not a nicety.** `task-1658` asks that control and
+        // plus zoom an image, and an image is opened by clicking it in the tree - which leaves the keyboard
+        // in the **explorer**, because a single click there is a way of looking through a folder. Routing by
+        // the keyboard alone would therefore mean the one gesture that ticket exists for could never be made
+        // without clicking somewhere else first. A picture has no text in it to be typing at, so there is
+        // nothing to be lost by saying the keys are always its own.
+        if self.files.active().picture.is_some() {
+            return None;
+        }
+        match self.focus {
+            Focus::Editor => None,
+            Focus::Explorer => Some(dock::Panel::Explorer),
+            Focus::Terminal => Some(dock::Panel::Terminal),
+            Focus::Plugin => {
+                let plugin = self.plugin_with_the_keyboard.as_deref()?;
+                (0..self.plugin_ui.pane_count())
+                    .filter(|slot| self.plugin_ui.is_visible(*slot))
+                    .find(|slot| self.plugin_ui.plugin_of(*slot).as_deref() == Some(plugin))
+                    .map(|slot| dock::Panel::Plugin(slot as u8))
+            }
+        }
+    }
+
+    /// Put a panel back to the size it draws at until somebody changes it, which is what `Reset Font Size`
+    /// means when the keys belong to a panel rather than to the editing area.
+    fn reset_the_zoom_of(&mut self, panel: dock::Panel) {
+        match panel {
+            dock::Panel::Terminal | dock::Panel::Run | dock::Panel::Debug => {
+                self.settings.terminal_font_size = settings::Settings::new().terminal_font_size;
+            }
+            dock::Panel::Explorer | dock::Panel::Plugin(_) => {
+                let was = self.panes.zoom_of(panel);
+                self.panes.set_zoom_of(panel, settings::DEFAULT_ZOOM);
+                self.keep_the_place_through_a_panels_zoom(panel, settings::DEFAULT_ZOOM / was, None);
+            }
+        }
+        self.unsaved_settings = true;
+    }
+
+    /// How far below the top of the explorer its scrolling rows start, at the zoom it is drawn at.
+    ///
+    /// The heading, the filter box and the gap under it, which is what `components::explorer` lays out
+    /// before the list. Written here rather than exported from there because it is the one number the
+    /// window needs and a second copy of the whole layout would be worse than one number with a name.
+    fn explorer_scroll_offset_to_the_rows(&self) -> f32 {
+        (36.0 + 24.0 + 12.0) * self.panes.zoom_of(dock::Panel::Explorer)
     }
 
     /// Remember the text `above` points below the top of the editing area, so the zoom can put it
@@ -7252,6 +7669,12 @@ impl QuillApp {
         if let Some(index) = outcome.close.and_then(at) {
             *close = Some(index);
         }
+        // Two presses on the empty part of the strip fill the window with the editing area, and two more
+        // put the panels back. `task-1771`: every pane is maximised from its own top, and the strip is what
+        // the editing area has instead of a header.
+        if outcome.twice_on_the_empty_part {
+            self.maximise_wanted = true;
+        }
         if let Some((within, where_)) = outcome.menu {
             // The tab is shown first, so every entry in the menu can be about "the tab that is
             // showing" and so be an action with no argument. See `actions::tab_menu`.
@@ -7312,6 +7735,11 @@ impl QuillApp {
         }
         if let Some(at) = grab.menu {
             self.panel_menu = Some((at, panel));
+        }
+        // Two presses on a header fill the window with that panel, and two more put everything back.
+        // `task-1771`, and it is the gesture every window manager gives a title bar.
+        if grab.twice {
+            self.toggle_maximised(Some(panel));
         }
     }
 
@@ -7406,16 +7834,100 @@ impl QuillApp {
         panes: Rect,
     ) {
         if drag.delta != 0.0 {
-            let room = match self.panes.dock.side_of(panel).is_a_column() {
-                true => panes.width() - dock::EDITOR_MIN_WIDTH,
-                false => panes.height() - dock::EDITOR_MIN_HEIGHT,
-            };
-            self.panes.resize(panel, drag.delta * sign, room);
+            match self.editor_visible {
+                true => {
+                    let room = match self.panes.dock.side_of(panel).is_a_column() {
+                        true => panes.width() - dock::EDITOR_MIN_WIDTH,
+                        false => panes.height() - dock::EDITOR_MIN_HEIGHT,
+                    };
+                    self.panes.resize(panel, drag.delta * sign, room);
+                }
+                false => self.move_a_divider_with_no_editor(panel, drag.delta * sign),
+            }
             self.unsaved_settings = true;
         }
         if drag.reset {
             self.panes.reset_size_of(panel);
             self.unsaved_settings = true;
+        }
+    }
+
+    /// Move a divider when there is no editing area between the two sides of the window.
+    ///
+    /// **The room is shared out in proportion when the editing area is hidden**, which `dock::fill_the_depth`
+    /// does so that hiding it gives the room to the panels rather than leaving a hole. That is right for the
+    /// layout and wrong for a drag: a panel's stored width is then a *share* rather than a size, so ten
+    /// points of pointer became three points of movement, less the wider it got — and it stopped altogether
+    /// at [`crate::settings::PANEL_MAX_WIDTH`]. `task-1771` reports that as the Agent-Chat pane having a
+    /// maximum width; the cap is gone, and this is the other half.
+    ///
+    /// Two steps, and the first is what makes the second exact. **Write the rendered measurements back**, so
+    /// the stored numbers add up to the room and the proportional share is the identity. Then **take what
+    /// this panel gains off the side facing it**, so they go on adding up to the room and the divider lands
+    /// under the pointer rather than a fraction of the way towards it.
+    ///
+    /// With nothing on the far side there is nothing to take from and a panel cannot grow: it already has
+    /// everything, which is what its divider sitting against the edge of the window says. Shrinking still
+    /// works, because the room it gives up goes to the panels beside it on its own side.
+    fn move_a_divider_with_no_editor(&mut self, panel: dock::Panel, by: f32) {
+        let side = self.panes.dock.side_of(panel);
+        let column = side.is_a_column();
+        let showing = self.panels_showing();
+        let contributed = self.plugin_ui.pane_count();
+        let measured = |panes: &Panes, one: dock::Panel| match column {
+            true => panes.width_of(one),
+            false => panes.height_of(one),
+        };
+        let smallest = |panes: &Panes, one: dock::Panel| match column {
+            true => panes.min_width_of(one),
+            false => panes.min_height_of(one),
+        };
+        let set = |panes: &mut Panes, one: dock::Panel, value: f32| match column {
+            true => panes.set_width_of(one, value),
+            false => panes.set_height_of(one, value),
+        };
+        // Every panel on this axis, laid out as it is on the screen right now.
+        let here: Vec<dock::Panel> = dock::Panel::all(contributed)
+            .into_iter()
+            .filter(|one| showing[one.index()])
+            .filter(|one| self.panes.dock.side_of(*one).is_a_column() == column)
+            .collect();
+        for one in here.iter().copied() {
+            let rect = self.panel_rects.of(one);
+            let drawn = match column {
+                true => rect.width(),
+                false => rect.height(),
+            };
+            let least = smallest(&self.panes, one);
+            if drawn > 0.0 {
+                set(&mut self.panes, one, drawn.max(least));
+            }
+        }
+        // What the far side can give, which is everything above each of its own smallest sizes.
+        let facing: Vec<dock::Panel> = here
+            .into_iter()
+            .filter(|one| self.panes.dock.side_of(*one) == side.opposite())
+            .collect();
+        let givable: f32 = facing
+            .iter()
+            .map(|one| (measured(&self.panes, *one) - smallest(&self.panes, *one)).max(0.0))
+            .sum();
+        let mine = measured(&self.panes, panel);
+        let by = by.clamp(-(mine - smallest(&self.panes, panel)).max(0.0), givable);
+        if by == 0.0 {
+            return;
+        }
+        set(&mut self.panes, panel, mine + by);
+        // Taken from the far side in proportion to what each of them has to give, so a side holding two
+        // panels shrinks as one thing rather than emptying the first of them first.
+        for one in facing {
+            let spare = (measured(&self.panes, one) - smallest(&self.panes, one)).max(0.0);
+            let share = match givable > 0.0 {
+                true => by * (spare / givable),
+                false => 0.0,
+            };
+            let now = measured(&self.panes, one);
+            set(&mut self.panes, one, now - share);
         }
     }
 

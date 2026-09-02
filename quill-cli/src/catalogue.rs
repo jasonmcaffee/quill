@@ -1075,6 +1075,22 @@ pub const COMMANDS: &[Command] = &[
     },
     Command {
         area: "panel",
+        verb: "zoom",
+        summary: "Make everything in a panel bigger or smaller, which is what Ctrl/Cmd and the wheel over it does. The explorer and a pane a plugin contributed carry a multiplier of their own; the terminal, run and debug tiles are character grids and their zoom is the terminal's font size, so a zoom there walks `settings set terminal.font.size` and both say the same number.",
+        arguments: &[
+            argument("panel", true, "explorer, terminal, run, debug, or a contributed pane's <plugin>/<pane>."),
+            argument("factor", false, "How much bigger than usual, between 0.5 and 3. Left out, it says what the panel is at now; `reset` puts it back to 1."),
+        ],
+        flags: NO_FLAGS,
+        examples: &[
+            "quill-cli panel zoom explorer 1.35",
+            "quill-cli panel zoom agent-chat/chat",
+            "quill-cli panel zoom explorer reset",
+        ],
+        local: false,
+    },
+    Command {
+        area: "panel",
         verb: "reset",
         summary: "Put every panel back where a new Quill has it: the explorer down the left, the three tiles along the bottom, each at its starting size.",
         arguments: NO_ARGUMENTS,

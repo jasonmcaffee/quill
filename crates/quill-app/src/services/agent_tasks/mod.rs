@@ -32,7 +32,7 @@ use std::path::PathBuf;
 use serde_json::json;
 
 use crate::services::plugin_ui::{Answer, Context, Look, Request, UiProvider};
-use model::{Assignee, Author, Board, Priority, Status, Task};
+use model::{Assignee, Author, Board, Epic, Priority, Sprint, SprintStatus, Status, Task};
 use store::{NewTask, Store, TaskEdit};
 
 /// What the board is showing.
@@ -474,6 +474,58 @@ pub struct Detail {
     pub comments_raw: std::collections::HashSet<i64>,
 }
 
+/// One group in the Backlog or the Completed view: a sprint, or the backlog itself, and its tickets.
+///
+/// A value rather than a pair of parallel lists, so that "which group is this row in" is one field and the
+/// drawing cannot pair the wrong heading with the wrong tickets.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Group {
+    /// The sprint, or `None` for the backlog — the tickets that are in no sprint at all.
+    pub sprint: Option<Sprint>,
+    pub tasks: Vec<Task>,
+}
+
+impl Group {
+    /// The id a ticket dropped in this group is given, which is `None` for the backlog.
+    pub fn id(&self) -> Option<i64> {
+        self.sprint.as_ref().map(|sprint| sprint.id)
+    }
+
+    pub fn name(&self) -> &str {
+        self.sprint.as_ref().map(|sprint| sprint.name.as_str()).unwrap_or("Backlog")
+    }
+}
+
+/// Split `arguments` into the longest run at the start that names something, and the rest.
+///
+/// **A sprint and an epic are named by name, and a name has spaces in it.** `August 2nd Half` is three
+/// arguments, so a command taking `<sprint> <name>` cannot simply read the first of them — and asking
+/// somebody to look an id up first would be asking them to read the database to rename a fortnight. So the
+/// longest prefix that names one wins, which is unambiguous in the one way that matters: a name cannot be a
+/// prefix of itself and something else at the same time.
+///
+/// `found` says whether a run of words names something, and answers which one. `None` when nothing does.
+fn split_off_a_name(
+    arguments: &[String],
+    found: impl Fn(&str) -> Option<usize>,
+) -> Option<(usize, String)> {
+    for taken in (1..=arguments.len()).rev() {
+        let said = arguments[..taken].join(" ");
+        if let Some(at) = found(&said) {
+            return Some((at, arguments[taken..].join(" ")));
+        }
+    }
+    None
+}
+
+/// The colours an epic can be given.
+///
+/// **The browser board's own seven**, from `EpicsView.tsx`, so that a board read in one place and the same
+/// board read in the other are the same colours. They are data rather than palette: an epic's colour is the
+/// one thing on this board that comes from the database, which is the allowance the file icons already have.
+pub const SWATCHES: &[&str] =
+    &["#2F6BFF", "#8B6BFF", "#FF6B5B", "#2FCFA6", "#FFB648", "#FF4F7A", "#6B7686"];
+
 /// The Agent-Tasks provider.
 #[derive(Default)]
 pub struct AgentTasks {
@@ -500,6 +552,43 @@ pub struct AgentTasks {
     /// The Backlog and Completed views, read when one of them is showing and a command changed something.
     backlog: Vec<Task>,
     completed: Vec<Task>,
+    /// The Backlog and Completed views, as the groups they are drawn in.
+    ///
+    /// `task-1771` asks that these two look like the page this board is modelled on, and that page groups by
+    /// **sprint**: every sprint that is not finished, then the backlog itself, each with its own heading and
+    /// its own count, and a ticket dragged from one to another changes which sprint it is in. A flat column
+    /// of every ticket that has no sprint, which is what this was, answers none of that.
+    ///
+    /// Read when the view is chosen and again after anything changes, which is the rule the lanes already
+    /// keep: a query inside the drawing is the one thing the design says the board never does.
+    groups: Vec<Group>,
+    /// Which sprints are folded shut in the Completed view, by id.
+    collapsed: Vec<i64>,
+    /// How many tickets name each epic, by epic id — counted in the database, because the board holds only
+    /// the active sprint and an epic used entirely in the backlog would otherwise read as zero.
+    epic_counts: Vec<(i64, i64)>,
+    /// The ticket being carried in the Backlog view, and the group the pointer is over.
+    carrying: Option<i64>,
+    over_group: Option<Option<i64>>,
+    /// What is being typed into the Backlog view's `New sprint` box, and whether it is open.
+    new_sprint: String,
+    naming_a_sprint: bool,
+    /// The same for the Epics view, with the colour chosen beside the box.
+    new_epic: String,
+    new_epic_colour: String,
+    /// The epic being renamed in place, and the name so far.
+    renaming_epic: Option<i64>,
+    epic_name_draft: String,
+    /// Where the ticket modal left room for its decoration on the frame just drawn. See
+    /// `plugin_ui::ChromeSlot`.
+    modal_canvas: Option<crate::services::plugin_ui::ChromeSlot>,
+    /// A sprint or an epic whose delete button has been pressed once.
+    ///
+    /// **Asked rather than done**, which is the rule `delete_asked` already keeps for a ticket: the browser
+    /// board puts a `confirm()` in the way of both of these, and a plugin cannot open the window's own
+    /// confirmation, so the row asks in place.
+    sprint_to_delete: Option<i64>,
+    epic_to_delete: Option<i64>,
     /// How far the lanes are scrolled sideways.
     lane_scroll: f32,
     /// How far each lane is scrolled down, by lane. Four at most, so a list rather than a map.
@@ -827,11 +916,180 @@ impl AgentTasks {
     /// backlog, and reading both on every refresh would be two queries nobody asked for.
     fn read_the_listings(&mut self) -> Result<(), String> {
         match self.view {
-            View::Backlog => self.backlog = self.store()?.backlog()?,
-            View::Completed => self.completed = self.store()?.completed()?,
+            View::Backlog => {
+                self.backlog = self.store()?.backlog()?;
+                self.groups = self.read_the_groups(false)?;
+            }
+            View::Completed => {
+                self.completed = self.store()?.completed()?;
+                self.groups = self.read_the_groups(true)?;
+            }
+            View::Epics => self.epic_counts = self.store()?.epic_counts()?,
             _ => {}
         }
         Ok(())
+    }
+
+    /// The groups one of the two listings is drawn in.
+    ///
+    /// `finished` picks which: the Completed view is every sprint that has been closed, newest first, and
+    /// the Backlog view is every sprint that has not been, in the order they were made, with the backlog
+    /// itself last — which is where the page this is modelled on puts it, because the backlog is what is
+    /// left over rather than a sprint of its own.
+    fn read_the_groups(&self, finished: bool) -> Result<Vec<Group>, String> {
+        let store = self.store()?;
+        let mut sprints: Vec<Sprint> = store
+            .sprints()?
+            .into_iter()
+            .filter(|sprint| (sprint.status == SprintStatus::Completed) == finished)
+            .collect();
+        if finished {
+            sprints.reverse();
+        }
+        let mut groups = Vec::with_capacity(sprints.len() + 1);
+        for sprint in sprints {
+            let tasks = store.tasks_of_sprint(sprint.id)?;
+            groups.push(Group { sprint: Some(sprint), tasks });
+        }
+        if !finished {
+            groups.push(Group { sprint: None, tasks: store.backlog()? });
+        }
+        Ok(groups)
+    }
+
+    /// The groups the view that is showing is drawn in.
+    pub fn groups(&self) -> &[Group] {
+        &self.groups
+    }
+
+    /// How many tickets name this epic, anywhere on the board.
+    pub fn epic_count(&self, epic: i64) -> i64 {
+        self.epic_counts.iter().find(|(id, _)| *id == epic).map(|(_, count)| *count).unwrap_or(0)
+    }
+
+    /// Keep room for the decoration behind the ticket modal, and say where it went.
+    ///
+    /// Called by `components::agent_tasks::ticket_modal` as the first thing it draws, so the canvas lands
+    /// **under** every widget on the modal — which is the order `show_the_plugin_panes` keeps for a pane and
+    /// the reason a provider must never paint its own ground.
+    pub fn reserve_the_modals_canvas(&mut self, ui: &mut egui::Ui, area: egui::Rect) {
+        self.modal_canvas = Some(crate::services::plugin_ui::ChromeSlot {
+            id: egui::Id::new("agent-tasks-modal-canvas"),
+            area,
+            painter: ui.painter().clone(),
+            shape: ui.painter().add(egui::Shape::Noop),
+        });
+    }
+
+    /// Whether a completed sprint is folded shut, and the toggle for it.
+    pub fn is_collapsed(&self, sprint: i64) -> bool {
+        self.collapsed.contains(&sprint)
+    }
+
+    pub fn toggle_collapsed(&mut self, sprint: i64) {
+        match self.collapsed.iter().position(|id| *id == sprint) {
+            Some(at) => {
+                self.collapsed.remove(at);
+            }
+            None => self.collapsed.push(sprint),
+        }
+    }
+
+    /// The ticket being carried between groups in the Backlog view, and the group under the pointer.
+    ///
+    /// Reported by the drawing and settled here, which is the same three-pass shape a card dragged between
+    /// lanes already follows: a row cannot know which group the pointer ended up over, because each is drawn
+    /// before the ones below it.
+    pub fn carry(&mut self, task: Option<i64>) {
+        self.carrying = task;
+    }
+
+    pub fn carrying(&self) -> Option<i64> {
+        self.carrying
+    }
+
+    pub fn hover_group(&mut self, group: Option<Option<i64>>) {
+        self.over_group = group;
+    }
+
+    pub fn hovered_group(&self) -> Option<Option<i64>> {
+        self.over_group
+    }
+
+    /// Put the ticket that was being carried into the group it was let go over.
+    pub fn drop_the_carried_row(&mut self) -> Result<(), String> {
+        let (Some(task), Some(sprint)) = (self.carrying.take(), self.over_group.take()) else {
+            self.carrying = None;
+            self.over_group = None;
+            return Ok(());
+        };
+        let now = clock::now();
+        self.store()?.set_sprint_of(task, sprint, &now)?;
+        self.refresh()
+    }
+
+    /// The boxes the two listings type into, which the drawing borrows and the commands set.
+    pub fn new_sprint_draft(&mut self) -> &mut String {
+        &mut self.new_sprint
+    }
+
+    pub fn naming_a_sprint(&self) -> bool {
+        self.naming_a_sprint
+    }
+
+    pub fn name_a_sprint(&mut self, naming: bool) {
+        self.naming_a_sprint = naming;
+        if !naming {
+            self.new_sprint.clear();
+        }
+    }
+
+    pub fn new_epic_draft(&mut self) -> &mut String {
+        &mut self.new_epic
+    }
+
+    /// The colour a new epic would be given, which is the first swatch until one is pressed.
+    ///
+    /// The fallback is here rather than in a constructor, because this provider is `#[derive(Default)]` and
+    /// a `String` defaults to empty — and a default written in two places is a default that drifts.
+    pub fn new_epic_colour(&self) -> &str {
+        match self.new_epic_colour.is_empty() {
+            true => SWATCHES[0],
+            false => &self.new_epic_colour,
+        }
+    }
+
+    pub fn choose_a_colour(&mut self, colour: &str) {
+        self.new_epic_colour = colour.to_owned();
+    }
+
+    pub fn renaming_epic(&self) -> Option<i64> {
+        self.renaming_epic
+    }
+
+    pub fn rename_epic_from(&mut self, epic: Option<i64>, name: &str) {
+        self.renaming_epic = epic;
+        self.epic_name_draft = name.to_owned();
+    }
+
+    pub fn epic_name_draft(&mut self) -> &mut String {
+        &mut self.epic_name_draft
+    }
+
+    pub fn sprint_to_delete(&self) -> Option<i64> {
+        self.sprint_to_delete
+    }
+
+    pub fn ask_about_a_sprint(&mut self, sprint: Option<i64>) {
+        self.sprint_to_delete = sprint;
+    }
+
+    pub fn epic_to_delete(&self) -> Option<i64> {
+        self.epic_to_delete
+    }
+
+    pub fn ask_about_an_epic(&mut self, epic: Option<i64>) {
+        self.epic_to_delete = epic;
     }
 
     pub fn detail(&self) -> &Detail {
@@ -880,6 +1138,60 @@ impl AgentTasks {
     /// a provider whose pane draws the reason rather than one that panics on the first click.
     fn store(&self) -> Result<&Store, String> {
         self.store.as_ref().ok_or_else(|| "the board is not open".to_owned())
+    }
+
+    /// The sprint a command named, by its name or by its id.
+    ///
+    /// By name first, because that is what is on the screen and what somebody reading the board would type;
+    /// the id is the answer for two sprints called the same thing. The refusal lists what there is, which is
+    /// what a caller who guessed wrong needs — the rule every refusal on this board keeps.
+    fn sprint_named(&self, said: &str) -> Result<Sprint, String> {
+        let sprints = self.store()?.sprints()?;
+        let found = sprints
+            .iter()
+            .find(|sprint| sprint.name.eq_ignore_ascii_case(said.trim()))
+            .or_else(|| {
+                said.trim().parse::<i64>().ok().and_then(|id| sprints.iter().find(|s| s.id == id))
+            });
+        found.cloned().ok_or_else(|| {
+            format!(
+                "there is no `{}` sprint: this board has {}",
+                said,
+                match sprints.is_empty() {
+                    true => "none".to_owned(),
+                    false => sprints
+                        .iter()
+                        .map(|sprint| sprint.name.clone())
+                        .collect::<Vec<String>>()
+                        .join(", "),
+                }
+            )
+        })
+    }
+
+    /// The same, for an epic.
+    fn epic_named(&self, said: &str) -> Result<Epic, String> {
+        let epics = self.store()?.epics()?;
+        let found = epics
+            .iter()
+            .find(|epic| epic.name.eq_ignore_ascii_case(said.trim()))
+            .or_else(|| {
+                said.trim().parse::<i64>().ok().and_then(|id| epics.iter().find(|e| e.id == id))
+            });
+        found.cloned().ok_or_else(|| {
+            format!(
+                "there is no `{}` epic: this board has {}",
+                said,
+                match epics.is_empty() {
+                    true => "none".to_owned(),
+                    false => epics
+                        .iter()
+                        .map(|epic| epic.name.clone())
+                        .collect::<Vec<String>>()
+                        .join(", "),
+                }
+            )
+        })
     }
 
     /// Read the board again. The one place a query happens outside a command.
@@ -1884,6 +2196,22 @@ impl AgentTasks {
         self.listing_down
     }
 
+    /// Keep the point the pointer was over still through a zoom of the board. `task-1771`.
+    ///
+    /// The listings and the epics scroll on `listing_down`, which this board keeps itself, and every row in
+    /// them is laid out at `Look::scale` - so the whole column's height is proportional to the zoom and the
+    /// point at `offset + above` lands at `(offset + above) * ratio`. It is clamped on the next frame by
+    /// [`Self::listing_scroll`], which knows how much there is to scroll and this does not.
+    ///
+    /// The lanes scroll sideways rather than down and are not corrected: a board's four lanes are as wide
+    /// as the pane whatever the zoom, so there is no point under the pointer that moves away from it.
+    pub fn zoom_the_listing(&mut self, ratio: f32, above: f32) {
+        if !ratio.is_finite() || ratio <= 0.0 {
+            return;
+        }
+        self.listing_down = ((self.listing_down + above) * ratio - above).max(0.0);
+    }
+
     /// Pump every terminal, and say whether any of them moved.
     ///
     /// Called once a frame while the board is open and once per watchdog tick. Moved means printed something or
@@ -2143,6 +2471,10 @@ impl UiProvider for AgentTasks {
 
     /// The board draws the decoration `egui` cannot: soft shadows, inset shadows, gradients and a rounded
     /// clip. `task-1765` is why, and `tasks/agent-tasks-vello-ui-tdd.md` is the design.
+    fn zoomed(&mut self, ratio: f32, above: f32) {
+        self.zoom_the_listing(ratio, above);
+    }
+
     fn draws_chrome(&self) -> bool {
         true
     }
@@ -2312,13 +2644,20 @@ impl UiProvider for AgentTasks {
                         View::ALL.iter().map(|view| view.name()).collect::<Vec<&str>>().join(", ")
                     )
                 })?;
-                self.view = view;
+                // Through `set_view`, so the command and the button in the rail reach the same code: the
+                // listing a view shows is read when the view is chosen, and a `view` command that set the
+                // field on its own left the Backlog and the Epics views drawing nothing at all.
+                self.set_view(view);
                 Ok(Answer::said(format!("showing {}", view.label())))
             }
+            // **Reading a ticket does not open it.** It used to call `open_detail`, and that is what
+            // `task-1771` reports as a side panel opening on its own: an agent working a ticket asks for
+            // it by key many times over, and every one of those turned the board into a ticket somebody
+            // else was looking at. Reading is `task`; showing is `open`, which is the modal. The two were
+            // one command and should never have been.
             "task" => {
                 let task = self.by_key(argument(0))?;
-                self.open_detail(task.id)?;
-                Ok(Answer::nothing().with(self.detail_json()))
+                Ok(Answer::nothing().with(self.read_a_ticket(task.id)?))
             }
             "new-task" => {
                 let draft = NewTask {
@@ -2562,6 +2901,167 @@ impl UiProvider for AgentTasks {
             // Both of these are on the plugin's `New` submenu, and a menu entry passes no arguments — so with a
             // required name they were two controls that could only fail. They name themselves instead, from what
             // is already there, and the name can be changed afterwards like any other.
+            // The two sections of a ticket that fold. `task-1771` gave them a control - the disclosure over
+            // each - and everything a person can do an agent can do too, so they have a command as well.
+            // Without an argument it says which way each of them is.
+            "fold" => {
+                let which = argument(0);
+                let how = argument(1);
+                let shut = match how {
+                    "" => None,
+                    "shut" | "closed" | "off" => Some(true),
+                    "open" | "on" => Some(false),
+                    other => {
+                        return Err(format!("`{other}` is neither `open` nor `shut`"));
+                    }
+                };
+                match which {
+                    "" => {}
+                    "todos" => self.todos_shut = shut.unwrap_or(self.todos_shut),
+                    "terminal" => self.terminal_shut = shut.unwrap_or(self.terminal_shut),
+                    other => {
+                        return Err(format!(
+                            "`{other}` is not a section that folds: a ticket has `todos` and `terminal`"
+                        ));
+                    }
+                }
+                Ok(Answer::said(format!(
+                    "todos are {}, the terminal is {}",
+                    match self.todos_shut {
+                        true => "shut",
+                        false => "open",
+                    },
+                    match self.terminal_shut {
+                        true => "shut",
+                        false => "open",
+                    }
+                ))
+                .with(json!({"todos": !self.todos_shut, "terminal": !self.terminal_shut})))
+            }
+            // ------------------------------------------------------------------ sprints and epics
+            //
+            // `task-1771` asks for the Backlog and the Epics views to do what the page they are modelled on
+            // does — rearrange by dragging, make a sprint, complete one, rename and recolour an epic — and
+            // Quill's rule is that everything a person can do reaches the same code from the command line.
+            // These are that half. A sprint or an epic is named by its **name**, because that is what is on
+            // the screen; its id is accepted too, for a board with two sprints called the same thing.
+            "sprint-assign" => {
+                let task = self.by_key(argument(0))?;
+                let said = rest(1);
+                let said = said.trim();
+                let sprint = match said.eq_ignore_ascii_case("backlog") || said.is_empty() {
+                    true => None,
+                    false => Some(self.sprint_named(said)?.id),
+                };
+                self.store()?.set_sprint_of(task.id, sprint, &now)?;
+                self.refresh()?;
+                Ok(Answer::said(match sprint {
+                    Some(_) => format!("{} is in {}", task.key, said),
+                    None => format!("{} is in the backlog", task.key),
+                }))
+            }
+            "sprint-activate" => {
+                let sprint = self.sprint_named(&rest(0))?;
+                self.store()?.make_sprint_active(sprint.id)?;
+                self.refresh()?;
+                Ok(Answer::said(format!("{} is the active sprint", sprint.name)))
+            }
+            "sprint-complete" => {
+                let sprint = self.sprint_named(&rest(0))?;
+                let moved = self.store()?.complete_sprint(sprint.id, &now)?;
+                self.refresh()?;
+                Ok(Answer::said(match moved {
+                    0 => format!("{} is completed", sprint.name),
+                    1 => format!("{} is completed. 1 unfinished ticket went to the backlog", sprint.name),
+                    many => format!(
+                        "{} is completed. {many} unfinished tickets went to the backlog",
+                        sprint.name
+                    ),
+                }))
+            }
+            "sprint-rename" => {
+                let sprints = self.store()?.sprints()?;
+                let (sprint, name) = split_off_a_name(arguments, |said| {
+                    sprints.iter().position(|sprint| sprint.name.eq_ignore_ascii_case(said))
+                })
+                .map(|(at, name)| (sprints[at].clone(), name))
+                .map_or_else(
+                    || {
+                        Err(format!(
+                            "there is no sprint named at the start of `{}`: this board has {}",
+                            arguments.join(" "),
+                            sprints.iter().map(|s| s.name.clone()).collect::<Vec<String>>().join(", ")
+                        ))
+                    },
+                    Ok,
+                )?;
+                if name.trim().is_empty() {
+                    return Err("a sprint needs a name: `sprint-rename <sprint> <name>`".to_owned());
+                }
+                self.store()?.rename_sprint(sprint.id, name.trim())?;
+                self.refresh()?;
+                Ok(Answer::said(format!("{} is now {}", sprint.name, name.trim())))
+            }
+            "sprint-delete" => {
+                let sprint = self.sprint_named(&rest(0))?;
+                self.store()?.delete_sprint(sprint.id, &now)?;
+                self.refresh()?;
+                Ok(Answer::said(format!(
+                    "{} is gone. Its tickets are in the backlog",
+                    sprint.name
+                )))
+            }
+            "epic-rename" => {
+                let epics = self.store()?.epics()?;
+                let (epic, name) = split_off_a_name(arguments, |said| {
+                    epics.iter().position(|epic| epic.name.eq_ignore_ascii_case(said))
+                })
+                .map(|(at, name)| (epics[at].clone(), name))
+                .map_or_else(
+                    || {
+                        Err(format!(
+                            "there is no epic named at the start of `{}`: this board has {}",
+                            arguments.join(" "),
+                            epics.iter().map(|e| e.name.clone()).collect::<Vec<String>>().join(", ")
+                        ))
+                    },
+                    Ok,
+                )?;
+                if name.trim().is_empty() {
+                    return Err("an epic needs a name: `epic-rename <epic> <name>`".to_owned());
+                }
+                self.store()?.edit_epic(epic.id, Some(name.trim()), None)?;
+                self.refresh()?;
+                Ok(Answer::said(format!("{} is now {}", epic.name, name.trim())))
+            }
+            // The colour is the **last** word and the epic is everything before it, so an epic whose name
+            // has a space in it can be recoloured without knowing its id.
+            "epic-colour" | "epic-color" => {
+                let colour = arguments.last().map(String::as_str).unwrap_or("");
+                let named = arguments
+                    .get(..arguments.len().saturating_sub(1))
+                    .map(|said| said.join(" "))
+                    .unwrap_or_default();
+                let epic = self.epic_named(&named)?;
+                if crate::services::plugins::colour(colour).is_none() {
+                    return Err(format!(
+                        "`{colour}` is not a colour: say one of {}",
+                        SWATCHES.join(", ")
+                    ));
+                }
+                self.store()?.edit_epic(epic.id, None, Some(colour))?;
+                self.refresh()?;
+                Ok(Answer::said(format!("{} is {colour}", epic.name)))
+            }
+            "epic-delete" => {
+                let epic = self.epic_named(&rest(0))?;
+                self.store()?.delete_epic(epic.id, &now)?;
+                self.refresh()?;
+                Ok(Answer::said(format!(
+                    "{} is gone. Its tickets keep existing with no epic",
+                    epic.name
+                )))
+            }
             "new-epic" => {
                 let name = match arguments.join(" ").trim() {
                     "" => format!("Epic {}", self.store()?.epics()?.len() + 1),
@@ -2662,6 +3162,15 @@ impl UiProvider for AgentTasks {
             ("search", "Tickets whose key, title or description holds the query."),
             ("new-epic", "Create an epic. Names itself when no name is given, which is what the menu entry does."),
             ("new-sprint", "Create a sprint and make it the active one. Names itself when no name is given."),
+            ("fold", "Open or shut a ticket's todos or its terminal: `fold terminal shut`. Says both when asked with nothing."),
+            ("sprint-assign", "Put a ticket in a sprint, or in the backlog: `sprint-assign task-1 backlog`."),
+            ("sprint-activate", "Make one sprint the active one, which is the sprint the board shows."),
+            ("sprint-complete", "Close a sprint. Anything in it that is not in Agent Done goes to the backlog."),
+            ("sprint-rename", "Rename a sprint."),
+            ("sprint-delete", "Delete a sprint. Its tickets go to the backlog rather than with it."),
+            ("epic-rename", "Rename an epic."),
+            ("epic-colour", "Recolour an epic, as `#RRGGBB`. `epic-color` is the same command."),
+            ("epic-delete", "Delete an epic. Its tickets keep existing with no epic."),
             ("sync", "Not implemented on this board: says so and does nothing. There is no menu entry for it."),
             ("tick", "Read every terminal and run one watchdog tick. The window does this every two minutes."),
             ("watchdog", "The same as `tick`, named for what it is for."),
@@ -2737,6 +3246,10 @@ impl UiProvider for AgentTasks {
         (outcome.requests, outcome.closed)
     }
 
+    fn take_the_modals_canvas(&mut self) -> Option<crate::services::plugin_ui::ChromeSlot> {
+        self.modal_canvas.take()
+    }
+
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
@@ -2773,6 +3286,36 @@ impl UiProvider for AgentTasks {
 }
 
 impl AgentTasks {
+    /// One ticket in full, read from the store and changing nothing about what the board is showing.
+    ///
+    /// The same shape [`Self::detail_json`] answers with, which is what lets `task` and `open` be told
+    /// apart by what they *do* rather than by what they say. See the `task` command.
+    fn read_a_ticket(&self, id: i64) -> Result<serde_json::Value, String> {
+        let store = self.store()?;
+        let task = store.task(id)?;
+        let (todos, comments) = match task.as_ref() {
+            Some(task) => (store.todos(task.id)?, store.comments(task.id)?),
+            None => (Vec::new(), Vec::new()),
+        };
+        Ok(json!({
+            "task": task.as_ref().map(card_json),
+            "description": task.as_ref().map(|task| task.description.clone()),
+            "todos": todos
+                .iter()
+                .map(|todo| json!({"text": todo.text, "done": todo.done}))
+                .collect::<Vec<serde_json::Value>>(),
+            "comments": comments
+                .iter()
+                .map(|comment| json!({
+                    "id": comment.id,
+                    "author": comment.author.name(),
+                    "body": comment.body,
+                    "at": comment.created_at,
+                }))
+                .collect::<Vec<serde_json::Value>>(),
+        }))
+    }
+
     fn detail_json(&self) -> serde_json::Value {
         json!({
             "task": self.detail.task.as_ref().map(card_json),

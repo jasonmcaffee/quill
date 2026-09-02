@@ -17,6 +17,7 @@ pub(crate) mod card;
 mod description;
 pub(crate) mod detail;
 mod lanes;
+pub(crate) mod listings;
 mod settings_page;
 pub mod ticket_modal;
 
@@ -112,7 +113,7 @@ pub fn pane_header(
     outcome
 }
 /// The gap round everything, which is the gap the explorer already leaves.
-const PAD: f32 = 8.0;
+pub(crate) const PAD: f32 = 8.0;
 
 /// The pane in the rail: the header, then either the lanes or one ticket.
 ///
@@ -134,13 +135,8 @@ pub fn pane(board: &mut AgentTasks, ui: &mut egui::Ui, look: &Look<'_>) -> Vec<R
     let header = Rect::from_min_size(page.min, Vec2::new(page.width(), header_height(look)));
     requests.extend(view_switch(board, ui, look, header));
     let body = Rect::from_min_max(Pos2::new(page.min.x, header.max.y), page.max);
-    // The lanes when the modal is open, because the modal **is** the ticket: drawing it here as well was one
-    // ticket in two places, and pressing Start in one of them left the other showing a state it did not have.
-    // The pane's own in-place detail is what a window too narrow for a modal falls back to.
-    match board.detail().task.is_some() && !board.modal_open {
-        true => requests.extend(detail::show(board, ui, look, body, false)),
-        false => requests.extend(body_for(board, ui, look, body)),
-    }
+    // **The lanes, always.** A ticket is the modal and nothing else — see [`tab`].
+    requests.extend(body_for(board, ui, look, body));
     take_the_chosen_view(board, chosen);
     requests
 }
@@ -185,10 +181,16 @@ fn take_the_chosen_view(board: &mut AgentTasks, chosen: Option<View>) {
     }
 }
 
-/// The tab in the editing area: the lanes on the left and the open ticket on the right.
+/// The tab in the editing area: the lanes, and nothing else.
 ///
-/// This is the arrangement the Markdown side by side view already uses, and it is what a whole editing
-/// area is for. With no ticket open the lanes fill it.
+/// **A ticket is the modal.** This used to be the arrangement the Markdown side by side view uses — the
+/// lanes on the left and the open ticket on the right — and `task-1771` reports what that is like to work
+/// beside: *"when an agent finishes a task and moves it to agent done, for some reason a side panel is
+/// opening up that shows the task. I'm not sure what that is, but I don't want it."* It was not the agent
+/// finishing; it was the agent **reading** the ticket, which opened the detail, which split the board. The
+/// read no longer opens anything (see the `task` command) and there is no longer a half of the board for it
+/// to open into, which is also what the page this board is modelled on does: a row is clicked and a modal
+/// comes up over the whole window.
 pub fn tab(board: &mut AgentTasks, ui: &mut egui::Ui, look: &Look<'_>) -> Vec<Request> {
     let area = ui.available_rect_before_wrap();
     // **The ground is the window's, not the board's.** It has to be painted *before* the slot the
@@ -204,27 +206,7 @@ pub fn tab(board: &mut AgentTasks, ui: &mut egui::Ui, look: &Look<'_>) -> Vec<Re
     let header = Rect::from_min_size(page.min, Vec2::new(page.width(), header_height(look)));
     requests.extend(view_switch(board, ui, look, header));
     let body = Rect::from_min_max(Pos2::new(page.min.x, header.max.y), page.max);
-    let showing_a_ticket = board.detail().task.is_some() && !board.modal_open;
-    if !showing_a_ticket || body.width() < 900.0 {
-        requests.extend(match showing_a_ticket {
-            true => detail::show(board, ui, look, body, false),
-            false => body_for(board, ui, look, body),
-        });
-        take_the_chosen_view(board, chosen);
-        return requests;
-    }
-    // Wide enough for both: the lanes take what they need and the ticket takes the rest, with a divider
-    // drawn the way every divider in Quill is drawn.
-    let split = (body.min.x + body.width() * 0.55).round();
-    let lanes_area = Rect::from_min_max(body.min, Pos2::new(split, body.max.y));
-    let detail_area = Rect::from_min_max(Pos2::new(split + 1.0, body.min.y), body.max);
-    ui.painter().rect_filled(
-        Rect::from_min_max(Pos2::new(split, body.min.y), Pos2::new(split + 1.0, body.max.y)),
-        0,
-        look.palette.divider,
-    );
-    requests.extend(body_for(board, ui, look, lanes_area));
-    requests.extend(detail::show(board, ui, look, detail_area, true));
+    requests.extend(body_for(board, ui, look, body));
     take_the_chosen_view(board, chosen);
     requests
 }
@@ -238,9 +220,11 @@ pub fn settings(board: &mut AgentTasks, ui: &mut egui::Ui, look: &Look<'_>) -> V
 fn body_for(board: &mut AgentTasks, ui: &mut egui::Ui, look: &Look<'_>, area: Rect) -> Vec<Request> {
     match board.current_view() {
         View::Board => lanes::show(board, ui, look, area),
-        View::Backlog => lanes::listing(board, ui, look, area, View::Backlog),
-        View::Completed => lanes::listing(board, ui, look, area, View::Completed),
-        View::Epics => lanes::epics(board, ui, look, area),
+        // The three listings are `components::agent_tasks::listings` since `task-1771`, which asked for them
+        // to be what the page this board is modelled on has rather than a flat column of cards.
+        View::Backlog => listings::groups(board, ui, look, area, View::Backlog),
+        View::Completed => listings::groups(board, ui, look, area, View::Completed),
+        View::Epics => listings::epics(board, ui, look, area),
     }
 }
 
@@ -379,10 +363,18 @@ fn view_switch(
     let painter = ui.painter().clone();
     let scale = look.scale();
 
-    // The sprint's name and how many tickets are on the board, which is the explorer's footer's own idea.
-    let title = match board.board().sprint.as_ref() {
-        Some(sprint) => sprint.name.clone(),
-        None => "No active sprint".to_owned(),
+    // **What the header says is what the view is.** On the board it is the sprint's name and how many
+    // tickets are on it, which is the explorer's footer's own idea; on the three listings it is the view's
+    // own name, because the sprint is not what is being looked at there — the Backlog holds several of them
+    // and the Epics view holds none. That is what the page this board is modelled on puts at the top of each
+    // of its four pages.
+    let listing = board.current_view() != View::Board;
+    let title = match board.current_view() {
+        View::Board => match board.board().sprint.as_ref() {
+            Some(sprint) => sprint.name.clone(),
+            None => "No active sprint".to_owned(),
+        },
+        other => other.label().to_owned(),
     };
     // Set in the bold face at 1.7 times the editor's size, which is the weight and the proportion the
     // picture gives it: `Current Sprint` is the one thing on the board meant to be read first.
@@ -393,7 +385,13 @@ fn view_switch(
     // narrow enough to be at the rail's own boundary that is most of the header — so it is capped, and the
     // word inside it is what gets shorter. A button that ran off the left of its own page would be a
     // control drawn where nothing can reach it.
-    let add_size = Vec2::new((127.0 * scale).min(area.width() * 0.5), 44.0 * scale);
+    // **Absent on a listing.** `+ Add Task` puts a ticket in the lane a board shows, and the search filters
+    // those lanes; neither means anything on a page of sprints or of epics, and Quill's rule is that a
+    // control which cannot apply is not drawn rather than drawn and refusing.
+    let add_size = match listing {
+        true => Vec2::ZERO,
+        false => Vec2::new((127.0 * scale).min(area.width() * 0.5), 44.0 * scale),
+    };
     let add = Rect::from_min_size(
         Pos2::new(area.max.x - add_size.x, area.center().y - add_size.y / 2.0),
         add_size,
@@ -426,7 +424,10 @@ fn view_switch(
     );
     let mut pen = area.min.x + heading.size().x + 10.0;
     let count = painter.layout_no_wrap(
-        format!("\u{b7} {}", card::plural(board.board().total() as i64, "task")),
+        match listing {
+            true => String::new(),
+            false => format!("\u{b7} {}", card::plural(board.board().total() as i64, "task")),
+        },
         egui::FontId::proportional(look.font_size - 1.0),
         look.palette.text_dim,
     );
@@ -441,7 +442,7 @@ fn view_switch(
     // **Always drawn.** It is the one action in the header, and a control that vanished when the pane got
     // narrow was a board somebody could not add a ticket to — where what should give way is the heading,
     // which is a label. So the heading is clipped to the room left in front of it, and the button stays.
-    let adding = primary_button(ui, look, add, "+ Add Task");
+    let adding = !listing && primary_button(ui, look, add, "+ Add Task");
     // **The search box takes whatever is spare**, between the heading and the button, up to the width the
     // reference gives it. It was a fixed 200 points, which on a wide board left a broad empty band where
     // the reference has its search.
@@ -455,7 +456,7 @@ fn view_switch(
     // 140 points unscaled, not 120 scaled: a field is wide enough to search in when it can hold a few
     // letters and its magnifier, and that does not get wider because the editor is set in 20 point text.
     // Scaled, a large font took the search box away on a window where it plainly fitted.
-    let room_for_search = width > 140.0;
+    let room_for_search = width > 140.0 && !listing;
     if room_for_search && look.chrome.is_recording() {
         look.chrome.sunken(
             search,
@@ -824,6 +825,20 @@ pub(crate) fn value_dropdown(
     chosen: &str,
     empty: Option<&str>,
 ) -> Option<String> {
+    value_dropdown_over(ui, at, name, options, chosen, empty, true)
+}
+
+/// The same, told whether to draw its own ground. See `controls::dropdown_over`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn value_dropdown_over(
+    ui: &mut egui::Ui,
+    at: Rect,
+    name: &str,
+    options: &[(String, String)],
+    chosen: &str,
+    empty: Option<&str>,
+    ground: bool,
+) -> Option<String> {
     let showing = options
         .iter()
         .find(|(value, _)| value == chosen)
@@ -833,7 +848,8 @@ pub(crate) fn value_dropdown(
         Some(said) => std::iter::once((String::new(), said.to_owned())).chain(options.iter().cloned()).collect(),
         None => options.to_vec(),
     };
-    let picked = crate::components::controls::dropdown(ui, at, &showing, name, None, |ui| {
+    let picked =
+        crate::components::controls::dropdown_over(ui, at, &showing, name, None, ground, |ui| {
         let mut picked = None;
         for (value, said) in &rows {
             // `selectable_label` rather than a painted row, because the list is inside egui's own popup and this

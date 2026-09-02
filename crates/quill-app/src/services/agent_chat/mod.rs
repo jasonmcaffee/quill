@@ -371,6 +371,15 @@ pub struct PaneState {
     /// Keyed on where the picture is rather than on its bytes, so a conversation with twenty pictures
     /// in it does not decode twenty pictures a frame.
     pub pictures: std::collections::HashMap<String, egui::TextureHandle>,
+    /// How far down the conversation the view is, and where to put it on the next frame.
+    ///
+    /// `task-1771`: the pane is zoomable, and a zoom that does not keep what the pointer was over still is
+    /// a zoom you have to scroll back from. The scrolling is `egui`'s, so the offset is read back off the
+    /// `ScrollArea` each frame and handed to it once when it has to move - the one-shot shape
+    /// `jump_to_bottom` beside it already uses. Worked out in `AgentChat::zoomed`, which is what the
+    /// window calls when the pane's zoom changes.
+    pub scrolled: f32,
+    pub scroll_to: Option<f32>,
     /// How big each of those is, read out of the picture's own header.
     ///
     /// Kept apart from the textures because the measuring pass needs it and has no `egui::Ui` to
@@ -963,10 +972,17 @@ impl AgentChat {
     /// What the window answered: a tool call by its position, or the clipboard's picture.
     fn tool_answered(&mut self, id: &str, answer: Result<serde_json::Value, String>) {
         if id == CLIPBOARD {
+            // **Nothing on the clipboard is not a fault.** The window answers `null` when there is no
+            // picture there, because the paste chord is now seen on the key going back up and that happens
+            // after an ordinary text paste as well — see `components::agent_chat::pasting`. Saying "there
+            // is no picture on the clipboard" under the composer every time somebody pasted a sentence
+            // into it would be a message about nothing. A picture that is there and will not decode is a
+            // real failure and still says so.
+            if matches!(answer, Ok(serde_json::Value::Null)) {
+                return;
+            }
             match answer.and_then(|value| self.attach_from(&value)) {
                 Ok(()) => self.problem = None,
-                // A paste with no picture on the clipboard is an ordinary thing to do by accident, so
-                // it says so where the other refusals go rather than doing nothing.
                 Err(problem) => self.problem = Some(problem),
             }
             return;
@@ -1376,6 +1392,20 @@ impl UiProvider for AgentChat {
 
     fn answered(&mut self, id: &str, answer: Result<serde_json::Value, String>) {
         self.tool_answered(id, answer);
+    }
+
+    /// Keep the point the pointer was over still through a zoom of the pane. `task-1771`.
+    ///
+    /// The conversation is an `egui::ScrollArea` and its offset belongs to `egui`, so what is done here is
+    /// to work out where it has to go and ask for it once on the next frame - the shape `jump_to_bottom`
+    /// already has. Every bubble is laid out at `Look::scale`, so the whole column's height is proportional
+    /// to the zoom and the point at `offset + above` lands at `(offset + above) * ratio`.
+    fn zoomed(&mut self, ratio: f32, above: f32) {
+        if !ratio.is_finite() || ratio <= 0.0 {
+            return;
+        }
+        let put = (self.ui.scrolled + above) * ratio - above;
+        self.ui.scroll_to = Some(put.max(0.0));
     }
 
     fn showing(&mut self, project: Option<&Path>, file: Option<&Path>) {

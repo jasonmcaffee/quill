@@ -236,7 +236,7 @@ pub fn show(
     // **A mark and its number are one decision, laid out once.** They were two — a test of the mark's own
     // width and then `room_for` on the number — and a card narrow enough for the first and not the second
     // wore a tick on its own, which says nothing at all. One measurement cannot disagree with itself.
-    let mut counted = |painter: &egui::Painter,
+    let counted = |painter: &egui::Painter,
                        pen: &mut f32,
                        mark: fn(&egui::Painter, Pos2, Color32),
                        gap: f32,

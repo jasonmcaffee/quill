@@ -2494,6 +2494,271 @@ fn the_explorer_cannot_be_dragged_past_its_limits() {
     assert_eq!(harness.state().panes.explorer_width, quill_app::settings::EXPLORER_MIN);
 }
 
+/// `task-1771`: *"I should be able to double click anywhere in the top of a pane to get it to maximize,
+/// then Esc or double click to put it back to the size it was."*
+///
+/// Maximising is putting everything else away, which is why nothing here has to check a rectangle: what is
+/// showing is the layout's own input, and `dock::regions` gives the room to whatever is left.
+#[test]
+fn two_presses_on_a_panels_header_fill_the_window_with_it_and_two_more_put_it_back() {
+    use quill_app::app::dock::Panel;
+    let mut harness = harness("");
+    did(&mut harness, "terminal show");
+    harness.run();
+    assert!(harness.state().explorer_visible && harness.state().editor_visible);
+
+    // The explorer's heading is its own drag handle, so it is the top of the pane in the ticket's sense.
+    let header = harness.get_by_label("Move Project").rect();
+    double_click_at(&mut harness, header.center());
+    assert_eq!(harness.state().maximised_pane(), Some(Some(Panel::Explorer)));
+    assert!(!harness.state().editor_visible, "the editing area is away");
+    assert!(!harness.state().terminal.visible, "and so is the terminal");
+    assert!(harness.state().explorer_visible, "and the explorer is the one thing left");
+    let filling = harness.state().panel_area(Panel::Explorer);
+    assert!(
+        (filling.width() - harness.state().panes_area().width()).abs() < 1.5,
+        "it fills the window: {filling:?}"
+    );
+
+    // And again puts back exactly what was showing.
+    let header = harness.get_by_label("Move Project").rect();
+    double_click_at(&mut harness, header.center());
+    assert_eq!(harness.state().maximised_pane(), None);
+    assert!(harness.state().editor_visible);
+    assert!(harness.state().terminal.visible, "the terminal was showing before, so it is showing again");
+}
+
+/// The editing area has a tab strip where every other pane has a header, so that is its top.
+#[test]
+fn two_presses_on_the_empty_part_of_the_tab_strip_fill_the_window_with_the_editing_area() {
+    let mut harness = harness("");
+    did(&mut harness, "terminal show");
+    harness.run();
+    // The far right of the strip, which is past every tab and is therefore the part no tab wanted.
+    let strip = harness.state().tab_strip_for_tests(0);
+    let empty = egui::pos2(strip.right() - 12.0, strip.center().y);
+    double_click_at(&mut harness, empty);
+    assert_eq!(harness.state().maximised_pane(), Some(None), "the editing area fills the window");
+    assert!(!harness.state().explorer_visible && !harness.state().terminal.visible);
+
+    double_click_at(&mut harness, empty);
+    assert_eq!(harness.state().maximised_pane(), None);
+    assert!(harness.state().explorer_visible && harness.state().terminal.visible);
+}
+
+/// Escape is the other way back, and it must not also do the two other things Escape means.
+#[test]
+fn escape_puts_a_maximised_pane_back_and_does_nothing_when_none_is() {
+    use quill_app::app::dock::Panel;
+    let mut harness = harness("");
+    did(&mut harness, "action run toggle-maximised-pane");
+    harness.run();
+    // Nothing had the keyboard but the editing area, so the editing area is what filled the window.
+    assert_eq!(harness.state().maximised_pane(), Some(None));
+    assert!(!harness.state().explorer_visible);
+
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+    assert_eq!(harness.state().maximised_pane(), None);
+    assert!(harness.state().explorer_visible, "the explorer came back");
+
+    // A second Escape with nothing maximised is nobody's business here: the explorer's own Escape goes on
+    // meaning what it meant, which is that the keyboard goes back to the document.
+    harness.get_by_label("readme.md").click();
+    harness.run();
+    assert_eq!(harness.state().focus, quill_app::app::Focus::Explorer);
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+    assert_eq!(harness.state().focus, quill_app::app::Focus::Editor);
+    assert_eq!(harness.state().maximised_pane(), None);
+    let _ = Panel::Explorer;
+}
+
+/// Press twice at `at`, which is what a double click is from inside the window.
+///
+/// The one beside it presses a control found by its name; this one presses a **point**, which is what a
+/// header with no control on it needs.
+fn double_click_at(harness: &mut Harness<'static, QuillApp>, at: egui::Pos2) {
+    let modifiers = Modifiers::default();
+    harness.input_mut().events.push(egui::Event::PointerMoved(at));
+    for _ in 0..2 {
+        for pressed in [true, false] {
+            harness.input_mut().events.push(egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers,
+            });
+        }
+    }
+    harness.run();
+}
+
+/// `task-1771`: *"we want every pane (file panel, folders, terminal, agent chat, agent tasks, etc) to be
+/// zoomable with Ctrl/Cmd + or Ctrl/Cmd scroll wheel."*
+///
+/// The gesture belongs to whichever pane the pointer is over, which is the rule the editing area already
+/// kept for itself and the reason `zoom_taken` exists. What one step means differs by pane, and that is the
+/// half worth pinning: a tile is a character grid drawn at the terminal's own font size, so its zoom walks
+/// that setting rather than putting a multiplier on top of it.
+#[test]
+fn a_wheel_with_the_modifier_zooms_whichever_pane_the_pointer_is_over() {
+    use quill_app::app::dock::Panel;
+    let mut harness = harness("");
+    did(&mut harness, "plugins pane agent-chat/chat --show");
+    did(&mut harness, "terminal show");
+    harness.run();
+
+    let editor_font = harness.state().settings.font_size;
+    let explorer = harness.state().panel_area(Panel::Explorer);
+    zoom_at(&mut harness, explorer.center(), true);
+    assert!(
+        harness.state().panes.zoom_of(Panel::Explorer) > 1.0,
+        "the explorer took the gesture: {}",
+        harness.state().panes.zoom_of(Panel::Explorer)
+    );
+    assert_eq!(
+        harness.state().settings.font_size,
+        editor_font,
+        "and the editing area did not also take it, which is the fault `zoom_taken` exists for"
+    );
+
+    // A tile has no multiplier of its own. Its zoom is `terminal.font.size`, so that one number goes on
+    // saying how big a terminal is and the Settings window cannot disagree with the wheel.
+    let terminal = harness.state().panel_area(Panel::Terminal);
+    let before = harness.state().settings.terminal_font_size;
+    zoom_at(&mut harness, terminal.center(), true);
+    assert!(
+        harness.state().settings.terminal_font_size > before,
+        "the terminal grew: {before} then {}",
+        harness.state().settings.terminal_font_size
+    );
+    assert_eq!(harness.state().panes.zoom_of(Panel::Terminal), 1.0, "and gained no second knob");
+
+    // A pane a plugin contributed carries its own, remembered against that pane.
+    let chat = harness.state().panel_area(Panel::Plugin(0));
+    zoom_at(&mut harness, chat.center(), false);
+    assert!(
+        harness.state().panes.zoom_of(Panel::Plugin(0)) < 1.0,
+        "the chat pane zoomed out: {}",
+        harness.state().panes.zoom_of(Panel::Plugin(0))
+    );
+    assert_eq!(
+        harness.state().settings.font_size,
+        editor_font,
+        "and the editor's font is still nobody else's business"
+    );
+}
+
+/// The keys go where the keyboard is, which is the other half of the same ask.
+#[test]
+fn the_zoom_keys_are_about_whichever_pane_holds_the_keyboard() {
+    use quill_app::app::dock::Panel;
+    let mut harness = harness("");
+    let editor_font = harness.state().settings.font_size;
+
+    // With the editing area holding the keys they mean what they always meant.
+    did(&mut harness, "action run increase-font-size");
+    harness.run();
+    assert!(harness.state().settings.font_size > editor_font);
+    let editor_font = harness.state().settings.font_size;
+
+    // Click a row, which is what gives the explorer the keyboard, and the same action is about the
+    // explorer instead.
+    harness.get_by_label("readme.md").click();
+    harness.run();
+    assert_eq!(harness.state().focus, quill_app::app::Focus::Explorer);
+    did(&mut harness, "action run increase-font-size");
+    harness.run();
+    assert!(harness.state().panes.zoom_of(Panel::Explorer) > 1.0, "the explorer grew");
+    assert_eq!(harness.state().settings.font_size, editor_font, "and the editor's font did not");
+
+    // And `Reset Font Size` puts that pane back rather than the editor.
+    did(&mut harness, "action run reset-font-size");
+    harness.run();
+    assert_eq!(harness.state().panes.zoom_of(Panel::Explorer), 1.0);
+    assert_eq!(harness.state().settings.font_size, editor_font);
+}
+
+/// Everything a person can do an agent can do, through the same code. `panel zoom` is that half.
+#[test]
+fn a_panels_zoom_is_set_and_read_from_the_command_line() {
+    use quill_app::app::dock::Panel;
+    let mut harness = harness("");
+    did(&mut harness, "plugins pane agent-chat/chat --show");
+    harness.run();
+
+    let set = did(&mut harness, "panel zoom explorer 1.35");
+    assert_eq!(set["kind"], "zoom");
+    assert!((harness.state().panes.zoom_of(Panel::Explorer) - 1.35).abs() < 0.001);
+    // Named the way the rest of the command line names a contributed pane, rather than by its slot.
+    did(&mut harness, "panel zoom agent-chat/chat 2.0");
+    assert!((harness.state().panes.zoom_of(Panel::Plugin(0)) - 2.0).abs() < 0.001);
+    // A tile answers with the one number that decides its size, and says which kind of answer it is.
+    let tile = did(&mut harness, "panel zoom terminal");
+    assert_eq!(tile["kind"], "font size");
+    assert_eq!(tile["font_size"], harness.state().settings.terminal_font_size);
+
+    did(&mut harness, "panel zoom explorer reset");
+    assert_eq!(harness.state().panes.zoom_of(Panel::Explorer), 1.0);
+    assert_eq!(refused(&mut harness, "panel zoom explorer sideways"), "usage");
+}
+
+/// Turn the wheel with the zoom modifier held, with the pointer at `at`.
+///
+/// `egui` reports a pinch and Ctrl with the wheel as one `zoom_delta`, so this is what both look like from
+/// inside the window. The pointer is moved first because which pane a gesture belongs to is decided by
+/// where it is — see `QuillApp::zoom_over_a_panel`.
+fn zoom_at(harness: &mut Harness<'static, QuillApp>, at: egui::Pos2, larger: bool) {
+    harness.input_mut().events.push(egui::Event::PointerMoved(at));
+    harness.run();
+    // Well past one step, so a single turn is worth a whole notch however the accumulator rounds.
+    harness.input_mut().events.push(egui::Event::Zoom(if larger { 1.6 } else { 1.0 / 1.6 }));
+    harness.run();
+}
+
+/// `task-1771`: "if I toggle off the file, agent chat width increases all the way to folder pane, but it
+/// seems to have a max width. I should be able to make it as wide as I want."
+///
+/// Two things made that wall, and both are gone. `PANEL_MAX_WIDTH` was 900 points, and with the editing
+/// area hidden the two sides share the room **in proportion**, so a stored width was a share rather than a
+/// size and the divider crept a fraction of the way towards the pointer.
+#[test]
+fn a_pane_is_as_wide_as_the_window_lets_it_be_once_the_editing_area_is_hidden() {
+    use quill_app::app::dock::Panel;
+    let mut harness = harness("");
+    did(&mut harness, "plugins pane agent-chat/chat --show");
+    harness.run();
+    did(&mut harness, "action run toggle-editor");
+    harness.run();
+    assert!(!harness.state().editor_visible, "the editing area is hidden");
+
+    // The chat is the right hand column, so its divider is on its left. Dragged far further left than
+    // any window is wide, which used to stop at 900 points.
+    let handle = harness.get_by_label("Resize plugin-1").rect();
+    let from = handle.center();
+    drag(&mut harness, from, egui::pos2(from.x - 2000.0, from.y));
+
+    let chat = harness.state().panel_area(Panel::Plugin(0));
+    let explorer = harness.state().panel_area(Panel::Explorer);
+    assert!(
+        chat.width() > 900.0,
+        "the pane should be past the old cap, and it is {} wide",
+        chat.width()
+    );
+    // Everything the explorer could give and not one point more: a divider takes room from the side
+    // facing it, and that side stops at its own smallest size rather than disappearing.
+    assert!(
+        (explorer.width() - quill_app::settings::EXPLORER_MIN).abs() < 1.5,
+        "the explorer is at its smallest, and it is {} wide",
+        explorer.width()
+    );
+    assert!(
+        (chat.width() + explorer.width() - harness.state().panes_area().width()).abs() < 1.5,
+        "and between them they hold the whole window"
+    );
+}
+
 #[test]
 fn the_split_between_the_source_and_the_preview_can_be_dragged() {
     let mut harness = harness(MARKDOWN);
@@ -11796,20 +12061,185 @@ fn the_board_keeps_add_task_at_the_width_the_rail_appears_at() {
     harness.snapshot(shot("agent_tasks_narrow_header").as_str());
 }
 
+/// A board with two sprints, a backlog and three epics, for the three listings.
+fn a_board_with_sprints() -> Harness<'static, QuillApp> {
+    let mut harness = harness("");
+    did(&mut harness, "plugins tab agent-tasks/board --open");
+    did(&mut harness, "plugins run agent-tasks new-sprint August 2nd Half");
+    did(&mut harness, "plugins run agent-tasks new-epic Quill");
+    did(&mut harness, "plugins run agent-tasks epic-colour Quill #8B6BFF");
+    did(&mut harness, "plugins run agent-tasks new-epic Rust-Db");
+    did(&mut harness, "plugins run agent-tasks epic-colour Rust-Db #FFB648");
+    for title in ["Upgrade and GPU stuck", "Quill agent chat plugin", "Rust db scoring system"] {
+        did(&mut harness, &format!("plugins run agent-tasks new-task {title}"));
+    }
+    did(&mut harness, "plugins run agent-tasks back");
+    did(&mut harness, "plugins run agent-tasks priority task-1 high");
+    did(&mut harness, "plugins run agent-tasks move-task task-2 agent_done");
+    did(&mut harness, "plugins run agent-tasks assign task-3 codex");
+    // One in the backlog, and one sprint that is not the active one.
+    did(&mut harness, "plugins run agent-tasks sprint-assign task-3 backlog");
+    did(&mut harness, "plugins run agent-tasks new-sprint September");
+    did(&mut harness, "plugins run agent-tasks sprint-activate August 2nd Half");
+    harness.run();
+    harness
+}
+
+/// `task-1771`: the Backlog view is what the page this board is modelled on has — sprints as groups, the
+/// backlog last, rows rather than cards, and a ticket dragged from one group to another changes its sprint.
 #[test]
-fn a_tickets_own_detail_with_its_todos_and_its_comments() {
+fn the_backlog_groups_by_sprint_and_a_row_dragged_between_them_moves_the_ticket() {
+    let mut harness = a_board_with_sprints();
+    did(&mut harness, "plugins run agent-tasks view backlog");
+    harness.run();
+    harness.get_by_label("August 2nd Half");
+    harness.get_by_label_contains("task-3");
+    harness.snapshot(shot("agent_tasks_backlog").as_str());
+
+    // The ticket in the backlog, carried into the active sprint.
+    let row = harness.get_by_label_contains("task-3").rect();
+    let sprint = harness.get_by_label("August 2nd Half").rect();
+    drag_through(
+        &mut harness,
+        row.center(),
+        &[
+            egui::pos2(row.center().x, row.center().y - 20.0),
+            egui::pos2(sprint.center().x, sprint.center().y + 30.0),
+        ],
+    );
+    let read = did(&mut harness, "plugins run agent-tasks task task-3");
+    assert_eq!(read["task"]["key"], "task-3");
+    let listed = did(&mut harness, "plugins view agent-tasks");
+    assert_eq!(listed["view"], "backlog");
+    // The board shows the active sprint, so a ticket that moved into it is on the board now.
+    let on_the_board = listed["lanes"]
+        .as_array()
+        .expect("the lanes")
+        .iter()
+        .flat_map(|lane| lane["cards"].as_array().expect("its cards"))
+        .any(|card| card["key"] == "task-3");
+    assert!(on_the_board, "the ticket was dragged into the active sprint: {listed:#?}");
+}
+
+/// The Completed view is the same shape with the finished sprints, and each of them folds.
+#[test]
+fn the_completed_view_groups_finished_sprints_and_each_one_folds() {
+    let mut harness = a_board_with_sprints();
+    did(&mut harness, "plugins run agent-tasks sprint-complete August 2nd Half");
+    did(&mut harness, "plugins run agent-tasks view completed");
+    harness.run();
+    harness.get_by_label("August 2nd Half");
+    harness.snapshot(shot("agent_tasks_completed").as_str());
+
+    harness.get_by_label("Fold August 2nd Half").click();
+    harness.run();
+    harness.snapshot(shot("agent_tasks_completed_folded").as_str());
+}
+
+/// The Epics view: a card an epic, with the seven colours, a rename and a delete that asks first.
+#[test]
+fn the_epics_view_is_a_grid_of_cards_that_can_be_renamed_recoloured_and_deleted() {
+    let mut harness = a_board_with_sprints();
+    did(&mut harness, "plugins run agent-tasks view epics");
+    harness.run();
+    harness.get_by_label("Quill");
+    harness.snapshot(shot("agent_tasks_epics").as_str());
+
+    // Recolouring is one press, and it is the same command the command line runs.
+    harness.get_by_label("Quill colour #2FCFA6").click();
+    harness.run();
+    let epics = did(&mut harness, "plugins view agent-tasks")["epics"].clone();
+    let quill = epics
+        .as_array()
+        .expect("the epics")
+        .iter()
+        .find(|epic| epic["name"] == "Quill")
+        .expect("the Quill epic")
+        .clone();
+    assert_eq!(quill["color"], "#2FCFA6");
+
+    // Deleting asks first, and what it asks is a second press rather than a dialog: a plugin cannot open
+    // the window's own confirmation.
+    harness.get_by_label("Delete Quill").click();
+    harness.run();
+    harness.get_by_label("Really delete Quill");
+    harness.get_by_label("Keep Quill").click();
+    harness.run();
+    assert_eq!(
+        did(&mut harness, "plugins view agent-tasks")["epics"].as_array().expect("the epics").len(),
+        2,
+        "cancelling keeps it"
+    );
+}
+
+/// Everything a person can do to a sprint or an epic, an agent can do too.
+#[test]
+fn the_sprints_and_the_epics_are_driven_entirely_from_the_command_line() {
+    let mut harness = a_board_with_sprints();
+    // A sprint is named by its name, which is what is on the screen.
+    did(&mut harness, "plugins run agent-tasks sprint-rename September October");
+    did(&mut harness, "plugins run agent-tasks sprint-activate October");
+    let view = did(&mut harness, "plugins view agent-tasks");
+    assert_eq!(view["sprint"]["name"], "October");
+    assert_eq!(view["sprint"]["status"], "active");
+
+    // Completing a sprint puts whatever is not in Agent Done back in the backlog, and says how many.
+    did(&mut harness, "plugins run agent-tasks sprint-activate August 2nd Half");
+    let said = run(&mut harness, "plugins run agent-tasks sprint-complete August 2nd Half");
+    assert!(said.message.contains("completed"), "{}", said.message);
+
+    // An epic renamed, recoloured and deleted.
+    did(&mut harness, "plugins run agent-tasks epic-rename Rust-Db Rust");
+    did(&mut harness, "plugins run agent-tasks epic-color Rust #FF4F7A");
+    did(&mut harness, "plugins run agent-tasks epic-delete Rust");
+    let epics = did(&mut harness, "plugins view agent-tasks")["epics"].clone();
+    assert!(
+        !epics.as_array().expect("the epics").iter().any(|epic| epic["name"] == "Rust"),
+        "the epic is gone: {epics:#?}"
+    );
+    // And the refusals name what there is, which is what a caller who guessed wrong needs.
+    assert_eq!(refused(&mut harness, "plugins run agent-tasks sprint-activate Nonesuch"), "failed");
+    assert_eq!(refused(&mut harness, "plugins run agent-tasks epic-colour Quill sideways"), "failed");
+}
+
+/// `task-1771`: *"when an agent finishes a task and moves it to agent done, for some reason a side panel is
+/// opening up that shows the task. I'm not sure what that is, but I don't want it."*
+///
+/// It was not the finishing. `task <key>` is what an agent runs to read a ticket, over and over while it
+/// works, and it used to **open** the ticket as well — which split the board in two under whoever was
+/// looking at it. Reading and showing are two commands now, and only one of them changes the window.
+#[test]
+fn reading_a_ticket_answers_with_it_and_leaves_the_board_showing_the_lanes() {
     let mut harness = harness("");
     did(&mut harness, "plugins tab agent-tasks/board --open");
     did(&mut harness, "plugins run agent-tasks new-sprint Current Sprint");
     did(&mut harness, "plugins run agent-tasks new-task Plugin architecture for UI");
     did(&mut harness, "plugins run agent-tasks todo-add task-1 Weigh the four mechanisms");
     did(&mut harness, "plugins run agent-tasks todo-add task-1 Write the manifest keys");
-    did(&mut harness, "plugins run agent-tasks todo-add task-1 Draw the pane");
     did(&mut harness, "plugins run agent-tasks todo-done task-1 1");
     did(&mut harness, "plugins run agent-tasks comment task-1 Zed and Lapce both have no UI surface.");
-    did(&mut harness, "plugins run agent-tasks task task-1");
+    // `+ Add Task` opens what it made, so that its six fields can be filled in; put it away again, because
+    // what is being measured here is what **reading** does.
+    did(&mut harness, "plugins run agent-tasks back");
     harness.run();
-    harness.snapshot(shot("agent_tasks_detail").as_str());
+
+    // Everything a ticket holds comes back, which is the whole point of the command.
+    let read = did(&mut harness, "plugins run agent-tasks task task-1");
+    assert_eq!(read["task"]["key"], "task-1");
+    assert_eq!(read["todos"].as_array().expect("its todos").len(), 2);
+    assert_eq!(read["comments"].as_array().expect("its comments").len(), 1);
+    harness.run();
+    // And the board is still the board.
+    let view = did(&mut harness, "plugins view agent-tasks");
+    assert!(view["detail"].is_null(), "reading a ticket must not open it: {view:#?}");
+    assert_eq!(view["modal"], false);
+
+    // Showing one is its own command, and that is the modal.
+    did(&mut harness, "plugins run agent-tasks open task-1");
+    harness.run();
+    let view = did(&mut harness, "plugins view agent-tasks");
+    assert_eq!(view["modal"], true, "`open` is what puts a ticket in front of somebody");
+    assert_eq!(view["detail"]["task"]["key"], "task-1");
 }
 
 #[test]
@@ -12478,7 +12908,7 @@ fn choosing_in_each_dropdown_writes_the_field_it_names() {
 
     // A dropdown that may hold nothing says so, and choosing that clears the column rather than writing an
     // empty string that nothing knows how to read.
-    pick(&mut harness, "Effort", "the agent's default");
+    pick(&mut harness, "Effort", "Model default");
     let ticket = did(&mut harness, "plugins run agent-tasks task task-1");
     assert!(ticket["task"]["effort"].is_null(), "choosing nothing clears it: {}", ticket["task"]);
 }
@@ -12600,7 +13030,8 @@ fn the_ticket_modal_holds_every_section_the_browser_board_has() {
     for section in [
         "Description",
         "Todos",
-        "Terminal",
+        "Agent terminal",
+        "Comments",
         "Post comment",
         "Send to terminal",
         "Assignee",
@@ -12608,8 +13039,8 @@ fn the_ticket_modal_holds_every_section_the_browser_board_has() {
         "Epic",
         "Project",
         "Status",
-        "Start work",
-        "Delete",
+        "Start Work",
+        "Delete task",
         "Close",
     ] {
         assert!(
@@ -12619,6 +13050,19 @@ fn the_ticket_modal_holds_every_section_the_browser_board_has() {
     }
     // The key is the heading, not `New task`: this ticket has been named.
     assert!(harness.query_all_by_label_contains("task-1").count() > 0);
+    // **Both sections fold**, which is what the page this is modelled on does with its todos — and what a
+    // person does to a ticket whose agent has written a screenful. The control is the heading; the command is
+    // the agent's half of the same thing, and it reaches the same two flags.
+    let folded = did(&mut harness, "plugins run agent-tasks fold terminal shut");
+    assert_eq!(folded["terminal"], false);
+    assert_eq!(folded["todos"], true, "shutting one leaves the other alone");
+    harness.run();
+    // The heading says which way it is, which is what a disclosure's name is for.
+    assert!(harness.query_all_by_label_contains("Agent terminal, shut").count() > 0);
+    did(&mut harness, "plugins run agent-tasks fold terminal open");
+    harness.run();
+    assert!(harness.query_all_by_label_contains("Agent terminal, open").count() > 0);
+    assert_eq!(refused(&mut harness, "plugins run agent-tasks fold sideways"), "failed");
     // And the modal closes, leaving the board.
     did(&mut harness, "plugins run agent-tasks close");
     harness.run();

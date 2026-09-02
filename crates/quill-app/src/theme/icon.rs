@@ -21,18 +21,22 @@ pub fn chevron_down(painter: &egui::Painter, centre: Pos2, color: Color32) {
 
 /// A triangle pointing down when a folder is open and right when it is closed.
 pub fn disclosure(painter: &egui::Painter, centre: Pos2, open: bool, color: Color32) {
+    disclosure_at(painter, centre, open, color, 1.0);
+}
+
+/// The same, `scale` times as large.
+///
+/// **Every icon in this file is drawn from numbers, and a zoom has to reach them.** `task-1771` makes each
+/// pane zoomable, and an explorer whose lettering grew while its arrows and its magnifier stayed at eight
+/// points would read as a bug rather than as a zoom. Only the three the explorer draws take a scale, and
+/// the plain form of each is the scaled one at one — so nothing else in the window changes and there is one
+/// shape rather than two that can drift apart.
+pub fn disclosure_at(painter: &egui::Painter, centre: Pos2, open: bool, color: Color32, scale: f32) {
+    let at = |x: f32, y: f32| Pos2::new(centre.x + x * scale, centre.y + y * scale);
     let points = if open {
-        vec![
-            Pos2::new(centre.x - 4.0, centre.y - 2.0),
-            Pos2::new(centre.x + 4.0, centre.y - 2.0),
-            Pos2::new(centre.x, centre.y + 3.0),
-        ]
+        vec![at(-4.0, -2.0), at(4.0, -2.0), at(0.0, 3.0)]
     } else {
-        vec![
-            Pos2::new(centre.x - 2.0, centre.y - 4.0),
-            Pos2::new(centre.x - 2.0, centre.y + 4.0),
-            Pos2::new(centre.x + 3.0, centre.y),
-        ]
+        vec![at(-2.0, -4.0), at(-2.0, 4.0), at(3.0, 0.0)]
     };
     painter.add(egui::Shape::convex_polygon(points, color, Stroke::NONE));
 }
@@ -104,10 +108,44 @@ pub fn half_filled_circle(painter: &egui::Painter, centre: Pos2, radius: f32, co
 
 /// A circle with a handle, in front of the box that filters the file list.
 pub fn magnifier(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    magnifier_at(painter, centre, color, 1.0);
+}
+
+/// The same, `scale` times as large. See [`disclosure_at`].
+pub fn magnifier_at(painter: &egui::Painter, centre: Pos2, color: Color32, scale: f32) {
+    let stroke = Stroke::new(1.3 * scale, color);
+    let at = |x: f32, y: f32| Pos2::new(centre.x + x * scale, centre.y + y * scale);
+    painter.circle_stroke(at(-0.8, -0.8), 3.4 * scale, stroke);
+    painter.line_segment([at(1.6, 1.6), at(4.0, 4.0)], stroke);
+}
+
+/// A waste bin: a lid, a body and two lines down it.
+///
+/// Drawn rather than lettered, which is `design/style-guide.md`'s rule for every mark in this file. It is
+/// beside the one control on a ticket that destroys work, where a word on its own reads as one more field.
+pub fn bin(painter: &egui::Painter, centre: Pos2, color: Color32) {
     let stroke = Stroke::new(1.3, color);
-    painter.circle_stroke(Pos2::new(centre.x - 0.8, centre.y - 0.8), 3.4, stroke);
+    let (w, h) = (4.0, 5.0);
+    // The lid, with the little handle over it.
     painter.line_segment(
-        [Pos2::new(centre.x + 1.6, centre.y + 1.6), Pos2::new(centre.x + 4.0, centre.y + 4.0)],
+        [Pos2::new(centre.x - w - 1.0, centre.y - h + 1.0), Pos2::new(centre.x + w + 1.0, centre.y - h + 1.0)],
+        stroke,
+    );
+    painter.line_segment(
+        [Pos2::new(centre.x - 1.6, centre.y - h - 1.0), Pos2::new(centre.x + 1.6, centre.y - h - 1.0)],
+        stroke,
+    );
+    // The body, as three sides of a box that narrows towards the bottom.
+    painter.line_segment(
+        [Pos2::new(centre.x - w, centre.y - h + 2.0), Pos2::new(centre.x - w + 0.8, centre.y + h)],
+        stroke,
+    );
+    painter.line_segment(
+        [Pos2::new(centre.x + w, centre.y - h + 2.0), Pos2::new(centre.x + w - 0.8, centre.y + h)],
+        stroke,
+    );
+    painter.line_segment(
+        [Pos2::new(centre.x - w + 0.8, centre.y + h), Pos2::new(centre.x + w - 0.8, centre.y + h)],
         stroke,
     );
 }
@@ -183,12 +221,18 @@ pub fn plus(painter: &egui::Painter, centre: Pos2, color: Color32) {
 
 /// An arrow pointing into a corner, for the button that hides the explorer.
 pub fn collapse(painter: &egui::Painter, centre: Pos2, color: Color32) {
-    let stroke = Stroke::new(1.4, color);
-    let a = Pos2::new(centre.x + 3.5, centre.y - 3.5);
-    let b = Pos2::new(centre.x - 3.5, centre.y + 3.5);
+    collapse_at(painter, centre, color, 1.0);
+}
+
+/// The same, `scale` times as large. See [`disclosure_at`].
+pub fn collapse_at(painter: &egui::Painter, centre: Pos2, color: Color32, scale: f32) {
+    let stroke = Stroke::new(1.4 * scale, color);
+    let at = |x: f32, y: f32| Pos2::new(centre.x + x * scale, centre.y + y * scale);
+    let a = at(3.5, -3.5);
+    let b = at(-3.5, 3.5);
     painter.line_segment([a, b], stroke);
-    painter.line_segment([b, Pos2::new(b.x + 4.5, b.y)], stroke);
-    painter.line_segment([b, Pos2::new(b.x, b.y - 4.5)], stroke);
+    painter.line_segment([b, Pos2::new(b.x + 4.5 * scale, b.y)], stroke);
+    painter.line_segment([b, Pos2::new(b.x, b.y - 4.5 * scale)], stroke);
 }
 
 /// The three view modes, drawn as small pictures of what each one shows.

@@ -124,16 +124,37 @@ pub fn dropdown<T>(
     draw: Option<fn(&egui::Painter, Pos2, Color32)>,
     contents: impl FnOnce(&mut egui::Ui) -> Option<T>,
 ) -> Option<T> {
+    dropdown_over(ui, area, value, name, draw, true, contents)
+}
+
+/// The same dropdown with its own ground drawn or left alone, for one on a decoration canvas.
+///
+/// See [`choice_button_over`] and [`search_field_over`], which exist for the same reason and are the two
+/// controls the board already needed it for: the well a value sits in on the Agent-Tasks ticket is drawn
+/// **behind** the whole modal by `services::vello_canvas`, and a flat rectangle painted here would fill it
+/// in. Everything else about the control — the words, the chevron, the popup, the name — is one function.
+#[allow(clippy::too_many_arguments)]
+pub fn dropdown_over<T>(
+    ui: &mut egui::Ui,
+    area: Rect,
+    value: &str,
+    name: &str,
+    draw: Option<fn(&egui::Painter, Pos2, Color32)>,
+    ground: bool,
+    contents: impl FnOnce(&mut egui::Ui) -> Option<T>,
+) -> Option<T> {
     let id = ui.id().with(("dropdown", name));
     let response = ui.interact(area, id, Sense::click()).on_hover_text(name);
     let painter = ui.painter();
-    painter.rect(
-        area,
-        CornerRadius::same(size::CONTROL_CORNER),
-        color::CONTROL,
-        Stroke::new(1.0, color::CONTROL_BORDER),
-        egui::StrokeKind::Inside,
-    );
+    if ground {
+        painter.rect(
+            area,
+            CornerRadius::same(size::CONTROL_CORNER),
+            color::CONTROL,
+            Stroke::new(1.0, color::CONTROL_BORDER),
+            egui::StrokeKind::Inside,
+        );
+    }
     let mut text_left = area.left() + 10.0;
     if let Some(draw) = draw {
         draw(painter, Pos2::new(text_left + 4.0, area.center().y), color::TEXT_DIM);

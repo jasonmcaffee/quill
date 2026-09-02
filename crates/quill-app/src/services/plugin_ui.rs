@@ -123,6 +123,14 @@ pub struct Look<'a> {
     /// before taking an arrow key: without it, moving the caret in the editor would also move the chosen card on
     /// a board nobody was looking at.
     pub has_the_keyboard: bool,
+    /// How much bigger or smaller this pane is drawn than the settings alone would make it.
+    ///
+    /// `task-1771`'s per-pane zoom, from `settings::Panes::zoom_of`. It is already multiplied into
+    /// `font_size`, `monospace_size` and the two row heights by [`Look::zoomed_by`], and it is kept here
+    /// because [`Look::scale`] is what every fixed measurement on a board is multiplied by and that has to
+    /// follow the zoom **down** as well as up — which the font size on its own cannot do, since it is
+    /// floored at one.
+    zoom: f32,
 }
 
 impl std::fmt::Debug for Look<'_> {
@@ -167,6 +175,23 @@ impl<'a> Look<'a> {
             // False unless the window says otherwise, because that is the safe answer: a plugin that was told it
             // had the keys when it did not would take them from the editor.
             has_the_keyboard: false,
+            zoom: crate::settings::DEFAULT_ZOOM,
+        }
+    }
+
+    /// The same look, `factor` bigger.
+    ///
+    /// Every size a provider reads is multiplied here rather than at each of its own call sites, so a pane
+    /// that already scaled with the editor's font zooms with no change to the provider at all. `task-1771`.
+    pub fn zoomed_by(self, factor: f32) -> Self {
+        let factor = factor.clamp(crate::settings::MIN_ZOOM, crate::settings::MAX_ZOOM);
+        Self {
+            font_size: self.font_size * factor,
+            monospace_size: self.monospace_size * factor,
+            row_height: self.row_height * factor,
+            menu_row_height: self.menu_row_height * factor,
+            zoom: self.zoom * factor,
+            ..self
         }
     }
 
@@ -208,8 +233,12 @@ impl<'a> Look<'a> {
     ///
     /// Floored rather than allowed below one: a person who chooses 9 point text wants small text, not cards too
     /// short to press, and a tick box that shrinks with the font stops being a target.
+    /// The zoom is applied **after** the floor rather than inside it, so a pane zoomed out really does get
+    /// smaller: the floor exists so that 9 point text does not shrink a tick box below a target, and a person
+    /// holding `Ctrl` and turning the wheel the other way is asking for exactly that.
     pub fn scale(&self) -> f32 {
-        (self.font_size / crate::settings::DEFAULT_FONT_SIZE).max(1.0)
+        let from_the_font = self.font_size / self.zoom / crate::settings::DEFAULT_FONT_SIZE;
+        from_the_font.max(1.0) * self.zoom
     }
 
     /// A colour with the window's opacity applied, which is what a provider paints a ground with.
@@ -297,6 +326,26 @@ impl Palette {
         attached: color::ATTACHED,
         board_accent: color::BOARD_ACCENT,
     };
+}
+
+/// Where a provider's modal reserved room for the decoration behind it.
+///
+/// Four values that travel together, so a provider hands back one thing rather than four. See
+/// [`UiProvider::take_the_modals_canvas`].
+pub struct ChromeSlot {
+    /// What the canvas is cached under, so a modal that did not change is not rasterised again.
+    pub id: egui::Id,
+    /// The rectangle the decoration covers.
+    pub area: egui::Rect,
+    /// The painter of the **modal's own layer**, which is the only one that can fill the slot in.
+    pub painter: egui::Painter,
+    pub shape: egui::layers::ShapeIdx,
+}
+
+impl std::fmt::Debug for ChromeSlot {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        out.debug_struct("ChromeSlot").field("id", &self.id).field("area", &self.area).finish()
+    }
 }
 
 /// What a provider asks the window to do, having drawn.
@@ -488,6 +537,21 @@ pub trait UiProvider: std::fmt::Debug {
         (Vec::new(), false)
     }
 
+    /// Where the modal just drawn left room for its decoration, if it draws any.
+    ///
+    /// **A modal is on a layer of its own, and that is the whole reason this exists.** A pane's decoration is
+    /// rasterised into a slot the *window* reserved, because the window draws the pane's ground; a modal is
+    /// drawn by `egui::Modal` on a foreground layer the window never touches, so the slot has to be reserved
+    /// from inside — and `egui::Painter::set` writes to the layer its own painter belongs to, so the painter
+    /// has to come back with it.
+    ///
+    /// Taken rather than read, once, on the frame the modal was drawn: a slot belongs to one frame's shape
+    /// list and is meaningless on the next. `None` from a provider whose modal has no depth, which is every
+    /// provider but one.
+    fn take_the_modals_canvas(&mut self) -> Option<ChromeSlot> {
+        None
+    }
+
     /// Answer a command from the menu, from a button in the pane, or from the command line.
     ///
     /// The one path a change goes down, which is what `QuillApp::run_action` is for the window and
@@ -544,6 +608,23 @@ pub trait UiProvider: std::fmt::Debug {
     /// the server's-own-words rule applied to Quill's own commands.
     fn answered(&mut self, id: &str, answer: Result<serde_json::Value, String>) {
         let _ = (id, answer);
+    }
+
+    /// Told that this pane was just zoomed, so it can keep the point under the pointer still.
+    ///
+    /// `ratio` is how much bigger the pane became - 1.15 for a notch out, its reciprocal for a notch in -
+    /// and `above` is how far below the top of the pane's **body** the pointer was.
+    ///
+    /// **A provider corrects its own scroll because the window cannot reach it.** The rows the explorer
+    /// draws hang off a scroll position the window keeps, and `task-1672`'s rule is applied there; a
+    /// provider's scrolling belongs to the provider - the chat's conversation is an `egui::ScrollArea` and
+    /// the board's listings are a number on the board - so it is told what happened and does the same
+    /// arithmetic. Content laid out at a scale has a height proportional to it, so the point at
+    /// `offset + above` lands at `(offset + above) * ratio` and putting it back is one subtraction.
+    ///
+    /// Nothing by default, which is right for a provider whose pane does not scroll.
+    fn zoomed(&mut self, ratio: f32, above: f32) {
+        let _ = (ratio, above);
     }
 
     /// Told what the window is showing, when it changes.

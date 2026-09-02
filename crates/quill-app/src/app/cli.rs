@@ -786,6 +786,60 @@ impl QuillApp {
                     }),
                 )
             }
+            // `task-1771`: every pane is zoomable with the wheel, and everything a person can do an agent
+            // can do too. The two shapes a zoom takes are both here, so a caller does not have to know
+            // which kind of panel it is asking about — a tile answers with its font size in points and
+            // everything else with its multiplier, and both are the number that really decides how big the
+            // pane is drawn.
+            "zoom" => {
+                let Some(panel) = self.cli_panel_named_or_a_pane(request) else {
+                    return self.cli_no_such_panel(request);
+                };
+                let asked = request.text("factor").map(|said| said.trim().to_owned());
+                match asked.as_deref() {
+                    None | Some("") => {}
+                    Some("reset") => self.reset_the_zoom_of(panel),
+                    Some(said) => match said.parse::<f32>() {
+                        Ok(factor) if factor.is_finite() && factor > 0.0 => {
+                            self.set_the_zoom_of(panel, factor);
+                        }
+                        _ => {
+                            return no(
+                                request,
+                                code::USAGE,
+                                format!(
+                                    "`{said}` is not a zoom: say a number between {:.1} and {:.1}, or `reset`.",
+                                    settings::MIN_ZOOM,
+                                    settings::MAX_ZOOM
+                                ),
+                            )
+                        }
+                    },
+                }
+                let tile = panel.is_a_tile();
+                let said = match tile {
+                    true => format!(
+                        "{} is a character grid at {:.0} points",
+                        panel.label(),
+                        self.settings.terminal_font_size
+                    ),
+                    false => {
+                        format!("{} is at {:.2}x", panel.label(), self.panes.zoom_of(panel))
+                    }
+                };
+                ok(
+                    request,
+                    said,
+                    json!({
+                        "panel": panel.name(),
+                        // A tile has no multiplier of its own, so it answers with the one thing that
+                        // decides its size, and says which of the two this is.
+                        "kind": if tile { "font size" } else { "zoom" },
+                        "zoom": self.panes.zoom_of(panel),
+                        "font_size": self.settings.terminal_font_size,
+                    }),
+                )
+            }
             "reset" => {
                 self.reset_the_panel_layout();
                 ok(
@@ -813,6 +867,47 @@ impl QuillApp {
     /// The panel a `panel` command names, if it names one Quill has.
     fn cli_panel_named(&self, request: &Request) -> Option<dock::Panel> {
         request.text("panel").and_then(|name| dock::Panel::from_name(name.trim()))
+    }
+
+    /// The same, and a contributed pane named the way the rest of the command line names one.
+    ///
+    /// `plugins pane agent-chat/chat --side right` is how a plugin's pane is spoken about everywhere else,
+    /// and `panel zoom plugin-2` would make somebody count slots. Both are accepted; the slot names are
+    /// what a window with no plugins in it still answers to.
+    fn cli_panel_named_or_a_pane(&self, request: &Request) -> Option<dock::Panel> {
+        let name = request.text("panel")?.trim().to_owned();
+        if let Some(panel) = dock::Panel::from_name(&name) {
+            return Some(panel);
+        }
+        self.plugin_ui.slot_of(&name).map(|slot| dock::Panel::Plugin(slot as u8))
+    }
+
+    /// Set a panel's zoom outright, which is what `panel zoom` does and what a test drives.
+    ///
+    /// A tile has no multiplier — its size is the terminal's font — so a factor there is read as a
+    /// multiple of the size it starts at and lands on the nearest size the Settings window offers. That
+    /// keeps one number saying how big a terminal is, which is the rule `step_the_zoom_of` follows.
+    pub fn set_the_zoom_of(&mut self, panel: dock::Panel, factor: f32) {
+        match panel.is_a_tile() {
+            true => {
+                let wanted = settings::Settings::new().terminal_font_size * factor;
+                let nearest = settings::TERMINAL_FONT_SIZES
+                    .iter()
+                    .copied()
+                    .min_by(|a, b| {
+                        (a - wanted).abs().total_cmp(&(b - wanted).abs())
+                    })
+                    .unwrap_or(wanted);
+                self.settings.terminal_font_size = nearest;
+            }
+            false => {
+                let was = self.panes.zoom_of(panel);
+                self.panes.set_zoom_of(panel, factor);
+                let now = self.panes.zoom_of(panel);
+                self.keep_the_place_through_a_panels_zoom(panel, now / was, None);
+            }
+        }
+        self.unsaved_settings = true;
     }
 
     /// The refusal that names them all, which is what a caller who guessed wrong needs.

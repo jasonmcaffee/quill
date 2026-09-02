@@ -40,6 +40,11 @@ pub struct Grab {
     pub dropped: bool,
     /// The header was right clicked, which opens the panel's own menu.
     pub menu: Option<Pos2>,
+    /// The header was double clicked, which fills the window with this panel and puts it back.
+    ///
+    /// `task-1771`. The handle is already the whole strip, so this is one more thing the same
+    /// `Response` answers rather than a second widget over it.
+    pub twice: bool,
 }
 
 /// Make `header` the handle a panel is carried by.
@@ -69,6 +74,7 @@ pub fn handle(ui: &mut egui::Ui, header: Rect, panel: Panel) -> Grab {
     if response.secondary_clicked() {
         grab.menu = response.interact_pointer_pos().or_else(|| response.hover_pos());
     }
+    grab.twice = response.double_clicked();
     // Named, because every control in Quill has a plain name and a test finds one by it.
     let name = format!("Move {}", panel.label());
     response.widget_info(|| {
