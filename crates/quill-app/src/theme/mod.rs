@@ -777,6 +777,7 @@ mod tests {
             assert_eq!(IconSet::parse(set.name()), Some(set));
         }
         assert_eq!(IconSet::parse("MATERIAL"), Some(IconSet::Material));
+        assert_eq!(IconSet::default(), IconSet::Material, "the improved marks are what a window comes up in");
         assert_eq!(IconSet::parse("atom"), None);
     }
 }
