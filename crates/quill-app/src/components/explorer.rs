@@ -650,6 +650,33 @@ impl RowClick {
     }
 }
 
+/// Where a row's mark goes, measured from the start of its indent.
+///
+/// The two rows are drawn by two functions and always have been, so the columns they share live here
+/// rather than in one of them. `mark` is [`icon::folder_mark_width`], which is zero for the `classic`
+/// set — and at zero these give exactly the numbers the explorer used before `task-1776`, which is what
+/// keeps that set unchanged to the pixel.
+///
+/// A folder's arrow sits at `x`; its mark and a file's mark share the column after it. Without that a
+/// folder's name would be pushed right by the width of its own mark and a file's would not, so a folder
+/// and a file at the same depth would not line up — which is the thing anybody reading a tree is doing.
+fn mark_column(x: f32, view: View, mark: f32) -> f32 {
+    match mark > 0.0 {
+        true => x + view.at(12.0) + mark / 2.0,
+        false => x + view.at(4.0),
+    }
+}
+
+/// Where a row's name starts. `folder` is what tells the two apart when there is no mark: a folder's
+/// name has always sat four points nearer its arrow than a file's does to its square.
+fn name_column(x: f32, view: View, mark: f32, folder: bool) -> f32 {
+    match (mark > 0.0, folder) {
+        (true, _) => x + view.at(12.0) + mark,
+        (false, true) => x + view.at(12.0),
+        (false, false) => x + view.at(16.0),
+    }
+}
+
 /// A folder row: a triangle that points down when open, then the name.
 fn folder_row(
     ui: &mut egui::Ui,
@@ -685,13 +712,15 @@ fn folder_row(
     // what you are reading is visible without reading any of the names.
     let tint = if entry.expanded { color::folder_open() } else { color::folder() };
     icon::disclosure_at(ui.painter(), Pos2::new(x, row.center().y), entry.expanded, tint, view.zoom);
-    // The mark in front of the name, when the icon set draws one. The `quill` set draws none and answers
-    // zero, so the name sits exactly where it always has — nothing here knows which set is on.
+    // The mark in front of the name, when the icon set draws one. The `classic` set draws none and
+    // answers zero, so the name sits exactly where it always has — nothing here knows which set is on.
+    // A file's own mark goes in the same column and its name starts in the same place, which is
+    // `mark_column` and `name_column`: a folder and a file at the same depth line up.
     let mark = icon::folder_mark_width(view.zoom);
     if mark > 0.0 {
         icon::folder_mark(
             ui.painter(),
-            Pos2::new(x + view.at(12.0) + mark / 2.0, row.center().y),
+            Pos2::new(mark_column(x, view, mark), row.center().y),
             entry.expanded,
             tint,
             view.zoom,
@@ -703,7 +732,7 @@ fn folder_row(
         color::text_control(),
     );
     ui.painter().galley(
-        Pos2::new(x + view.at(12.0) + mark, row.center().y - galley.size().y / 2.0),
+        Pos2::new(name_column(x, view, mark, true), row.center().y - galley.size().y / 2.0),
         galley,
         color::text_control(),
     );
@@ -763,11 +792,14 @@ fn file_row(
         );
     }
     let x = row.left() + view.at(16.0) + depth as f32 * view.at(size::INDENT);
+    // The column a file's own mark shares with a folder's, so the two line up. Zero for the `classic`
+    // set, where it is exactly the number this row has always used — see [`mark_column`].
+    let mark = icon::folder_mark_width(view.zoom);
     match &decoration.icon {
         // A file whose plugin gives it a picture gets the picture in place of the square.
         Some(icon) => crate::services::icons::draw(
             ui.painter(),
-            Pos2::new(x + view.at(4.0), row.center().y),
+            Pos2::new(mark_column(x, view, mark), row.center().y),
             icon,
         ),
         None => {
@@ -775,7 +807,7 @@ fn file_row(
                 if openable { file_marker(path) } else { color::text_faint().gamma_multiply(0.45) };
             ui.painter().rect_filled(
                 Rect::from_center_size(
-                    Pos2::new(x + view.at(4.0), row.center().y),
+                    Pos2::new(mark_column(x, view, mark), row.center().y),
                     Vec2::splat(view.at(8.0)),
                 ),
                 CornerRadius::same(2),
@@ -797,7 +829,7 @@ fn file_row(
     let galley =
         ui.painter().layout_no_wrap(name.clone(), egui::FontId::proportional(view.at(12.5)), tint);
     ui.painter().galley(
-        Pos2::new(x + view.at(16.0), row.center().y - galley.size().y / 2.0),
+        Pos2::new(name_column(x, view, mark, false), row.center().y - galley.size().y / 2.0),
         galley,
         tint,
     );

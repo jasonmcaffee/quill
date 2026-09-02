@@ -1070,11 +1070,26 @@ fn one_theme(values: &Values, plugin: &str, id: &str) -> Result<crate::theme::Th
 
     // All nine tokens or none. Eight would half-recolour a file: the ninth would keep whichever language
     // plugin's colour it had, and the two schemes would be visible in one line of code.
+    //
+    // **A value that will not read as a colour is refused, not treated as absent**, and the difference
+    // matters more here than anywhere else in this function: a theme whose nine were all mistyped would
+    // otherwise load as a theme that names none, which is a *valid* thing to be — so the manifest would
+    // be accepted, the window would quietly go on using each language plugin's own scheme, and nothing
+    // would ever say why. The review on `task-1776` found it. Every other refusal here exists to stop
+    // exactly that, and this is the one place where the silent outcome looks like a legitimate one.
     let mut named: Vec<(Token, Color)> = Vec::new();
     let mut missing: Vec<&str> = Vec::new();
     for token in Token::ALL {
-        match at(&format!("syntax.{}", token.name())).and_then(colour) {
-            Some(read) => named.push((token, read)),
+        match at(&format!("syntax.{}", token.name())) {
+            Some(value) => match colour(value) {
+                Some(read) => named.push((token, read)),
+                None => {
+                    return Err(format!(
+                        "theme.{id}.syntax.{} is `{value}`, which is not a colour such as #FF79C6",
+                        token.name()
+                    ))
+                }
+            },
             None => missing.push(token.name()),
         }
     }
@@ -1088,6 +1103,23 @@ fn one_theme(values: &Values, plugin: &str, id: &str) -> Result<crate::theme::Th
             ))
         }
     };
+
+    // And a key under this theme that is none of the five it reads is a line that would do nothing,
+    // silently — the rule `no_orphans` already keeps for `pane.`, `tab.`, `menu.` and `settings.`. It is
+    // last so the messages above, which say what is wrong with a key that *is* recognised, come first.
+    for (leaf, _) in values.starting_with(&format!("theme.{id}.")) {
+        let known = matches!(leaf.as_str(), "name" | "dark" | "icons")
+            || leaf.strip_prefix("ui.").is_some()
+            || leaf
+                .strip_prefix("syntax.")
+                .is_some_and(|token| Token::ALL.iter().any(|known| known.name() == token));
+        if !known {
+            return Err(format!(
+                "theme.{id}.{leaf} is not a key a theme has. It reads name, dark, icons, ui.<colour> and syntax.<token>, where a token is one of {}",
+                Token::ALL.map(Token::name).join(", ")
+            ));
+        }
+    }
 
     Ok(crate::theme::Theme {
         key: format!("{plugin}/{id}"),
@@ -2258,6 +2290,25 @@ language.extensions = .aa
 
         let problem = refused(&format!("{base}theme.one.ui.accent = magenta\n"));
         assert!(problem.contains("not a colour"), "{problem}");
+
+        // **The one whose silent outcome looks legitimate**, which is why the review found it and the
+        // eight-of-nine check above did not: a theme that names no token colours is a valid theme, so a
+        // theme whose nine were all mistyped would have loaded as one and gone on using each language
+        // plugin's own scheme with nothing said.
+        let mut all_nine_mistyped = base.to_owned();
+        for token in Token::ALL {
+            all_nine_mistyped.push_str(&format!("theme.one.syntax.{} = #GGGGGG\n", token.name()));
+        }
+        let problem = refused(&all_nine_mistyped);
+        assert!(problem.contains("not a colour"), "{problem}");
+        assert!(problem.contains("syntax."), "and it says which key: {problem}");
+
+        // A key under a theme that is none of the five it reads.
+        let problem = refused(&format!("{base}theme.one.colour.editor = #FF0000\n"));
+        assert!(problem.contains("not a key a theme has"), "{problem}");
+        let problem = refused(&format!("{base}theme.one.syntax.keywrd = #FF0000\n"));
+        assert!(problem.contains("keywrd"), "{problem}");
+        assert!(problem.contains("keyword"), "and it lists the tokens: {problem}");
 
         // A group nothing lists is a block of colours that would never be read.
         let problem = refused(&format!("{base}theme.two.name = Two\n"));
