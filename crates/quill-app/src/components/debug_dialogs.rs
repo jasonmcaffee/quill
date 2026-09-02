@@ -183,16 +183,16 @@ pub fn evaluate(ctx: &egui::Context, dialog: &mut EvaluateDialog, paused: bool) 
 /// The answer area: the value, the debugger's own refusal, or the reason there is nothing yet.
 fn show_result(ui: &egui::Ui, area: Rect, dialog: &EvaluateDialog, paused: bool) {
     let (text, tint) = match (&dialog.result, dialog.asking, paused) {
-        (_, true, _) => ("\u{2026}".to_owned(), color::TEXT_FAINT),
-        (Some(Ok(value)), _, _) => (value.clone(), color::TEXT),
+        (_, true, _) => ("\u{2026}".to_owned(), color::text_faint()),
+        (Some(Ok(value)), _, _) => (value.clone(), color::text()),
         // The debugger's own message, shown as it was written: it explains a bad expression far
         // better than Quill could, which is the rule `quill-git` keeps about git's standard error.
-        (Some(Err(problem)), _, _) => (problem.clone(), color::CLOSE),
+        (Some(Err(problem)), _, _) => (problem.clone(), color::close()),
         (None, _, false) => (
             "The program has to be stopped for an expression to be evaluated in it.".to_owned(),
-            color::TEXT_FAINT,
+            color::text_faint(),
         ),
-        (None, _, true) => ("Type an expression and press Enter.".to_owned(), color::TEXT_FAINT),
+        (None, _, true) => ("Type an expression and press Enter.".to_owned(), color::text_faint()),
     };
     let painter = ui.painter_at(area);
     let galley = painter.layout(text, egui::FontId::monospace(12.0), tint, area.width());

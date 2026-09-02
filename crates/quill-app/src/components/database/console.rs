@@ -96,14 +96,14 @@ fn toolbar(
     let painter = ui.painter();
     let mark = Pos2::new(bar.right() - 8.0 * scale, bar.center().y);
     let drawn = painter
-        .layout_no_wrap(where_it_is.clone(), egui::FontId::proportional(look.font_size * 0.85), color::TEXT_DIM)
+        .layout_no_wrap(where_it_is.clone(), egui::FontId::proportional(look.font_size * 0.85), color::text_dim())
         .size()
         .x;
     text(
         painter,
         Pos2::new(mark.x - drawn, mark.y),
         &where_it_is,
-        color::TEXT_DIM,
+        color::text_dim(),
         look.font_size * 0.85,
         drawn + 2.0,
     );
@@ -111,7 +111,7 @@ fn toolbar(
         crate::components::database::waiting(
             painter,
             Pos2::new(mark.x - drawn - 24.0 * scale, mark.y),
-            color::ACCENT,
+            color::accent(),
             ui.input(|input| input.time),
         );
     }
@@ -152,7 +152,7 @@ fn sql_editor(
             .desired_width(inner.width())
             .desired_rows((inner.height() / (size * 1.4)).max(1.0) as usize)
             .layouter(&mut layouter)
-            .text_color(color::TEXT_CONTROL),
+            .text_color(color::text_control()),
     );
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "SQL"));
     // Where the caret is decides which statement Execute runs, so it is read back every frame rather
@@ -202,14 +202,14 @@ fn colour_the_sql(
             continue;
         }
         if range.start > at {
-            job.append(&text[at..range.start], 0.0, format(font.clone(), color::TEXT_CONTROL));
+            job.append(&text[at..range.start], 0.0, format(font.clone(), color::text_control()));
         }
         let tint = egui::Color32::from_rgb(colour.r, colour.g, colour.b);
         job.append(&text[range.start..range.end], 0.0, format(font.clone(), tint));
         at = range.end;
     }
     if at < text.len() {
-        job.append(&text[at..], 0.0, format(font, color::TEXT_CONTROL));
+        job.append(&text[at..], 0.0, format(font, color::text_control()));
     }
     job
 }
@@ -243,7 +243,7 @@ fn the_results(
         ui.painter(),
         Pos2::new(heading.left(), heading.center().y),
         &said,
-        color::TEXT_STRONG,
+        color::text_strong(),
         look.font_size * 0.85,
         heading.width(),
     );
@@ -259,10 +259,10 @@ fn the_results(
             let galley = painter.layout(
                 why.to_string(),
                 egui::FontId::monospace(look.monospace_size * 0.95),
-                color::UNSAVED,
+                color::unsaved(),
                 inner.width(),
             );
-            painter.galley(inner.min, galley, color::UNSAVED);
+            painter.galley(inner.min, galley, color::unsaved());
         }
         (Some(rows), None) => {
             crate::components::database::grid::rows_only(ui, look, inner, rows, id);
@@ -273,7 +273,7 @@ fn the_results(
             // Newest last, which is what a console log is: an `UPDATE`'s count, a `NOTICE`, a
             // `CREATE TABLE` that said nothing else.
             for line in output.iter().rev().take(12).collect::<Vec<&String>>().into_iter().rev() {
-                code(&painter, Pos2::new(inner.left(), pen), line, color::TEXT, look.monospace_size * 0.95, inner.width());
+                code(&painter, Pos2::new(inner.left(), pen), line, color::text(), look.monospace_size * 0.95, inner.width());
                 pen += look.monospace_size * 1.5;
             }
         }

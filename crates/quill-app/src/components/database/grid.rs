@@ -66,10 +66,10 @@ pub fn show(
         let galley = painter.layout(
             why.to_string(),
             egui::FontId::monospace(look.monospace_size * 0.95),
-            color::UNSAVED,
+            color::unsaved(),
             body.width(),
         );
-        painter.galley(body.min + Vec2::splat(8.0 * scale), galley, color::UNSAVED);
+        painter.galley(body.min + Vec2::splat(8.0 * scale), galley, color::unsaved());
         return acts;
     }
     let rows = grid.rows.clone();
@@ -136,7 +136,7 @@ fn toolbar(
             ui.painter(),
             Pos2::new(bar.left() + 60.0 * scale, bar.center().y),
             &why,
-            color::TEXT_FAINT,
+            color::text_faint(),
             look.font_size * 0.8,
             bar.width() - 70.0 * scale,
         );
@@ -190,14 +190,14 @@ fn fragment_field(
     let scale = look.scale();
     let painter = ui.painter().clone();
     let label_width = painter
-        .layout_no_wrap(name.to_owned(), egui::FontId::proportional(look.font_size * 0.75), color::TEXT_FAINT)
+        .layout_no_wrap(name.to_owned(), egui::FontId::proportional(look.font_size * 0.75), color::text_faint())
         .size()
         .x;
     text(
         &painter,
         Pos2::new(area.left() + 8.0 * scale, area.center().y),
         name,
-        color::TEXT_FAINT,
+        color::text_faint(),
         look.font_size * 0.75,
         label_width + 2.0,
     );
@@ -211,7 +211,7 @@ fn fragment_field(
             .frame(egui::Frame::NONE)
             .font(egui::FontId::monospace(look.monospace_size * 0.95))
             .desired_width(text_rect.width())
-            .text_color(color::TEXT_CONTROL),
+            .text_color(color::text_control()),
     );
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, name));
     response
@@ -234,7 +234,7 @@ fn the_grid(
             ui.painter(),
             Pos2::new(area.left() + 10.0 * scale, area.top() + 16.0 * scale),
             "No rows.",
-            color::TEXT_FAINT,
+            color::text_faint(),
             look.font_size * 0.9,
             area.width(),
         );
@@ -301,8 +301,8 @@ fn header(
             painter.rect_filled(rect, egui::CornerRadius::same(4), look.palette.control);
         }
         let tint = match column.in_key {
-            true => color::ACCENT,
-            false => color::TEXT_STRONG,
+            true => color::accent(),
+            false => color::text_strong(),
         };
         let drawn = text(
             &painter,
@@ -317,7 +317,7 @@ fn header(
                 &painter,
                 Pos2::new(rect.left() + 10.0 * scale + drawn, rect.center().y),
                 &column.type_name,
-                color::TEXT_FAINT,
+                color::text_faint(),
                 look.font_size * 0.7,
                 column_width - drawn - 34.0 * scale,
             );
@@ -326,9 +326,9 @@ fn header(
         // is how a grid says "the order you are looking at is the server's own".
         let sorting = order.trim();
         if sorting == format!("{} asc", column.name) {
-            icon::disclosure_at(&painter, Pos2::new(rect.right() - 10.0 * scale, rect.center().y), true, color::ACCENT, scale);
+            icon::disclosure_at(&painter, Pos2::new(rect.right() - 10.0 * scale, rect.center().y), true, color::accent(), scale);
         } else if sorting == format!("{} desc", column.name) {
-            icon::disclosure_at(&painter, Pos2::new(rect.right() - 10.0 * scale, rect.center().y), false, color::ACCENT, scale);
+            icon::disclosure_at(&painter, Pos2::new(rect.right() - 10.0 * scale, rect.center().y), false, color::accent(), scale);
         }
         response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &column.name));
         if response.clicked() {
@@ -359,7 +359,7 @@ fn one_row(
         painter,
         Pos2::new(rect.left() + 6.0 * scale, rect.center().y),
         &(at + 1).to_string(),
-        color::TEXT_FAINT,
+        color::text_faint(),
         look.font_size * 0.75,
         GUTTER * scale - 12.0 * scale,
     );
@@ -407,9 +407,9 @@ fn draw_a_value(
     let size = look.monospace_size * 0.95;
     let room = cell.width() - 12.0 * scale;
     let tint = match (deleted, value.is_null()) {
-        (true, _) => color::TEXT_FAINT,
-        (false, true) => color::TEXT_FAINT,
-        (false, false) => color::TEXT,
+        (true, _) => color::text_faint(),
+        (false, true) => color::text_faint(),
+        (false, false) => color::text(),
     };
     let said = match value.is_null() {
         true => "NULL".to_owned(),
@@ -433,7 +433,7 @@ fn draw_a_value(
         // pressing anything.
         painter.line_segment(
             [Pos2::new(at.x, cell.center().y), Pos2::new(at.x + drawn, cell.center().y)],
-            egui::Stroke::new(1.0, color::TEXT_FAINT),
+            egui::Stroke::new(1.0, color::text_faint()),
         );
     }
 }
@@ -473,7 +473,7 @@ fn paging(
         ui.painter(),
         Pos2::new(at + 8.0 * scale, foot.center().y),
         &said,
-        color::TEXT_DIM,
+        color::text_dim(),
         look.font_size * 0.8,
         220.0 * scale,
     );
@@ -506,7 +506,7 @@ pub fn rows_only(ui: &mut egui::Ui, look: &Look<'_>, area: Rect, rows: &Rows, id
             &painter,
             Pos2::new(left + 4.0 * scale, head.center().y),
             &column.name,
-            color::TEXT_STRONG,
+            color::text_strong(),
             look.font_size * 0.8,
             column_width - 8.0 * scale,
         );

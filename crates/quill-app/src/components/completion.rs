@@ -106,8 +106,8 @@ fn frame(ui: &egui::Ui, area: Rect) {
     ui.painter().rect(
         area,
         CornerRadius::same(size::CONTROL_CORNER),
-        color::MENU,
-        Stroke::new(1.0, color::CONTROL_BORDER),
+        color::menu(),
+        Stroke::new(1.0, color::control_border()),
         egui::StrokeKind::Inside,
     );
 }
@@ -123,19 +123,19 @@ fn draw_row(ui: &mut egui::Ui, area: Rect, row: &quill_core::completion::Row, ch
     // One pill, drawn one way: the same `SELECTED_ROW` fill the explorer's open file and every menu
     // row's hover already use.
     if chosen {
-        painter.rect_filled(area, CornerRadius::same(4), color::SELECTED_ROW);
+        painter.rect_filled(area, CornerRadius::same(4), color::selected_row());
     } else if response.hovered() {
-        painter.rect_filled(area, CornerRadius::same(4), color::CONTROL);
+        painter.rect_filled(area, CornerRadius::same(4), color::control());
     }
     if let Some(kind) = row.kind {
         icon::symbol_kind(
             painter,
             Pos2::new(area.left() + GLYPH / 2.0 + 2.0, area.center().y),
             kind,
-            color::TEXT_DIM,
+            color::text_dim(),
         );
     }
-    let tint = if chosen { color::TEXT_STRONG } else { color::TEXT_CONTROL };
+    let tint = if chosen { color::text_strong() } else { color::text_control() };
     // The matched letters in the accent colour, which is how `Find in Files` and `Go to File`
     // already answer "why is this row here".
     let galley = controls::marked_text(
@@ -151,12 +151,12 @@ fn draw_row(ui: &mut egui::Ui, area: Rect, row: &quill_core::completion::Row, ch
         let suffix = painter.layout_no_wrap(
             format!("\u{00B7} {}", row.detail),
             egui::FontId::proportional(11.0),
-            color::TEXT_FAINT,
+            color::text_faint(),
         );
         painter.galley(
             Pos2::new(area.right() - 6.0 - suffix.size().x, area.center().y - suffix.size().y / 2.0),
             suffix,
-            color::TEXT_FAINT,
+            color::text_faint(),
         );
     }
     response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, chosen, &name));

@@ -223,9 +223,9 @@ fn text_options(
         let fill = Color32::from_rgb(swatch.r, swatch.g, swatch.b);
         painter.circle_filled(centre, if chosen { 7.5 } else { 8.0 }, fill);
         if chosen {
-            painter.circle_stroke(centre, 10.0, Stroke::new(1.6, color::TEXT_STRONG));
+            painter.circle_stroke(centre, 10.0, Stroke::new(1.6, color::text_strong()));
         } else if response.hovered() {
-            painter.circle_stroke(centre, 10.0, Stroke::new(1.2, color::TEXT_DIM));
+            painter.circle_stroke(centre, 10.0, Stroke::new(1.2, color::text_dim()));
         }
         response.widget_info(|| {
             egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), chosen, *name)
@@ -242,7 +242,7 @@ fn text_options(
             Pos2::new(area.left(), middle.round()),
             Pos2::new(area.right(), middle.round()),
         ],
-        Stroke::new(1.0, color::DIVIDER),
+        Stroke::new(1.0, color::divider()),
     );
     middle += PANEL_ROW / 2.0 + rule_gap / 2.0;
 
@@ -280,7 +280,7 @@ fn spacing_width(ui: &egui::Ui, name: &str) -> f32 {
     let galley = ui.painter().layout_no_wrap(
         name.to_owned(),
         egui::FontId::proportional(12.5),
-        color::TEXT_CONTROL,
+        color::text_control(),
     );
     (galley.size().x + 16.0).round()
 }
@@ -299,11 +299,11 @@ fn format_button(
         .interact(area, ui.id().with(("format", name)), Sense::click())
         .on_hover_text(name);
     if active {
-        ui.painter().rect_filled(area, CornerRadius::same(size::CONTROL_CORNER), color::ACCENT);
+        ui.painter().rect_filled(area, CornerRadius::same(size::CONTROL_CORNER), color::accent());
     } else if response.hovered() {
-        ui.painter().rect_filled(area, CornerRadius::same(size::CONTROL_CORNER), color::CONTROL);
+        ui.painter().rect_filled(area, CornerRadius::same(size::CONTROL_CORNER), color::control());
     }
-    let tint = if active { color::TEXT_STRONG } else { color::TEXT_CONTROL };
+    let tint = if active { color::text_strong() } else { color::text_control() };
     // The letter is drawn with the formatting it applies, so the button looks like what it does. Bold uses
     // the real bold face installed in `theme::install_fonts`, because egui's built in font has none.
     let font_id = if name == "Bold" {
@@ -347,11 +347,11 @@ fn view_mode_button(
         .on_hover_text(mode.description_for(kind));
     let painter = ui.painter();
     if active {
-        painter.rect_filled(area, CornerRadius::same(size::CONTROL_CORNER), color::ACCENT);
+        painter.rect_filled(area, CornerRadius::same(size::CONTROL_CORNER), color::accent());
     } else if response.hovered() {
-        painter.rect_filled(area, CornerRadius::same(size::CONTROL_CORNER), color::CONTROL);
+        painter.rect_filled(area, CornerRadius::same(size::CONTROL_CORNER), color::control());
     }
-    let tint = if active { color::TEXT_STRONG } else { color::TEXT_CONTROL };
+    let tint = if active { color::text_strong() } else { color::text_control() };
     icon::view_mode(painter, area.shrink(6.0), mode, tint);
     response.widget_info(|| {
         egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), active, name)
@@ -367,11 +367,11 @@ fn alignment_button(ui: &mut egui::Ui, area: Rect, align: Align, active: bool) -
         .on_hover_text(format!("Align {}", name.to_lowercase()));
     let painter = ui.painter();
     if active {
-        painter.rect_filled(area, CornerRadius::same(size::CONTROL_CORNER), color::ACCENT);
+        painter.rect_filled(area, CornerRadius::same(size::CONTROL_CORNER), color::accent());
     } else if response.hovered() {
-        painter.rect_filled(area, CornerRadius::same(size::CONTROL_CORNER), color::CONTROL);
+        painter.rect_filled(area, CornerRadius::same(size::CONTROL_CORNER), color::control());
     }
-    let tint = if active { color::TEXT_STRONG } else { color::TEXT_CONTROL };
+    let tint = if active { color::text_strong() } else { color::text_control() };
     icon::alignment(painter, area.shrink2(Vec2::new(7.0, 9.0)), align, tint);
     response.widget_info(|| {
         egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), active, name)

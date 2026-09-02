@@ -194,7 +194,7 @@ pub fn show(explorer: &mut DatabaseExplorer, ui: &mut egui::Ui, look: &Look<'_>,
             &ui.painter_at(strip),
             Pos2::new(strip.left() + 8.0 * scale, strip.center().y),
             &said,
-            color::TEXT_FAINT,
+            color::text_faint(),
             11.0 * scale,
             strip.width() - 16.0 * scale,
         );
@@ -299,7 +299,7 @@ fn one(
 
     // The disclosure, for a row that has anything under it.
     if let Some(open) = opens(line) {
-        icon::disclosure_at(painter, Pos2::new(at + 5.0 * scale, middle), open, color::TEXT_DIM, scale);
+        icon::disclosure_at(painter, Pos2::new(at + 5.0 * scale, middle), open, color::text_dim(), scale);
     }
     at += 14.0 * scale;
     if let Some(draw) = mark(line) {
@@ -310,7 +310,7 @@ fn one(
     let drawn = text(painter, Pos2::new(at, middle), &name, tint(line), look.font_size * 0.85, room);
     after(painter, line, Pos2::new(at + drawn + 8.0 * scale, middle), look, rect.right() - 8.0 * scale, scale);
     if let What::Source { busy: true, .. } = &line.what {
-        waiting(painter, Pos2::new(rect.right() - 16.0 * scale, middle), color::ACCENT, ui.input(|input| input.time));
+        waiting(painter, Pos2::new(rect.right() - 16.0 * scale, middle), color::accent(), ui.input(|input| input.time));
     }
     response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, chosen, &name));
 
@@ -378,19 +378,19 @@ fn after(painter: &egui::Painter, line: &Line, at: Pos2, look: &Look<'_>, right:
                 true => where_it_points.clone(),
                 false => format!("{where_it_points} · not connected"),
             };
-            text(painter, at, &said, color::TEXT_FAINT, size, room);
+            text(painter, at, &said, color::text_faint(), size, room);
         }
         // The count IntelliJ puts on a folder, which is how an empty schema is told from one that has
         // not been read yet.
         What::Folder { count, .. } => {
-            text(painter, at, &count.to_string(), color::TEXT_FAINT, size, room);
+            text(painter, at, &count.to_string(), color::text_faint(), size, room);
         }
         What::Column { type_name, not_null, .. } => {
             let said = match not_null {
                 true => format!("{type_name} not null"),
                 false => type_name.clone(),
             };
-            text(painter, at, &said, color::TEXT_FAINT, size, room);
+            text(painter, at, &said, color::text_faint(), size, room);
         }
         _ => {
             let _ = scale;
@@ -424,12 +424,12 @@ fn mark(line: &Line) -> Option<fn(&egui::Painter, Pos2, egui::Color32)> {
 
 fn tint(line: &Line) -> egui::Color32 {
     match &line.what {
-        What::Source { connected: true, .. } => color::TEXT_STRONG,
-        What::Source { .. } => color::TEXT,
-        What::Problem { .. } => color::UNSAVED,
-        What::Empty { .. } => color::TEXT_FAINT,
-        What::Column { in_key: true, .. } => color::ACCENT,
-        _ => color::TEXT,
+        What::Source { connected: true, .. } => color::text_strong(),
+        What::Source { .. } => color::text(),
+        What::Problem { .. } => color::unsaved(),
+        What::Empty { .. } => color::text_faint(),
+        What::Column { in_key: true, .. } => color::accent(),
+        _ => color::text(),
     }
 }
 

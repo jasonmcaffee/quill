@@ -18,19 +18,22 @@ use crate::components::plugins_page::{self, PluginsOutcome, PluginsState};
 use crate::services::plugins::Plugins;
 use crate::settings::{
     Page, Settings, Suggestions, ValueTooltip, FONT_SIZES, MIN_OPACITY, TERMINAL_FONT_SIZES,
+    UI_FONT_SIZES,
 };
 use crate::theme::{color, icon, size};
 
 /// How large the window is, before it is shrunk to fit a small Quill window.
 ///
-/// It grew by eighty points when `task-1679` added the MCP page, which is the tallest of the five:
-/// two rows of buttons, three controls and a block of configuration to be read and copied. The
-/// window is one size for every page — a dialog that changed height as its list was walked would
-/// jump under the pointer — so the tallest page is what it has to hold. The other four gain empty
-/// space at the bottom, which is the cheaper of the two costs, and `modal::fit` still shrinks the
-/// whole thing to whatever room a small Quill window has.
+/// It grew by eighty points when `task-1679` added the MCP page, and by forty more when `task-1776`
+/// added an Interface section to Appearance — which took Appearance past MCP as the tallest page, and
+/// left its last line of explanation thirteen points off the bottom edge. The window is one size for
+/// every page — a dialog that changed height as its list was walked would jump under the pointer — so
+/// the tallest page is what it has to hold, and it holds it with room rather than exactly. A page that
+/// fits exactly is a page where the next line of explanation is drawn off the bottom and nobody
+/// notices. The other pages gain empty space, which is the cheaper of the two costs, and `modal::fit`
+/// still shrinks the whole thing to whatever room a small Quill window has.
 const WIDTH: f32 = 900.0;
-const HEIGHT: f32 = 640.0;
+const HEIGHT: f32 = 680.0;
 /// How wide the list of pages is.
 const LIST_WIDTH: f32 = 258.0;
 const HEADER: f32 = 46.0;
@@ -164,7 +167,7 @@ fn contents(
     painter.rect_filled(
         header,
         CornerRadius { nw: 10, ne: 10, sw: 0, se: 0 },
-        color::TITLE_BAR,
+        color::title_bar(),
     );
     let title = if project.is_empty() {
         "Settings".to_owned()
@@ -172,11 +175,11 @@ fn contents(
         format!("Settings \u{2014} {project}")
     };
     let galley =
-        painter.layout_no_wrap(title, egui::FontId::proportional(13.0), color::TEXT_STRONG);
+        painter.layout_no_wrap(title, egui::FontId::proportional(13.0), color::text_strong());
     painter.galley(
         Pos2::new(area.left() + 20.0, header.center().y - galley.size().y / 2.0),
         galley,
-        color::TEXT_STRONG,
+        color::text_strong(),
     );
     let close = Rect::from_center_size(
         Pos2::new(area.right() - 24.0, header.center().y),
@@ -193,13 +196,16 @@ fn contents(
     );
     let list = Rect::from_min_size(body.min, Vec2::new(LIST_WIDTH, body.height()));
     let page_area = Rect::from_min_max(Pos2::new(list.right(), body.top()), body.max);
-    ui.painter_at(area).rect_filled(list, CornerRadius::ZERO, color::EXPLORER_FOOTER);
+    ui.painter_at(area).rect_filled(list, CornerRadius::ZERO, color::explorer_footer());
     line(ui, Pos2::new(list.right(), list.top()), Pos2::new(list.right(), list.bottom()));
 
     show_list(ui, list, state, plugin_pages);
     match state.page {
         Page::Appearance => {
             outcome.changed |= appearance_page(ui, page_area, settings, families);
+        }
+        Page::Theme => {
+            outcome.changed |= theme_page(ui, page_area, settings, plugins);
         }
         Page::Editor => {
             outcome.changed |= editor_page(ui, page_area, settings);
@@ -249,12 +255,12 @@ fn contents(
     let note = ui.painter_at(area).layout_no_wrap(
         "Changes take effect at once.".to_owned(),
         egui::FontId::proportional(11.0),
-        color::TEXT_FAINT,
+        color::text_faint(),
     );
     ui.painter_at(area).galley(
         Pos2::new(footer.left() + 20.0, footer.center().y - note.size().y / 2.0),
         note,
-        color::TEXT_FAINT,
+        color::text_faint(),
     );
 
     outcome
@@ -275,19 +281,19 @@ fn show_list(
     painter.rect(
         search,
         CornerRadius::same(size::CONTROL_CORNER),
-        color::FIELD,
-        Stroke::new(1.0, color::DIVIDER),
+        color::field(),
+        Stroke::new(1.0, color::divider()),
         egui::StrokeKind::Inside,
     );
-    icon::magnifier(&painter, Pos2::new(search.left() + 13.0, search.center().y), color::TEXT_FAINT);
+    icon::magnifier(&painter, Pos2::new(search.left() + 13.0, search.center().y), color::text_faint());
     let text_rect = crate::components::controls::field_text_rect(ui, search, 26.0);
     let mut field = ui.new_child(egui::UiBuilder::new().max_rect(text_rect));
     field.add(
         egui::TextEdit::singleline(&mut state.search)
-            .hint_text(egui::RichText::new("Search settings").color(color::TEXT_FAINT))
+            .hint_text(egui::RichText::new("Search settings").color(color::text_faint()))
             .frame(egui::Frame::NONE)
             .desired_width(text_rect.width())
-            .text_color(color::TEXT_CONTROL),
+            .text_color(color::text_control()),
     );
 
     let mut pen = search.bottom() + 14.0;
@@ -309,17 +315,17 @@ fn show_list(
                 &ui.painter_at(area),
                 Pos2::new(row.left() + 18.0, row.center().y),
                 true,
-                color::TEXT_DIM,
+                color::text_dim(),
             );
             let galley = ui.painter_at(area).layout_no_wrap(
                 page.group().to_owned(),
                 egui::FontId::proportional(12.5),
-                color::TEXT_CONTROL,
+                color::text_control(),
             );
             ui.painter_at(area).galley(
                 Pos2::new(row.left() + 30.0, row.center().y - galley.size().y / 2.0),
                 galley,
-                color::TEXT_CONTROL,
+                color::text_control(),
             );
             pen += size::ROW;
         }
@@ -336,9 +342,9 @@ fn show_list(
         let galley = ui.painter_at(area).layout_no_wrap(
             "No setting matches".to_owned(),
             egui::FontId::proportional(11.5),
-            color::TEXT_FAINT,
+            color::text_faint(),
         );
-        ui.painter_at(area).galley(Pos2::new(area.left() + 30.0, pen + 4.0), galley, color::TEXT_FAINT);
+        ui.painter_at(area).galley(Pos2::new(area.left() + 30.0, pen + 4.0), galley, color::text_faint());
     }
 }
 
@@ -371,11 +377,11 @@ fn page_row(ui: &mut egui::Ui, row: Rect, title: &str, chosen: bool, indent: f32
     let response = ui.interact(row, ui.id().with(("settings-page", title.to_owned())), Sense::click());
     let pill = row.shrink2(Vec2::new(8.0, 1.0));
     if chosen {
-        ui.painter().rect_filled(pill, CornerRadius::same(5), color::SELECTED_ROW);
+        ui.painter().rect_filled(pill, CornerRadius::same(5), color::selected_row());
     } else if response.hovered() {
-        ui.painter().rect_filled(pill, CornerRadius::same(5), color::CONTROL);
+        ui.painter().rect_filled(pill, CornerRadius::same(5), color::control());
     }
-    let tint = if chosen { color::TEXT_STRONG } else { color::TEXT_CONTROL };
+    let tint = if chosen { color::text_strong() } else { color::text_control() };
     let galley = ui.painter().layout_no_wrap(
         title.to_owned(),
         egui::FontId::proportional(12.5),
@@ -467,6 +473,70 @@ fn appearance_page(
         "and the size is also on the keyboard at command or control with plus and minus.",
     );
 
+    // IntelliJ's `Appearance -> Use custom font`, which Quill had no equivalent of: the window's own text
+    // was the editor's family at egui's own size, so a large editor meant large menus and there was no way
+    // to ask for a compact window round a big document.
+    pen = section(ui, area, pen + 10.0, "Interface");
+    let ui_font_row = row_at(area, pen);
+    label(ui, area, ui_font_row, "Family:");
+    let ui_family = if settings.ui_font_family.is_empty() {
+        "The editor's".to_owned()
+    } else {
+        settings.ui_font_family.clone()
+    };
+    if let Some(chosen) = controls::dropdown(
+        ui,
+        Rect::from_min_size(Pos2::new(area.left() + 130.0, ui_font_row.top()), Vec2::new(240.0, 28.0)),
+        &ui_family,
+        "Interface font family",
+        None,
+        |ui| {
+            let mut chosen = None;
+            if ui.selectable_label(settings.ui_font_family.is_empty(), "The editor's").clicked() {
+                chosen = Some(String::new());
+            }
+            for family in families {
+                if ui.selectable_label(*family == settings.ui_font_family, family).clicked() {
+                    chosen = Some(family.clone());
+                }
+            }
+            chosen
+        },
+    ) {
+        settings.ui_font_family = chosen;
+        changed = true;
+    }
+    pen += 34.0;
+    let ui_size_row = row_at(area, pen);
+    label(ui, area, ui_size_row, "Size:");
+    if let Some(chosen) = controls::dropdown(
+        ui,
+        Rect::from_min_size(Pos2::new(area.left() + 130.0, ui_size_row.top()), Vec2::new(96.0, 28.0)),
+        &format!("{:.1}", settings.ui_font_size),
+        "Interface font size",
+        None,
+        |ui| {
+            let mut chosen = None;
+            for option in UI_FONT_SIZES {
+                let selected = (settings.ui_font_size - option).abs() < 0.01;
+                if ui.selectable_label(selected, format!("{option:.1}")).clicked() {
+                    chosen = Some(*option);
+                }
+            }
+            chosen
+        },
+    ) {
+        settings.ui_font_size = chosen;
+        changed = true;
+    }
+    pen += 34.0;
+    pen = note(
+        ui,
+        area,
+        pen,
+        "The menus, the rail, the explorer and the status bar. The editing area keeps its own font above.",
+    );
+
     pen = section(ui, area, pen + 10.0, "Background");
     let opacity_row = row_at(area, pen);
     label(ui, area, opacity_row, "Opacity:");
@@ -513,6 +583,222 @@ fn appearance_page(
         "Soft shadows, gradients and pressed edges behind a plugin's own pane, drawn on the processor. Off, a plugin draws flat, which costs nothing at all.",
     );
     changed
+}
+
+/// `Appearance & Behavior > Theme`: which palette the window is painted in, its accent, and its icons.
+///
+/// A page of its own because the Settings window is one size for every page and no page scrolls — see
+/// `Page::Theme`. It is laid out the way IntelliJ's own theme list is: a row per theme, its name on the
+/// left and the colours it is made of on the right, so the choice can be made by looking rather than by
+/// choosing a name and then seeing what happened.
+fn theme_page(
+    ui: &mut egui::Ui,
+    area: Rect,
+    settings: &mut Settings,
+    plugins: &crate::services::plugins::Plugins,
+) -> bool {
+    let mut changed = false;
+    let mut pen = breadcrumb(ui, area, Page::Theme);
+
+    pen = section(ui, area, pen, "Theme");
+    let themes = plugins.themes();
+    // Empty means Quill's own, which is what the settings file says by saying nothing. Matched on the key
+    // rather than remembered, so a theme whose plugin has been switched off leaves the row on Quill Dark
+    // rather than on a name that is no longer in the list.
+    let chosen = match settings.theme.is_empty() {
+        true => crate::theme::Theme::quill_dark().key,
+        false => settings.theme.clone(),
+    };
+    for theme in &themes {
+        let row = row_at(area, pen);
+        let on = theme.key == chosen;
+        if theme_row(ui, row, &theme.name, &theme.plugin, theme.palette, on) && !on {
+            // Quill's own is written as an empty setting rather than as its key, so a settings file that
+            // has never chosen a theme keeps saying nothing — `terminal_shell`'s rule.
+            settings.theme = match theme.key == crate::theme::Theme::quill_dark().key {
+                true => String::new(),
+                false => theme.key.clone(),
+            };
+            changed = true;
+        }
+        pen += 30.0;
+    }
+    pen = note(
+        ui,
+        area,
+        pen + 6.0,
+        "A theme says what every colour in Quill's own palette means. One that names the nine token colours also recolours code, in every language at once, in the same frame.",
+    );
+
+    pen = section(ui, area, pen + 6.0, "Accent");
+    let accent_row = row_at(area, pen);
+    label(ui, area, accent_row, "Accent:");
+    let active = crate::theme::active();
+    // The theme's own first, then the accents this theme already has. The palette is closed and this does
+    // not open it: every swatch here is a colour the chosen theme names, so an accent can never be a
+    // forty-first colour that nothing else in the window is drawn in.
+    let offered: Vec<(&str, Option<egui::Color32>)> = vec![
+        ("The theme's own", None),
+        ("Accent", Some(active.palette.accent)),
+        ("Unsaved", Some(active.palette.unsaved)),
+        ("Added", Some(active.palette.git_added)),
+        ("Modified", Some(active.palette.git_modified)),
+        ("Agent", Some(active.palette.agent)),
+        ("Blame", Some(active.palette.blame_new)),
+        ("Close", Some(active.palette.close)),
+    ];
+    let wanted = settings.accent_colour();
+    for (index, (name, colour)) in offered.iter().enumerate() {
+        let at = Pos2::new(area.left() + 130.0 + index as f32 * 30.0, accent_row.center().y);
+        let shown = colour.unwrap_or(active.palette.accent);
+        let on = match colour {
+            None => wanted.is_none(),
+            Some(offered) => wanted == Some(*offered),
+        };
+        if swatch_button(ui, at, shown, name, on, colour.is_none()) {
+            settings.accent = match colour {
+                None => String::new(),
+                Some(colour) => format!("#{:02X}{:02X}{:02X}", colour.r(), colour.g(), colour.b()),
+            };
+            changed = true;
+        }
+    }
+    pen += 34.0;
+    pen = note(
+        ui,
+        area,
+        pen,
+        "One colour for everything the accent means: the caret, the open tab, an open folder and the line a program is stopped on. The first is whatever the theme chose.",
+    );
+
+    pen = section(ui, area, pen + 6.0, "Icons");
+    let icons_row = row_at(area, pen);
+    label(ui, area, icons_row, "Icon set:");
+    let shown = match settings.icon_set() {
+        None => "Follow the theme".to_owned(),
+        Some(set) => icon_set_name(set).to_owned(),
+    };
+    if let Some(picked) = controls::dropdown(
+        ui,
+        Rect::from_min_size(Pos2::new(area.left() + 130.0, icons_row.top()), Vec2::new(200.0, 28.0)),
+        &shown,
+        "Icon set",
+        None,
+        |ui| {
+            let mut picked = None;
+            if ui.selectable_label(settings.icons.is_empty(), "Follow the theme").clicked() {
+                picked = Some(String::new());
+            }
+            for set in crate::theme::IconSet::ALL {
+                if ui
+                    .selectable_label(settings.icon_set() == Some(set), icon_set_name(set))
+                    .clicked()
+                {
+                    picked = Some(set.name().to_owned());
+                }
+            }
+            picked
+        },
+    ) {
+        settings.icons = picked;
+        changed = true;
+    }
+    pen += 34.0;
+    note(
+        ui,
+        area,
+        pen,
+        "Which drawn marks the rail buttons, the folder arrow and the small controls use. Material draws a chevron where the classic set draws a triangle, and puts a folder in front of a folder's name.",
+    );
+    changed
+}
+
+/// What a person reads for an icon set, which is its name with a capital letter.
+fn icon_set_name(set: crate::theme::IconSet) -> &'static str {
+    match set {
+        crate::theme::IconSet::Classic => "Classic",
+        crate::theme::IconSet::Material => "Material",
+    }
+}
+
+/// One theme in the list: the pill every list in Quill draws for its chosen row, the name, where it came
+/// from, and the six colours the theme is most recognisable by.
+fn theme_row(
+    ui: &mut egui::Ui,
+    row: Rect,
+    name: &str,
+    plugin: &str,
+    palette: crate::theme::Palette,
+    chosen: bool,
+) -> bool {
+    let response = ui.interact(row, ui.id().with(("theme", name)), Sense::click());
+    let painter = ui.painter_at(row);
+    if chosen {
+        painter.rect_filled(row, CornerRadius::same(5), color::selected_row());
+    } else if response.hovered() {
+        painter.rect_filled(row, CornerRadius::same(5), color::control());
+    }
+    let tint = if chosen { color::text_strong() } else { color::text_control() };
+    let galley = painter.layout_no_wrap(name.to_owned(), egui::FontId::proportional(12.5), tint);
+    painter.galley(Pos2::new(row.left() + 10.0, row.center().y - galley.size().y / 2.0), galley.clone(), tint);
+    // Where it came from, in the faintest colour, so a bundle's five and Quill's own are told apart.
+    let from = painter.layout_no_wrap(plugin.to_owned(), egui::FontId::proportional(11.0), color::text_faint());
+    painter.galley(
+        Pos2::new(row.left() + 20.0 + galley.size().x, row.center().y - from.size().y / 2.0),
+        from,
+        color::text_faint(),
+    );
+    // The colours it is made of, right aligned, so the list can be read as a set of palettes.
+    let swatches =
+        [palette.editor, palette.explorer, palette.accent, palette.git_added, palette.unsaved, palette.close];
+    for (index, colour) in swatches.iter().enumerate() {
+        let at = Rect::from_center_size(
+            Pos2::new(row.right() - 14.0 - (5 - index) as f32 * 18.0, row.center().y),
+            Vec2::splat(14.0),
+        );
+        painter.rect(
+            at,
+            CornerRadius::same(3),
+            *colour,
+            Stroke::new(1.0, color::control_border()),
+            egui::StrokeKind::Inside,
+        );
+    }
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), chosen, name)
+    });
+    response.clicked()
+}
+
+/// One accent swatch: a disc of the colour, ringed when it is the one in use.
+///
+/// `follow` draws the disc hollow, because "the theme's own" is not a colour of its own — it is whichever
+/// colour the row above it landed on, and a filled disc would claim to be a seventh choice.
+fn swatch_button(
+    ui: &mut egui::Ui,
+    centre: Pos2,
+    colour: egui::Color32,
+    name: &str,
+    chosen: bool,
+    follow: bool,
+) -> bool {
+    let area = Rect::from_center_size(centre, Vec2::splat(24.0));
+    let response = ui.interact(area, ui.id().with(("accent", name)), Sense::click()).on_hover_text(name);
+    let painter = ui.painter_at(area);
+    if follow {
+        painter.circle_stroke(centre, 8.0, Stroke::new(2.0, colour));
+    } else {
+        painter.circle_filled(centre, 8.0, colour);
+    }
+    if chosen {
+        painter.circle_stroke(centre, 11.0, Stroke::new(1.5, color::text_strong()));
+    } else if response.hovered() {
+        painter.circle_stroke(centre, 11.0, Stroke::new(1.0, color::text_faint()));
+    }
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), chosen, name)
+    });
+    response.clicked()
 }
 
 /// `Editor > Editor`: what the gutter down the left of the editing area shows, and whether
@@ -579,19 +865,19 @@ pub(crate) fn checkbox(ui: &mut egui::Ui, row: Rect, name: &str, value: &mut boo
     painter.rect(
         box_rect,
         CornerRadius::same(3),
-        if *value { color::ACCENT } else { color::FIELD },
-        Stroke::new(1.0, if *value { color::ACCENT } else { color::CONTROL_BORDER }),
+        if *value { color::accent() } else { color::field() },
+        Stroke::new(1.0, if *value { color::accent() } else { color::control_border() }),
         egui::StrokeKind::Inside,
     );
     if *value {
-        icon::tick(painter, box_rect.center(), color::TEXT_STRONG);
+        icon::tick(painter, box_rect.center(), color::text_strong());
     }
     let galley =
-        painter.layout_no_wrap(name.to_owned(), egui::FontId::proportional(12.5), color::TEXT_CONTROL);
+        painter.layout_no_wrap(name.to_owned(), egui::FontId::proportional(12.5), color::text_control());
     painter.galley(
         Pos2::new(box_rect.right() + 10.0, row.center().y - galley.size().y / 2.0),
         galley,
-        color::TEXT_CONTROL,
+        color::text_control(),
     );
     response.widget_info(|| {
         egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), *value, name)
@@ -687,32 +973,32 @@ pub(crate) fn breadcrumb(ui: &mut egui::Ui, area: Rect, page: Page) -> f32 {
         let title = painter.layout_no_wrap(
             page.title().to_owned(),
             egui::FontId::proportional(13.5),
-            color::TEXT_STRONG,
+            color::text_strong(),
         );
-        painter.galley(Pos2::new(area.left() + 24.0, y - title.size().y / 2.0), title, color::TEXT_STRONG);
+        painter.galley(Pos2::new(area.left() + 24.0, y - title.size().y / 2.0), title, color::text_strong());
         return y + 22.0;
     }
     let group = painter.layout_no_wrap(
         page.group().to_owned(),
         egui::FontId::proportional(13.5),
-        color::TEXT_DIM,
+        color::text_dim(),
     );
     let mut pen = area.left() + 24.0;
-    painter.galley(Pos2::new(pen, y - group.size().y / 2.0), group.clone(), color::TEXT_DIM);
+    painter.galley(Pos2::new(pen, y - group.size().y / 2.0), group.clone(), color::text_dim());
     pen += group.size().x + 8.0;
     let arrow = painter.layout_no_wrap(
         "\u{203A}".to_owned(),
         egui::FontId::proportional(13.5),
-        color::TEXT_FAINT,
+        color::text_faint(),
     );
-    painter.galley(Pos2::new(pen, y - arrow.size().y / 2.0), arrow.clone(), color::TEXT_FAINT);
+    painter.galley(Pos2::new(pen, y - arrow.size().y / 2.0), arrow.clone(), color::text_faint());
     pen += arrow.size().x + 8.0;
     let title = painter.layout_no_wrap(
         page.title().to_owned(),
         egui::FontId::proportional(13.5),
-        color::TEXT_STRONG,
+        color::text_strong(),
     );
-    painter.galley(Pos2::new(pen, y - title.size().y / 2.0), title, color::TEXT_STRONG);
+    painter.galley(Pos2::new(pen, y - title.size().y / 2.0), title, color::text_strong());
     y + 22.0
 }
 
@@ -720,13 +1006,13 @@ pub(crate) fn breadcrumb(ui: &mut egui::Ui, area: Rect, page: Page) -> f32 {
 pub(crate) fn section(ui: &mut egui::Ui, area: Rect, top: f32, name: &str) -> f32 {
     let painter = ui.painter_at(area);
     let galley =
-        painter.layout_no_wrap(name.to_owned(), egui::FontId::proportional(12.5), color::TEXT_STRONG);
+        painter.layout_no_wrap(name.to_owned(), egui::FontId::proportional(12.5), color::text_strong());
     let y = top + 12.0;
-    painter.galley(Pos2::new(area.left() + 24.0, y - galley.size().y / 2.0), galley.clone(), color::TEXT_STRONG);
+    painter.galley(Pos2::new(area.left() + 24.0, y - galley.size().y / 2.0), galley.clone(), color::text_strong());
     let from = area.left() + 24.0 + galley.size().x + 12.0;
     painter.line_segment(
         [Pos2::new(from, y), Pos2::new(area.right() - 24.0, y)],
-        Stroke::new(1.0, color::DIVIDER),
+        Stroke::new(1.0, color::divider()),
     );
     y + 20.0
 }
@@ -738,11 +1024,11 @@ pub(crate) fn row_at(area: Rect, top: f32) -> Rect {
 pub(crate) fn label(ui: &mut egui::Ui, area: Rect, row: Rect, text: &str) {
     let painter = ui.painter_at(area);
     let galley =
-        painter.layout_no_wrap(text.to_owned(), egui::FontId::proportional(12.5), color::TEXT_CONTROL);
+        painter.layout_no_wrap(text.to_owned(), egui::FontId::proportional(12.5), color::text_control());
     painter.galley(
         Pos2::new(row.left(), row.center().y - galley.size().y / 2.0),
         galley,
-        color::TEXT_CONTROL,
+        color::text_control(),
     );
 }
 
@@ -752,31 +1038,31 @@ pub(crate) fn note(ui: &mut egui::Ui, area: Rect, top: f32, text: &str) -> f32 {
     let galley = painter.layout(
         text.to_owned(),
         egui::FontId::proportional(11.5),
-        color::TEXT_FAINT,
+        color::text_faint(),
         area.width() - 48.0,
     );
-    painter.galley(Pos2::new(area.left() + 24.0, top), galley.clone(), color::TEXT_FAINT);
+    painter.galley(Pos2::new(area.left() + 24.0, top), galley.clone(), color::text_faint());
     top + galley.size().y + 8.0
 }
 
 /// A button with a word in it, which the footer uses.
 pub(crate) fn wide_button(ui: &mut egui::Ui, area: Rect, name: &str) -> bool {
     let response = ui.interact(area, ui.id().with(("settings-button", name)), Sense::click());
-    let fill = if response.hovered() { color::ACCENT } else { color::CONTROL };
+    let fill = if response.hovered() { color::accent() } else { color::control() };
     let painter = ui.painter();
     painter.rect(
         area,
         CornerRadius::same(size::CONTROL_CORNER),
         fill,
-        Stroke::new(1.0, color::CONTROL_BORDER),
+        Stroke::new(1.0, color::control_border()),
         egui::StrokeKind::Inside,
     );
     let galley = painter.layout_no_wrap(
         name.to_owned(),
         egui::FontId::proportional(12.5),
-        color::TEXT_STRONG,
+        color::text_strong(),
     );
-    painter.galley(area.center() - galley.size() / 2.0, galley, color::TEXT_STRONG);
+    painter.galley(area.center() - galley.size() / 2.0, galley, color::text_strong());
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), name)
     });
@@ -784,5 +1070,5 @@ pub(crate) fn wide_button(ui: &mut egui::Ui, area: Rect, name: &str) -> bool {
 }
 
 fn line(ui: &egui::Ui, from: Pos2, to: Pos2) {
-    ui.painter().line_segment([from, to], Stroke::new(1.0, color::DIVIDER));
+    ui.painter().line_segment([from, to], Stroke::new(1.0, color::divider()));
 }

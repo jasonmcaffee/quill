@@ -72,11 +72,11 @@ pub fn pane_header(
 ) -> HeaderOutcome {
     let mut outcome = HeaderOutcome::default();
     let painter = ui.painter_at(area);
-    painter.rect_filled(area, 0, crate::theme::faded(crate::theme::color::TOOLBAR, opacity));
+    painter.rect_filled(area, 0, crate::theme::faded(crate::theme::color::toolbar(), opacity));
     painter.rect_filled(
         Rect::from_min_max(Pos2::new(area.min.x, area.max.y - 1.0), area.max),
         0,
-        crate::theme::color::DIVIDER,
+        crate::theme::color::divider(),
     );
     let mut pen = area.min.x + 10.0;
     pen += text(
@@ -84,7 +84,7 @@ pub fn pane_header(
         Pos2::new(pen, area.center().y - 7.0),
         label,
         12.5,
-        crate::theme::color::TEXT_CONTROL,
+        crate::theme::color::text_control(),
     );
     if let Some(count) = count {
         text(
@@ -92,7 +92,7 @@ pub fn pane_header(
             Pos2::new(pen + 8.0, area.center().y - 6.5),
             count,
             11.5,
-            crate::theme::color::TEXT_DIM,
+            crate::theme::color::text_dim(),
         );
     }
     // **The handle first and the cross after it.** egui gives a pointer to the *last* widget that wanted it,

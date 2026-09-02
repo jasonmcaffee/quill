@@ -182,7 +182,7 @@ pub fn show(
 ) -> ExplorerOutcome {
     let mut outcome = ExplorerOutcome::default();
     let painter = ui.painter_at(area);
-    painter.rect_filled(area, CornerRadius::ZERO, crate::theme::faded(color::EXPLORER, view.opacity));
+    painter.rect_filled(area, CornerRadius::ZERO, crate::theme::faded(color::explorer(), view.opacity));
 
     // The heading strip is the handle this panel is carried to another edge by — `task-1697`, and
     // it is what the ask means by "the top bar". Added **first**, so the project's own row and the
@@ -208,7 +208,7 @@ pub fn show(
     // ellipsis rather than run underneath it.
     let available = area.width() - view.at(16.0) - view.at(46.0);
     let mut heading = spaced.trim_end().to_owned();
-    let mut galley = painter.layout_no_wrap(heading.clone(), font.clone(), color::TEXT_DIM);
+    let mut galley = painter.layout_no_wrap(heading.clone(), font.clone(), color::text_dim());
     while galley.size().x > available && heading.chars().count() > 1 {
         // Two characters at a time, because each letter of the name was followed by a space.
         heading.pop();
@@ -216,13 +216,13 @@ pub fn show(
         galley = painter.layout_no_wrap(
             format!("{}\u{2026}", heading.trim_end()),
             font.clone(),
-            color::TEXT_DIM,
+            color::text_dim(),
         );
     }
     painter.galley(
         Pos2::new(area.left() + view.at(16.0), heading_y - galley.size().y / 2.0),
         galley,
-        color::TEXT_DIM,
+        color::text_dim(),
     );
 
     // The project's name is a row like any other row in the tree, so it takes a right click and
@@ -270,9 +270,9 @@ pub fn show(
         let response =
             ui.interact(hit, ui.id().with(("explorer-button", name)), Sense::click()).on_hover_text(name);
         if response.hovered() {
-            painter.rect_filled(hit, CornerRadius::same(4), color::CONTROL);
+            painter.rect_filled(hit, CornerRadius::same(4), color::control());
         }
-        icon::collapse_at(&painter, centre, color::TEXT_DIM, view.zoom);
+        icon::collapse_at(&painter, centre, color::text_dim(), view.zoom);
         response.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), name)
         });
@@ -289,14 +289,14 @@ pub fn show(
     painter.rect(
         filter_rect,
         CornerRadius::same(size::CONTROL_CORNER),
-        color::FIELD,
-        Stroke::new(1.0, color::DIVIDER),
+        color::field(),
+        Stroke::new(1.0, color::divider()),
         egui::StrokeKind::Inside,
     );
     icon::magnifier_at(
         &painter,
         Pos2::new(filter_rect.left() + view.at(13.0), filter_rect.center().y),
-        color::TEXT_FAINT,
+        color::text_faint(),
         view.zoom,
     );
     let text_rect = crate::components::controls::field_text_rect(ui, filter_rect, view.at(26.0));
@@ -313,11 +313,11 @@ pub fn show(
     let mut field = ui.new_child(egui::UiBuilder::new().max_rect(text_rect));
     let response = field.add(
         egui::TextEdit::singleline(filter)
-            .hint_text(egui::RichText::new("Filter files").color(color::TEXT_FAINT).size(typed))
+            .hint_text(egui::RichText::new("Filter files").color(color::text_faint()).size(typed))
             .font(egui::FontId::proportional(typed))
             .frame(egui::Frame::NONE)
             .desired_width(text_rect.width())
-            .text_color(color::TEXT_CONTROL),
+            .text_color(color::text_control()),
     );
     // Named, because a test finds a control by its name and egui names a text box after what is typed in it.
     response.widget_info(|| {
@@ -350,7 +350,7 @@ pub fn show(
                 ui.label(
                     egui::RichText::new("  No file matches")
                         .size(view.at(11.5))
-                        .color(color::TEXT_FAINT),
+                        .color(color::text_faint()),
                 );
             }
             for path in matches {
@@ -427,7 +427,7 @@ pub fn show(
         }
         if let Some(error) = &tree.last_error {
             ui.add_space(view.at(6.0));
-            ui.label(egui::RichText::new(error).size(view.at(11.0)).color(color::CLOSE));
+            ui.label(egui::RichText::new(error).size(view.at(11.0)).color(color::close()));
         }
     });
     outcome.scroll = scrolled.state.offset.y;
@@ -470,8 +470,8 @@ pub fn show(
                 painter.rect(
                     row.rect.shrink2(Vec2::new(8.0, 1.0)),
                     CornerRadius::same(5),
-                    color::CONTROL,
-                    Stroke::new(1.0, color::ACCENT),
+                    color::control(),
+                    Stroke::new(1.0, color::accent()),
                     egui::StrokeKind::Inside,
                 );
             } else if *folder == *tree.root() {
@@ -479,7 +479,7 @@ pub fn show(
                     heading_hit,
                     CornerRadius::same(5),
                     egui::Color32::TRANSPARENT,
-                    Stroke::new(1.0, color::ACCENT),
+                    Stroke::new(1.0, color::accent()),
                     egui::StrokeKind::Inside,
                 );
             }
@@ -496,10 +496,10 @@ pub fn show(
 
     // The footer, counting the files and how many are unsaved.
     let footer = Rect::from_min_max(Pos2::new(area.left(), footer_top), area.right_bottom());
-    painter.rect_filled(footer, CornerRadius::ZERO, crate::theme::faded(color::EXPLORER_FOOTER, view.opacity));
+    painter.rect_filled(footer, CornerRadius::ZERO, crate::theme::faded(color::explorer_footer(), view.opacity));
     painter.line_segment(
         [Pos2::new(footer.left(), footer.top()), Pos2::new(footer.right(), footer.top())],
-        Stroke::new(1.0, color::DIVIDER),
+        Stroke::new(1.0, color::divider()),
     );
     let count = tree.file_count();
     let files = if count == 1 { "1 file".to_owned() } else { format!("{count} files") };
@@ -512,11 +512,11 @@ pub fn show(
         text = format!("{text}  \u{00B7}  1 unsaved");
     }
     let galley =
-        painter.layout_no_wrap(text, egui::FontId::proportional(view.at(10.5)), color::TEXT_DIM);
+        painter.layout_no_wrap(text, egui::FontId::proportional(view.at(10.5)), color::text_dim());
     painter.galley(
         Pos2::new(footer.left() + view.at(16.0), footer.center().y - galley.size().y / 2.0),
         galley,
-        color::TEXT_DIM,
+        color::text_dim(),
     );
 
     outcome
@@ -554,7 +554,7 @@ fn drop_target(
 fn carried_name(ui: &egui::Ui, area: Rect, source: &Path, at: Pos2, welcome: bool) {
     let name = source.file_name().map(|name| name.to_string_lossy().to_string()).unwrap_or_default();
     let painter = ui.painter_at(area.expand(4.0));
-    let tint = if welcome { color::TEXT_STRONG } else { color::TEXT_FAINT };
+    let tint = if welcome { color::text_strong() } else { color::text_faint() };
     let galley = painter.layout_no_wrap(name, egui::FontId::proportional(12.0), tint);
     let box_rect = Rect::from_min_size(
         at + Vec2::new(12.0, 6.0),
@@ -563,8 +563,8 @@ fn carried_name(ui: &egui::Ui, area: Rect, source: &Path, at: Pos2, welcome: boo
     painter.rect(
         box_rect,
         CornerRadius::same(4),
-        color::MENU,
-        Stroke::new(1.0, if welcome { color::ACCENT } else { color::CONTROL_BORDER }),
+        color::menu(),
+        Stroke::new(1.0, if welcome { color::accent() } else { color::control_border() }),
         egui::StrokeKind::Inside,
     );
     painter.galley(box_rect.min + Vec2::new(6.0, 3.0), galley, tint);
@@ -650,6 +650,33 @@ impl RowClick {
     }
 }
 
+/// Where a row's mark goes, measured from the start of its indent.
+///
+/// The two rows are drawn by two functions and always have been, so the columns they share live here
+/// rather than in one of them. `mark` is [`icon::folder_mark_width`], which is zero for the `classic`
+/// set — and at zero these give exactly the numbers the explorer used before `task-1776`, which is what
+/// keeps that set unchanged to the pixel.
+///
+/// A folder's arrow sits at `x`; its mark and a file's mark share the column after it. Without that a
+/// folder's name would be pushed right by the width of its own mark and a file's would not, so a folder
+/// and a file at the same depth would not line up — which is the thing anybody reading a tree is doing.
+fn mark_column(x: f32, view: View, mark: f32) -> f32 {
+    match mark > 0.0 {
+        true => x + view.at(12.0) + mark / 2.0,
+        false => x + view.at(4.0),
+    }
+}
+
+/// Where a row's name starts. `folder` is what tells the two apart when there is no mark: a folder's
+/// name has always sat four points nearer its arrow than a file's does to its square.
+fn name_column(x: f32, view: View, mark: f32, folder: bool) -> f32 {
+    match (mark > 0.0, folder) {
+        (true, _) => x + view.at(12.0) + mark,
+        (false, true) => x + view.at(12.0),
+        (false, false) => x + view.at(16.0),
+    }
+}
+
 /// A folder row: a triangle that points down when open, then the name.
 fn folder_row(
     ui: &mut egui::Ui,
@@ -669,33 +696,45 @@ fn folder_row(
     // A folder is never the file that is showing, so it has only the cursor's quiet mark. See the
     // note at the top of this file.
     if selected || response.hovered() {
-        ui.painter().rect_filled(pill, CornerRadius::same(5), color::CONTROL);
+        ui.painter().rect_filled(pill, CornerRadius::same(5), color::control());
     }
     if selected && view.keyboard {
         ui.painter().rect_stroke(
             pill,
             CornerRadius::same(5),
-            Stroke::new(1.0, color::ACCENT),
+            Stroke::new(1.0, color::accent()),
             egui::StrokeKind::Inside,
         );
     }
     let x = row.left() + view.at(16.0) + depth as f32 * view.at(size::INDENT);
-    icon::disclosure_at(
-        ui.painter(),
-        Pos2::new(x, row.center().y),
-        entry.expanded,
-        color::TEXT_DIM,
-        view.zoom,
-    );
+    // A folder that is open is drawn in its own colour, which is Atom Material Icons' one loud move and
+    // the reason `color::folder` and `color::folder_open` are two roles rather than one: the path down to
+    // what you are reading is visible without reading any of the names.
+    let tint = if entry.expanded { color::folder_open() } else { color::folder() };
+    icon::disclosure_at(ui.painter(), Pos2::new(x, row.center().y), entry.expanded, tint, view.zoom);
+    // The mark in front of the name, when the icon set draws one. The `classic` set draws none and
+    // answers zero, so the name sits exactly where it always has — nothing here knows which set is on.
+    // A file's own mark goes in the same column and its name starts in the same place, which is
+    // `mark_column` and `name_column`: a folder and a file at the same depth line up.
+    let mark = icon::folder_mark_width(view.zoom);
+    if mark > 0.0 {
+        icon::folder_mark(
+            ui.painter(),
+            Pos2::new(mark_column(x, view, mark), row.center().y),
+            entry.expanded,
+            tint,
+            view.zoom,
+        );
+    }
     let galley = ui.painter().layout_no_wrap(
         name.to_owned(),
         egui::FontId::proportional(view.at(12.5)),
-        color::TEXT_CONTROL,
+        color::text_control(),
     );
     ui.painter().galley(
-        Pos2::new(x + view.at(12.0), row.center().y - galley.size().y / 2.0),
+        Pos2::new(name_column(x, view, mark, true), row.center().y - galley.size().y / 2.0),
         galley,
-        color::TEXT_CONTROL,
+        color::text_control(),
     );
     // The accessible name is the folder's name, so a test can ask for it by name.
     response.widget_info(|| {
@@ -738,9 +777,9 @@ fn file_row(
     // hover already uses, so two rows are never drawn as though both were open — `task-1693`, and
     // the note at the top of this file.
     if open {
-        ui.painter().rect_filled(pill, CornerRadius::same(5), color::SELECTED_ROW);
+        ui.painter().rect_filled(pill, CornerRadius::same(5), color::selected_row());
     } else if selected || (response.hovered() && openable) {
-        ui.painter().rect_filled(pill, CornerRadius::same(5), color::CONTROL);
+        ui.painter().rect_filled(pill, CornerRadius::same(5), color::control());
     }
     // The ring says where the keyboard is, which is the whole reason the explorer has a selection of
     // its own. Without it a person could not tell whether Delete would take a letter or a file.
@@ -748,24 +787,27 @@ fn file_row(
         ui.painter().rect_stroke(
             pill,
             CornerRadius::same(5),
-            Stroke::new(1.0, color::ACCENT),
+            Stroke::new(1.0, color::accent()),
             egui::StrokeKind::Inside,
         );
     }
     let x = row.left() + view.at(16.0) + depth as f32 * view.at(size::INDENT);
+    // The column a file's own mark shares with a folder's, so the two line up. Zero for the `classic`
+    // set, where it is exactly the number this row has always used — see [`mark_column`].
+    let mark = icon::folder_mark_width(view.zoom);
     match &decoration.icon {
         // A file whose plugin gives it a picture gets the picture in place of the square.
         Some(icon) => crate::services::icons::draw(
             ui.painter(),
-            Pos2::new(x + view.at(4.0), row.center().y),
+            Pos2::new(mark_column(x, view, mark), row.center().y),
             icon,
         ),
         None => {
             let marker =
-                if openable { file_marker(path) } else { color::TEXT_FAINT.gamma_multiply(0.45) };
+                if openable { file_marker(path) } else { color::text_faint().gamma_multiply(0.45) };
             ui.painter().rect_filled(
                 Rect::from_center_size(
-                    Pos2::new(x + view.at(4.0), row.center().y),
+                    Pos2::new(mark_column(x, view, mark), row.center().y),
                     Vec2::splat(view.at(8.0)),
                 ),
                 CornerRadius::same(2),
@@ -776,18 +818,18 @@ fn file_row(
     // A file git has something to say about is drawn in git's colour for it, which is what IntelliJ
     // does and is the cheapest way to see at a glance what a commit would hold.
     let tint = if open {
-        color::TEXT_STRONG
+        color::text_strong()
     } else if let Some(mark) = decoration.tint {
         mark
     } else if openable {
-        color::TEXT_CONTROL
+        color::text_control()
     } else {
-        color::TEXT_FAINT.gamma_multiply(0.7)
+        color::text_faint().gamma_multiply(0.7)
     };
     let galley =
         ui.painter().layout_no_wrap(name.clone(), egui::FontId::proportional(view.at(12.5)), tint);
     ui.painter().galley(
-        Pos2::new(x + view.at(16.0), row.center().y - galley.size().y / 2.0),
+        Pos2::new(name_column(x, view, mark, false), row.center().y - galley.size().y / 2.0),
         galley,
         tint,
     );
@@ -795,7 +837,7 @@ fn file_row(
         ui.painter().circle_filled(
             Pos2::new(pill.right() - view.at(12.0), row.center().y),
             view.at(3.5),
-            color::UNSAVED,
+            color::unsaved(),
         );
     }
     response.widget_info(|| {

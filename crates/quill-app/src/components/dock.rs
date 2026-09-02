@@ -109,7 +109,7 @@ pub fn zones(ui: &egui::Ui, bands: &[Zone; 4], chosen: Option<Side>, landing: Re
     painter.rect_stroke(
         landing.shrink(1.0),
         CornerRadius::same(3),
-        Stroke::new(2.0, color::ACCENT),
+        Stroke::new(2.0, color::accent()),
         egui::StrokeKind::Inside,
     );
     // The panel's own name in the middle of where it is going, so a preview over an empty editing
@@ -117,13 +117,13 @@ pub fn zones(ui: &egui::Ui, bands: &[Zone; 4], chosen: Option<Side>, landing: Re
     let label = painter.layout_no_wrap(
         carrying.label().to_owned(),
         egui::FontId::proportional(12.5),
-        color::TEXT_STRONG,
+        color::text_strong(),
     );
     let size = label.size();
     if size.x + 20.0 < landing.width() && size.y + 12.0 < landing.height() {
         let plate = Rect::from_center_size(landing.center(), size + Vec2::new(20.0, 12.0));
-        painter.rect_filled(plate, CornerRadius::same(4), color::ACCENT);
-        painter.galley(plate.center() - size / 2.0, label, color::TEXT_STRONG);
+        painter.rect_filled(plate, CornerRadius::same(4), color::accent());
+        painter.galley(plate.center() - size / 2.0, label, color::text_strong());
     }
 }
 
@@ -135,9 +135,9 @@ pub fn zones(ui: &egui::Ui, bands: &[Zone; 4], chosen: Option<Side>, landing: Re
 fn fade(amount: f32) -> Color32 {
     let alpha = (255.0 * amount).round().clamp(0.0, 255.0) as u8;
     Color32::from_rgba_unmultiplied(
-        color::ACCENT.r(),
-        color::ACCENT.g(),
-        color::ACCENT.b(),
+        color::accent().r(),
+        color::accent().g(),
+        color::accent().b(),
         alpha,
     )
 }
@@ -157,7 +157,7 @@ mod tests {
             // Within a few units of the accent: going through egui's premultiplied storage and back
             // again rounds, and the question is which colour was chosen rather than the last bit of it.
             for (painted, wanted) in
-                [(red, color::ACCENT.r()), (green, color::ACCENT.g()), (blue, color::ACCENT.b())]
+                [(red, color::accent().r()), (green, color::accent().g()), (blue, color::accent().b())]
             {
                 assert!(painted.abs_diff(wanted) <= 4, "{painted} is not the accent's {wanted}");
             }

@@ -97,7 +97,7 @@ pub fn show(
 ) -> PanelOutcome {
     let mut outcome = PanelOutcome::default();
     let painter = ui.painter_at(area);
-    painter.rect_filled(area, CornerRadius::ZERO, crate::theme::faded(color::TOOLBAR, opacity));
+    painter.rect_filled(area, CornerRadius::ZERO, crate::theme::faded(color::toolbar(), opacity));
 
     let header = Rect::from_min_size(
         Pos2::new(area.left(), area.top() + 1.0),
@@ -139,12 +139,12 @@ fn show_header(
     let heading = painter.layout_no_wrap(
         "Terminal".to_owned(),
         egui::FontId::proportional(12.0),
-        color::TEXT_DIM,
+        color::text_dim(),
     );
     painter.galley(
         Pos2::new(area.left() + 16.0, area.center().y - heading.size().y / 2.0),
         heading.clone(),
-        color::TEXT_DIM,
+        color::text_dim(),
     );
 
     let after = tab_strip(ui, area, area.left() + 16.0 + heading.size().x + 18.0, panel, outcome);
@@ -245,7 +245,7 @@ fn draw_tab(
     let label = painter.layout_no_wrap(
         name.to_owned(),
         egui::FontId::proportional(12.0),
-        if active { color::TEXT_STRONG } else { color::TEXT_CONTROL },
+        if active { color::text_strong() } else { color::text_control() },
     );
     let tab = Rect::from_min_size(
         Pos2::new(pen, area.center().y - 11.0),
@@ -267,27 +267,27 @@ fn draw_tab(
         painter.rect(
             tab,
             CornerRadius::same(4),
-            color::SELECTED_ROW,
-            Stroke::new(1.0, color::ACCENT.gamma_multiply(0.7)),
+            color::selected_row(),
+            Stroke::new(1.0, color::accent().gamma_multiply(0.7)),
             egui::StrokeKind::Inside,
         );
     } else if response.hovered() {
-        painter.rect_filled(tab, CornerRadius::same(4), color::CONTROL);
+        painter.rect_filled(tab, CornerRadius::same(4), color::control());
     }
     // A tab being carried is outlined, so it is clear which one is in the air.
     if response.dragged() {
         painter.rect(
             tab,
             CornerRadius::same(4),
-            color::CONTROL,
-            Stroke::new(1.0, color::ACCENT),
+            color::control(),
+            Stroke::new(1.0, color::accent()),
             egui::StrokeKind::Inside,
         );
     }
     painter.galley(
         Pos2::new(tab.left() + 10.0, tab.center().y - label.size().y / 2.0),
         label,
-        color::TEXT_CONTROL,
+        color::text_control(),
     );
     let shut = Rect::from_center_size(
         Pos2::new(tab.right() - 12.0, tab.center().y),
@@ -296,7 +296,7 @@ fn draw_tab(
     let shut_response = ui
         .interact(shut, ui.id().with(("terminal-close", index)), Sense::click())
         .on_hover_text(format!("Close {name}"));
-    icon::cross(&painter, shut.center(), color::TEXT_DIM);
+    icon::cross(&painter, shut.center(), color::text_dim());
     shut_response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Close {name}"))
     });
@@ -411,11 +411,11 @@ pub(crate) fn grid(
     let Some(session) = session else {
         let painter = ui.painter_at(area);
         let galley =
-            painter.layout_no_wrap(empty.to_owned(), egui::FontId::proportional(12.0), color::TEXT_FAINT);
+            painter.layout_no_wrap(empty.to_owned(), egui::FontId::proportional(12.0), color::text_faint());
         painter.galley(
             Pos2::new(area.left() + PADDING_X + 4.0, area.top() + PADDING_Y + 6.0),
             galley,
-            color::TEXT_FAINT,
+            color::text_faint(),
         );
         return outcome;
     };
@@ -510,7 +510,7 @@ fn paint(
                 break;
             }
             let rect = Rect::from_min_size(at(row, column), Vec2::new(cell.width, cell.height));
-            painter.rect_filled(rect, CornerRadius::ZERO, color::TEXT_SELECTION);
+            painter.rect_filled(rect, CornerRadius::ZERO, color::text_selection());
         }
     }
 
@@ -613,7 +613,7 @@ fn paint(
             ),
         };
         if focused {
-            painter.rect_filled(shape, CornerRadius::ZERO, color::ACCENT);
+            painter.rect_filled(shape, CornerRadius::ZERO, color::accent());
             // The character under a solid block is drawn again in the background colour, so it can still be
             // read through the cursor.
             if let Some(under) = screen.cell(cursor.row, cursor.column) {
@@ -642,7 +642,7 @@ fn paint(
             painter.rect_stroke(
                 full,
                 CornerRadius::ZERO,
-                Stroke::new(1.0, color::ACCENT),
+                Stroke::new(1.0, color::accent()),
                 egui::StrokeKind::Inside,
             );
         }
@@ -652,7 +652,7 @@ fn paint(
     // otherwise gives no sign that there is more above.
     if screen.scrollback > 0 {
         let text = format!("{} lines back", screen.scrollback);
-        let galley = painter.layout_no_wrap(text, egui::FontId::proportional(11.0), color::TEXT_DIM);
+        let galley = painter.layout_no_wrap(text, egui::FontId::proportional(11.0), color::text_dim());
         let at = Pos2::new(
             ui.max_rect().right() - 12.0 - galley.size().x,
             ui.max_rect().top() + 6.0,
@@ -660,9 +660,9 @@ fn paint(
         painter.rect_filled(
             Rect::from_min_size(at, galley.size()).expand(4.0),
             CornerRadius::same(4),
-            color::MENU,
+            color::menu(),
         );
-        painter.galley(at, galley, color::TEXT_DIM);
+        painter.galley(at, galley, color::text_dim());
     }
 }
 

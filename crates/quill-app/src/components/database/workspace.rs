@@ -52,7 +52,7 @@ fn pages(explorer: &DatabaseExplorer, ui: &mut egui::Ui, look: &Look<'_>, strip:
         let title = page.title();
         let painter = ui.painter();
         let measured = painter
-            .layout_no_wrap(title.clone(), egui::FontId::proportional(look.font_size * 0.85), color::TEXT)
+            .layout_no_wrap(title.clone(), egui::FontId::proportional(look.font_size * 0.85), color::text())
             .size()
             .x;
         let width = (measured + 34.0 * scale).min(strip.width() * 0.4);
@@ -90,8 +90,8 @@ fn pages(explorer: &DatabaseExplorer, ui: &mut egui::Ui, look: &Look<'_>, strip:
             Pos2::new(rect.left() + 8.0 * scale, rect.center().y),
             &title,
             match showing {
-                true => color::TEXT_STRONG,
-                false => color::TEXT,
+                true => color::text_strong(),
+                false => color::text(),
             },
             look.font_size * 0.85,
             width - 30.0 * scale,
@@ -128,7 +128,7 @@ fn nothing_open(explorer: &DatabaseExplorer, ui: &mut egui::Ui, look: &Look<'_>,
         ui.painter(),
         Pos2::new(middle.x - 160.0 * scale, middle.y - 24.0 * scale),
         &said,
-        color::TEXT_DIM,
+        color::text_dim(),
         look.font_size * 0.95,
         320.0 * scale,
     );

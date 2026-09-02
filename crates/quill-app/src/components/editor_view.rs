@@ -423,7 +423,7 @@ fn paint_execution_point(
                 Vec2::new(clip.width(), line.height),
             ),
             0.0,
-            crate::theme::color::EXECUTION_POINT,
+            crate::theme::color::execution_point(),
         );
     }
 }
@@ -462,12 +462,12 @@ fn paint_inline_values(
         let galley = painter.layout_no_wrap(
             values[at].1.clone(),
             egui::FontId::monospace(INLINE_SIZE),
-            crate::theme::color::INLINE_VALUE,
+            crate::theme::color::inline_value(),
         );
         painter.galley(
             Pos2::new(x, text_origin.y + line.y + (line.height - galley.size().y) / 2.0),
             galley,
-            crate::theme::color::INLINE_VALUE,
+            crate::theme::color::inline_value(),
         );
     }
 }
@@ -559,11 +559,11 @@ pub fn fold_badges(
         painter.rect(
             area,
             egui::CornerRadius::same(4),
-            crate::theme::color::CONTROL,
-            Stroke::new(1.0, if response.hovered() { crate::theme::color::ACCENT } else { crate::theme::color::CONTROL_BORDER }),
+            crate::theme::color::control(),
+            Stroke::new(1.0, if response.hovered() { crate::theme::color::accent() } else { crate::theme::color::control_border() }),
             egui::StrokeKind::Inside,
         );
-        let tint = crate::theme::color::TEXT_CONTROL;
+        let tint = crate::theme::color::text_control();
         for step in 0..3 {
             let x = area.left() + BADGE_WIDTH / 4.0 + step as f32 * BADGE_WIDTH / 4.0;
             painter.circle_filled(Pos2::new(x, area.center().y), 1.1, tint);

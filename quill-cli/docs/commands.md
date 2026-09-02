@@ -2467,6 +2467,56 @@ The font families this machine has that the editor can be set to.
 quill-cli settings fonts --json
 ```
 
+## theme — the colours the whole window is painted in
+
+A theme says what every name in Quill's own palette means, which drawn icon set the rail and the explorer use, and — when it names all nine token colours — how code is coloured in every language at once. Quill's own theme names none of the nine, so each language plugin's scheme is what colours its files until a theme is chosen. `settings set appearance.theme` reaches the same code; these exist because a setting cannot say what themes there are.
+
+### theme list
+
+```
+quill-cli theme list
+```
+
+Every theme that can be chosen, with the plugin it came from and the six colours it is most recognisable by, and which one the window is painted in now.
+
+```sh
+quill-cli theme list --json
+```
+
+### theme show
+
+```
+quill-cli theme show [theme]
+```
+
+One theme in full: every colour in Quill's palette by name, the nine token colours, and which drawn icon set it uses. The one the window is painted in when no theme is named.
+
+- `theme` (optional) — Its key, `themes-bundle-1/dracula`, or its name, `Monokai Pro`. The active one when it is left out.
+
+```sh
+quill-cli theme show --json
+quill-cli theme show "Monokai Pro" --json
+```
+
+### theme set
+
+```
+quill-cli theme set <theme> [--accent <colour>] [--icons <set>]
+```
+
+Paint the window in a theme. It takes effect at once, in every tab and every pane, and is written to the settings file.
+
+- `theme` — Its key, `themes-bundle-1/dracula`, or its name, `Material Deep Ocean`. Everything after it on the line belongs to it.
+
+- `--accent <colour>` — One colour for everything the accent means, as #RRGGBB. `none` puts it back to the theme's own.
+- `--icons <set>` — Which drawn icon set to use: material, classic, or `follow` for whichever the theme names.
+
+```sh
+quill-cli theme set themes-bundle-1/dracula
+quill-cli theme set "Monokai Pro" --icons material
+quill-cli theme set quill/dark --accent none
+```
+
 ## plugins — the languages Quill colours, and the panes it draws
 
 A plugin is a folder of data. A `language` one describes a language: its extensions, its keywords and a colour per kind of token. A `ui` one names code that shipped in the binary and says what it contributes — a pane, a tab, a menu, a Settings page — which is how the Agent-Tasks board, the Agent-Chat pane and the Database explorer are reached. Nothing in a plugin is executed and nothing is fetched over a network.

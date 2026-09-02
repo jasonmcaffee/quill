@@ -588,10 +588,10 @@ fn header(ui: &mut egui::Ui, look: &Look<'_>, lane: Rect, status: Status, count:
     let painter = ui.painter().clone();
     // Four colours a person can tell apart at nine points across, which is what the picture uses: grey for
     // untouched, red for failed, blue for running and the agent's violet for done. Three of the four are
-    // already Quill's; the violet is `color::AGENT`, and the reason it was added is written down beside it.
+    // already Quill's; the violet is `color::agent()`, and the reason it was added is written down beside it.
     let dot = match status {
         Status::New => look.palette.text_dim,
-        Status::QaFailed => crate::theme::color::CLOSE,
+        Status::QaFailed => crate::theme::color::close(),
         Status::InProgress => look.palette.board_accent,
         Status::AgentDone => look.palette.agent,
     };

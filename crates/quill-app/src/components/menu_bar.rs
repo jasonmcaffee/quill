@@ -54,8 +54,8 @@ fn popup(ui: &mut egui::Ui, response: &egui::Response, entries: &[Entry]) -> Opt
         .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
         .frame(
             egui::Frame::popup(ui.style())
-                .fill(color::MENU)
-                .stroke(Stroke::new(1.0, color::CONTROL_BORDER))
+                .fill(color::menu())
+                .stroke(Stroke::new(1.0, color::control_border()))
                 .inner_margin(6),
         )
         // Wide enough that the longest entry and its shortcut do not meet in the middle. `Open Folder in New

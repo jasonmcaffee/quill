@@ -11,11 +11,13 @@ They were taken from `quill 0.1.0` after `task-1658`, on a 3840 by 2160 screen, 
 `README.md` says what Quill is and how to run it. This file is the same ground covered in pictures.
 
 Some things came after these were taken and so are not in them: `Go to File`, `Find in Files`,
-pictures drawn in the Markdown preview rather than shown as their alt text, and everything
-`task-1685` did to that preview — tables drawn as tables, fenced code coloured by its language on a
-panel, and a passage of the preview that can be selected and copied. All of them are described in
-`README.md` and in the task designs under `tasks/`, and the gallery is due a pass to add them — a
-capture here has a clear desktop behind it, which is most of the work of taking one.
+pictures drawn in the Markdown preview rather than shown as their alt text, everything `task-1685`
+did to that preview — tables drawn as tables, fenced code coloured by its language on a panel, and a
+passage of the preview that can be selected and copied — and **themes**, which `task-1776` added and
+which change every colour in every picture below. The rail and the explorer in these captures are
+drawn in the `classic` icon set, which is no longer the one a window comes up in. All of them are
+described in `README.md` and in the task designs under `tasks/`, and the gallery is due a pass to add
+them — a capture here has a clear desktop behind it, which is most of the work of taking one.
 
 ---
 

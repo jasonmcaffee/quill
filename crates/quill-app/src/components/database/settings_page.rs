@@ -85,7 +85,7 @@ fn rows(explorer: &mut DatabaseExplorer, ui: &mut egui::Ui, look: &Look<'_>) -> 
         size_row,
         field.right() + 10.0,
         "rows a page, in a grid and in a console result",
-        color::TEXT_DIM,
+        color::text_dim(),
         12.0,
     );
     pen = modal::note(
@@ -145,7 +145,7 @@ fn one_source(
         &painter,
         Pos2::new(row.left(), row.center().y),
         &source.name,
-        color::TEXT_STRONG,
+        color::text_strong(),
         12.5,
         edit.left() - row.left() - 12.0,
     );
@@ -172,7 +172,7 @@ fn one_source(
         &painter,
         Pos2::new(under.left(), under.center().y),
         &said,
-        color::TEXT_FAINT,
+        color::text_faint(),
         11.0,
         under.width(),
     );

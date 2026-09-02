@@ -61,7 +61,7 @@ pub fn show(ui: &egui::Ui, area: Rect, status: &Status<'_>, opacity: f32) {
     painter.rect_filled(
         area,
         CornerRadius { nw: 0, ne: 0, sw: size::WINDOW_CORNER, se: size::WINDOW_CORNER },
-        crate::theme::faded(color::STATUS_BAR, opacity),
+        crate::theme::faded(color::status_bar(), opacity),
     );
 
     let font = egui::FontId::proportional(11.0);
@@ -74,41 +74,41 @@ pub fn show(ui: &egui::Ui, area: Rect, status: &Status<'_>, opacity: f32) {
         *pen += galley.size().x;
     };
 
-    label(&painter, &mut pen, name.to_owned(), color::TEXT_CONTROL);
+    label(&painter, &mut pen, name.to_owned(), color::text_control());
     pen += 12.0;
     if unsaved {
-        painter.circle_filled(Pos2::new(pen + 3.0, middle), 3.0, color::UNSAVED);
+        painter.circle_filled(Pos2::new(pen + 3.0, middle), 3.0, color::unsaved());
         pen += 12.0;
-        label(&painter, &mut pen, "Unsaved".to_owned(), color::TEXT_DIM);
+        label(&painter, &mut pen, "Unsaved".to_owned(), color::text_dim());
         pen += 12.0;
     }
-    label(&painter, &mut pen, "\u{2502}".to_owned(), color::DIVIDER);
+    label(&painter, &mut pen, "\u{2502}".to_owned(), color::divider());
     pen += 10.0;
-    label(&painter, &mut pen, kind.to_owned(), color::TEXT_DIM);
+    label(&painter, &mut pen, kind.to_owned(), color::text_dim());
     // A picture has no caret, so it has no line and column either.
     if let Some(position) = position {
         pen += 12.0;
-        label(&painter, &mut pen, "\u{2502}".to_owned(), color::DIVIDER);
+        label(&painter, &mut pen, "\u{2502}".to_owned(), color::divider());
         pen += 10.0;
         label(
             &painter,
             &mut pen,
             format!("Ln {}, Col {}", position.line, position.column),
-            color::TEXT_DIM,
+            color::text_dim(),
         );
     }
 
     // The font, or the picture's size, sits against the right edge, and the branch sits before it,
     // which is where every editor with a status bar puts it. Worked out before the message is drawn,
     // because where they end is what says how much room the message has.
-    let galley = painter.layout_no_wrap(detail.to_owned(), font.clone(), color::TEXT_DIM);
+    let galley = painter.layout_no_wrap(detail.to_owned(), font.clone(), color::text_dim());
     let mut right = area.right() - 16.0 - galley.size().x;
-    painter.galley(Pos2::new(right, middle - galley.size().y / 2.0), galley, color::TEXT_DIM);
+    painter.galley(Pos2::new(right, middle - galley.size().y / 2.0), galley, color::text_dim());
     if let Some(git) = git {
-        let galley = painter.layout_no_wrap(git.to_owned(), font.clone(), color::TEXT_CONTROL);
+        let galley = painter.layout_no_wrap(git.to_owned(), font.clone(), color::text_control());
         right -= 18.0 + galley.size().x;
-        crate::theme::icon::branch(&painter, Pos2::new(right - 12.0, middle), color::TEXT_DIM);
-        painter.galley(Pos2::new(right, middle - galley.size().y / 2.0), galley, color::TEXT_CONTROL);
+        crate::theme::icon::branch(&painter, Pos2::new(right - 12.0, middle), color::text_dim());
+        painter.galley(Pos2::new(right, middle - galley.size().y / 2.0), galley, color::text_control());
     }
 
     // A message, when there is one, sits after the caret position and **before whatever the right
@@ -118,13 +118,13 @@ pub fn show(ui: &egui::Ui, area: Rect, status: &Status<'_>, opacity: f32) {
     // being the rare case it had been.
     if let Some(message) = message {
         pen += 12.0;
-        label(&painter, &mut pen, "\u{2502}".to_owned(), color::DIVIDER);
+        label(&painter, &mut pen, "\u{2502}".to_owned(), color::divider());
         pen += 10.0;
         // Clear of the branch icon as well, which is drawn twelve points to the left of `right`.
         let room = right - 26.0 - pen;
         if room > 24.0 {
             let galley = elided(&painter, message, &font, room);
-            painter.galley(Pos2::new(pen, middle - galley.size().y / 2.0), galley, color::TEXT_CONTROL);
+            painter.galley(Pos2::new(pen, middle - galley.size().y / 2.0), galley, color::text_control());
         }
     }
 }
@@ -141,7 +141,7 @@ fn elided(
     font: &egui::FontId,
     room: f32,
 ) -> std::sync::Arc<egui::Galley> {
-    let whole = painter.layout_no_wrap(message.to_owned(), font.clone(), color::TEXT_CONTROL);
+    let whole = painter.layout_no_wrap(message.to_owned(), font.clone(), color::text_control());
     if whole.size().x <= room {
         return whole;
     }
@@ -149,7 +149,7 @@ fn elided(
     let mut keep = ((characters.len() as f32) * (room / whole.size().x)).floor() as usize;
     loop {
         let cut: String = characters.iter().take(keep).collect::<String>() + "\u{2026}";
-        let galley = painter.layout_no_wrap(cut, font.clone(), color::TEXT_CONTROL);
+        let galley = painter.layout_no_wrap(cut, font.clone(), color::text_control());
         if galley.size().x <= room || keep == 0 {
             return galley;
         }

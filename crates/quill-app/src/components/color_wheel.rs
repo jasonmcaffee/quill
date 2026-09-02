@@ -129,12 +129,12 @@ pub fn show(ui: &mut egui::Ui, area: Rect, current: Rgba) -> Outcome {
     let label = painter.layout_no_wrap(
         format!("{}  ·  {} % opacity", chosen.to_hex(), (alpha as f32 / 255.0 * 100.0).round()),
         egui::FontId::monospace(11.5),
-        color::TEXT_DIM,
+        color::text_dim(),
     );
     painter.galley(
         Pos2::new(reading.left(), reading.center().y - label.size().y / 2.0),
         label,
-        color::TEXT_DIM,
+        color::text_dim(),
     );
 
     let button = Rect::from_min_size(
@@ -216,7 +216,7 @@ fn paint_shade(ui: &egui::Ui, square: Rect, hue: f32) {
     ui.painter().rect_stroke(
         square,
         CornerRadius::ZERO,
-        Stroke::new(1.0, color::CONTROL_BORDER),
+        Stroke::new(1.0, color::control_border()),
         egui::StrokeKind::Outside,
     );
 }
@@ -238,7 +238,7 @@ fn paint_markers(
     painter.circle_stroke(
         Pos2::new(centre.x + cos * at, centre.y + sin * at),
         6.0,
-        Stroke::new(2.0, color::TEXT_STRONG),
+        Stroke::new(2.0, color::text_strong()),
     );
     painter.circle_stroke(
         Pos2::new(
@@ -246,7 +246,7 @@ fn paint_markers(
             square.top() + square.height() * (1.0 - value),
         ),
         5.0,
-        Stroke::new(2.0, color::TEXT_STRONG),
+        Stroke::new(2.0, color::text_strong()),
     );
 }
 
@@ -256,7 +256,7 @@ fn paint_markers(
 /// shows through, and that is a thing to look at rather than to read.
 fn paint_opacity(ui: &egui::Ui, bar: Rect, solid: Rgba, alpha: u8) {
     let painter = ui.painter();
-    painter.rect_filled(bar, CornerRadius::same(size::CONTROL_CORNER), color::FIELD);
+    painter.rect_filled(bar, CornerRadius::same(size::CONTROL_CORNER), color::field());
     let mut column = 0;
     let mut x = bar.left();
     while x < bar.right() {
@@ -268,7 +268,7 @@ fn paint_opacity(ui: &egui::Ui, bar: Rect, solid: Rgba, alpha: u8) {
                     Pos2::new(x, y),
                     Pos2::new((x + CHECK).min(bar.right()), (y + CHECK).min(bar.bottom())),
                 );
-                painter.rect_filled(square, CornerRadius::ZERO, color::CONTROL);
+                painter.rect_filled(square, CornerRadius::ZERO, color::control());
             }
             row += 1;
             y += CHECK;
@@ -298,7 +298,7 @@ fn paint_opacity(ui: &egui::Ui, bar: Rect, solid: Rgba, alpha: u8) {
     let at = bar.left() + bar.width() * (alpha as f32 / 255.0);
     painter.line_segment(
         [Pos2::new(at, bar.top() - 2.0), Pos2::new(at, bar.bottom() + 2.0)],
-        Stroke::new(2.0, color::TEXT_STRONG),
+        Stroke::new(2.0, color::text_strong()),
     );
 }
 

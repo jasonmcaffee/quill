@@ -101,10 +101,10 @@ pub fn show(
 fn say(ui: &egui::Ui, area: Rect, text: &str) {
     let painter = ui.painter_at(area);
     let galley =
-        painter.layout(text.to_owned(), egui::FontId::proportional(12.5), color::TEXT_DIM, area.width() - 64.0);
+        painter.layout(text.to_owned(), egui::FontId::proportional(12.5), color::text_dim(), area.width() - 64.0);
     painter.galley(
         Pos2::new(area.center().x - galley.size().x / 2.0, area.center().y - galley.size().y / 2.0),
         galley,
-        color::TEXT_DIM,
+        color::text_dim(),
     );
 }

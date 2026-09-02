@@ -135,9 +135,9 @@ impl State {
     /// `theme::color`, which is the whole list of colours Quill draws with.
     pub fn tint(&self) -> egui::Color32 {
         match self {
-            State::Running => color::GIT_ADDED,
-            State::Failed(_) => color::CLOSE,
-            State::Finished | State::Stopped => color::TEXT_DIM,
+            State::Running => color::git_added(),
+            State::Failed(_) => color::close(),
+            State::Finished | State::Stopped => color::text_dim(),
         }
     }
 }
@@ -472,7 +472,7 @@ pub fn show(
 ) -> RunOutcome {
     let mut outcome = RunOutcome::default();
     let painter = ui.painter_at(area);
-    painter.rect_filled(area, CornerRadius::ZERO, crate::theme::faded(color::TOOLBAR, opacity));
+    painter.rect_filled(area, CornerRadius::ZERO, crate::theme::faded(color::toolbar(), opacity));
 
     let header =
         Rect::from_min_size(Pos2::new(area.left(), area.top() + 1.0), Vec2::new(area.width(), HEADER));
@@ -515,11 +515,11 @@ fn show_header(ui: &mut egui::Ui, area: Rect, panel: &mut RunPanel, outcome: &mu
     outcome.grab = crate::components::dock::handle(ui, area, crate::app::dock::Panel::Run);
     let painter = ui.painter_at(area);
     let heading =
-        painter.layout_no_wrap("Run".to_owned(), egui::FontId::proportional(12.0), color::TEXT_DIM);
+        painter.layout_no_wrap("Run".to_owned(), egui::FontId::proportional(12.0), color::text_dim());
     painter.galley(
         Pos2::new(area.left() + 16.0, area.center().y - heading.size().y / 2.0),
         heading.clone(),
-        color::TEXT_DIM,
+        color::text_dim(),
     );
 
     // The buttons first, so the strip of tabs knows where it has to stop and a long list of names
@@ -591,9 +591,9 @@ fn dimmable_button(
     let sense = if enabled { Sense::click() } else { Sense::hover() };
     let response = ui.interact(area, ui.id().with(("run-button", name)), sense).on_hover_text(name);
     if response.hovered() && enabled {
-        ui.painter().rect_filled(area, CornerRadius::same(4), color::CONTROL);
+        ui.painter().rect_filled(area, CornerRadius::same(4), color::control());
     }
-    let tint = if enabled { color::TEXT_DIM } else { color::TEXT_FAINT.gamma_multiply(0.6) };
+    let tint = if enabled { color::text_dim() } else { color::text_faint().gamma_multiply(0.6) };
     draw(ui.painter(), area.center(), tint);
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, name));
     response.clicked()
@@ -653,7 +653,7 @@ fn draw_tab(
     let label = painter.layout_no_wrap(
         name.to_owned(),
         egui::FontId::proportional(12.0),
-        if active { color::TEXT_STRONG } else { color::TEXT_CONTROL },
+        if active { color::text_strong() } else { color::text_control() },
     );
     // The state is written beside the name rather than in the grid: IntelliJ prints its epilogue
     // into the console, and a line pretending to be program output is the confusion this avoids.
@@ -677,12 +677,12 @@ fn draw_tab(
         painter.rect(
             tab,
             CornerRadius::same(4),
-            color::SELECTED_ROW,
-            Stroke::new(1.0, color::ACCENT.gamma_multiply(0.7)),
+            color::selected_row(),
+            Stroke::new(1.0, color::accent().gamma_multiply(0.7)),
             egui::StrokeKind::Inside,
         );
     } else if response.hovered() {
-        painter.rect_filled(tab, CornerRadius::same(4), color::CONTROL);
+        painter.rect_filled(tab, CornerRadius::same(4), color::control());
     }
     let mut text_left = tab.left() + 10.0;
     if state.is_running() {
@@ -692,7 +692,7 @@ fn draw_tab(
     painter.galley(
         Pos2::new(text_left, tab.center().y - label.size().y / 2.0),
         label.clone(),
-        color::TEXT_CONTROL,
+        color::text_control(),
     );
     if let Some(note) = note {
         painter.galley(
@@ -709,7 +709,7 @@ fn draw_tab(
     let shut_response = ui
         .interact(shut, ui.id().with(("run-close", index)), Sense::click())
         .on_hover_text(format!("Close {name}"));
-    icon::cross(&painter, shut.center(), color::TEXT_DIM);
+    icon::cross(&painter, shut.center(), color::text_dim());
     shut_response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Close {name}"))
     });
@@ -804,8 +804,8 @@ mod tests {
         assert_eq!(State::Finished.label(), "finished");
         assert_eq!(State::Failed(101).label(), "exit code 101");
         assert_eq!(State::Stopped.label(), "stopped");
-        assert_eq!(State::Failed(101).tint(), color::CLOSE, "a bad code is in the error colour");
-        assert_eq!(State::Running.tint(), color::GIT_ADDED);
+        assert_eq!(State::Failed(101).tint(), color::close(), "a bad code is in the error colour");
+        assert_eq!(State::Running.tint(), color::git_added());
         assert!(State::Running.is_running());
         assert!(!State::Finished.is_running());
     }

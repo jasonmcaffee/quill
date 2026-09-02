@@ -144,7 +144,7 @@ pub fn show(ctx: &egui::Context, state: &mut GoToFile) -> GoToFileOutcome {
             ),
             area.left() + 20.0,
             &summary,
-            color::TEXT_FAINT,
+            color::text_faint(),
             11.0,
         );
         if modal::footer(ui, area, &[("OPEN", state.chosen_path().is_some())]) == Some(0) {
@@ -170,7 +170,7 @@ fn rows(ui: &mut egui::Ui, area: Rect, state: &mut GoToFile) -> Option<std::path
     egui::ScrollArea::vertical().id_salt("go-to-file-rows").show(&mut child, |ui| {
         if state.results.is_empty() {
             ui.add_space(8.0);
-            ui.label(egui::RichText::new("  No file matches").size(11.5).color(color::TEXT_FAINT));
+            ui.label(egui::RichText::new("  No file matches").size(11.5).color(color::text_faint()));
             return;
         }
         for (index, found) in state.results.iter().enumerate() {
@@ -202,9 +202,9 @@ fn rows(ui: &mut egui::Ui, area: Rect, state: &mut GoToFile) -> Option<std::path
                     if openable { marker } else { marker.gamma_multiply(0.5) },
                 );
                 let tint = match (openable, chosen) {
-                    (false, _) => color::TEXT_FAINT,
-                    (true, true) => color::TEXT_STRONG,
-                    (true, false) => color::TEXT_CONTROL,
+                    (false, _) => color::text_faint(),
+                    (true, true) => color::text_strong(),
+                    (true, false) => color::text_control(),
                 };
                 let galley = controls::marked_text(painter, &name, &hits, tint, egui::FontId::proportional(12.5));
                 let width = galley.size().x;
@@ -219,7 +219,7 @@ fn rows(ui: &mut egui::Ui, area: Rect, state: &mut GoToFile) -> Option<std::path
                         row,
                         row.left() + 34.0 + width + 14.0,
                         &folder,
-                        color::TEXT_FAINT,
+                        color::text_faint(),
                         11.0,
                     );
                 }

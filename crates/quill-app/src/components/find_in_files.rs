@@ -300,7 +300,7 @@ pub fn show(ctx: &egui::Context, state: &mut FindInFiles, split: f32) -> FindOut
             ),
             area.left() + 20.0,
             &summary,
-            color::TEXT_FAINT,
+            color::text_faint(),
             11.0,
         );
         if modal::footer(ui, area, &[("OPEN", state.chosen_hit().is_some())]) == Some(0) {
@@ -340,7 +340,7 @@ fn rows(
             } else {
                 "  Nothing in this project matches"
             };
-            ui.label(egui::RichText::new(words).size(11.5).color(color::TEXT_FAINT));
+            ui.label(egui::RichText::new(words).size(11.5).color(color::text_faint()));
             return;
         }
         for (index, hit) in state.hits.iter().enumerate() {
@@ -356,19 +356,19 @@ fn rows(
             let label = format!("Result {where_it_is}");
             let (text, marks) = picked_out(&hit.text, &hit.range);
             let response = modal::row(ui, index, &label, chosen, |painter, row| {
-                let tint = if chosen { color::TEXT_STRONG } else { color::TEXT_DIM };
+                let tint = if chosen { color::text_strong() } else { color::text_dim() };
                 let x = modal::label(painter, row, row.left() + 16.0, &where_it_is, tint, 11.5);
                 let galley = controls::marked_text(
                     painter,
                     &text,
                     &marks,
-                    color::TEXT_CONTROL,
+                    color::text_control(),
                     egui::FontId::monospace(11.5),
                 );
                 painter.galley(
                     Pos2::new(x + 16.0, row.center().y - galley.size().y / 2.0),
                     galley,
-                    color::TEXT_CONTROL,
+                    color::text_control(),
                 );
             });
             if response.clicked() {
@@ -406,14 +406,14 @@ fn show_preview(ui: &mut egui::Ui, area: Rect, state: &mut FindInFiles) {
         ui.label(
             egui::RichText::new("  Choose a result to see the file it is in")
                 .size(11.5)
-                .color(color::TEXT_FAINT),
+                .color(color::text_faint()),
         );
         return;
     };
     if let Some(problem) = &preview.problem {
         let mut ui = child;
         ui.add_space(8.0);
-        ui.label(egui::RichText::new(format!("  {problem}")).size(11.5).color(color::CLOSE));
+        ui.label(egui::RichText::new(format!("  {problem}")).size(11.5).color(color::close()));
         return;
     }
     let hit = state.hits.get(state.chosen);
@@ -440,10 +440,10 @@ fn show_preview(ui: &mut egui::Ui, area: Rect, state: &mut FindInFiles) {
             let painter = ui.painter();
             let on_the_match = number == matched_line;
             if on_the_match {
-                painter.rect_filled(rect, egui::CornerRadius::same(3), color::SELECTED_ROW);
+                painter.rect_filled(rect, egui::CornerRadius::same(3), color::selected_row());
             }
-            let tint = if on_the_match { color::TEXT_STRONG } else { color::TEXT_DIM };
-            modal::label(painter, rect, rect.left() + 6.0, &format!("{number:>5}"), color::TEXT_FAINT, 10.5);
+            let tint = if on_the_match { color::text_strong() } else { color::text_dim() };
+            modal::label(painter, rect, rect.left() + 6.0, &format!("{number:>5}"), color::text_faint(), 10.5);
             let marks = if on_the_match { char_marks(line, &range) } else { Vec::new() };
             let galley = controls::marked_text(
                 painter,
@@ -475,8 +475,8 @@ fn frame(ui: &egui::Ui, area: Rect) {
     ui.painter().rect(
         area,
         egui::CornerRadius::same(size::CONTROL_CORNER),
-        color::EDITOR,
-        egui::Stroke::new(1.0, color::DIVIDER),
+        color::editor(),
+        egui::Stroke::new(1.0, color::divider()),
         egui::StrokeKind::Inside,
     );
 }

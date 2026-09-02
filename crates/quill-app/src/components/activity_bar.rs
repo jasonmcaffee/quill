@@ -134,10 +134,10 @@ pub fn show_with(
     plugins: &[PluginButton],
 ) -> RailOutcome {
     let painter = ui.painter_at(area);
-    painter.rect_filled(area, CornerRadius::ZERO, crate::theme::faded(color::EXPLORER_FOOTER, opacity));
+    painter.rect_filled(area, CornerRadius::ZERO, crate::theme::faded(color::explorer_footer(), opacity));
     painter.line_segment(
         [Pos2::new(area.right(), area.top()), Pos2::new(area.right(), area.bottom())],
-        egui::Stroke::new(1.0, color::DIVIDER),
+        egui::Stroke::new(1.0, color::divider()),
     );
 
     let mut outcome = RailOutcome::default();
@@ -341,16 +341,20 @@ fn rail_button(
         .on_hover_text(name);
     let painter = ui.painter();
     if on {
-        painter.rect_filled(hit, CornerRadius::same(size::CONTROL_CORNER), color::SELECTED_ROW);
+        painter.rect_filled(hit, CornerRadius::same(size::CONTROL_CORNER), color::selected_row());
     } else if response.hovered() && enabled {
-        painter.rect_filled(hit, CornerRadius::same(size::CONTROL_CORNER), color::CONTROL);
+        painter.rect_filled(hit, CornerRadius::same(size::CONTROL_CORNER), color::control());
     }
+    // The rail's three states, through the palette's icon roles rather than through the text ladder they
+    // used to borrow. Each role defaults to exactly the colour that was passed before `task-1776`, so
+    // nothing moved when they arrived — what they buy is that a theme can tint the rail without also
+    // moving every heading and every placeholder in the window.
     let tint = if !enabled {
-        color::TEXT_FAINT.gamma_multiply(0.6)
+        color::icon_disabled().gamma_multiply(0.6)
     } else if on {
-        color::TEXT_STRONG
+        color::icon_active()
     } else {
-        color::TEXT_DIM
+        color::icon()
     };
     draw(painter, centre, tint);
     response.widget_info(|| {

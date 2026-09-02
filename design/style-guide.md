@@ -36,6 +36,21 @@ comment saying which region of the design it was read from, or it is not used. W
 `Color32::from_rgb(0x3A, 0x40, 0x4C)` at the point of use is how a window comes to have four slightly
 different greys, and it must not happen.
 
+**A name is a question and not a number** — `color::editor()`, not `color::EDITOR`. `task-1776` made
+each of these read the theme the window is painted in, and the list of names is closed exactly as it
+was: a theme says what `editor` *means*, and it cannot add a forty-first name. The table below is that
+list; it is also what a `plugin.kind = theme` manifest may set, because both are generated from the one
+`palette!` invocation in `theme/mod.rs`. The numbers in it are Quill Dark's, which is what a window
+comes up in.
+
+Four colours are **derived** rather than being roles of their own, and they live in `theme::derived`
+with the reason beside each: `breakpoint()` is the close button's red, `inline_value()` is the faintest
+text, `value_changed()` is the unsaved amber, and `attached()` is git's added green. A theme that could
+set them separately could make a breakpoint a different red from the close button. `execution_point()`
+is derived too, and for a sharper reason: it is the one colour whose **alpha** carries meaning, so a
+role a manifest set in the same `#RRGGBB` as everything else would have painted an opaque band over the
+line the debugger stopped on.
+
 | Name | Where it goes |
 |---|---|
 | `EDITOR` | Behind the text. The opacity setting's alpha is applied to this. |
@@ -55,6 +70,8 @@ different greys, and it must not happen.
 | `HIGHLIGHT_YELLOW`, `HIGHLIGHT_GREEN`, `HIGHLIGHT_BLUE`, `HIGHLIGHT_PINK` | The four colours a passage can be marked in. Held as `quill_core::Rgba` rather than `Color32`, because a mark is written to a file and sent over the command line as well as painted; `theme::color32` is the one place the two spellings meet. |
 | `GIT_ADDED`, `GIT_MODIFIED`, `GIT_UNTRACKED` | What git says about a file, on its row in the explorer. `GIT_ADDED` is **also the green that means "this starts something"**: the run widget's play button, the play beside a row of its flyout, and the dot on a run that is going. A second green would have been a second green. |
 | `CLOSE`, `MINIMISE`, `MAXIMISE` | The three window buttons. `CLOSE` is **also the red that means "this went wrong"**: a removed line in a diff, and `exit code 101` on a run's tab. |
+| `ICON`, `ICON_ACTIVE`, `ICON_DISABLED` | A drawn icon sitting there, one whose pane is open, and one that cannot be used. They default to `TEXT_DIM`, `TEXT_STRONG` and `TEXT_FAINT`, which is what the rail was passing before they existed; they are roles of their own so a theme can tint the rail without moving every heading in the window. |
+| `FOLDER`, `FOLDER_OPEN` | A folder's arrow, and the mark the `material` icon set draws in front of its name. An open folder is drawn in the accent, which is Atom Material Icons' one loud move and the reason these are two roles. |
 
 A **diagram** is drawn in this palette too, and it has to be said out loud because a diagram is the
 one thing in the window whose source could plausibly have opinions about colour. Mermaid's own
@@ -312,6 +329,22 @@ as `color` in `egui`.
 letter or a Unicode symbol: egui's default fonts have no glyph for most of them, and an absent glyph
 renders as an empty box. That was found the hard way — the shift symbol at U+21E7 came out as a box,
 which is why menu shortcuts are spelled in words.
+
+**Ten of them have two drawings and the theme says which**, from `theme::IconSet`: `classic` is what
+Quill shipped with, and `material` — heavier, filled, with a **chevron** where the classic set draws a
+solid triangle — is what a window comes up in, because `task-1776` asked for the marks on the rail and
+the explorer's arrow to be improved rather than merely to become choosable. The two drawings of one
+mark sit next to each other in the file, because what is worth reading is how a folder differs between
+the sets. A mark with one drawing is unchanged and asks for no second one: the ticket is about the rail
+and the explorer, and fifty icons redrawn twice would be fifty chances to make one of them worse. A set
+with no drawing for a mark falls through to the classic one, so a third set is the four shapes it wants
+to differ on rather than fifty. `design/icons.md` records how the `material` set was designed and what
+was taken off the generated sheets — and, in one row, what was not.
+
+**Nothing in a set is painted in the background.** An icon is drawn over four grounds — the rail, the
+rail's own pill, a menu row and a flyout — so a shape knocked out of a fill by painting it in
+`color::editor()` would be right in one place and wrong in the other three. A stroke and a fill in the
+one colour is how a window, a title bar and a prompt are told apart instead.
 
 An icon is drawn inside about a 10 point square around its centre, at a 1.3 to 1.6 point stroke.
 

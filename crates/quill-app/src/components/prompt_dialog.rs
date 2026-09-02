@@ -100,8 +100,8 @@ pub fn show(ctx: &egui::Context, prompt: &mut Prompt) -> PromptOutcome {
         ui.painter().rect(
             field,
             CornerRadius::same(size::CONTROL_CORNER),
-            color::FIELD,
-            Stroke::new(1.0, color::CONTROL_BORDER),
+            color::field(),
+            Stroke::new(1.0, color::control_border()),
             egui::StrokeKind::Inside,
         );
         let text_rect = crate::components::controls::field_text_rect(ui, field, 8.0);
@@ -110,7 +110,7 @@ pub fn show(ctx: &egui::Context, prompt: &mut Prompt) -> PromptOutcome {
             egui::TextEdit::singleline(&mut prompt.value)
                 .frame(egui::Frame::NONE)
                 .desired_width(text_rect.width())
-                .text_color(color::TEXT_CONTROL),
+                .text_color(color::text_control()),
         );
         entry.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Name")
@@ -177,13 +177,13 @@ fn body_rect(area: Rect) -> Rect {
 fn header(ui: &mut egui::Ui, area: Rect, title: &str, cancelled: &mut bool) {
     let bar = Rect::from_min_size(area.min, Vec2::new(area.width(), HEADER));
     let painter = ui.painter_at(area);
-    painter.rect_filled(bar, CornerRadius { nw: 10, ne: 10, sw: 0, se: 0 }, color::TITLE_BAR);
+    painter.rect_filled(bar, CornerRadius { nw: 10, ne: 10, sw: 0, se: 0 }, color::title_bar());
     let galley =
-        painter.layout_no_wrap(title.to_owned(), egui::FontId::proportional(13.0), color::TEXT_STRONG);
+        painter.layout_no_wrap(title.to_owned(), egui::FontId::proportional(13.0), color::text_strong());
     painter.galley(
         Pos2::new(area.left() + 20.0, bar.center().y - galley.size().y / 2.0),
         galley,
-        color::TEXT_STRONG,
+        color::text_strong(),
     );
     let close = Rect::from_center_size(Pos2::new(area.right() - 24.0, bar.center().y), Vec2::splat(22.0));
     if crate::components::controls::icon_button(ui, close, "Close", crate::theme::icon::cross) {
@@ -191,7 +191,7 @@ fn header(ui: &mut egui::Ui, area: Rect, title: &str, cancelled: &mut bool) {
     }
     painter.line_segment(
         [Pos2::new(bar.left(), bar.bottom()), Pos2::new(bar.right(), bar.bottom())],
-        Stroke::new(1.0, color::DIVIDER),
+        Stroke::new(1.0, color::divider()),
     );
 }
 
@@ -200,10 +200,10 @@ fn note(ui: &mut egui::Ui, body: Rect, text: &str) {
     let galley = painter.layout(
         text.to_owned(),
         egui::FontId::proportional(11.5),
-        color::TEXT_FAINT,
+        color::text_faint(),
         body.width(),
     );
-    painter.galley(body.left_top(), galley, color::TEXT_FAINT);
+    painter.galley(body.left_top(), galley, color::text_faint());
 }
 
 fn buttons(
@@ -216,7 +216,7 @@ fn buttons(
     let footer = Rect::from_min_max(Pos2::new(area.left(), area.bottom() - FOOTER), area.max);
     ui.painter_at(area).line_segment(
         [Pos2::new(footer.left(), footer.top()), Pos2::new(footer.right(), footer.top())],
-        Stroke::new(1.0, color::DIVIDER),
+        Stroke::new(1.0, color::divider()),
     );
     let ok = Rect::from_min_size(
         Pos2::new(footer.right() - 20.0 - 104.0, footer.center().y - 14.0),
@@ -244,20 +244,20 @@ fn button(ui: &mut egui::Ui, area: Rect, name: &str, enabled: bool, primary: boo
     let sense = if enabled { Sense::click() } else { Sense::hover() };
     let response = ui.interact(area, ui.id().with(("prompt-button", name)), sense);
     let fill = match (enabled, primary, response.hovered()) {
-        (false, _, _) => color::CONTROL.gamma_multiply(0.6),
-        (true, true, _) => color::ACCENT,
-        (true, false, true) => color::CONTROL.gamma_multiply(1.25),
-        (true, false, false) => color::CONTROL,
+        (false, _, _) => color::control().gamma_multiply(0.6),
+        (true, true, _) => color::accent(),
+        (true, false, true) => color::control().gamma_multiply(1.25),
+        (true, false, false) => color::control(),
     };
     let painter = ui.painter();
     painter.rect(
         area,
         CornerRadius::same(size::CONTROL_CORNER),
         fill,
-        Stroke::new(1.0, if primary { color::ACCENT } else { color::CONTROL_BORDER }),
+        Stroke::new(1.0, if primary { color::accent() } else { color::control_border() }),
         egui::StrokeKind::Inside,
     );
-    let tint = if enabled { color::TEXT_STRONG } else { color::TEXT_FAINT };
+    let tint = if enabled { color::text_strong() } else { color::text_faint() };
     let galley = painter.layout_no_wrap(name.to_owned(), egui::FontId::proportional(12.5), tint);
     painter.galley(area.center() - galley.size() / 2.0, galley, tint);
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, name));

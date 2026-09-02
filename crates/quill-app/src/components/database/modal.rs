@@ -34,7 +34,7 @@ const GAP: f32 = 6.0;
 /// A label at the left, and the rectangle the field goes in, which starts past it.
 fn labelled(ui: &egui::Ui, body: Rect, pen: f32, name: &str) -> Rect {
     let row = Rect::from_min_size(Pos2::new(body.left(), pen), Vec2::new(body.width(), FIELD));
-    crate::components::modal::label(ui.painter(), row, row.left(), name, color::TEXT_DIM, 12.0);
+    crate::components::modal::label(ui.painter(), row, row.left(), name, color::text_dim(), 12.0);
     Rect::from_min_max(Pos2::new(body.left() + LABEL, pen), Pos2::new(body.right(), pen + FIELD))
 }
 
@@ -103,8 +103,8 @@ fn source_modal(
         // so the two read as one thing rather than as an answer floating above the footer.
         if let Some(tested) = &form.tested {
             let (said, tint) = match tested {
-                Ok(version) => (version.clone(), color::GIT_ADDED),
-                Err(why) => (why.clone(), color::UNSAVED),
+                Ok(version) => (version.clone(), color::git_added()),
+                Err(why) => (why.clone(), color::unsaved()),
             };
             let painter = ui.painter_at(body);
             let galley = painter.layout(
@@ -258,8 +258,8 @@ fn secret_field(ui: &mut egui::Ui, area: Rect, value: &mut String) {
     ui.painter().rect(
         area,
         egui::CornerRadius::same(crate::theme::size::CONTROL_CORNER),
-        color::FIELD,
-        egui::Stroke::new(1.0, color::CONTROL_BORDER),
+        color::field(),
+        egui::Stroke::new(1.0, color::control_border()),
         egui::StrokeKind::Inside,
     );
     let text_rect = crate::components::controls::field_text_rect(ui, area, 8.0);
@@ -269,7 +269,7 @@ fn secret_field(ui: &mut egui::Ui, area: Rect, value: &mut String) {
             .frame(egui::Frame::NONE)
             .password(true)
             .desired_width(text_rect.width())
-            .text_color(color::TEXT_CONTROL),
+            .text_color(color::text_control()),
     );
     response.widget_info(|| {
         // Named, never valued: `WidgetInfo::labeled` would otherwise read the field's contents out to

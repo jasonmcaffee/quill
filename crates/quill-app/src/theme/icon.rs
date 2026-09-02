@@ -1,8 +1,34 @@
 //! Drawn icons. The design uses shapes rather than letters for the alignment buttons, for undo and redo
 //! and for the small controls in the explorer, and the characters for those are not in egui's default
 //! fonts, so they are drawn here.
+//!
+//! ## Ten of them have two drawings, and the theme says which
+//!
+//! `task-1776` asks for the marks on the rail and the explorer's folder arrow to be improved and to be
+//! themeable. Themeable in **colour** they already are, and more so since the palette gained
+//! `color::icon`, `color::folder` and the three beside them: every icon here is tinted where it is used.
+//! What a theme now also chooses is the **shape**, from [`super::IconSet`]:
+//!
+//! - `quill` — the marks Quill shipped with: outlines at a 1.3 to 1.6 point stroke, and a solid triangle
+//!   for a disclosure.
+//! - `material` — heavier and rounder, filled where the Quill one is a stroke, and a **chevron** for a
+//!   disclosure, which is what IntelliJ, VS Code and every Material icon set draw. A stroke meeting at a
+//!   point reads as something to press; a filled triangle reads as a bullet.
+//!
+//! The two drawings of one mark sit next to each other rather than in two modules, because what is worth
+//! reading is *how a folder differs between the sets*, not what one set holds. A mark with one drawing —
+//! the alignment buttons, undo and redo, the debugger's steps, the symbol kinds — is unchanged and asks
+//! for no second one: the ticket is about the rail and the explorer, and fifty icons redrawn twice would
+//! be fifty chances to make one of them worse.
+//!
+//! **Nothing here is a picture, and that is the style guide's rule rather than a preference.** Each of
+//! these is drawn in three colours depending on its state and at any zoom, and a bitmap is one colour at
+//! one size. `design/icons.md` records how the `material` set's design sheet was generated with Krea 2
+//! and what was measured off it.
 
 use egui::{Color32, CornerRadius, Pos2, Rect, Stroke};
+
+use super::IconSet;
 
 /// A small triangle pointing down, on the right of a dropdown.
 pub fn chevron_down(painter: &egui::Painter, centre: Pos2, color: Color32) {
@@ -32,6 +58,14 @@ pub fn disclosure(painter: &egui::Painter, centre: Pos2, open: bool, color: Colo
 /// the plain form of each is the scaled one at one — so nothing else in the window changes and there is one
 /// shape rather than two that can drift apart.
 pub fn disclosure_at(painter: &egui::Painter, centre: Pos2, open: bool, color: Color32, scale: f32) {
+    match super::icons() {
+        IconSet::Classic => classic_disclosure(painter, centre, open, color, scale),
+        IconSet::Material => material_disclosure(painter, centre, open, color, scale),
+    }
+}
+
+/// The triangle Quill shipped with.
+fn classic_disclosure(painter: &egui::Painter, centre: Pos2, open: bool, color: Color32, scale: f32) {
     let at = |x: f32, y: f32| Pos2::new(centre.x + x * scale, centre.y + y * scale);
     let points = if open {
         vec![at(-4.0, -2.0), at(4.0, -2.0), at(0.0, 3.0)]
@@ -39,6 +73,72 @@ pub fn disclosure_at(painter: &egui::Painter, centre: Pos2, open: bool, color: C
         vec![at(-2.0, -4.0), at(-2.0, 4.0), at(3.0, 0.0)]
     };
     painter.add(egui::Shape::convex_polygon(points, color, Stroke::NONE));
+}
+
+/// A chevron: two strokes meeting at a point, with round caps.
+///
+/// **The mark `task-1776` names.** It is a little narrower than the triangle it replaces — 3.2 points
+/// either side of the point rather than 4 — because a chevron reads at its corner and the triangle read
+/// at its mass, and the explorer's rows are 18 points apart at one level of indent.
+fn material_disclosure(painter: &egui::Painter, centre: Pos2, open: bool, color: Color32, scale: f32) {
+    let at = |x: f32, y: f32| Pos2::new(centre.x + x * scale, centre.y + y * scale);
+    let points = if open {
+        vec![at(-3.4, -1.6), at(0.0, 2.0), at(3.4, -1.6)]
+    } else {
+        vec![at(-1.6, -3.4), at(2.0, 0.0), at(-1.6, 3.4)]
+    };
+    painter.add(egui::Shape::line(points, Stroke::new(1.6 * scale, color)));
+}
+
+/// How much room a folder's own mark takes in front of its name, in points, at this scale.
+///
+/// Zero for the `quill` set, which draws no folder mark at all — the explorer has never had one, and a
+/// row that gained one under every theme would be a change nobody asked for. The explorer asks this
+/// rather than assuming, so the name sits against the arrow under one set and past the folder under the
+/// other, and nothing hard-codes which set is on.
+pub fn folder_mark_width(scale: f32) -> f32 {
+    match super::icons() {
+        IconSet::Classic => 0.0,
+        IconSet::Material => 16.0 * scale,
+    }
+}
+
+/// The mark in front of a folder's name in the explorer, when the set draws one.
+///
+/// This is Atom Material Icons' whole idea, and it is why `color::folder` and `color::folder_open` are
+/// two roles: a folder that is open is drawn in the accent, so the path down to what you are reading is
+/// visible without reading any of the names.
+pub fn folder_mark(painter: &egui::Painter, centre: Pos2, open: bool, color: Color32, scale: f32) {
+    if super::icons() == IconSet::Classic {
+        return;
+    }
+    material_folder(painter, centre, open, color, scale * 0.85);
+}
+
+/// A filled folder, with a raised tab, and leaning open when it is.
+///
+/// One drawing behind both the rail's button and the explorer's mark, so the two cannot drift apart.
+fn material_folder(painter: &egui::Painter, centre: Pos2, open: bool, color: Color32, scale: f32) {
+    let at = |x: f32, y: f32| Pos2::new(centre.x + x * scale, centre.y + y * scale);
+    let round = (2.0 * scale).max(1.0) as u8;
+    // **Open and shut differ by a gap, not by a second shape.** The design sheet draws the open folder as
+    // the closed one with the tab lifted a point and a half clear of the body, and that is the whole
+    // difference — which matters here because an icon has one colour, so a lid drawn *over* the body
+    // would be invisible and one drawn beside it would make the mark wider on alternate rows.
+    let lift = if open { 1.6 } else { 0.0 };
+    painter.rect_filled(
+        Rect::from_min_max(at(-6.0, -5.0 - lift), at(-0.4, -3.0 - lift)),
+        CornerRadius { nw: round, ne: round, sw: 0, se: 0 },
+        color,
+    );
+    // The body's top **left** corner is square when the folder is shut, because the tab sits on it: a
+    // rounded one leaves a notch between the two shapes that reads as a bite taken out of the mark. Open,
+    // the tab has lifted clear and the corner is rounded like the other three.
+    painter.rect_filled(
+        Rect::from_min_max(at(-6.0, -3.4), at(6.0, 5.0)),
+        CornerRadius { nw: if open { round } else { 0 }, ne: round, sw: round, se: round },
+        color,
+    );
 }
 
 /// Four stacked lines showing how a paragraph is placed. The short lines sit where the ragged edge
@@ -193,6 +293,36 @@ pub fn clock(painter: &egui::Painter, centre: Pos2, color: Color32) {
 
 /// A branch: a line with a second one leaving it, for anything about git.
 pub fn branch(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    match super::icons() {
+        IconSet::Classic => classic_branch(painter, centre, color),
+        IconSet::Material => material_branch(painter, centre, color),
+    }
+}
+
+/// The same branch at the set's weight: heavier strokes with round caps and larger discs.
+///
+/// The design sheet's own attempt at this one was the weakest thing on it — it came back as an X with
+/// four dots, which says nothing about git — so this keeps the shape Quill already had and only takes the
+/// weight and the caps from the sheet. That is what a design reference is for: the parts of it that are
+/// better are copied and the parts that are not are not.
+fn material_branch(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    let at = |x: f32, y: f32| Pos2::new(centre.x + x, centre.y + y);
+    let stroke = Stroke::new(1.6, color);
+    // Three commits and the line between them, which is what a branch is: a stem with one at each end,
+    // and a third off to the side that the stem forks to. The fork is a polyline with a corner in it
+    // rather than a diagonal, so at ten points across it reads as a branch and not as a letter.
+    painter.line_segment([at(-4.4, -3.2), at(-4.4, 3.2)], stroke);
+    painter.add(egui::Shape::line(
+        vec![at(-4.4, 1.6), at(0.6, 1.6), at(4.4, -2.2), at(4.4, -3.0)],
+        stroke,
+    ));
+    for dot in [at(-4.4, -5.0), at(-4.4, 5.0), at(4.4, -5.0)] {
+        painter.circle_filled(dot, 2.2, color);
+    }
+}
+
+/// The branch Quill shipped with.
+fn classic_branch(painter: &egui::Painter, centre: Pos2, color: Color32) {
     let stroke = Stroke::new(1.4, color);
     painter.line_segment(
         [Pos2::new(centre.x - 3.0, centre.y - 5.0), Pos2::new(centre.x - 3.0, centre.y + 5.0)],
@@ -316,6 +446,14 @@ pub fn font(painter: &egui::Painter, centre: Pos2, color: Color32) {
 /// terminal beside it in the activity bar. The tab across the top left is what tells a folder from a
 /// plain rectangle at ten points across.
 pub fn folder(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    match super::icons() {
+        IconSet::Classic => classic_folder(painter, centre, color),
+        IconSet::Material => material_folder(painter, centre, false, color, 1.0),
+    }
+}
+
+/// The outlined folder Quill shipped with.
+fn classic_folder(painter: &egui::Painter, centre: Pos2, color: Color32) {
     let stroke = Stroke::new(1.4, color);
     let left = centre.x - 5.5;
     let right = centre.x + 5.5;
@@ -337,6 +475,37 @@ pub fn folder(painter: &egui::Painter, centre: Pos2, color: Color32) {
 /// is a rectangle with one tab on its top edge, so that is what is drawn — the same outline the folder above it
 /// is drawn with, at the same weight, so the two read as a pair.
 pub fn editing_area(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    match super::icons() {
+        IconSet::Classic => classic_editing_area(painter, centre, color),
+        IconSet::Material => material_editing_area(painter, centre, color),
+    }
+}
+
+/// Two filled slabs side by side, which is what the editing area **is**.
+///
+/// The design sheet drew it this way and it is a better mark than the one it replaces: Quill's editing
+/// area is a row of panes, so two panes with a gap between them says what the button does, where a panel
+/// with a tab on it says "a document" and could as easily have meant the explorer.
+///
+/// Nothing here is knocked out of a fill. An icon has one colour and is drawn over four different
+/// grounds — the rail, the rail's own chosen pill, a menu row and a flyout — so a shape painted in "the
+/// background" would be right in one place and wrong in the other three.
+fn material_editing_area(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    let round = CornerRadius::same(2);
+    painter.rect_filled(
+        Rect::from_min_max(Pos2::new(centre.x - 6.0, centre.y - 4.5), Pos2::new(centre.x - 0.9, centre.y + 4.5)),
+        round,
+        color,
+    );
+    painter.rect_filled(
+        Rect::from_min_max(Pos2::new(centre.x + 0.9, centre.y - 4.5), Pos2::new(centre.x + 6.0, centre.y + 4.5)),
+        round,
+        color,
+    );
+}
+
+/// The outlined panel Quill shipped with.
+fn classic_editing_area(painter: &egui::Painter, centre: Pos2, color: Color32) {
     let stroke = Stroke::new(1.4, color);
     let left = centre.x - 5.5;
     let right = centre.x + 5.5;
@@ -355,6 +524,37 @@ pub fn editing_area(painter: &egui::Painter, centre: Pos2, color: Color32) {
 
 /// A prompt: a chevron and an underscore, for the button that shows and hides the terminal.
 pub fn terminal(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    match super::icons() {
+        IconSet::Classic => classic_terminal(painter, centre, color),
+        IconSet::Material => material_terminal(painter, centre, color),
+    }
+}
+
+/// A window with a filled title bar and a chevron inside it, which is the design sheet's shape.
+///
+/// The body is stroked at 1.6 and the bar and the chevron are filled, so the mark carries the set's
+/// weight without any part of it being painted in the ground — see [`material_editing_area`].
+fn material_terminal(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    let body = Rect::from_center_size(centre, egui::Vec2::new(12.0, 10.0));
+    painter.rect_stroke(body, CornerRadius::same(2), Stroke::new(1.6, color), egui::StrokeKind::Inside);
+    painter.rect_filled(
+        Rect::from_min_max(body.min, Pos2::new(body.right(), body.top() + 2.6)),
+        CornerRadius { nw: 2, ne: 2, sw: 0, se: 0 },
+        color,
+    );
+    // The prompt, pointing the way a shell's does.
+    painter.add(egui::Shape::line(
+        vec![
+            Pos2::new(body.left() + 3.0, body.top() + 5.0),
+            Pos2::new(body.left() + 5.6, body.top() + 7.0),
+            Pos2::new(body.left() + 3.0, body.top() + 9.0),
+        ],
+        Stroke::new(1.6, color),
+    ));
+}
+
+/// The prompt Quill shipped with.
+fn classic_terminal(painter: &egui::Painter, centre: Pos2, color: Color32) {
     let stroke = Stroke::new(1.5, color);
     let left = centre.x - 5.0;
     // The chevron, pointing the way a shell prompt does.
@@ -641,6 +841,37 @@ pub fn breakpoint_badge(painter: &egui::Painter, centre: Pos2, color: Color32) {
 /// Drawn rather than lettered, in the manner of every other icon here, and recognisable at the
 /// eighteen points the rail draws its buttons at.
 pub fn bug(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    match super::icons() {
+        IconSet::Classic => classic_bug(painter, centre, color),
+        IconSet::Material => material_bug(painter, centre, color),
+    }
+}
+
+/// The same insect with a filled body, which is how the design sheet drew it.
+///
+/// Filled bodies and stroked limbs is the set's own rule — a folder, a title bar and a bug's shell are
+/// mass, and a leg, an antenna and a prompt are lines.
+fn material_bug(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    let stroke = Stroke::new(1.5, color);
+    let body = Rect::from_center_size(centre, egui::Vec2::new(8.4, 10.0));
+    painter.rect_filled(body, CornerRadius::same(4), color);
+    for step in 0..3 {
+        let y = body.top() + 2.5 + step as f32 * 2.75;
+        painter.line_segment([Pos2::new(body.left(), y), Pos2::new(body.left() - 3.0, y - 1.0)], stroke);
+        painter.line_segment([Pos2::new(body.right(), y), Pos2::new(body.right() + 3.0, y - 1.0)], stroke);
+    }
+    painter.line_segment(
+        [Pos2::new(centre.x - 1.5, body.top() + 0.6), Pos2::new(centre.x - 3.6, body.top() - 3.0)],
+        stroke,
+    );
+    painter.line_segment(
+        [Pos2::new(centre.x + 1.5, body.top() + 0.6), Pos2::new(centre.x + 3.6, body.top() - 3.0)],
+        stroke,
+    );
+}
+
+/// The outlined insect Quill shipped with.
+fn classic_bug(painter: &egui::Painter, centre: Pos2, color: Color32) {
     let stroke = Stroke::new(1.4, color);
     let body = Rect::from_center_size(centre, egui::Vec2::new(8.0, 10.0));
     painter.rect_stroke(body, CornerRadius::same(4), stroke, egui::StrokeKind::Middle);
@@ -815,6 +1046,33 @@ pub fn copy(painter: &egui::Painter, centre: Pos2, color: Color32) {
 /// rounded rectangle. Drawn rather than lettered, which is `design/style-guide.md`'s rule for every
 /// icon here: a drawn icon takes the tint it is given and follows the rail's own three states.
 pub fn chat(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    match super::icons() {
+        IconSet::Classic => classic_chat(painter, centre, color),
+        IconSet::Material => material_chat(painter, centre, color),
+    }
+}
+
+/// A filled bubble with a tail, and no words in it.
+///
+/// The lines of words go with the outline: inside a filled bubble they would have to be painted in the
+/// ground, which is the one thing this set does not do. What is left is the silhouette, which is what the
+/// design sheet drew and what reads at ten points.
+fn material_chat(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    let bubble = Rect::from_center_size(Pos2::new(centre.x, centre.y - 1.0), egui::Vec2::new(13.0, 10.0));
+    painter.rect_filled(bubble, CornerRadius::same(3), color);
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            Pos2::new(centre.x - 4.6, bubble.max.y - 1.0),
+            Pos2::new(centre.x - 1.2, bubble.max.y - 1.0),
+            Pos2::new(centre.x - 4.0, bubble.max.y + 3.4),
+        ],
+        color,
+        Stroke::NONE,
+    ));
+}
+
+/// The outlined bubble Quill shipped with.
+fn classic_chat(painter: &egui::Painter, centre: Pos2, color: Color32) {
     let box_rect = Rect::from_center_size(Pos2::new(centre.x, centre.y - 1.0), egui::Vec2::new(13.0, 10.0));
     painter.rect_stroke(
         box_rect,
@@ -842,6 +1100,38 @@ pub fn chat(painter: &egui::Painter, centre: Pos2, color: Color32) {
 /// drawn icon takes the tint it is given, so it follows the rail's own three states and the window's
 /// colours rather than carrying a colour of its own.
 pub fn board(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    match super::icons() {
+        IconSet::Classic => classic_board(painter, centre, color),
+        IconSet::Material => material_board(painter, centre, color),
+    }
+}
+
+/// Three columns under a header bar, which is what a board looks like on the design sheet.
+///
+/// The bar is what tells it from a bar chart, and it is the one thing the Quill drawing is missing: four
+/// columns of different heights with nothing over them is a chart, and a chart is not what the button
+/// opens.
+fn material_board(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    let half = 5.5;
+    painter.rect_filled(
+        Rect::from_min_max(Pos2::new(centre.x - half, centre.y - half), Pos2::new(centre.x + half, centre.y - 3.2)),
+        CornerRadius { nw: 2, ne: 2, sw: 0, se: 0 },
+        color,
+    );
+    let column = 2.8;
+    for (index, share) in [1.0_f32, 0.6, 0.82].into_iter().enumerate() {
+        let x = centre.x - half + index as f32 * (column + 1.2);
+        let height = (half + 3.2) * share;
+        painter.rect_filled(
+            Rect::from_min_size(Pos2::new(x, centre.y - 2.2), egui::Vec2::new(column, height)),
+            CornerRadius::same(1),
+            color,
+        );
+    }
+}
+
+/// The four columns Quill shipped with.
+fn classic_board(painter: &egui::Painter, centre: Pos2, color: Color32) {
     let half = 5.5;
     let column = 2.4;
     // Four columns of different heights, which is what a board with different numbers of cards in each

@@ -128,6 +128,16 @@ pub const PANE_ICONS: &[&str] = &[
     "database", "table",
 ];
 
+/// The icon sets built into this version of Quill that a theme's `icons` may name.
+///
+/// The sixth registry of this shape, checked the same way and for the same reason as the five above: a
+/// theme naming a set Quill has not got should say so plainly rather than load as a theme whose rail
+/// buttons and folder arrows are drawn as nothing. `theme::icon` is what each name draws.
+///
+/// **The shapes are code and the choice is data**, which is `language.renders` again. The most a
+/// third-party theme can do is pick one of the sets that shipped in the binary, visibly.
+pub const ICON_SETS: &[&str] = &["material", "classic"];
+
 /// The conditions a `pane.applies` may name.
 ///
 /// Quill's answer to VS Code's `when` expressions, which are the most copied part of its contribution
@@ -138,8 +148,10 @@ pub const PANE_CONDITIONS: &[&str] = &["always", "in_project"];
 
 /// The kind of plugin.
 ///
-/// Two, and the second one is what `tasks/ui-plugin-architecture.md` widened the seam for. A third is
-/// still refused rather than half-loaded, which is what the field was added for.
+/// Three. The second is what `tasks/ui-plugin-architecture.md` widened the seam for and the third is
+/// `task-1776`. A fourth is still refused rather than half-loaded, which is what the field was added for —
+/// and each widening is done in the open, with a check and a test, because the whole value of the field is
+/// that a manifest asking for something this version cannot do says so.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     /// A description of a language: extensions, a grammar, an icon and a colour scheme.
@@ -148,6 +160,10 @@ pub enum Kind {
     /// menu, and a page in Settings. The arrangement is data in the manifest and the drawing is code
     /// in Quill, named by `ui.provider`.
     Ui,
+    /// A set of themes: what every name in `theme::color` means, what the tokens are coloured, and which
+    /// of the drawn icon sets is used. It claims no file type and contributes no pane; it says what the
+    /// window it is already in looks like.
+    Theme,
 }
 
 impl Kind {
@@ -156,6 +172,7 @@ impl Kind {
         match self {
             Kind::Language => "language",
             Kind::Ui => "ui",
+            Kind::Theme => "theme",
         }
     }
 }
@@ -163,7 +180,7 @@ impl Kind {
 /// A colour scheme: one colour per kind of token.
 ///
 /// **It colours the tokens and not the background.** Dracula's own `#282A36` is not used, and
-/// Quill's `theme::color::EDITOR` stays, because the window letting the desktop show through is the
+/// Quill's `theme::color::editor()` stays, because the window letting the desktop show through is the
 /// whole character of the product and a scheme that repaints the editing area opaque would take that
 /// away in exchange for being a shade nearer a screenshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -174,6 +191,11 @@ pub struct SyntaxTheme {
 }
 
 impl SyntaxTheme {
+    /// A scheme built from a list, which is what a theme's `syntax.*` keys produce.
+    pub fn of(name: impl Into<String>, colours: Vec<(Token, Color)>) -> SyntaxTheme {
+        SyntaxTheme { name: name.into(), colours }
+    }
+
     pub fn colour(&self, token: Token) -> Option<Color> {
         self.colours.iter().find(|(known, _)| *known == token).map(|(_, colour)| *colour)
     }
@@ -429,6 +451,12 @@ pub struct Plugin {
     pub debug_adapter: Option<String>,
     pub grammar: Grammar,
     pub theme: SyntaxTheme,
+    /// The themes this plugin carries. Empty for every `language` and `ui` plugin.
+    ///
+    /// A `Vec` because "a themes bundle" is several: one plugin is switched on or off, and five palettes
+    /// arrive or leave with it. The order is the manifest's `themes` line rather than alphabetical, so the
+    /// list in Settings is the order somebody arranged.
+    pub themes: Vec<crate::theme::Theme>,
     /// The bytes of `icon.png`, when it has one.
     pub icon: Option<Vec<u8>>,
     /// True when it came from inside the binary rather than from disk.
@@ -552,6 +580,35 @@ impl Plugins {
     /// The plugins that draw, whether or not they are switched on, for the Plugins page's own list.
     pub fn ui_plugins(&self) -> Vec<&Plugin> {
         self.installed.iter().filter(|plugin| plugin.kind == Kind::Ui).collect()
+    }
+
+    /// Every theme that can be chosen: Quill's own, then each theme plugin that is switched on.
+    ///
+    /// Worked out from the manifests each time rather than remembered, which is what `surfaces` does and
+    /// for the same reason: switching a theme plugin off has to withdraw its themes in the same frame it
+    /// withdraws anything else, and one value everything reads is what makes that impossible to get wrong.
+    /// `QuillApp::apply_the_theme` falls back to `quill/dark` when the active one is no longer in this
+    /// list, so a plugin switched off can never leave the window in a palette nothing can name.
+    pub fn themes(&self) -> Vec<crate::theme::Theme> {
+        let mut found = vec![crate::theme::Theme::quill_dark()];
+        for plugin in self.installed.iter().filter(|plugin| plugin.enabled) {
+            found.extend(plugin.themes.iter().cloned());
+        }
+        found
+    }
+
+    /// The theme this key names, by its `<plugin>/<theme>` key or by the name on the screen.
+    ///
+    /// Both, because the key is what the settings file holds and the name is what a person and an agent
+    /// read — `theme set "Deep Ocean"` is what somebody types. That is `split_off_a_name`'s rule kept
+    /// again: a thing is named on the command line by what is on the screen.
+    pub fn theme(&self, wanted: &str) -> Option<crate::theme::Theme> {
+        let wanted = wanted.trim();
+        let all = self.themes();
+        all.iter()
+            .find(|theme| theme.key.eq_ignore_ascii_case(wanted))
+            .or_else(|| all.iter().find(|theme| theme.name.eq_ignore_ascii_case(wanted)))
+            .cloned()
     }
 
     pub fn enabled_count(&self) -> usize {
@@ -762,6 +819,23 @@ impl Grammars {
     }
 }
 
+/// The scheme a file of this plugin's language is coloured by.
+///
+/// **The active theme's if it names the nine tokens, and the plugin's own otherwise.** Until `task-1776`
+/// there was no other answer: five language plugins each carried their own copy of Dracula, so choosing a
+/// scheme meant editing five manifests and a sixth language would have arrived with a sixth copy. A theme
+/// owns the scheme now, which is what IntelliJ does and is the whole reason a scheme can be switched at
+/// all.
+///
+/// Quill's own theme names none, so a Quill nobody has chosen a theme in colours every file exactly as it
+/// did before — which is the rule every key added since `task-1671` keeps, stated for colour.
+///
+/// Asked at the moment of use, so choosing a theme recolours every open file in the same frame, the way
+/// [`Plugins::renders`] withdraws a diagram.
+pub fn scheme_of(plugin: &Plugin) -> SyntaxTheme {
+    crate::theme::syntax().unwrap_or_else(|| plugin.theme.clone())
+}
+
 /// Read one plugin folder.
 fn read_folder(folder: &Path) -> Result<Plugin, String> {
     let manifest = folder.join(MANIFEST);
@@ -780,9 +854,10 @@ pub fn parse(values: &Values, bundled: bool) -> Result<Plugin, String> {
     let kind = match values.text("plugin.kind").unwrap_or("language") {
         "language" => Kind::Language,
         "ui" => Kind::Ui,
+        "theme" => Kind::Theme,
         other => {
             return Err(format!(
-                "plugin.kind is `{other}`, and this version of Quill runs `language` and `ui` plugins"
+                "plugin.kind is `{other}`, and this version of Quill runs `language`, `ui` and `theme` plugins"
             ))
         }
     };
@@ -866,13 +941,24 @@ pub fn parse(values: &Values, bundled: bool) -> Result<Plugin, String> {
         markup: values.flag("language.markup").unwrap_or(false),
         raw_text: raw_text(values)?,
     };
-    let colours: Vec<(Token, Color)> = Token::ALL
-        .into_iter()
-        .filter_map(|token| {
-            let value = values.text(&format!("theme.{}", token.name()))?;
-            colour(value).map(|colour| (token, colour))
-        })
-        .collect();
+    // A `theme` plugin's `theme.` keys are its themes, one group each, so the flat scheme a language
+    // carries is not read for it — `theme.dracula.syntax.keyword` is not `theme.keyword`, and reading both
+    // out of one prefix would be one namespace meaning two things.
+    let colours: Vec<(Token, Color)> = match kind {
+        Kind::Theme => Vec::new(),
+        _ => Token::ALL
+            .into_iter()
+            .filter_map(|token| {
+                let value = values.text(&format!("theme.{}", token.name()))?;
+                colour(value).map(|colour| (token, colour))
+            })
+            .collect(),
+    };
+    let themes = themes(values, &id, kind)?;
+    let syntax_scheme_name = match kind {
+        Kind::Theme => name.clone(),
+        _ => values.text("theme.name").unwrap_or("Dracula").to_owned(),
+    };
     Ok(Plugin {
         id,
         name,
@@ -888,13 +974,162 @@ pub fn parse(values: &Values, bundled: bool) -> Result<Plugin, String> {
         run_project: run_project(values)?,
         debug_adapter: debug_adapter(values)?,
         grammar,
-        theme: SyntaxTheme {
-            name: values.text("theme.name").unwrap_or("Dracula").to_owned(),
-            colours,
-        },
+        theme: SyntaxTheme { name: syntax_scheme_name, colours },
+        themes,
         icon: None,
         bundled,
         enabled: true,
+    })
+}
+
+/// The `themes` line and the `theme.<id>.` groups: what a `plugin.kind = theme` manifest carries.
+///
+/// One plugin holds several, because that is what a themes bundle is: it is switched on or off once and
+/// five palettes arrive or leave together. The groups are read with [`Values::starting_with`], which is the
+/// same mechanism a plugin's submenus already use, so nothing new parses anything.
+///
+/// Every refusal here names what was asked for and what this version has, which is the rule
+/// `plugin.kind`, `language.renders`, `ui.provider` and `ui.chrome` all keep. A `language` or `ui`
+/// manifest reaches none of it, which `the_older_plugins_ask_for_none_of_what_themes_added` keeps.
+fn themes(values: &Values, plugin: &str, kind: Kind) -> Result<Vec<crate::theme::Theme>, String> {
+    let declared = list(values, "themes");
+    if kind != Kind::Theme {
+        // A `themes` line on a plugin that is not a theme is a line that would do nothing, silently.
+        if !declared.is_empty() {
+            return Err(format!(
+                "plugin.kind is `{}` and the manifest sets themes, which only a `theme` plugin has",
+                kind.name()
+            ));
+        }
+        return Ok(Vec::new());
+    }
+    if declared.is_empty() {
+        return Err(
+            "themes is empty, so this plugin would offer nothing: name its themes, as `themes = dracula, palenight`"
+                .to_owned(),
+        );
+    }
+    // Every group that was written, so one that is not on the `themes` line is refused rather than being
+    // a block of colours nothing reads.
+    let mut written: Vec<String> = Vec::new();
+    for (rest, _) in values.starting_with("theme.") {
+        if let Some((id, _)) = rest.split_once('.') {
+            if !written.iter().any(|known| known == id) {
+                written.push(id.to_owned());
+            }
+        }
+    }
+    for id in &written {
+        if !declared.contains(id) {
+            return Err(format!(
+                "theme.{id} is set and `{id}` is not on the themes line, so nothing would ever read it"
+            ));
+        }
+    }
+    declared.iter().map(|id| one_theme(values, plugin, id)).collect()
+}
+
+/// One `theme.<id>.` group.
+fn one_theme(values: &Values, plugin: &str, id: &str) -> Result<crate::theme::Theme, String> {
+    let at = |leaf: &str| values.text(&format!("theme.{id}.{leaf}")).map(str::trim);
+    let name = at("name")
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| format!("theme.{id}.name is missing, so it would have nothing to be called in the list"))?
+        .to_owned();
+    // Dark unless it says otherwise, and light is refused with the reason rather than half-supported. The
+    // window is drawn on a transparent ground, the depth recipe in `vello_canvas` lifts a surface and
+    // darkens it with black, and every accepted screenshot is judged against a dark ground — so a light
+    // theme is not a palette swap and shipping one nobody had looked at every screen in would be worse
+    // than saying so. This is `plugin.kind`'s own move: name the seam and leave it closed.
+    let dark = values.flag(&format!("theme.{id}.dark")).unwrap_or(true);
+    if !dark {
+        return Err(format!(
+            "theme.{id}.dark is false, and this version of Quill draws dark themes only"
+        ));
+    }
+    let icons = match at("icons").filter(|named| !named.is_empty()) {
+        Some(named) => crate::theme::IconSet::parse(named).ok_or_else(|| {
+            format!("theme.{id}.icons is `{named}`, and this version of Quill draws {}", ICON_SETS.join(", "))
+        })?,
+        None => crate::theme::IconSet::default(),
+    };
+
+    // A role that is not named keeps Quill Dark's, which is IntelliJ's `parentTheme` in one line and is
+    // what keeps a manifest to the thirty colours that matter rather than all forty.
+    let mut palette = crate::theme::Palette::QUILL_DARK;
+    for (role, value) in values.starting_with(&format!("theme.{id}.ui.")) {
+        let Some(read) = colour(&value) else {
+            return Err(format!("theme.{id}.ui.{role} is `{value}`, which is not a colour such as #FF79C6"));
+        };
+        if !palette.set(&role, egui::Color32::from_rgb(read.r, read.g, read.b)) {
+            return Err(format!(
+                "theme.{id}.ui.{role} names a colour Quill has not got. It has {}",
+                crate::theme::Palette::NAMES.join(", ")
+            ));
+        }
+    }
+
+    // All nine tokens or none. Eight would half-recolour a file: the ninth would keep whichever language
+    // plugin's colour it had, and the two schemes would be visible in one line of code.
+    //
+    // **A value that will not read as a colour is refused, not treated as absent**, and the difference
+    // matters more here than anywhere else in this function: a theme whose nine were all mistyped would
+    // otherwise load as a theme that names none, which is a *valid* thing to be — so the manifest would
+    // be accepted, the window would quietly go on using each language plugin's own scheme, and nothing
+    // would ever say why. The review on `task-1776` found it. Every other refusal here exists to stop
+    // exactly that, and this is the one place where the silent outcome looks like a legitimate one.
+    let mut named: Vec<(Token, Color)> = Vec::new();
+    let mut missing: Vec<&str> = Vec::new();
+    for token in Token::ALL {
+        match at(&format!("syntax.{}", token.name())) {
+            Some(value) => match colour(value) {
+                Some(read) => named.push((token, read)),
+                None => {
+                    return Err(format!(
+                        "theme.{id}.syntax.{} is `{value}`, which is not a colour such as #FF79C6",
+                        token.name()
+                    ))
+                }
+            },
+            None => missing.push(token.name()),
+        }
+    }
+    let syntax = match (named.is_empty(), missing.is_empty()) {
+        (true, _) => None,
+        (false, true) => Some(SyntaxTheme::of(name.clone(), named)),
+        (false, false) => {
+            return Err(format!(
+                "theme.{id} colours some tokens and not others, which would leave a file in two schemes at once. It is missing {}",
+                missing.join(", ")
+            ))
+        }
+    };
+
+    // And a key under this theme that is none of the five it reads is a line that would do nothing,
+    // silently — the rule `no_orphans` already keeps for `pane.`, `tab.`, `menu.` and `settings.`. It is
+    // last so the messages above, which say what is wrong with a key that *is* recognised, come first.
+    for (leaf, _) in values.starting_with(&format!("theme.{id}.")) {
+        let known = matches!(leaf.as_str(), "name" | "dark" | "icons")
+            || leaf.strip_prefix("ui.").is_some()
+            || leaf
+                .strip_prefix("syntax.")
+                .is_some_and(|token| Token::ALL.iter().any(|known| known.name() == token));
+        if !known {
+            return Err(format!(
+                "theme.{id}.{leaf} is not a key a theme has. It reads name, dark, icons, ui.<colour> and syntax.<token>, where a token is one of {}",
+                Token::ALL.map(Token::name).join(", ")
+            ));
+        }
+    }
+
+    Ok(crate::theme::Theme {
+        key: format!("{plugin}/{id}"),
+        name,
+        plugin: plugin.to_owned(),
+        dark,
+        palette,
+        syntax,
+        icons,
     })
 }
 
@@ -960,21 +1195,27 @@ fn contributions(values: &Values, kind: Kind) -> Result<Contributions, String> {
                 .to_owned(),
         );
     }
-    if kind == Kind::Language && !found.is_empty() {
-        return Err("plugin.kind is `language` and the manifest contributes to the window, which only a `ui` plugin does"
-            .to_owned());
+    if kind != Kind::Ui && !found.is_empty() {
+        return Err(format!(
+            "plugin.kind is `{}` and the manifest contributes to the window, which only a `ui` plugin does",
+            kind.name()
+        ));
     }
-    // A language plugin that names a provider is refused too, even though it contributes nothing: it asked
-    // for code that only a `ui` plugin runs, and loading it would leave the provider unreachable.
-    if kind == Kind::Language && found.provider.is_some() {
-        return Err("plugin.kind is `language` and it names a ui.provider, which only a `ui` plugin has"
-            .to_owned());
+    // A plugin that is not a `ui` one and names a provider is refused too, even though it contributes
+    // nothing: it asked for code that only a `ui` plugin runs, and loading it would leave the provider
+    // unreachable.
+    if kind != Kind::Ui && found.provider.is_some() {
+        return Err(format!(
+            "plugin.kind is `{}` and it names a ui.provider, which only a `ui` plugin has",
+            kind.name()
+        ));
     }
     // And a plugin that draws must not carry a language's keys. A manifest naming both was read as a UI
     // plugin and its grammar, its renderer, its runner and its debugger were all silently dropped, which is
-    // the outcome every other check here exists to prevent.
-    if kind == Kind::Ui {
-        for named in [
+    // the outcome every other check here exists to prevent. A `theme` plugin is held to the same rule for
+    // the same reason, minus `theme.name`, which is a theme's own group there.
+    if kind != Kind::Language {
+        let language_only = [
             "language.extensions",
             "language.renders",
             "language.keywords",
@@ -984,11 +1225,15 @@ fn contributions(values: &Values, kind: Kind) -> Result<Contributions, String> {
             "run.file",
             "run.project",
             "debug.adapter",
-            "theme.name",
-        ] {
+        ];
+        for named in language_only.into_iter().chain(match kind {
+            Kind::Ui => Some("theme.name"),
+            _ => None,
+        }) {
             if values.text(named).map(str::trim).is_some_and(|value| !value.is_empty()) {
                 return Err(format!(
-                    "plugin.kind is `ui` and the manifest sets {named}, which only a `language` plugin has"
+                    "plugin.kind is `{}` and the manifest sets {named}, which only a `language` plugin has",
+                    kind.name()
                 ));
             }
         }
@@ -1422,6 +1667,10 @@ pub mod bundled {
             include_str!("../../plugins/html/plugin.conf"),
             Some(include_bytes!("../../plugins/html/icon.png")),
         ),
+        // The first plugin that is neither a language nor a pane: five palettes and nothing else. No icon,
+        // because it has no files to put one in front of — what it looks like is the six swatches the
+        // Theme page draws for each of its themes.
+        ("themes-bundle-1", include_str!("../../plugins/themes-bundle-1/plugin.conf"), None),
     ];
 }
 
@@ -1840,6 +2089,13 @@ language.extensions = .aa
                     assert!(plugin.theme.is_empty(), "{} names colours, which no plugin may", plugin.id);
                     assert!(plugin.extensions.is_empty(), "{} claims a file type", plugin.id);
                 }
+                // A theme plugin is the one that *does* name colours, which is the whole of what it is
+                // for. It claims no file type and contributes nothing to the window.
+                Kind::Theme => {
+                    assert!(!plugin.themes.is_empty(), "{} carries no themes", plugin.id);
+                    assert!(plugin.extensions.is_empty(), "{} claims a file type", plugin.id);
+                    assert!(plugin.contributions.is_empty(), "{} contributes to the window", plugin.id);
+                }
             }
         }
     }
@@ -1967,6 +2223,182 @@ language.extensions = .aa
             assert!(!plugin.grammar.markup, "{} is not markup", plugin.id);
             assert!(plugin.grammar.raw_text.is_empty(), "{} names no raw text elements", plugin.id);
         }
+    }
+
+    /// The same rule a seventh time, for `task-1776`. Nothing that shipped before the themes carries a
+    /// theme, so every one of them is read by exactly the code that read it before.
+    #[test]
+    fn the_older_plugins_ask_for_none_of_what_themes_added() {
+        let (plugins, problems) = Plugins::load(None);
+        assert!(problems.is_empty(), "{problems:?}");
+        for plugin in plugins.all().iter().filter(|plugin| plugin.kind != Kind::Theme) {
+            assert!(plugin.themes.is_empty(), "{} carries no theme", plugin.id);
+        }
+    }
+
+    /// `task-1776`. One plugin, five themes, in the manifest's own order rather than alphabetical.
+    #[test]
+    fn a_theme_plugin_carries_several_themes() {
+        let (plugins, problems) = Plugins::load(None);
+        assert!(problems.is_empty(), "{problems:?}");
+        let bundle = plugins.get("themes-bundle-1").expect("the themes bundle");
+        assert_eq!(bundle.kind, Kind::Theme);
+        let names: Vec<&str> = bundle.themes.iter().map(|theme| theme.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "Islands Dracula Colorful",
+                "Material Palenight",
+                "Material Deep Ocean",
+                "Monokai Pro",
+                "One Dark"
+            ],
+            "the order is the manifest's `themes` line"
+        );
+        let dracula = &bundle.themes[0];
+        assert_eq!(dracula.key, "themes-bundle-1/dracula", "named as a contributed pane is");
+        assert_eq!(dracula.palette.editor, egui::Color32::from_rgb(0x28, 0x2A, 0x36));
+        assert_eq!(dracula.palette.accent, egui::Color32::from_rgb(0xFF, 0x79, 0xC6));
+        assert_eq!(dracula.icons, crate::theme::IconSet::Material);
+        // The blue comment is what makes Dracula **Colorful** rather than plain Dracula, and it is the
+        // one number a theme called Dracula is most likely to be wrong about.
+        let scheme = dracula.syntax.as_ref().expect("it colours the tokens");
+        assert_eq!(scheme.colour(Token::Comment), Some(Color::rgb(0x98, 0xAF, 0xFF)));
+        assert_eq!(scheme.colour(Token::Keyword), Some(Color::rgb(0xFF, 0x79, 0xC6)));
+        // And One Dark keeps the marks Quill shipped with, so the bundle has one of each.
+        assert_eq!(bundle.themes[4].icons, crate::theme::IconSet::Classic);
+    }
+
+    /// A role a theme does not name keeps Quill Dark's, which is IntelliJ's `parentTheme` in one line.
+    #[test]
+    fn a_theme_inherits_every_colour_it_does_not_name() {
+        let manifest = "plugin.id = t\nplugin.kind = theme\nthemes = one\ntheme.one.name = One\ntheme.one.ui.accent = #FF0000\n";
+        let plugin = parse(&Values::parse(manifest), false).expect("it parses");
+        let theme = &plugin.themes[0];
+        assert_eq!(theme.palette.accent, egui::Color32::RED, "the one it named");
+        assert_eq!(
+            theme.palette.editor,
+            crate::theme::Palette::QUILL_DARK.editor,
+            "and every other is Quill's own"
+        );
+        assert!(theme.syntax.is_none(), "naming no token colours leaves the plugins alone");
+        assert_eq!(theme.icons, crate::theme::IconSet::Material, "and the marks a window comes up in");
+    }
+
+    /// Every refusal names what was asked for and what this version has, which is the rule
+    /// `plugin.kind`, `language.renders`, `ui.provider` and `ui.chrome` all keep.
+    #[test]
+    fn a_theme_manifest_is_refused_rather_than_half_loaded() {
+        let refused = |manifest: &str| {
+            parse(&Values::parse(manifest), false).expect_err("it should be refused")
+        };
+        let base = "plugin.id = t\nplugin.kind = theme\nthemes = one\ntheme.one.name = One\n";
+
+        let problem = refused(&format!("{base}theme.one.ui.editor_background = #FF0000\n"));
+        assert!(problem.contains("editor_background"), "{problem}");
+        assert!(problem.contains("explorer_footer"), "and it lists what Quill has: {problem}");
+
+        let problem = refused(&format!("{base}theme.one.dark = false\n"));
+        assert!(problem.contains("dark themes only"), "{problem}");
+
+        let problem = refused(&format!("{base}theme.one.icons = atom\n"));
+        assert!(problem.contains("material, classic"), "{problem}");
+
+        // Eight of the nine would leave one line of code drawn in two schemes at once.
+        let problem = refused(&format!("{base}theme.one.syntax.keyword = #FF0000\n"));
+        assert!(problem.contains("missing"), "{problem}");
+        assert!(problem.contains("comment"), "and it says which: {problem}");
+
+        let problem = refused(&format!("{base}theme.one.ui.accent = magenta\n"));
+        assert!(problem.contains("not a colour"), "{problem}");
+
+        // **The one whose silent outcome looks legitimate**, which is why the review found it and the
+        // eight-of-nine check above did not: a theme that names no token colours is a valid theme, so a
+        // theme whose nine were all mistyped would have loaded as one and gone on using each language
+        // plugin's own scheme with nothing said.
+        let mut all_nine_mistyped = base.to_owned();
+        for token in Token::ALL {
+            all_nine_mistyped.push_str(&format!("theme.one.syntax.{} = #GGGGGG\n", token.name()));
+        }
+        let problem = refused(&all_nine_mistyped);
+        assert!(problem.contains("not a colour"), "{problem}");
+        assert!(problem.contains("syntax."), "and it says which key: {problem}");
+
+        // A key under a theme that is none of the five it reads.
+        let problem = refused(&format!("{base}theme.one.colour.editor = #FF0000\n"));
+        assert!(problem.contains("not a key a theme has"), "{problem}");
+        let problem = refused(&format!("{base}theme.one.syntax.keywrd = #FF0000\n"));
+        assert!(problem.contains("keywrd"), "{problem}");
+        assert!(problem.contains("keyword"), "and it lists the tokens: {problem}");
+
+        // A group nothing lists is a block of colours that would never be read.
+        let problem = refused(&format!("{base}theme.two.name = Two\n"));
+        assert!(problem.contains("themes line"), "{problem}");
+
+        let problem = refused("plugin.id = t\nplugin.kind = theme\n");
+        assert!(problem.contains("themes is empty"), "{problem}");
+
+        // And a theme plugin is held to the same rule a `ui` one is about a language's keys.
+        let problem = refused(&format!("{base}language.extensions = .foo\n"));
+        assert!(problem.contains("language.extensions"), "{problem}");
+    }
+
+    /// A theme's palette is the whole list, so a role added to `theme::Palette` later is a role the
+    /// bundle can set without anything here being taught its name.
+    #[test]
+    fn every_role_the_palette_has_can_be_named_in_a_manifest() {
+        let mut manifest =
+            "plugin.id = t\nplugin.kind = theme\nthemes = one\ntheme.one.name = One\n".to_owned();
+        for role in crate::theme::Palette::NAMES {
+            manifest.push_str(&format!("theme.one.ui.{role} = #123456\n"));
+        }
+        let plugin = parse(&Values::parse(&manifest), false).expect("every name is a role");
+        assert_eq!(plugin.themes[0].palette.editor, egui::Color32::from_rgb(0x12, 0x34, 0x56));
+        assert_eq!(plugin.themes[0].palette.folder_open, egui::Color32::from_rgb(0x12, 0x34, 0x56));
+    }
+
+    /// Switching the plugin off withdraws its themes, which is `Plugins::renders`' rule for colour.
+    #[test]
+    fn switching_a_theme_plugin_off_withdraws_its_themes() {
+        let (mut plugins, _) = Plugins::load(None);
+        assert!(plugins.theme("Monokai Pro").is_some(), "it is there to begin with");
+        assert_eq!(plugins.themes().len(), 6, "Quill's own, then the bundle's five");
+        plugins.set_enabled(None, "themes-bundle-1", false);
+        assert!(plugins.theme("Monokai Pro").is_none(), "and gone when the plugin is off");
+        assert_eq!(plugins.themes().len(), 1, "leaving only Quill's own");
+    }
+
+    /// The registry a manifest is checked against and the enum that draws are one list.
+    ///
+    /// Two lists of the same thing is how a manifest comes to be refused for naming a set that exists, or
+    /// accepted for naming one that does not. The registry is a `&[&str]` because every other one here is,
+    /// and this is what keeps it honest.
+    #[test]
+    fn the_icon_set_registry_and_the_enum_are_one_list() {
+        let drawn: Vec<&str> =
+            crate::theme::IconSet::ALL.into_iter().map(crate::theme::IconSet::name).collect();
+        assert_eq!(drawn, ICON_SETS, "the names a manifest may use are the sets that are drawn");
+        for name in ICON_SETS {
+            assert!(crate::theme::IconSet::parse(name).is_some(), "{name} is drawn");
+        }
+    }
+
+    /// A theme is found by its key or by the name that is on the screen, which is `split_off_a_name`'s
+    /// rule: a thing is named on the command line by what a person reads.
+    #[test]
+    fn a_theme_is_found_by_its_key_or_by_its_name() {
+        let (plugins, _) = Plugins::load(None);
+        assert_eq!(
+            plugins.theme("themes-bundle-1/deep-ocean").map(|theme| theme.name),
+            Some("Material Deep Ocean".to_owned())
+        );
+        assert_eq!(
+            plugins.theme("material deep ocean").map(|theme| theme.key),
+            Some("themes-bundle-1/deep-ocean".to_owned()),
+            "and by name, whatever the case"
+        );
+        assert_eq!(plugins.theme("quill/dark").map(|theme| theme.name), Some("Quill Dark".to_owned()));
+        assert!(plugins.theme("solarized").is_none());
     }
 
     /// `task-1694`. The two keys are opt-in, and this is what proves they reach the grammar at all

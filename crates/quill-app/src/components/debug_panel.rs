@@ -178,7 +178,7 @@ pub fn show(
 ) -> DebugOutcome {
     let mut outcome = DebugOutcome::default();
     let painter = ui.painter_at(area);
-    painter.rect_filled(area, CornerRadius::ZERO, crate::theme::faded(color::TOOLBAR, opacity));
+    painter.rect_filled(area, CornerRadius::ZERO, crate::theme::faded(color::toolbar(), opacity));
 
     let header = Rect::from_min_size(
         Pos2::new(area.left(), area.top() + 1.0),
@@ -235,11 +235,11 @@ fn show_header(
     outcome.grab = crate::components::dock::handle(ui, area, crate::app::dock::Panel::Debug);
     let painter = ui.painter_at(area);
     let heading =
-        painter.layout_no_wrap("Debug".to_owned(), egui::FontId::proportional(12.0), color::TEXT_DIM);
+        painter.layout_no_wrap("Debug".to_owned(), egui::FontId::proportional(12.0), color::text_dim());
     painter.galley(
         Pos2::new(area.left() + 16.0, area.center().y - heading.size().y / 2.0),
         heading.clone(),
-        color::TEXT_DIM,
+        color::text_dim(),
     );
 
     let mut right = area.right() - 22.0;
@@ -328,8 +328,8 @@ fn show_header(
     if let Some(debug) = debug {
         let said = debug.where_it_is();
         let tint = match debug.is_paused() {
-            true => color::TEXT_CONTROL,
-            false => color::TEXT_DIM,
+            true => color::text_control(),
+            false => color::text_dim(),
         };
         let label =
             ui.painter().layout_no_wrap(said, egui::FontId::proportional(11.5), tint);
@@ -354,8 +354,8 @@ fn show_frames(ui: &mut egui::Ui, area: Rect, debug: &DebugState, outcome: &mut 
             .find(|thread| Some(thread.id) == debug.frames.first().map(|_| thread.id))
             .map(|thread| thread.name.clone())
             .unwrap_or_else(|| format!("{} threads", debug.threads.len()));
-        let label = painter.layout_no_wrap(name, egui::FontId::proportional(11.0), color::TEXT_DIM);
-        painter.galley(Pos2::new(area.left() + 16.0, top + 3.0), label, color::TEXT_DIM);
+        let label = painter.layout_no_wrap(name, egui::FontId::proportional(11.0), color::text_dim());
+        painter.galley(Pos2::new(area.left() + 16.0, top + 3.0), label, color::text_dim());
         top += 22.0;
     }
     if debug.frames.is_empty() {
@@ -376,22 +376,22 @@ fn show_frames(ui: &mut egui::Ui, area: Rect, debug: &DebugState, outcome: &mut 
                 ui.painter().rect_filled(
                     rect.shrink2(Vec2::new(6.0, 2.0)),
                     CornerRadius::same(size::CONTROL_CORNER),
-                    color::SELECTED_ROW,
+                    color::selected_row(),
                 );
             } else if response.hovered() {
                 ui.painter().rect_filled(
                     rect.shrink2(Vec2::new(6.0, 2.0)),
                     CornerRadius::same(size::CONTROL_CORNER),
-                    color::CONTROL,
+                    color::control(),
                 );
             }
             // A frame the adapter marked `subtle` — library internals — is drawn in the quiet
             // colour and **listed rather than hidden**, which is the comments-and-strings rule from
             // the references list.
             let tint = match (selected, frame.subtle) {
-                (true, _) => color::TEXT_STRONG,
-                (false, true) => color::TEXT_FAINT,
-                (false, false) => color::TEXT,
+                (true, _) => color::text_strong(),
+                (false, true) => color::text_faint(),
+                (false, false) => color::text(),
             };
             let name = ui.painter().layout_no_wrap(
                 frame.name.clone(),
@@ -409,7 +409,7 @@ fn show_frames(ui: &mut egui::Ui, area: Rect, debug: &DebugState, outcome: &mut 
                 let label = ui.painter().layout_no_wrap(
                     where_it_is,
                     egui::FontId::proportional(10.5),
-                    color::TEXT_FAINT,
+                    color::text_faint(),
                 );
                 ui.painter().galley(
                     Pos2::new(
@@ -417,7 +417,7 @@ fn show_frames(ui: &mut egui::Ui, area: Rect, debug: &DebugState, outcome: &mut 
                         rect.center().y - label.size().y / 2.0,
                     ),
                     label,
-                    color::TEXT_FAINT,
+                    color::text_faint(),
                 );
             }
             let accessible = format!("Frame: {}", frame.name);
@@ -490,20 +490,20 @@ fn show_watch(ui: &mut egui::Ui, row: Rect, watch: &Watch, outcome: &mut DebugOu
     let name = ui.painter().layout_no_wrap(
         watch.expression.clone(),
         egui::FontId::monospace(11.5),
-        color::TEXT,
+        color::text(),
     );
     let width = name.size().x;
     ui.painter().galley(
         Pos2::new(row.left() + 16.0, row.center().y - name.size().y / 2.0),
         name,
-        color::TEXT,
+        color::text(),
     );
     // The debugger's own answer, in its own words. A refusal is shown as it was written, because a
     // debugger explains a bad expression better than Quill could.
     let (said, tint) = match &watch.result {
-        Some(Ok(value)) => (elide(&value.value), color::TEXT_CONTROL),
-        Some(Err(problem)) => (elide(problem), color::CLOSE),
-        None => ("\u{2014}".to_owned(), color::TEXT_FAINT),
+        Some(Ok(value)) => (elide(&value.value), color::text_control()),
+        Some(Err(problem)) => (elide(problem), color::close()),
+        None => ("\u{2014}".to_owned(), color::text_faint()),
     };
     let value = ui.painter().layout_no_wrap(said, egui::FontId::monospace(11.5), tint);
     ui.painter().galley(
@@ -569,7 +569,7 @@ pub fn show_row(
         ui.painter().rect_filled(
             rect.shrink2(Vec2::new(6.0, 2.0)),
             CornerRadius::same(size::CONTROL_CORNER),
-            color::CONTROL,
+            color::control(),
         );
     }
     let left = rect.left() + 12.0 + row.depth as f32 * INDENT;
@@ -578,13 +578,13 @@ pub fn show_row(
             ui.painter(),
             Pos2::new(left + 6.0, rect.center().y),
             row.expanded,
-            color::TEXT_CONTROL,
+            color::text_control(),
         );
     }
     let mut pen = left + 16.0;
     let name_tint = match row.is_scope {
-        true => color::TEXT_DIM,
-        false => color::TEXT,
+        true => color::text_dim(),
+        false => color::text(),
     };
     let name = ui.painter().layout_no_wrap(
         row.name.clone(),
@@ -601,12 +601,12 @@ pub fn show_row(
         let label = ui.painter().layout_no_wrap(
             format!("{kind}"),
             egui::FontId::monospace(10.5),
-            color::TEXT_FAINT,
+            color::text_faint(),
         );
         ui.painter().galley(
             Pos2::new(pen, rect.center().y - label.size().y / 2.0),
             label.clone(),
-            color::TEXT_FAINT,
+            color::text_faint(),
         );
         pen += label.size().x + 10.0;
     }
@@ -622,8 +622,8 @@ pub fn show_row(
             ui.painter().rect(
                 field,
                 CornerRadius::same(size::CONTROL_CORNER),
-                color::FIELD,
-                Stroke::new(1.0, color::ACCENT),
+                color::field(),
+                Stroke::new(1.0, color::accent()),
                 egui::StrokeKind::Inside,
             );
             let inner = controls::field_text_rect(ui, field, 8.0);
@@ -632,7 +632,7 @@ pub fn show_row(
                 egui::TextEdit::singleline(typed)
                     .frame(egui::Frame::NONE)
                     .desired_width(inner.width())
-                    .text_color(color::TEXT_CONTROL)
+                    .text_color(color::text_control())
                     .font(egui::FontId::monospace(11.5)),
             );
             editor.request_focus();
@@ -654,8 +654,8 @@ pub fn show_row(
         // A row whose value changed at this stop is tinted, which is IntelliJ's change-marking and
         // is what stepping is for.
         let tint = match row.changed {
-            true => color::VALUE_CHANGED,
-            false => color::TEXT_CONTROL,
+            true => color::value_changed(),
+            false => color::text_control(),
         };
         let value = ui.painter().layout_no_wrap(
             elide(&row.value),
@@ -707,7 +707,7 @@ fn show_idle(ui: &mut egui::Ui, area: Rect, idle: &Idle, outcome: &mut DebugOutc
     let text = ui.painter_at(area).layout(
         missing.sentence.clone(),
         egui::FontId::proportional(12.0),
-        color::TEXT_FAINT,
+        color::text_faint(),
         (area.width() - 64.0).max(120.0),
     );
     let has_a_command = !missing.install.is_empty();
@@ -717,7 +717,7 @@ fn show_idle(ui: &mut egui::Ui, area: Rect, idle: &Idle, outcome: &mut DebugOutc
     };
     let size = text.size();
     let top = area.center().y - (size.y + buttons) / 2.0;
-    ui.painter_at(area).galley(Pos2::new(area.center().x - size.x / 2.0, top), text, color::TEXT_FAINT);
+    ui.painter_at(area).galley(Pos2::new(area.center().x - size.x / 2.0, top), text, color::text_faint());
     if !has_a_command {
         return;
     }
@@ -742,7 +742,7 @@ fn empty(ui: &egui::Ui, area: Rect, message: &str) {
     let label = painter.layout(
         message.to_owned(),
         egui::FontId::proportional(12.0),
-        color::TEXT_FAINT,
+        color::text_faint(),
         (area.width() - 48.0).max(60.0),
     );
     painter.galley(
@@ -751,7 +751,7 @@ fn empty(ui: &egui::Ui, area: Rect, message: &str) {
             area.center().y - label.size().y / 2.0,
         ),
         label,
-        color::TEXT_FAINT,
+        color::text_faint(),
     );
 }
 
@@ -773,7 +773,7 @@ fn dimmable(
     let response =
         ui.interact(area, ui.id().with(("debug-button", name)), sense).on_hover_text(name);
     if response.hovered() && enabled {
-        ui.painter().rect_filled(area, CornerRadius::same(4), color::CONTROL);
+        ui.painter().rect_filled(area, CornerRadius::same(4), color::control());
     }
     draw(ui.painter(), area.center());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, name));
@@ -783,8 +783,8 @@ fn dimmable(
 /// The colour a header button is drawn in, which says whether it can be pressed.
 fn tint(enabled: bool) -> egui::Color32 {
     match enabled {
-        true => color::TEXT_DIM,
-        false => color::TEXT_FAINT.gamma_multiply(0.6),
+        true => color::text_dim(),
+        false => color::text_faint().gamma_multiply(0.6),
     }
 }
 
