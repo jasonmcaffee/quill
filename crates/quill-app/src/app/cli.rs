@@ -6461,18 +6461,22 @@ impl QuillApp {
                 let Some(theme) = self.plugins.theme(&wanted) else {
                     return self.no_such_theme(request, &wanted);
                 };
+                // Every refusal happens before anything is changed, so a command line with a good theme
+                // and a bad accent in it leaves the window exactly as it was rather than half applied.
+                // That is the rule `unknown_argument_refusal` keeps for the whole command surface.
+                let mut settings = self.settings.clone();
                 // Quill's own is remembered as an empty setting rather than as its key, so a settings file
                 // that has never chosen a theme goes on saying nothing — `terminal.shell`'s rule.
-                self.settings.theme = match theme.key == crate::theme::Theme::quill_dark().key {
+                settings.theme = match theme.key == crate::theme::Theme::quill_dark().key {
                     true => String::new(),
                     false => theme.key.clone(),
                 };
                 if let Some(accent) = request.text("accent") {
                     let accent = accent.trim();
                     if accent.eq_ignore_ascii_case("none") {
-                        self.settings.accent = String::new();
+                        settings.accent = String::new();
                     } else if crate::services::plugins::colour(accent).is_some() {
-                        self.settings.accent = accent.to_uppercase();
+                        settings.accent = accent.to_uppercase();
                     } else {
                         return no(
                             request,
@@ -6484,9 +6488,9 @@ impl QuillApp {
                 if let Some(icons) = request.text("icons") {
                     let icons = icons.trim();
                     if icons.eq_ignore_ascii_case("follow") {
-                        self.settings.icons = String::new();
+                        settings.icons = String::new();
                     } else if let Some(set) = crate::theme::IconSet::parse(icons) {
-                        self.settings.icons = set.name().to_owned();
+                        settings.icons = set.name().to_owned();
                     } else {
                         return no(
                             request,
@@ -6498,11 +6502,10 @@ impl QuillApp {
                         );
                     }
                 }
-                // Down the window's own way in, so a theme chosen from the command line and one chosen in
-                // Settings are the same change — and the file is written, which is what makes it survive.
-                self.apply_the_theme();
-                self.unsaved_settings = true;
-                self.write_settings();
+                // Down the window's own way in, so a theme chosen from the command line, one chosen in
+                // Settings and one set through `settings set` are the same change — and the file is
+                // written on the same terms as every other setting.
+                self.set_settings(settings);
                 ok(
                     request,
                     format!("The window is painted in {}", theme.name),

@@ -7205,7 +7205,12 @@ impl QuillApp {
         self.apply_the_theme();
         // The interface's own family is bound into egui rather than read at drawing time, so it is
         // installed again when it moves — and only then, because `set_fonts` throws away the glyph atlas.
-        if self.settings.ui_font_family != before.ui_font_family {
+        // The editor's family counts as a move, because an empty `ui_font_family` means "the editor's":
+        // without this, changing the editor's font would leave the menus in the family it had before.
+        if self.settings.ui_font_family != before.ui_font_family
+            || (self.settings.ui_font_family.trim().is_empty()
+                && self.settings.font_family != before.font_family)
+        {
             self.install_the_interface_font();
         }
         // The MCP endpoint follows its three settings. It is asked on every settings change rather
@@ -7255,6 +7260,25 @@ impl QuillApp {
         }
         self.interface_scale = self.settings.interface_scale();
         theme::activate(wanted);
+        // **Everything that holds a colour it has already worked out is thrown away**, and only here,
+        // because this is the one point at which the answer to "what colour is that" changed.
+        //
+        // `colour_the_file` is asked once a *revision* rather than once a frame, a preview is laid out
+        // with its colours baked into the glyphs, and a Mermaid scene is built through
+        // `mermaid_scene::theme`, which reads the palette. Without this, choosing a theme repainted the
+        // window's furniture and left every open document, every preview and every diagram in the
+        // colours they were built in until they were typed in — which the review on `task-1776` found.
+        //
+        // Every open file rather than the one showing, which is the rule `set_plugin_enabled` already
+        // keeps for exactly these caches: a theme is a setting for the window, and with panes there is
+        // more than one file being drawn.
+        for file in self.files.iter_mut() {
+            file.coloured_revision = None;
+            file.cached.preview = None;
+            file.cached.preview_diagrams.clear();
+            file.cached.stale = true;
+        }
+        self.mermaid_scenes.forget();
         if let Some(context) = &self.context {
             theme::apply_scaled(context, self.interface_scale);
             context.request_repaint();

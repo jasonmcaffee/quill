@@ -572,11 +572,17 @@ pub fn apply_scaled(ctx: &egui::Context, interface_scale: f32) {
         style.spacing.button_padding = Vec2::new(8.0, 4.0);
         style.spacing.menu_margin = egui::Margin::same(6);
 
-        // The interface's own font size, which is IntelliJ's Appearance -> Use custom font. Left alone at
-        // one, so a Quill that names no size in its settings file is drawn exactly as it always was.
-        if (scale - 1.0).abs() > 0.001 {
-            for (_, font) in style.text_styles.iter_mut() {
-                font.size = (font.size * scale).round();
+        // The interface's own font size, which is IntelliJ's Appearance -> Use custom font.
+        //
+        // **Set from egui's own defaults rather than multiplied in place**, because this function is
+        // called again every time the theme changes: scaling what is already there would compound, so
+        // choosing 16 points twice would land on 20. Reading the defaults each time makes it absolute,
+        // and at a scale of one it writes back exactly what egui had, so a Quill that names no size in
+        // its settings file is drawn exactly as it always was.
+        let defaults = egui::Style::default();
+        for (kind, font) in style.text_styles.iter_mut() {
+            if let Some(default) = defaults.text_styles.get(kind) {
+                font.size = (default.size * scale).round();
             }
         }
     });
@@ -740,6 +746,29 @@ mod tests {
         .expect("the other thread finished");
         assert_eq!(elsewhere, Color32::from_rgb(0x0F, 0x11, 0x1A), "it got its own");
         assert_eq!(color::editor(), Color32::from_rgb(0x1A, 0x1F, 0x26), "and this one is untouched");
+    }
+
+    /// The interface size is set from egui's defaults rather than multiplied into what is there.
+    ///
+    /// `apply_scaled` runs again on every theme change, so a scale applied in place would compound:
+    /// choosing sixteen points and then choosing a theme would land on twenty.
+    #[test]
+    fn the_interface_size_is_absolute_rather_than_compounding() {
+        let context = egui::Context::default();
+        let size_of = |context: &egui::Context| {
+            context.style_of(egui::Theme::Dark).text_styles.get(&egui::TextStyle::Body).map(|font| font.size)
+        };
+        apply(&context);
+        let plain = size_of(&context).expect("egui has a body style");
+
+        apply_scaled(&context, 1.6);
+        let once = size_of(&context).expect("still there");
+        assert!(once > plain, "asking for a larger interface makes it larger");
+        apply_scaled(&context, 1.6);
+        assert_eq!(size_of(&context), Some(once), "and asking twice is asking once");
+
+        apply_scaled(&context, 1.0);
+        assert_eq!(size_of(&context), Some(plain), "and one is exactly what egui had");
     }
 
     #[test]

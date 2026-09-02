@@ -651,9 +651,12 @@ accepts a new one after somebody has opened the image and looked at it.
 **The Settings window is one size for every page, and the tallest page is what it has to hold.** It
 grew from 560 to 640 points when `task-1679` added the MCP page, because a dialog that changed height
 as its list was walked would jump under the pointer, and because a settings page here does not scroll.
-The other four gained empty space, which is the cheaper of the two costs. If a page ever needs more
-than 640, that is the point at which a scrolling page area is worth building rather than another
-eighty points.
+It grew to 680 when `task-1776` added an Interface section to Appearance, which took Appearance past
+MCP as the tallest and left its last line of explanation thirteen points off the bottom edge — **a page
+that fits exactly is a page where the next line added to it is drawn off the bottom and nobody
+notices**, so the number holds the tallest page with room rather than to the point. The other pages
+gain empty space, which is the cheaper of the two costs. If a page ever needs more than 680, that is
+the point at which a scrolling page area is worth building rather than another forty points.
 
 `components::modal` is the furniture every modal is made of: the frame, the header, the body
 rectangle, the footer, the buttons, the rows, a field and a tick box. The Settings window, the commit

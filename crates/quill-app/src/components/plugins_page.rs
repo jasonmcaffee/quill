@@ -308,11 +308,20 @@ fn detail(
                 let extensions: Vec<String> =
                     plugin.extensions.iter().map(|extension| format!(".{extension}")).collect();
                 note(ui, format!("Claims {}", extensions.join(", ")));
+                // The scheme that is actually colouring this language's files, which since `task-1776`
+                // is the theme's when the theme names the nine tokens. Naming the plugin's own here
+                // while a theme was overriding it would be a small wrongness a reader notices at once,
+                // and it is the same rule the `match` above this one keeps about a plugin's kind.
+                let scheme = crate::services::plugins::scheme_of(plugin);
+                let from = match crate::theme::syntax().is_some() {
+                    true => " \u{2014} from the theme, which colours every language at once",
+                    false => "",
+                };
                 note(
                     ui,
                     format!(
-                        "Colour scheme: {}. A scheme colours the tokens and not the editing area, so the window still lets the desktop through.",
-                        plugin.theme.name
+                        "Colour scheme: {}{from}. A scheme colours the tokens and not the editing area, so the window still lets the desktop through.",
+                        scheme.name
                     ),
                 );
             }

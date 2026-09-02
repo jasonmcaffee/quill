@@ -2296,6 +2296,21 @@ language.extensions = .aa
         assert_eq!(plugins.themes().len(), 1, "leaving only Quill's own");
     }
 
+    /// The registry a manifest is checked against and the enum that draws are one list.
+    ///
+    /// Two lists of the same thing is how a manifest comes to be refused for naming a set that exists, or
+    /// accepted for naming one that does not. The registry is a `&[&str]` because every other one here is,
+    /// and this is what keeps it honest.
+    #[test]
+    fn the_icon_set_registry_and_the_enum_are_one_list() {
+        let drawn: Vec<&str> =
+            crate::theme::IconSet::ALL.into_iter().map(crate::theme::IconSet::name).collect();
+        assert_eq!(drawn, ICON_SETS, "the names a manifest may use are the sets that are drawn");
+        for name in ICON_SETS {
+            assert!(crate::theme::IconSet::parse(name).is_some(), "{name} is drawn");
+        }
+    }
+
     /// A theme is found by its key or by the name that is on the screen, which is `split_off_a_name`'s
     /// rule: a thing is named on the command line by what a person reads.
     #[test]

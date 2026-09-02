@@ -4613,6 +4613,20 @@ fn a_theme_repaints_the_window_and_recolours_the_code() {
     let before = harness.state().settings.theme.clone();
     assert!(before.is_empty(), "a window that has chosen nothing says nothing");
 
+    // The file is coloured before the theme is chosen, in the Rust plugin's own Dracula.
+    let keyword_at = harness
+        .state()
+        .document()
+        .text()
+        .to_string()
+        .find("fn ")
+        .expect("the sample program starts with a function");
+    assert_eq!(
+        harness.state().document().chars().style_at(keyword_at).color,
+        quill_core::Color::rgb(0xFF, 0x79, 0xC6),
+        "Dracula's pink, from the Rust plugin's own scheme"
+    );
+
     let reply = run(&mut harness, "theme set \"Monokai Pro\"");
     assert!(reply.ok, "{}", reply.message);
     harness.run();
@@ -4622,11 +4636,13 @@ fn a_theme_repaints_the_window_and_recolours_the_code() {
         egui::Color32::from_rgb(0x2D, 0x2A, 0x2E),
         "the palette followed"
     );
+    // **The document itself, not the theme value.** A theme that changed the scheme but left every open
+    // file coloured in the one before it is what the review on `task-1776` found, and asserting on
+    // `theme::active().syntax` would not have caught it: `colour_the_file` is asked once a revision.
     assert_eq!(
-        quill_app::theme::active().syntax.as_ref().and_then(|scheme| scheme
-            .colour(quill_core::Token::Keyword)),
-        Some(quill_core::Color::rgb(0xFF, 0x61, 0x88)),
-        "and so did the colour scheme, for every language at once"
+        harness.state().document().chars().style_at(keyword_at).color,
+        quill_core::Color::rgb(0xFF, 0x61, 0x88),
+        "and the file that was already open was coloured again in Monokai's"
     );
     harness.snapshot(shot("themed_window"));
 }

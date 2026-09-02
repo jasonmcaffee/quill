@@ -24,14 +24,16 @@ use crate::theme::{color, icon, size};
 
 /// How large the window is, before it is shrunk to fit a small Quill window.
 ///
-/// It grew by eighty points when `task-1679` added the MCP page, which is the tallest of the five:
-/// two rows of buttons, three controls and a block of configuration to be read and copied. The
-/// window is one size for every page — a dialog that changed height as its list was walked would
-/// jump under the pointer — so the tallest page is what it has to hold. The other four gain empty
-/// space at the bottom, which is the cheaper of the two costs, and `modal::fit` still shrinks the
-/// whole thing to whatever room a small Quill window has.
+/// It grew by eighty points when `task-1679` added the MCP page, and by forty more when `task-1776`
+/// added an Interface section to Appearance — which took Appearance past MCP as the tallest page, and
+/// left its last line of explanation thirteen points off the bottom edge. The window is one size for
+/// every page — a dialog that changed height as its list was walked would jump under the pointer — so
+/// the tallest page is what it has to hold, and it holds it with room rather than exactly. A page that
+/// fits exactly is a page where the next line of explanation is drawn off the bottom and nobody
+/// notices. The other pages gain empty space, which is the cheaper of the two costs, and `modal::fit`
+/// still shrinks the whole thing to whatever room a small Quill window has.
 const WIDTH: f32 = 900.0;
-const HEIGHT: f32 = 640.0;
+const HEIGHT: f32 = 680.0;
 /// How wide the list of pages is.
 const LIST_WIDTH: f32 = 258.0;
 const HEADER: f32 = 46.0;
