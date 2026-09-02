@@ -37,6 +37,15 @@ type HmacSha256 = Hmac<Sha256>;
 /// binding this cannot compute.
 pub const MECHANISM: &str = "SCRAM-SHA-256";
 
+/// The fewest rounds of PBKDF2 Quill will derive a password with.
+///
+/// RFC 7677's own recommended minimum, and PostgreSQL's default for `scram_iterations`. A server
+/// asking for fewer is refused by name rather than obeyed: see [`Exchange::respond`].
+pub const LEAST_ROUNDS: u32 = 4096;
+
+/// The most, so that a server cannot ask for work that would never finish.
+pub const MOST_ROUNDS: u32 = 10_000_000;
+
 /// A SCRAM exchange in progress.
 #[derive(Debug)]
 pub struct Exchange {
@@ -85,17 +94,34 @@ impl Exchange {
     /// The server's first message in, the client's final message out.
     pub fn respond(&mut self, server_first: &str) -> Answer<String> {
         let (nonce, salt, iterations) = read_server_first(server_first)?;
-        // The server's nonce has to begin with the one that was sent. Without this check a server —
-        // or something between — could replay another exchange's challenge.
-        if !nonce.starts_with(&self.client_nonce) {
+        // The server's nonce has to begin with the one that was sent **and be longer than it**. The
+        // first half stops a challenge from another exchange being replayed at this one; the second
+        // is what RFC 5802 actually requires, since the combined nonce is the client's with the
+        // server's own appended — and a server that echoed the client's nonce back unchanged would
+        // be contributing no freshness at all, which is the property the nonce exists for.
+        if !nonce.starts_with(&self.client_nonce) || nonce.len() <= self.client_nonce.len() {
             return Err(Failure::said(
-                "the server's SCRAM nonce does not begin with the one Quill sent, so this is not an \
-                 answer to this exchange.",
+                "the server's SCRAM nonce is not the one Quill sent with the server's own added to \
+                 it, so this is not a fresh answer to this exchange.",
             ));
         }
-        if iterations == 0 || iterations > 10_000_000 {
+        if iterations < LEAST_ROUNDS {
+            // **A floor as well as a ceiling.** The ceiling stops a server asking for work that would
+            // never finish; the floor stops one asking for work that is not worth doing. At `i=1` the
+            // proof is derived with essentially no hardening, so an exchange somebody recorded is
+            // cheap to attack afterwards — and a server can ask for that either because it was
+            // misconfigured or because it is not the server it claims to be. 4096 is SCRAM-SHA-256's
+            // own recommended minimum and PostgreSQL's own default.
             return Err(Failure::said(format!(
-                "the server asked for {iterations} rounds of PBKDF2, which is not a number Quill will work through."
+                "the server asked for {iterations} rounds of PBKDF2, and Quill will not derive a \
+                 password with fewer than {LEAST_ROUNDS} — which is what SCRAM-SHA-256 recommends \
+                 and what PostgreSQL uses unless somebody has lowered `scram_iterations`."
+            )));
+        }
+        if iterations > MOST_ROUNDS {
+            return Err(Failure::said(format!(
+                "the server asked for {iterations} rounds of PBKDF2, which is past the {MOST_ROUNDS} \
+                 Quill will work through."
             )));
         }
         let salted = pbkdf2_sha256(self.password.as_bytes(), &salt, iterations);
@@ -282,7 +308,7 @@ mod tests {
         let refused = exchange
             .respond("r=bbbbbbbbcccc,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096")
             .expect_err("refused");
-        assert!(refused.message.contains("does not begin with"), "{refused}");
+        assert!(refused.message.contains("is not the one Quill sent"), "{refused}");
     }
 
     #[test]
@@ -291,7 +317,30 @@ mod tests {
         let refused = exchange
             .respond("r=aaaabbbb,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4000000000")
             .expect_err("refused");
-        assert!(refused.message.contains("rounds of PBKDF2"), "{refused}");
+        assert!(refused.message.contains("past the"), "{refused}");
+    }
+
+    #[test]
+    fn too_few_rounds_is_refused_too_because_that_is_a_password_derived_with_no_hardening() {
+        // A server can ask for `i=1` because it was misconfigured or because it is not the server it
+        // claims to be, and in both cases the proof it gets is cheap to attack afterwards.
+        let mut exchange = Exchange::with_nonce("pencil", "", "aaaa").expect("an exchange");
+        let refused =
+            exchange.respond("r=aaaabbbb,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=1").expect_err("refused");
+        assert!(refused.message.contains("fewer than 4096"), "{refused}");
+        // And the recommended minimum itself is accepted, which is what every ordinary server sends.
+        assert!(exchange.respond("r=aaaabbbb,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096").is_ok());
+    }
+
+    #[test]
+    fn a_server_nonce_that_is_only_the_clients_own_is_refused() {
+        // RFC 5802's combined nonce is the client's with the server's appended. One that is exactly
+        // the client's contributes no freshness at all, and `starts_with` alone would accept it.
+        let mut exchange = Exchange::with_nonce("pencil", "", "aaaabbbb").expect("an exchange");
+        let refused = exchange
+            .respond("r=aaaabbbb,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096")
+            .expect_err("refused");
+        assert!(refused.message.contains("with the server's own added"), "{refused}");
     }
 
     #[test]

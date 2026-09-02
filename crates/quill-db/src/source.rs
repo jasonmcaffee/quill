@@ -79,7 +79,12 @@ impl SslMode {
 }
 
 /// Where a password is, which is all that is ever written down.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+///
+/// **`Debug` is written by hand and redacts the one variant that holds a value.** Nothing in Quill
+/// formats a `Secret` or a `Source` with `{:?}` today, and a derived `Debug` would still print
+/// `Typed("hunter2")` the first time somebody added a `dbg!` while chasing something else. A type
+/// whose whole invariant is "never answers the password back" should not be able to.
+#[derive(Clone, PartialEq, Eq, Default)]
 pub enum Secret {
     /// There is none: trust authentication, or a SQLite file.
     #[default]
@@ -93,6 +98,17 @@ pub enum Secret {
     Keychain(String),
     /// Typed into the dialog, held in this process and written nowhere.
     Typed(String),
+}
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Secret::None => write!(out, "None"),
+            Secret::Environment(name) => write!(out, "Environment({name:?})"),
+            Secret::Keychain(name) => write!(out, "Keychain({name:?})"),
+            Secret::Typed(_) => write!(out, "Typed(<hidden>)"),
+        }
+    }
 }
 
 impl Secret {
@@ -405,6 +421,23 @@ mod tests {
         assert_eq!(source.database, r"C:\jason\dev\quill\tasks.db");
         let scheme = Source::parse("x", "mysql://root@localhost/db").expect_err("refused");
         assert!(scheme.message.contains("postgres, sqlite"), "{scheme}");
+    }
+
+    #[test]
+    fn a_typed_password_is_redacted_even_by_debug() {
+        // Nothing formats a `Source` with `{:?}` today. This is about the first `dbg!` somebody adds
+        // while chasing something else: a type whose invariant is "never answers the password back"
+        // should not be able to.
+        let mut source = Source::parse("x", "postgres://me@localhost/db").expect("read");
+        source.secret = Secret::Typed("hunter2".to_owned());
+        assert_eq!(format!("{:?}", source.secret), "Typed(<hidden>)");
+        assert!(!format!("{source:?}").contains("hunter2"));
+        // The two that name a place print the place, because that is not a secret and is the thing
+        // somebody debugging actually needs.
+        assert_eq!(
+            format!("{:?}", Secret::Environment("QUILL_DB_AI".to_owned())),
+            "Environment(\"QUILL_DB_AI\")"
+        );
     }
 
     #[test]

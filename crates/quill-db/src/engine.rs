@@ -149,17 +149,17 @@ impl Database {
 
     /// Write a list of statements as one transaction, or write none of them.
     ///
-    /// **The affected count of each is checked.** An `UPDATE` that reports zero rows means the row
-    /// moved underneath — somebody else changed or deleted it since the grid was filled — and
-    /// reporting that as a success is how an edit is silently lost. It rolls the whole thing back and
-    /// says which statement it was.
+    /// **Every statement must change exactly one row**, checked before the commit rather than after
+    /// it. Zero means the row moved underneath — somebody else changed or deleted it since the grid
+    /// was filled — and more than one means the key did not name a single row, which is the fault the
+    /// whole editing rule exists to prevent. Either rolls the transaction back, and the message says
+    /// which happened and to which statement.
     pub fn write(&mut self, work: &[(String, Vec<Value>)]) -> Answer<Vec<u64>> {
         match self {
-            Database::Sqlite(session) => {
-                let affected = session.in_one_transaction(work)?;
-                check(&affected)?;
-                Ok(affected)
-            }
+            // **The check is handed in rather than run afterwards**, because SQLite's transaction
+            // commits inside that call: a postcondition tested after the commit is a report about
+            // something that has already happened rather than a guard against it.
+            Database::Sqlite(session) => session.in_one_transaction(work, check),
             Database::Postgres(session) => {
                 session.simple("BEGIN", usize::MAX)?;
                 let mut affected = Vec::with_capacity(work.len());
@@ -231,16 +231,31 @@ impl Stopper {
     }
 }
 
-/// An affected count of zero from a statement that named one row.
+/// Every statement the row editor writes names exactly one row, so exactly one is what it must change.
+///
+/// **Not "at least one".** Zero means the row is not there any more — somebody else changed or
+/// deleted it since the grid was filled — and *more* than one means the key did not name what it
+/// claimed to, which is the fault the whole editing rule exists to prevent and the more dangerous of
+/// the two. Both roll the transaction back, and the message says which happened.
 fn check(affected: &[u64]) -> Answer<()> {
-    match affected.iter().position(|count| *count == 0) {
-        Some(at) => Err(Failure::said(format!(
-            "statement {} changed no rows, which means that row is not there any more — somebody \
-             else has changed or deleted it since this grid was filled. Nothing was written.",
-            at + 1
-        ))),
-        None => Ok(()),
+    for (at, count) in affected.iter().enumerate() {
+        if *count == 1 {
+            continue;
+        }
+        return Err(Failure::said(match count {
+            0 => format!(
+                "statement {} changed no rows, which means that row is not there any more — somebody \
+                 else has changed or deleted it since this grid was filled. Nothing was written.",
+                at + 1
+            ),
+            many => format!(
+                "statement {} would have changed {many} rows, and every statement this writes names \
+                 exactly one. The key it matched on does not name a single row. Nothing was written.",
+                at + 1
+            ),
+        }));
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -248,12 +263,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_statement_that_changed_nothing_stops_the_whole_write() {
-        // The fault this exists to prevent: a row somebody else deleted, an `UPDATE` that matches
-        // nothing, and a grid that reports the edit as saved.
+    fn a_statement_that_changed_anything_but_one_row_stops_the_whole_write() {
+        // Two faults, not one. Zero is a row somebody else deleted, and a grid that reported the edit
+        // as saved would be lying. More than one is worse: it means the key did not name a single
+        // row, which is the thing the whole editing rule exists to prevent.
         assert!(check(&[1, 1, 1]).is_ok());
-        let refused = check(&[1, 0, 1]).expect_err("refused");
-        assert!(refused.message.contains("statement 2"), "{refused}");
-        assert!(refused.message.contains("Nothing was written"), "{refused}");
+        let none = check(&[1, 0, 1]).expect_err("refused");
+        assert!(none.message.contains("statement 2"), "{none}");
+        assert!(none.message.contains("changed no rows"), "{none}");
+        assert!(none.message.contains("Nothing was written"), "{none}");
+        let many = check(&[1, 4]).expect_err("refused");
+        assert!(many.message.contains("would have changed 4 rows"), "{many}");
+        assert!(many.message.contains("does not name a single row"), "{many}");
     }
 }

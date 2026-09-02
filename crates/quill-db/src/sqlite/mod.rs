@@ -21,7 +21,17 @@ use crate::catalog::{Item, Kind, Table};
 use crate::rows::{Answer, Failure, Rows};
 use crate::value::{Column, Value};
 
-/// The name SQLite gives the implicit key of an ordinary table.
+/// The three names SQLite answers its implicit key by, in the order they are tried.
+///
+/// **Three rather than one, because a table may declare a real column called `rowid`.** SQLite lets
+/// it, and once it does, `rowid` in a statement means that column — which need not be unique, so an
+/// `UPDATE … WHERE "rowid" = ?` written against it would change every row sharing the value. That is
+/// exactly the fault the whole editing rule exists to prevent, arriving through the one door that is
+/// not a declared key. So the alias used is the first of these that the table has **not** shadowed,
+/// and a table that has shadowed all three has no key at all and is drawn read only.
+pub const ROWID_ALIASES: &[&str] = &["rowid", "_rowid_", "oid"];
+
+/// The first of them, which is what an unshadowed table uses.
 pub const ROWID: &str = "rowid";
 
 /// One open database file.
@@ -130,7 +140,16 @@ impl Session {
 
     /// Run several statements as one transaction, stopping and undoing everything at the first
     /// failure. This is what Submit does.
-    pub fn in_one_transaction(&mut self, work: &[(String, Vec<Value>)]) -> Answer<Vec<u64>> {
+    ///
+    /// `check` is applied **before the commit**, which is the whole reason it is an argument rather
+    /// than something the caller does afterwards: a postcondition tested after `COMMIT` is not a
+    /// postcondition, it is a report about something that has already happened. `Transaction` rolls
+    /// back when it is dropped without committing, so returning early here undoes everything.
+    pub fn in_one_transaction(
+        &mut self,
+        work: &[(String, Vec<Value>)],
+        check: impl Fn(&[u64]) -> Answer<()>,
+    ) -> Answer<Vec<u64>> {
         let transaction = self.connection.transaction().map_err(said)?;
         let mut affected = Vec::with_capacity(work.len());
         for (statement, values) in work {
@@ -140,6 +159,7 @@ impl Session {
                 .map_err(said)?;
             affected.push(count as u64);
         }
+        check(&affected)?;
         transaction.commit().map_err(said)?;
         Ok(affected)
     }
@@ -206,29 +226,46 @@ impl Session {
         }
         key.sort_by_key(|(at, _)| *at);
         table.key = key.into_iter().map(|(_, name)| name).collect();
-        if table.key.is_empty() && self.has_a_rowid(name)? {
+        if table.key.is_empty() {
             // **A table with no declared key is still addressable here**, which is a real difference
             // from PostgreSQL rather than a convenience: SQLite gives every ordinary table a `rowid`,
             // and a hidden column that names exactly one row is exactly what the editing rule asks
-            // for. A `WITHOUT ROWID` table has none, and is then read-only for the same reason a
-            // PostgreSQL table with no key is.
-            table.key = vec![ROWID.to_owned()];
-            let mut column = Column::new(ROWID, "INTEGER");
-            column.in_key = true;
-            column.not_null = true;
-            table.columns.insert(0, column);
+            // for. A `WITHOUT ROWID` table has none, and so does one that has shadowed every alias,
+            // and both are then read-only for the same reason a PostgreSQL table with no key is.
+            if let Some(alias) = self.an_unshadowed_rowid(name, &table)? {
+                table.key = vec![alias.clone()];
+                let mut column = Column::new(&alias, "INTEGER");
+                column.in_key = true;
+                column.not_null = true;
+                table.columns.insert(0, column);
+            }
         }
         Ok(table)
     }
 
-    /// Whether this table has SQLite's implicit key.
+    /// Which of SQLite's three names for its implicit key this table has not shadowed, if any.
     ///
-    /// Asked by selecting it, because there is no pragma that answers directly and a `WITHOUT ROWID`
-    /// table refuses the name with an error rather than returning nothing.
-    fn has_a_rowid(&mut self, name: &str) -> Answer<bool> {
-        let statement =
-            format!("select rowid from {} limit 1", crate::catalog::quoted(name, '"'));
-        Ok(self.run(&statement, &[], 1).is_ok())
+    /// Two things have to be true of the answer, and both are checked: the table must not declare a
+    /// column of that name — because then the name means *that* column, which need not be unique —
+    /// and selecting it must work, because a `WITHOUT ROWID` table has no implicit key at all and
+    /// refuses every one of the three.
+    fn an_unshadowed_rowid(&mut self, name: &str, table: &Table) -> Answer<Option<String>> {
+        for alias in ROWID_ALIASES {
+            // SQLite identifiers are case-insensitive, so a column called `ROWID` shadows `rowid`.
+            let shadowed = table
+                .columns
+                .iter()
+                .any(|column| column.name.eq_ignore_ascii_case(alias));
+            if shadowed {
+                continue;
+            }
+            let statement =
+                format!("select {alias} from {} limit 1", crate::catalog::quoted(name, '"'));
+            if self.run(&statement, &[], 1).is_ok() {
+                return Ok(Some((*alias).to_owned()));
+            }
+        }
+        Ok(None)
     }
 
     /// The `CREATE` statement, which SQLite keeps verbatim.
@@ -339,6 +376,42 @@ mod tests {
     }
 
     #[test]
+    fn a_table_that_declares_its_own_rowid_column_does_not_get_it_as_a_key() {
+        // SQLite lets a table declare a real column called `rowid`, and once it does, `rowid` in a
+        // statement means that column — which need not be unique. Taking it as the key would produce
+        // an `UPDATE … WHERE "rowid" = ?` matching two rows, which is the one thing the editing rule
+        // exists to prevent.
+        let folder = std::env::temp_dir().join(format!("quill-db-shadow-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&folder);
+        let file = folder.join("shadow.db");
+        let _ = std::fs::remove_file(&file);
+        let connection = Connection::open(&file).expect("a database");
+        connection
+            .execute_batch(
+                "create table shadowed (rowid text, note text);
+                 insert into shadowed values ('same', 'one'), ('same', 'two');
+                 create table plain (a text);
+                 insert into plain values ('x');
+                 create table every_alias (rowid text, _rowid_ text, oid text);",
+            )
+            .expect("a schema");
+        let mut session = Session::open(&file, false).expect("opened");
+
+        let shadowed = session.table("shadowed").expect("a table");
+        assert_eq!(shadowed.key, ["_rowid_"], "the next alias it has not shadowed");
+        assert!(shadowed.can_be_changed());
+
+        // And a table that has shadowed all three has no key at all, and is read only.
+        let all = session.table("every_alias").expect("a table");
+        assert!(all.key.is_empty(), "{:?}", all.key);
+        assert!(!all.can_be_changed());
+        assert!(all.why_not_changeable().unwrap().contains("no primary key"));
+
+        // The ordinary case is unchanged.
+        assert_eq!(session.table("plain").expect("a table").key, ["rowid"]);
+    }
+
+    #[test]
     fn a_declared_key_is_the_key_and_a_table_without_one_falls_back_to_the_rowid() {
         let mut session = Session::open(&a_database("keys"), false).expect("opened");
         let member = session.table("member").expect("a table");
@@ -397,7 +470,7 @@ mod tests {
             // The second one breaks the NOT NULL, so the first must not survive either.
             ("insert into member (id, name) values (?1, ?2)".to_owned(), vec![Value::typed("4"), Value::Null]),
         ];
-        assert!(session.in_one_transaction(&work).is_err());
+        assert!(session.in_one_transaction(&work, |_| Ok(())).is_err());
         let rows = session.run("select count(*) from member", &[], usize::MAX).expect("rows");
         assert_eq!(rows.rows[0][0], Value::Text("2".to_owned()), "neither insert survived");
     }

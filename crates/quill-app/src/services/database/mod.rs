@@ -195,6 +195,14 @@ impl Page {
             Sheet::Grid(grid) => &grid.source,
         }
     }
+
+    /// Which job this page is waiting for, if any. What decides whether an answer is still wanted.
+    pub fn running(&self) -> Option<u64> {
+        match &self.sheet {
+            Sheet::Console(console) => console.running,
+            Sheet::Grid(grid) => grid.running,
+        }
+    }
 }
 
 /// What is chosen in the tree.
@@ -388,10 +396,40 @@ impl DatabaseExplorer {
             Some(at) => self.configuration.sources[at] = source.clone(),
             None => self.configuration.sources.push(source.clone()),
         }
+        // **A rename takes everything that names the source with it.** The name is the key in five
+        // places, and leaving four of them behind gives pages that report a data source which is not
+        // connected and can never be, and a tree that has lost its expansion — which is exactly the
+        // lifecycle fault the conventions warn about.
+        if !was.is_empty() && was != source.name {
+            self.rename(was, &source.name);
+        }
         if self.configuration.chosen.is_empty() {
             self.configuration.chosen = source.name.clone();
         }
         self.write_the_configuration()
+    }
+
+    /// Move everything that names `was` onto `now`.
+    fn rename(&mut self, was: &str, now: &str) {
+        if let Some(loaded) = self.loaded.remove(was) {
+            self.loaded.insert(now.to_owned(), loaded);
+        }
+        if self.open_sources.remove(was) {
+            self.open_sources.insert(now.to_owned());
+        }
+        if self.configuration.chosen == was {
+            self.configuration.chosen = now.to_owned();
+        }
+        if let Some(chosen) = self.chosen.as_mut().filter(|chosen| chosen.source == was) {
+            chosen.source = now.to_owned();
+        }
+        for page in &mut self.pages {
+            match &mut page.sheet {
+                Sheet::Console(console) if console.source == was => console.source = now.to_owned(),
+                Sheet::Grid(grid) if grid.source == was => grid.source = now.to_owned(),
+                _ => {}
+            }
+        }
     }
 
     pub fn remove_source(&mut self, name: &str) -> Result<(), String> {
@@ -777,6 +815,9 @@ impl DatabaseExplorer {
             }
             (Wanted::Rows { page }, Ok(Reply::Rows(rows))) => self.rows_arrived(page, ticket, rows),
             (Wanted::Written { page }, Ok(Reply::Written(affected))) => {
+                if self.page(page).and_then(Page::running) != Some(ticket) {
+                    return;
+                }
                 if let Some(Page { sheet: Sheet::Grid(grid), .. }) = self.page_mut(page) {
                     grid.pending.clear();
                     grid.running = None;
@@ -792,17 +833,26 @@ impl DatabaseExplorer {
             }
             (wanted, _) => {
                 let Some(why) = failure else { return };
-                self.failed(source, wanted, why);
+                self.failed(source, ticket, wanted, why);
             }
         }
     }
 
     /// A result arriving for a console or a grid.
+    ///
+    /// **A reply that is not the one this page is waiting for is thrown away.** A second query or a
+    /// reload can be asked for while the first is still outstanding — the command line makes that
+    /// easy — and the older answer arriving afterwards would otherwise overwrite the newer one, so
+    /// the grid would end up showing the result of a statement nobody is looking at. The ticket is
+    /// what says which, and it is the same reason `quill_db::Worker` hands one out at all.
     fn rows_arrived(&mut self, page: u64, ticket: u64, rows: Rows) {
         let Some(page) = self.page_mut(page) else { return };
+        if page.running() != Some(ticket) {
+            return;
+        }
         match &mut page.sheet {
             Sheet::Console(console) => {
-                if console.running == Some(ticket) {
+                {
                     console.running = None;
                 }
                 for notice in &rows.notices {
@@ -819,9 +869,7 @@ impl DatabaseExplorer {
                 }
             }
             Sheet::Grid(grid) => {
-                if grid.running == Some(ticket) {
-                    grid.running = None;
-                }
+                grid.running = None;
                 grid.rows = rows;
                 grid.chosen = None;
                 grid.editing = None;
@@ -830,11 +878,15 @@ impl DatabaseExplorer {
     }
 
     /// Something went wrong, and it is shown where the thing that asked for it is.
-    fn failed(&mut self, source: &str, wanted: Wanted, why: Failure) {
+    ///
+    /// A failure is dropped for the same reason a result is when it belongs to a superseded ticket:
+    /// an old refusal landing on a page that is running something else would clear the spinner and
+    /// report a statement nobody is waiting for.
+    fn failed(&mut self, source: &str, ticket: u64, wanted: Wanted, why: Failure) {
         let said = why.to_string();
         match wanted {
             Wanted::Rows { page } | Wanted::Written { page } => {
-                if let Some(page) = self.page_mut(page) {
+                if let Some(page) = self.page_mut(page).filter(|page| page.running() == Some(ticket)) {
                     match &mut page.sheet {
                         Sheet::Console(console) => {
                             console.running = None;
@@ -853,6 +905,25 @@ impl DatabaseExplorer {
             }
         }
         self.problem = Some(said);
+    }
+
+    /// Hand a page a result as though a worker had answered it. Tests only.
+    ///
+    /// `UiProvider::as_any_mut` exists for exactly two callers and a test is one of them; these two
+    /// are the same idea for a path that otherwise needs a real server to be slow at the right moment.
+    #[cfg(test)]
+    pub fn take_a_result_for_tests(&mut self, page: u64, ticket: u64, rows: Rows) {
+        self.rows_arrived(page, ticket, rows);
+    }
+
+    /// Say which job a page is waiting for. Tests only.
+    #[cfg(test)]
+    pub fn mark_running_for_tests(&mut self, page: u64, ticket: u64) -> Option<u64> {
+        match self.page_mut(page)? {
+            Page { sheet: Sheet::Console(console), .. } => console.running = Some(ticket),
+            Page { sheet: Sheet::Grid(grid), .. } => grid.running = Some(ticket),
+        }
+        Some(ticket)
     }
 
     // ------------------------------------------------------------------ what it is showing
@@ -969,18 +1040,52 @@ fn rows_value(rows: &Rows) -> serde_json::Value {
 /// statement's own grammar and cannot be parameters in any engine, and pretending otherwise would
 /// mean building a filter language IntelliJ's own users go round anyway. Every **value** the grid
 /// writes back is bound — see `quill_db::edit`.
+///
+/// ## With no `ORDER BY` typed, the key is the order, and that is a correctness fix rather than a
+/// tidiness one
+///
+/// `LIMIT … OFFSET` over an unordered result is not a page sequence: no engine promises an order it
+/// was not asked for, so page two can repeat a row from page one and skip another entirely. It shows
+/// up sooner than that, though, and it showed up on the first real PostgreSQL run of this code: an
+/// `UPDATE` moves a row to the end of the heap, so reloading after a submit put the row that had just
+/// been edited at the bottom and the grid appeared to shuffle itself. A row number then meant a
+/// different row than it had a moment earlier, which is what `set <n>` and `delete-row <n>` are
+/// addressed by.
+///
+/// So a table with a key is read **in key order** unless somebody has typed an order of their own.
+/// A table with no key has nothing to order by, and its rows are read-only anyway.
 pub fn select_for(grid: &Grid, engine: Engine, limit: usize, at: usize) -> String {
-    // SQLite's `rowid` is not in `select *`, so a table addressed by it has to ask for it by name.
-    let columns = match engine == Engine::Sqlite && grid.table.key.first().map(String::as_str) == Some("rowid") {
-        true => "rowid, *".to_owned(),
+    // SQLite's implicit key is not in `select *`, so a table addressed by it has to ask for it by
+    // name — and by **whichever** of its three names this table has not shadowed, which is what
+    // `quill_db::sqlite::ROWID_ALIASES` decides. Asking for the literal `rowid` on a table that
+    // declares a column of that name would select the declared column instead.
+    let by_rowid = engine == Engine::Sqlite
+        && grid
+            .table
+            .key
+            .first()
+            .is_some_and(|name| quill_db::sqlite::ROWID_ALIASES.contains(&name.as_str()));
+    let columns = match by_rowid {
+        true => format!("{}, *", grid.table.key[0]),
         false => "*".to_owned(),
     };
     let mut statement = format!("select {columns} from {}", grid.table.qualified('"'));
     if !grid.where_clause.trim().is_empty() {
         statement.push_str(&format!(" where {}", grid.where_clause.trim()));
     }
-    if !grid.order_by.trim().is_empty() {
-        statement.push_str(&format!(" order by {}", grid.order_by.trim()));
+    match grid.order_by.trim() {
+        typed if !typed.is_empty() => statement.push_str(&format!(" order by {typed}")),
+        _ if !grid.table.key.is_empty() => {
+            let by = grid
+                .table
+                .key
+                .iter()
+                .map(|name| quill_db::catalog::quoted(name, '"'))
+                .collect::<Vec<String>>()
+                .join(", ");
+            statement.push_str(&format!(" order by {by}"));
+        }
+        _ => {}
     }
     // One more than is kept, which is what makes `1-200 of 200+` honest.
     statement.push_str(&format!(" limit {} offset {}", limit + 1, at * limit));

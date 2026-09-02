@@ -194,12 +194,24 @@ impl Drop for Worker {
     /// running would leave a connection open on somebody's server after the pane that opened it had
     /// gone. It is only ever waiting on a `recv`, or inside a statement somebody can stop.
     fn drop(&mut self) {
-        let _ = self.jobs.send((0, Job::Close));
-        if let Ok(mut held) = self.stopper.lock() {
-            held.take();
+        // **Stopped before it is waited for**, which is the whole of why this is three lines rather
+        // than one. `Close` is read off the channel *between* jobs, so a worker in the middle of a
+        // statement would not see it until that statement finished — and the join below would then
+        // block the thread doing the dropping, which is the window, for as long as the query takes.
+        // Asking the engine to stop first is what makes the wait short. An earlier version took the
+        // stopper away and then waited, which is the same bug with the one thing that could have
+        // helped thrown away first.
+        if let Ok(held) = self.stopper.lock() {
+            if let Some(stopper) = held.as_ref() {
+                let _ = stopper.stop();
+            }
         }
+        let _ = self.jobs.send((0, Job::Close));
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
+        }
+        if let Ok(mut held) = self.stopper.lock() {
+            held.take();
         }
     }
 }

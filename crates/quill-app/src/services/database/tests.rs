@@ -415,6 +415,36 @@ fn a_grids_statement_asks_for_one_more_row_than_it_keeps() {
         statement,
         "select * from \"member\" where name like 'A%' order by name desc limit 201 offset 400"
     );
+
+    // **With nothing typed, the key is the order.** `LIMIT … OFFSET` over an unordered result is not
+    // a page sequence, and an `UPDATE` moves a row to the end of the heap — so without this the grid
+    // shuffled itself after every submit, which is how this was found on a real server.
+    let unordered = Grid { order_by: String::new(), where_clause: String::new(), ..grid.clone() };
+    assert_eq!(
+        select_for(&unordered, quill_db::Engine::Postgres, 200, 0),
+        "select * from \"member\" order by \"id\" limit 201 offset 0"
+    );
+    // A compound key orders by every part of itself, in key order.
+    let compound = Grid {
+        table: quill_db::Table {
+            key: vec!["tenant".to_owned(), "id".to_owned()],
+            ..unordered.table.clone()
+        },
+        ..unordered.clone()
+    };
+    assert_eq!(
+        select_for(&compound, quill_db::Engine::Postgres, 10, 0),
+        "select * from \"member\" order by \"tenant\", \"id\" limit 11 offset 0"
+    );
+    // And a table with no key has nothing to order by, which is fine: its rows are read only anyway.
+    let no_key = Grid {
+        table: quill_db::Table { key: Vec::new(), ..unordered.table.clone() },
+        ..unordered.clone()
+    };
+    assert_eq!(
+        select_for(&no_key, quill_db::Engine::Postgres, 10, 0),
+        "select * from \"member\" limit 11 offset 0"
+    );
     // A SQLite table addressed by its `rowid` has to ask for it by name: it is not in `select *`.
     let by_rowid = Grid {
         table: quill_db::Table { key: vec!["rowid".to_owned()], ..grid.table.clone() },
@@ -423,10 +453,19 @@ fn a_grids_statement_asks_for_one_more_row_than_it_keeps() {
         ..grid
     };
     let statement = select_for(&by_rowid, quill_db::Engine::Sqlite, 10, 0);
-    assert_eq!(statement, "select rowid, * from \"member\" limit 11 offset 0");
+    assert_eq!(statement, "select rowid, * from \"member\" order by \"rowid\" limit 11 offset 0");
     // And PostgreSQL's `select *` is enough, because a declared key is a column.
     let statement = select_for(&by_rowid, quill_db::Engine::Postgres, 10, 0);
-    assert_eq!(statement, "select * from \"member\" limit 11 offset 0");
+    assert_eq!(statement, "select * from \"member\" order by \"rowid\" limit 11 offset 0");
+    // A SQLite table that shadowed `rowid` is addressed by the next alias, and asks for that one.
+    let by_alias = Grid {
+        table: quill_db::Table { key: vec!["_rowid_".to_owned()], ..by_rowid.table.clone() },
+        ..by_rowid.clone()
+    };
+    assert_eq!(
+        select_for(&by_alias, quill_db::Engine::Sqlite, 10, 0),
+        "select _rowid_, * from \"member\" order by \"_rowid_\" limit 11 offset 0"
+    );
 }
 
 #[test]
@@ -459,6 +498,58 @@ fn a_cell_shows_what_is_pending_on_it_rather_than_what_was_read() {
     grid.pending.set(row, "name", Value::typed("Grace"));
     assert_eq!(grid.cell(0, 1), (Value::typed("Grace"), true), "and it is marked as pending");
     assert_eq!(grid.cell(0, 0), (Value::typed("1"), false), "the cell beside it is untouched");
+}
+
+#[test]
+fn an_answer_to_a_superseded_question_is_thrown_away_rather_than_drawn() {
+    // A second query can be asked for while the first is still outstanding — the command line makes
+    // that easy — and the older answer arriving afterwards would otherwise overwrite the newer one,
+    // so the grid would show the result of a statement nobody is looking at.
+    let (mut explorer, _) = opened("stale");
+    run(&mut explorer, "connect", &["test"]);
+    settle(&mut explorer);
+    let page = value(&mut explorer, "console", &["test"]);
+    let id = page["page"].as_u64().expect("a page");
+
+    let mut rows = quill_db::Rows::default();
+    rows.columns = vec![quill_db::Column::new("who", "text")];
+    rows.rows = vec![vec![Value::typed("the old answer")]];
+    // The page is waiting for nothing, so an answer with any ticket at all is stale.
+    explorer.take_a_result_for_tests(id, 99, rows.clone());
+    let after = value(&mut explorer, "result", &[]);
+    assert!(after["result"].is_null(), "a reply nobody is waiting for is not drawn: {after}");
+
+    // And the one it *is* waiting for lands.
+    let ticket = explorer.mark_running_for_tests(id, 7);
+    assert_eq!(ticket, Some(7));
+    explorer.take_a_result_for_tests(id, 7, rows);
+    let now = value(&mut explorer, "result", &[]);
+    assert_eq!(now["result"]["rows"][0][0], serde_json::json!("the old answer"));
+}
+
+#[test]
+fn renaming_a_data_source_takes_its_pages_and_its_tree_with_it() {
+    // The name is the key in five places, and leaving four of them behind gives pages that report a
+    // data source which is not connected and can never be.
+    let (mut explorer, file) = opened("rename");
+    explorer.toggle_source("test");
+    settle(&mut explorer);
+    explorer.toggle_schema("test", "main");
+    settle(&mut explorer);
+    run(&mut explorer, "console", &["test"]);
+    assert_eq!(explorer.pages[0].source(), "test");
+
+    let renamed = Source::sqlite("library", file.to_string_lossy());
+    explorer.save_source("test", renamed).expect("renamed");
+    assert_eq!(explorer.pages[0].source(), "library", "the page came with it");
+    assert!(explorer.open_sources.contains("library"), "and so did the tree's expansion");
+    assert!(explorer.loaded.contains_key("library"));
+    assert!(!explorer.loaded.contains_key("test"));
+    assert_eq!(explorer.configuration.chosen, "library");
+    // And the page can be used again, which is the thing that was broken.
+    run(&mut explorer, "connect", &["library"]);
+    settle(&mut explorer);
+    assert!(explorer.is_connected("library"));
 }
 
 #[test]

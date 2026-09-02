@@ -662,3 +662,40 @@ read-only for its own reason, and its DDL came back as `pg_get_viewdef`'s rather
 composed.
 
 `_agent_output/task-1777-database-plugin/verify/postgres-window.png` is the window during that run.
+
+## 14. What the review found, and what was done about each
+
+The ticket asks for another agent to review the pull request. **Codex Sol** read the branch and raised
+twelve concerns; the transcript is `_agent_output/task-1777-database-plugin/codex-review.md`. Three of
+them had already been found and fixed in a read of my own an hour earlier, which is worth saying
+because it is the same three a second reader found independently — they were the real ones.
+
+Every one was acted on. None was argued away.
+
+| # | What it said | What was done |
+|---|---|---|
+| 1 | SQLite lets a table declare a real column called `rowid`, which shadows the hidden key and need not be unique — so a grid could produce an `UPDATE … WHERE "rowid" = ?` matching every row sharing a value | **The most serious of the twelve.** The alias is now the first of `rowid`, `_rowid_`, `oid` the table has **not** shadowed, compared case-insensitively because SQLite identifiers are; a table that has shadowed all three has no key and is read only. `select_for` asks for whichever alias was chosen |
+| 2 | SQLite committed the transaction and *then* checked the affected counts, so a failed postcondition reported "Nothing was written" about something already written | The check is handed **into** `in_one_transaction` and applied before `commit()`. `Transaction` rolls back when dropped, so returning early undoes everything |
+| 3 | The postcondition only rejected **zero** affected rows; a statement reporting two was a success, against the design's own invariant | Exactly one, for every statement the row editor writes. More than one is the more dangerous case — it means the key did not name a single row — and the message says which of the two happened |
+| 4 | A reply for a superseded ticket was still applied, so an older query's result could overwrite a newer one | `Page::running` is what decides: an answer whose ticket is not the one the page is waiting for is dropped, results and failures alike |
+| 5 | Dropping a busy worker queued `Close`, threw the stopper away, and joined — blocking the window for as long as the query took | *(found independently first)* The stopper is used **before** the join |
+| 6 | The introspecting commands blocked inside a frame for up to ten seconds | *(found independently first)* `PATIENCE` is 250 ms and past it the command says to ask again |
+| 7 | Renaming a data source left its pages, its tree state and the chosen source pointing at the old name | `rename` carries all five things that key on the name |
+| 8 | `starts_with` alone accepted a server nonce exactly equal to the client's, which contributes no freshness | It must also be longer |
+| 9 | The iteration bound had a ceiling and no floor, so `i=1` was accepted — a proof derived with no hardening | `LEAST_ROUNDS = 4096`, which is RFC 7677's recommendation and PostgreSQL's default, refused by name so it is actionable |
+| 10 | A negative value length other than `-1` became an empty value, corrupting the one distinction this client promises to keep | Anything below `-1` is a refusal, and so is a negative count of columns or values |
+| 11 | The unframed-buffer guard was unreachable | *(found independently first)* Removed; the declared-length check is the one that works |
+| 12 | `Secret` derived `Debug`, so a typed password was printable as `Typed("…")` | A hand-written `Debug` that redacts the one variant holding a value. Nothing formats it today; this is about the first `dbg!` somebody adds |
+
+**And re-running the write path against a real server after the fixes found a thirteenth, which
+neither reader had seen**: `LIMIT … OFFSET` with no `ORDER BY` is not a page sequence. No engine
+promises an order it was not asked for, so page two can repeat a row from page one and skip another —
+and it shows up sooner than that, because an `UPDATE` moves a row to the end of a PostgreSQL heap. The
+grid reordered itself after every submit, so the row a person had just edited jumped to the bottom and
+a row *number* then meant a different row than it had a moment earlier, which is what `set <n>` and
+`delete-row <n>` are addressed by. A table with a key is now read **in key order** unless somebody has
+typed an order of their own.
+
+That last one is the argument for §10's last row in miniature: the scripted server proves the
+protocol, the plugin's tests prove the rules, and only a real database with a real heap under it
+proves the statements are the right statements.

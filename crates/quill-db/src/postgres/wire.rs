@@ -116,9 +116,6 @@ impl Frames {
     /// confused: one is the server saying no, the other is the connection being unusable.
     pub fn next(&mut self) -> Result<Option<Message>, Failure> {
         if self.held.len() < 5 {
-            if self.held.len() > LARGEST_FRAME {
-                return Err(Failure::said("the server sent more than one frame's worth of bytes without framing one."));
-            }
             return Ok(None);
         }
         let tag = self.held[0];
@@ -183,9 +180,9 @@ fn read(tag: u8, body: &[u8]) -> Result<Message, Failure> {
         b'K' => Message::BackendKeyData { process: at.int32()? as u32, secret: at.int32()? as u32 },
         b'Z' => Message::ReadyForQuery(*at.take(1)?.first().unwrap_or(&b'I')),
         b'T' => {
-            let count = at.int16()?;
-            let mut fields = Vec::with_capacity(count.max(0) as usize);
-            for _ in 0..count.max(0) {
+            let count = counted(at.int16()?, "columns")?;
+            let mut fields = Vec::with_capacity(count);
+            for _ in 0..count {
                 fields.push(Field {
                     name: at.string()?,
                     table: at.int32()? as u32,
@@ -203,15 +200,24 @@ fn read(tag: u8, body: &[u8]) -> Result<Message, Failure> {
             Message::RowDescription(fields)
         }
         b'D' => {
-            let count = at.int16()?;
-            let mut values = Vec::with_capacity(count.max(0) as usize);
-            for _ in 0..count.max(0) {
+            let count = counted(at.int16()?, "values")?;
+            let mut values = Vec::with_capacity(count);
+            for _ in 0..count {
                 let length = at.int32()?;
                 values.push(match length {
                     // -1 is NULL, which is a different thing from a value of length zero. Collapsing
                     // the two is the fault `value::Value` exists to keep out of the grid.
                     -1 => None,
-                    length => Some(at.take(length.max(0) as usize)?.to_vec()),
+                    // **Anything else negative is a broken stream, not an empty value.** Clamping it
+                    // to zero would turn a fault into a value the grid cannot be told apart from a
+                    // real empty string — which is the one distinction this client promises to keep.
+                    length if length < 0 => {
+                        return Err(Failure::said(format!(
+                            "the server sent a value of length {length}, and the only negative length \
+                             a value has is -1, which means NULL."
+                        )))
+                    }
+                    length => Some(at.take(length as usize)?.to_vec()),
                 });
             }
             Message::DataRow(values)
@@ -312,6 +318,19 @@ impl<'a> Reader<'a> {
 
 fn short() -> Failure {
     Failure::said("the server sent a frame that ends in the middle of a field.")
+}
+
+/// A count of things in a frame, refusing a negative one rather than reading it as none.
+///
+/// A negative count means the stream is not what it claims to be, and reading it as zero would turn
+/// a broken frame into an empty result — which looks exactly like a table with nothing in it.
+fn counted(count: i16, what: &str) -> Result<usize, Failure> {
+    match count < 0 {
+        true => Err(Failure::said(format!(
+            "the server said a frame holds {count} {what}, which is not a number of anything."
+        ))),
+        false => Ok(count as usize),
+    }
 }
 
 /// Building a message to send.
@@ -488,6 +507,25 @@ mod tests {
         huge.feed(&[b'D', 0xff, 0xff, 0xff, 0xff]);
         let refused = huge.next().expect_err("refused");
         assert!(refused.message.contains("past the"), "{refused}");
+    }
+
+    #[test]
+    fn a_negative_length_that_is_not_minus_one_is_a_refusal_rather_than_an_empty_value() {
+        // -1 is NULL and nothing else negative means anything. Clamping to zero would turn a broken
+        // stream into a value the grid cannot tell from a real empty string.
+        let bytes = Out::tagged(b'D').int16(1).int32(-2).finish();
+        let mut frames = Frames::new();
+        frames.feed(&bytes);
+        let refused = frames.next().expect_err("refused");
+        assert!(refused.message.contains("only negative length"), "{refused}");
+
+        // And a negative count of values or columns is refused for the same reason.
+        let mut counts = Frames::new();
+        counts.feed(&Out::tagged(b'D').int16(-1).finish());
+        assert!(counts.next().is_err());
+        let mut columns = Frames::new();
+        columns.feed(&Out::tagged(b'T').int16(-3).finish());
+        assert!(columns.next().is_err());
     }
 
     #[test]

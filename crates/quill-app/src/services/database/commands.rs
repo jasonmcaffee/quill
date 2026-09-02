@@ -206,37 +206,63 @@ fn add_source(explorer: &mut DatabaseExplorer, rest: &str) -> Result<Answer, Str
         .with(serde_json::json!({ "name": named, "where": where_it_points })))
 }
 
+/// How long an introspecting command will wait for its answer before saying to ask again.
+///
+/// **A quarter of a second, because the caller is inside a frame.** `UiProvider::command` runs at the
+/// top of a frame, so every millisecond spent here is a millisecond the window is not drawing — the
+/// sentence `quill_git::Worker` exists for, and the reason `query` answers with a ticket instead.
+/// Introspection is different in degree rather than in kind: it is one bounded catalogue query, it is
+/// answered in single-digit milliseconds by a local server, and a tree that needed three round trips
+/// through `state` to read one level is a tree no agent would use. So it waits, but only for as long
+/// as a person would not notice, and past that it says to ask again rather than holding the window.
+/// An earlier version waited **ten seconds**, which would have frozen the window on a slow server.
+const PATIENCE: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// What a command says when the answer has not arrived inside [`PATIENCE`].
+///
+/// A refusal rather than an empty answer, because an empty list and "not yet" are different things and
+/// an agent that could not tell them apart would report a database with no tables in it.
+fn ask_again(source: &str) -> String {
+    format!(
+        "`{source}` has not answered yet. It is still being read — ask again in a moment; the window          is not held while it does."
+    )
+}
+
+/// Wait for `ready` to answer, taking replies as they arrive, for at most [`PATIENCE`].
+fn briefly(
+    explorer: &mut DatabaseExplorer,
+    source: &str,
+    ready: impl Fn(&DatabaseExplorer) -> Option<Result<Answer, String>>,
+) -> Result<Answer, String> {
+    let until = std::time::Instant::now() + PATIENCE;
+    loop {
+        explorer.take_the_replies();
+        if let Some(problem) = explorer.loaded.get(source).and_then(|loaded| loaded.problem.clone()) {
+            return Err(problem);
+        }
+        if let Some(answer) = ready(explorer) {
+            return answer;
+        }
+        if std::time::Instant::now() > until {
+            return Err(ask_again(source));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+}
+
 fn schemas(explorer: &mut DatabaseExplorer, rest: &str) -> Result<Answer, String> {
     let name = a_source(explorer, rest)?;
     explorer.connect(&name)?;
-    // **It waits here, and only here.** Every other command that reaches the database answers with a
-    // ticket, but a tree that could not be read without three round trips through `state` would be a
-    // tree no agent would use. Introspection is bounded and fast, and this is a read.
-    let loaded = wait_for_the_schemas(explorer, &name)?;
-    Ok(Answer::said(loaded.join(", ")).with(serde_json::json!({ "source": name, "schemas": loaded })))
-}
-
-/// Draw the replies until this source's schemas have arrived, or give up.
-///
-/// Bounded by a deadline rather than looping for ever, because a server that never answers must not
-/// hold the window: the caller is inside a frame.
-fn wait_for_the_schemas(explorer: &mut DatabaseExplorer, name: &str) -> Result<Vec<String>, String> {
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        explorer.take_the_replies();
-        if let Some(loaded) = explorer.loaded.get(name) {
-            if let Some(why) = &loaded.problem {
-                return Err(why.clone());
-            }
-            if !loaded.schemas.is_empty() {
-                return Ok(loaded.schemas.clone());
-            }
+    let source = name.clone();
+    briefly(explorer, &name, move |explorer| {
+        let loaded = explorer.loaded.get(&source)?;
+        if loaded.schemas.is_empty() {
+            return None;
         }
-        if std::time::Instant::now() > until {
-            return Err(format!("`{name}` has not answered in ten seconds."));
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+        let schemas = loaded.schemas.clone();
+        Some(Ok(Answer::said(schemas.join(", "))
+            .with(serde_json::json!({ "source": source, "schemas": schemas }))))
+    })
 }
 
 fn tables(explorer: &mut DatabaseExplorer, rest: &str) -> Result<Answer, String> {
@@ -245,70 +271,78 @@ fn tables(explorer: &mut DatabaseExplorer, rest: &str) -> Result<Answer, String>
         return Err("there is no data source to look in. `use <name>` first.".to_owned());
     }
     explorer.connect(&source)?;
-    let schemas = wait_for_the_schemas(explorer, &source)?;
+    // The schemas first, because naming no schema means the first one — and a source that has not
+    // answered with its schemas yet cannot say which that is.
+    let known = {
+        let source = source.clone();
+        briefly(explorer, &source.clone(), move |explorer| {
+            let loaded = explorer.loaded.get(&source)?;
+            match loaded.schemas.is_empty() {
+                true => None,
+                false => Some(Ok(Answer::nothing().with(serde_json::json!(loaded.schemas.clone())))),
+            }
+        })?
+    };
     let schema = match rest.trim().is_empty() {
-        true => schemas.first().cloned().unwrap_or_default(),
+        true => known
+            .value
+            .as_array()
+            .and_then(|schemas| schemas.first())
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
         false => rest.trim().to_owned(),
     };
-    explorer.toggle_schema(&source, &schema);
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        explorer.take_the_replies();
-        if let Some(items) = explorer.loaded.get(&source).and_then(|loaded| loaded.items.get(&schema)) {
-            let listed: Vec<serde_json::Value> = items
-                .iter()
-                .map(|item| serde_json::json!({ "name": item.name, "kind": item.kind.name() }))
-                .collect();
-            let names: Vec<&str> = items.iter().map(|item| item.name.as_str()).collect();
-            return Ok(Answer::said(names.join(", "))
-                .with(serde_json::json!({ "source": source, "schema": schema, "items": listed })));
-        }
-        if let Some(why) = explorer.loaded.get(&source).and_then(|loaded| loaded.problem.clone()) {
-            return Err(why);
-        }
-        if std::time::Instant::now() > until {
-            return Err(format!("`{source}` has not answered in ten seconds."));
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
+    if !explorer.loaded.get(&source).is_some_and(|loaded| loaded.items.contains_key(&schema)) {
+        explorer.toggle_schema(&source, &schema);
     }
+    let wanted = schema.clone();
+    let named = source.clone();
+    briefly(explorer, &source, move |explorer| {
+        let items = explorer.loaded.get(&named)?.items.get(&wanted)?;
+        let listed: Vec<serde_json::Value> = items
+            .iter()
+            .map(|item| serde_json::json!({ "name": item.name, "kind": item.kind.name() }))
+            .collect();
+        let names: Vec<&str> = items.iter().map(|item| item.name.as_str()).collect();
+        Some(Ok(Answer::said(names.join(", "))
+            .with(serde_json::json!({ "source": named, "schema": wanted, "items": listed }))))
+    })
 }
 
 fn columns(explorer: &mut DatabaseExplorer, rest: &str) -> Result<Answer, String> {
     let (schema, name) = split_a_name(explorer, rest)?;
     let source = explorer.configuration.chosen.clone();
     explorer.connect(&source)?;
-    explorer.toggle_table(&source, &schema, &name);
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        explorer.take_the_replies();
-        if let Some(table) = explorer
-            .loaded
-            .get(&source)
-            .and_then(|loaded| loaded.columns.get(&(schema.clone(), name.clone())))
-        {
-            return Ok(Answer::said(format!(
-                "{} columns, key [{}]",
-                table.columns.len(),
-                table.key.join(", ")
-            ))
-            .with(serde_json::json!({
-                "schema": table.schema,
-                "table": table.name,
-                "key": table.key,
-                "editable": table.can_be_changed(),
-                "columns": table.columns.iter().map(|column| serde_json::json!({
-                    "name": column.name,
-                    "type": column.type_name,
-                    "not_null": column.not_null,
-                    "key": column.in_key,
-                })).collect::<Vec<serde_json::Value>>(),
-            })));
-        }
-        if std::time::Instant::now() > until {
-            return Err(format!("`{source}` has not answered in ten seconds."));
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
+    if !explorer
+        .loaded
+        .get(&source)
+        .is_some_and(|loaded| loaded.columns.contains_key(&(schema.clone(), name.clone())))
+    {
+        explorer.toggle_table(&source, &schema, &name);
     }
+    let named = source.clone();
+    let at = (schema, name);
+    briefly(explorer, &source, move |explorer| {
+        let table = explorer.loaded.get(&named)?.columns.get(&at)?;
+        Some(Ok(Answer::said(format!(
+            "{} columns, key [{}]",
+            table.columns.len(),
+            table.key.join(", ")
+        ))
+        .with(serde_json::json!({
+            "schema": table.schema,
+            "table": table.name,
+            "key": table.key,
+            "editable": table.can_be_changed(),
+            "columns": table.columns.iter().map(|column| serde_json::json!({
+                "name": column.name,
+                "type": column.type_name,
+                "not_null": column.not_null,
+                "key": column.in_key,
+            })).collect::<Vec<serde_json::Value>>(),
+        }))))
+    })
 }
 
 fn ddl(explorer: &mut DatabaseExplorer, rest: &str) -> Result<Answer, String> {
@@ -324,17 +358,10 @@ fn ddl(explorer: &mut DatabaseExplorer, rest: &str) -> Result<Answer, String> {
         .unwrap_or(quill_db::Kind::Table);
     // `show` is false: a command must never put a modal in front of somebody who asked for text.
     explorer.ask_for_ddl(&source, &schema, &name, kind, false)?;
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        explorer.take_the_replies();
-        if let Some((_, text)) = explorer.last_ddl.clone() {
-            return Ok(Answer::said(text.clone()).with(serde_json::json!({ "table": name, "ddl": text })));
-        }
-        if std::time::Instant::now() > until {
-            return Err(format!("`{source}` has not answered in ten seconds."));
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    briefly(explorer, &source.clone(), move |explorer| {
+        let (_, text) = explorer.last_ddl.clone()?;
+        Some(Ok(Answer::said(text.clone()).with(serde_json::json!({ "table": name, "ddl": text }))))
+    })
 }
 
 fn open(explorer: &mut DatabaseExplorer, rest: &str) -> Result<Answer, String> {
