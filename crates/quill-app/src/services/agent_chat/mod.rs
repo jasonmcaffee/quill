@@ -371,6 +371,13 @@ pub struct PaneState {
     /// Keyed on where the picture is rather than on its bytes, so a conversation with twenty pictures
     /// in it does not decode twenty pictures a frame.
     pub pictures: std::collections::HashMap<String, egui::TextureHandle>,
+    /// Whether the composer's own prompt field held the keyboard on the frame just drawn.
+    ///
+    /// **Not "some text box in the window has it".** `task-1771`'s paste is read off the key going back up,
+    /// and the question of whose that key is has to be answered by *this* field rather than by any field:
+    /// with the pane showing and the explorer's filter box focused, `Ctrl`+`V` was attaching the clipboard's
+    /// picture to a conversation nobody was typing into. Found by the ticket's own review.
+    pub prompt_focused: bool,
     /// How far down the conversation the view is, and where to put it on the next frame.
     ///
     /// `task-1771`: the pane is zoomable, and a zoom that does not keep what the pointer was over still is

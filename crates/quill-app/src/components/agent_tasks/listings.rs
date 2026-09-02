@@ -23,12 +23,17 @@
 //! lane it is in and who has it. That is what the reference draws, and the difference between the two is the
 //! difference between a board and a list.
 //!
-//! ## Nothing here decides anything
+//! ## The drawing decides nothing, and `act` is where the deciding is
 //!
-//! Every function takes a rectangle, paints, and reports what was pressed as a [`Pressed`]; the changes are
-//! applied by [`act`] once the drawing has finished and the borrow of the board has ended. That is the
-//! division every component in Quill makes and it is what lets a drag be settled after every group has said
-//! where it is — a row cannot know which group the pointer ended up over.
+//! Every function that **paints** takes a rectangle, paints, and reports what was pressed as a [`Pressed`];
+//! not one of them changes the board. [`act`] is the one place a press becomes a change, and it runs once
+//! the drawing has finished and the borrow of the board has ended. That is what lets a drag be settled after
+//! every group has said where it is — a row cannot know which group the pointer ended up over.
+//!
+//! [`groups`] and [`epics`] are the provider's own entries rather than components: they draw and then call
+//! `act`, which is exactly the shape `agent_chat::pane` and `lanes::show` already have. The distinction that
+//! matters is not "this function never changes anything" but "**nothing is changed while the board is being
+//! read**", which is what the borrow checker is being used to enforce here.
 
 use egui::{CornerRadius, Pos2, Rect, Sense, Stroke, Vec2};
 
@@ -517,7 +522,11 @@ fn group_heading(
         return;
     }
     let mut right = area.max.x;
-    let about = |what: &str| format!("{what} {}", sprint.name);
+    // **The id as well as the name.** Two sprints may be called the same thing — the schema allows it and
+    // the commands accept an id for exactly that reason — and two controls called `Complete September` are
+    // two controls with one name and one `egui` id, which is the case `CLAUDE.md`'s naming rule exists to
+    // stop. Found by the `task-1771` review. The name comes first because it is what a person reads.
+    let about = |what: &str| format!("{what} {} ({})", sprint.name, sprint.id);
     if how.asked == Some(sprint.id) {
         // Asked rather than done. The two answers are drawn where the one button was.
         let no = quiet_button_named(ui, look, right, middle, "Cancel", &about("Keep"), false);
@@ -970,7 +979,11 @@ pub fn epics(board: &mut AgentTasks, ui: &mut egui::Ui, look: &Look<'_>, area: R
     }
     // A grid as wide as the room allows, which is what `.epics-grid` is: a card is a fixed width and the
     // number across follows from the pane rather than being chosen.
-    let card = Vec2::new(EPIC_CARD_WIDTH * scale, EPIC_CARD_HEIGHT * scale);
+    // **Never wider than the page it is on.** A card is 300 points at the default size and three times
+    // that at the largest zoom, so in a narrow pane it would be drawn off the right hand edge with its
+    // Rename and Delete beyond anything the pointer can reach. Found by the `task-1771` review: a zoom is
+    // only worth having if what it draws stays usable at both ends of it.
+    let card = Vec2::new((EPIC_CARD_WIDTH * scale).min(body.width()), EPIC_CARD_HEIGHT * scale);
     let across = (((body.width() + EPIC_GAP * scale) / (card.x + EPIC_GAP * scale)).floor() as usize).max(1);
     let rows = epics.len().div_ceil(across);
     let tall = rows as f32 * (card.y + EPIC_GAP * scale);
@@ -1053,19 +1066,20 @@ fn new_epic_bar(
     if primary_button(ui, look, add, "+ Add epic") {
         pressed.create_epic = true;
     }
-    // The seven swatches, in front of the button.
+    // The seven swatches, in front of the button, squeezed together before they run past the field. See
+    // the same rule on a card below.
     let chosen = board.new_epic_colour().to_owned();
-    let swatches = SWATCHES.len() as f32 * (SWATCH * scale + SWATCH_GAP * scale);
+    let room = (add.min.x - 12.0 * scale - area.min.x).max(0.0) * 0.5;
+    let step = (room / SWATCHES.len() as f32).min(SWATCH * scale + SWATCH_GAP * scale).max(4.0);
+    let size = (SWATCH * scale).min(step - 2.0).max(6.0);
+    let swatches = SWATCHES.len() as f32 * step;
     let mut pen = add.min.x - 12.0 * scale - swatches;
     for colour in SWATCHES {
-        let at = Rect::from_center_size(
-            Pos2::new(pen + SWATCH * scale / 2.0, middle),
-            Vec2::splat(SWATCH * scale),
-        );
+        let at = Rect::from_center_size(Pos2::new(pen + size / 2.0, middle), Vec2::splat(size));
         if swatch(ui, look, at, colour, chosen == **colour, "new epic") {
             pressed.choose_colour = Some((*colour).to_owned());
         }
-        pen += SWATCH * scale + SWATCH_GAP * scale;
+        pen += step;
     }
     let width = (240.0 * scale).min((add.min.x - 12.0 - swatches - area.min.x).max(40.0));
     let field = Rect::from_min_size(Pos2::new(area.min.x, middle - height / 2.0), Vec2::new(width, height));
@@ -1180,18 +1194,21 @@ fn epic_card(
         );
     }
 
-    // The seven colours it can be changed to.
+    // The seven colours it can be changed to, **squeezed together rather than run off the card**: at a
+    // large zoom in a narrow pane seven discs are wider than the card, and a colour drawn past its own edge
+    // is a colour nobody can press. The gap gives way first and the discs themselves after it, which is what
+    // a row of marks can afford to do and a word cannot.
+    let room = area.width() - inset * 2.0;
+    let step = (room / SWATCHES.len() as f32).min(SWATCH * scale + SWATCH_GAP * scale);
+    let size = (SWATCH * scale).min(step - 2.0).max(6.0);
     let mut pen = area.min.x + inset;
     let swatch_y = mark.max.y + 16.0 * scale;
     for colour in SWATCHES {
-        let at = Rect::from_center_size(
-            Pos2::new(pen + SWATCH * scale / 2.0, swatch_y),
-            Vec2::splat(SWATCH * scale),
-        );
+        let at = Rect::from_center_size(Pos2::new(pen + size / 2.0, swatch_y), Vec2::splat(size));
         if swatch(ui, look, at, colour, epic.color.eq_ignore_ascii_case(colour), &epic.name) {
             pressed.recolour_epic = Some((epic.id, (*colour).to_owned()));
         }
-        pen += SWATCH * scale + SWATCH_GAP * scale;
+        pen += step;
     }
 
     // Rename, and Delete — which asks first. `general` cannot be deleted, which is the browser board's own

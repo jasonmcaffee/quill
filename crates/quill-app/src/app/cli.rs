@@ -799,8 +799,15 @@ impl QuillApp {
                 match asked.as_deref() {
                     None | Some("") => {}
                     Some("reset") => self.reset_the_zoom_of(panel),
+                    // **Refused rather than clamped**, because the catalogue, the reference and the
+                    // refusal all name a range: `panel zoom explorer 100` answered "explorer is at 3.00x",
+                    // which is a command that did not do what it was asked and said it had. Found by the
+                    // `task-1771` review.
                     Some(said) => match said.parse::<f32>() {
-                        Ok(factor) if factor.is_finite() && factor > 0.0 => {
+                        Ok(factor)
+                            if factor.is_finite()
+                                && (settings::MIN_ZOOM..=settings::MAX_ZOOM).contains(&factor) =>
+                        {
                             self.set_the_zoom_of(panel, factor);
                         }
                         _ => {

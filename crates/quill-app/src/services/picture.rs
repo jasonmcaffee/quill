@@ -263,8 +263,16 @@ fn shrink_to_fit(image: egui::ColorImage, limit: usize) -> egui::ColorImage {
 pub fn from_the_clipboard() -> Result<serde_json::Value, String> {
     let mut clipboard = arboard::Clipboard::new()
         .map_err(|problem| format!("the clipboard could not be opened: {problem}"))?;
-    let Ok(held) = clipboard.get_image() else {
-        return Ok(serde_json::Value::Null);
+    let held = match clipboard.get_image() {
+        Ok(held) => held,
+        // **`null` for "there is none", a refusal for "there is one and it will not read".** `arboard`
+        // tells the two apart and this used to throw the distinction away, so a picture the platform could
+        // not convert was reported as no picture at all — a silent nothing where a person had every reason
+        // to expect an attachment. Found by the `task-1771` review.
+        Err(arboard::Error::ContentNotAvailable) => return Ok(serde_json::Value::Null),
+        Err(problem) => {
+            return Err(format!("the picture on the clipboard could not be read: {problem}"))
+        }
     };
     let width = held.width as u32;
     let height = held.height as u32;

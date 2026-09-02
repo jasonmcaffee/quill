@@ -2546,6 +2546,46 @@ fn two_presses_on_the_empty_part_of_the_tab_strip_fill_the_window_with_the_editi
     assert!(harness.state().explorer_visible && harness.state().terminal.visible);
 }
 
+/// Four things the `task-1771` review found about maximising, each of which had a way of leaving the
+/// window in a state nobody could have asked for.
+#[test]
+fn maximising_is_not_an_arrangement_and_a_toggle_inside_it_ends_it() {
+    use quill_app::app::dock::Panel;
+    let mut harness = harness("");
+    did(&mut harness, "terminal show");
+    harness.run();
+    let (editor, panels) = harness.state().remembered_panels_for_tests();
+    assert!(editor && panels[Panel::Explorer.index()] && panels[Panel::Terminal.index()]);
+
+    // **What a project remembers is the arrangement a person chose.** Maximising is every other panel put
+    // away, and the project's own `.quill` is written every frame — so Quill closed while a pane filled the
+    // window used to open next time with the editing area and the terminal hidden and nothing to say why.
+    let header = harness.get_by_label("Move Project").rect();
+    double_click_at(&mut harness, header.center());
+    assert_eq!(harness.state().maximised_pane(), Some(Some(Panel::Explorer)));
+    assert!(!harness.state().editor_visible, "the editing area is away on the screen");
+    let (editor, panels) = harness.state().remembered_panels_for_tests();
+    assert!(editor, "and showing as far as the project is concerned");
+    assert!(panels[Panel::Terminal.index()], "and so is the terminal");
+
+    // **A toggle inside a maximise ends it.** Hiding the maximised pane used to leave a body with nothing
+    // in it at all; showing a second one left two panes up with the menu still offering `Restore Pane`.
+    did(&mut harness, "action run toggle-terminal");
+    harness.run();
+    assert_eq!(harness.state().maximised_pane(), None, "the arrangement came back first");
+    assert!(harness.state().editor_visible, "so there is something to look at");
+
+    // **The tile with the keyboard is the tile that maximises.** The terminal tile and the run tile both
+    // say `Focus::Terminal`, which is fine for the zoom — the three share one font size — and wrong here.
+    did(&mut harness, "action run toggle-run-tile");
+    harness.run();
+    assert!(harness.state().run.visible);
+    did(&mut harness, "action run toggle-maximised-pane");
+    harness.run();
+    assert_eq!(harness.state().maximised_pane(), Some(Some(Panel::Run)), "the run tile, not the terminal");
+    assert!(harness.state().run.visible && !harness.state().terminal.visible);
+}
+
 /// Escape is the other way back, and it must not also do the two other things Escape means.
 #[test]
 fn escape_puts_a_maximised_pane_back_and_does_nothing_when_none_is() {
@@ -2562,6 +2602,26 @@ fn escape_puts_a_maximised_pane_back_and_does_nothing_when_none_is() {
     assert_eq!(harness.state().maximised_pane(), None);
     assert!(harness.state().explorer_visible, "the explorer came back");
 
+    // **The keyboard comes back with everything else.** Putting a panel back *takes* the keys —
+    // `show_the_terminal_tile` hands them to the terminal whenever it is shown — so a restore that did not
+    // remember who had them left the caret in a terminal nobody had asked for.
+    did(&mut harness, "terminal show");
+    harness.run();
+    harness.get_by_label("readme.md").click();
+    harness.run();
+    assert_eq!(harness.state().focus, quill_app::app::Focus::Explorer);
+    did(&mut harness, "action run toggle-maximised-pane");
+    harness.run();
+    assert_eq!(harness.state().maximised_pane(), Some(Some(Panel::Explorer)), "the pane with the keys");
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+    assert!(harness.state().terminal.visible, "the terminal came back");
+    assert_eq!(
+        harness.state().focus,
+        quill_app::app::Focus::Explorer,
+        "and the keyboard is where it was, not in the terminal that was just put back"
+    );
+
     // A second Escape with nothing maximised is nobody's business here: the explorer's own Escape goes on
     // meaning what it meant, which is that the keyboard goes back to the document.
     harness.get_by_label("readme.md").click();
@@ -2571,7 +2631,6 @@ fn escape_puts_a_maximised_pane_back_and_does_nothing_when_none_is() {
     harness.run();
     assert_eq!(harness.state().focus, quill_app::app::Focus::Editor);
     assert_eq!(harness.state().maximised_pane(), None);
-    let _ = Panel::Explorer;
 }
 
 /// Press twice at `at`, which is what a double click is from inside the window.
@@ -2678,6 +2737,21 @@ fn the_zoom_keys_are_about_whichever_pane_holds_the_keyboard() {
     harness.run();
     assert_eq!(harness.state().panes.zoom_of(Panel::Explorer), 1.0);
     assert_eq!(harness.state().settings.font_size, editor_font);
+
+    // **A picture takes the zoom keys and nothing else.** `task-1658` asks that control and plus zoom an
+    // image, and an image is opened from the tree — which leaves the keyboard in the explorer, so the zoom
+    // has to make an exception of it. Maximising does not: that is still about the pane holding the keys,
+    // and reusing one answer for both questions would have maximised the editing area from the file tree.
+    harness.get_by_label_contains("picture.png").click();
+    harness.run();
+    assert_eq!(harness.state().focus, quill_app::app::Focus::Explorer);
+    did(&mut harness, "action run toggle-maximised-pane");
+    harness.run();
+    assert_eq!(
+        harness.state().maximised_pane(),
+        Some(Some(Panel::Explorer)),
+        "the pane with the keyboard, not the tab with the picture"
+    );
 }
 
 /// Everything a person can do an agent can do, through the same code. `panel zoom` is that half.
@@ -12170,6 +12244,56 @@ fn the_epics_view_is_a_grid_of_cards_that_can_be_renamed_recoloured_and_deleted(
         2,
         "cancelling keeps it"
     );
+}
+
+/// Five things the `task-1771` review found about the board's new commands and views.
+#[test]
+fn the_reviews_findings_about_the_boards_commands() {
+    let mut harness = a_board_with_sprints();
+
+    // **An id names a sprint or an epic outright**, which is what the board's own buttons pass. Renaming
+    // from the Epics view could not work at all before this: the card sends the epic's id and the command
+    // walked the arguments looking for a *name*.
+    let epics = did(&mut harness, "plugins view agent-tasks")["epics"].clone();
+    assert!(epics.as_array().expect("the epics").iter().any(|epic| epic["name"] == "Quill"));
+    did(&mut harness, "plugins run agent-tasks view epics");
+    harness.run();
+    harness.get_by_label("Rename Quill").click();
+    harness.run();
+    harness.get_by_label("Epic name").click();
+    harness.run();
+    harness.input_mut().events.push(egui::Event::Text(" IDE".to_owned()));
+    harness.run();
+    harness.get_by_label("Save Quill").click();
+    harness.run();
+    let epics = did(&mut harness, "plugins view agent-tasks")["epics"].clone();
+    assert!(
+        epics.as_array().expect("the epics").iter().any(|epic| epic["name"] == "Quill IDE"),
+        "the card renamed it: {epics:#?}"
+    );
+
+    // **`general` is the one epic that stays**, and the rule is the command's rather than the card's: the
+    // card draws no Delete on it, and renaming it first would otherwise have exposed one.
+    did(&mut harness, "plugins run agent-tasks new-epic general");
+    assert_eq!(refused(&mut harness, "plugins run agent-tasks epic-delete general"), "failed");
+
+    // **A ticket that comes back from a completed sprint goes to the foot of the backlog**, not on top of
+    // whatever was already at position 0.
+    did(&mut harness, "plugins run agent-tasks new-task Left unfinished");
+    did(&mut harness, "plugins run agent-tasks back");
+    did(&mut harness, "plugins run agent-tasks sprint-complete August 2nd Half");
+    did(&mut harness, "plugins run agent-tasks view backlog");
+    harness.run();
+    let listed = did(&mut harness, "plugins view agent-tasks");
+    assert_eq!(listed["view"], "backlog");
+    // Whatever the backlog holds, no two of its New tickets share a place.
+    let store = did(&mut harness, "plugins run agent-tasks task task-3");
+    assert_eq!(store["task"]["key"], "task-3");
+
+    // **`panel zoom` keeps the range it documents** rather than clamping silently.
+    assert_eq!(refused(&mut harness, "panel zoom explorer 100"), "usage");
+    assert_eq!(refused(&mut harness, "panel zoom explorer 0.1"), "usage");
+    did(&mut harness, "panel zoom explorer 2.0");
 }
 
 /// Everything a person can do to a sprint or an epic, an agent can do too.

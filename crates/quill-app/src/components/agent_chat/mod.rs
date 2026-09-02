@@ -95,7 +95,7 @@ pub fn pane(chat: &mut AgentChat, ui: &mut egui::Ui, look: &Look<'_>) -> Vec<Req
     // Markdown preview's own copy already uses. What `egui` reports of Ctrl/Cmd+V when the clipboard
     // holds a picture rather than text is nothing at all, so the chord is read off the key going back
     // up and the window is asked for the picture - see `pasting`.
-    if pasting(ui) {
+    if pasting(ui, chat.parts().state.prompt_focused) {
         acts.push(Act::Paste);
     }
     apply(chat, acts)
@@ -758,8 +758,12 @@ fn apply(chat: &mut AgentChat, acts: Vec<Act>) -> Vec<Request> {
 /// the one report of the chord that reaches Quill. Asking the window for a picture on the way up is a
 /// keystroke late and nobody can tell; a clipboard with no picture on it answers `None` and nothing
 /// happens, which is what makes it safe to ask after an ordinary text paste as well.
-fn pasting(ui: &egui::Ui) -> bool {
-    if !crate::app::text_box_has_the_keyboard(ui.ctx()) {
+fn pasting(ui: &egui::Ui, in_the_composer: bool) -> bool {
+    // **This pane's own field, not any field.** `text_box_has_the_keyboard` answers whether *some* box in
+    // the window has the keys, and with this pane showing beside a focused explorer filter that was enough
+    // to attach the clipboard's picture to a conversation nobody was typing into. The composer says whether
+    // it has them — see `agent_chat::PaneState::prompt_focused`.
+    if !in_the_composer {
         return false;
     }
     ui.ctx().input(|input| is_a_paste_chord(&input.events))
@@ -802,9 +806,14 @@ fn belongs_here(pointer: Option<Pos2>, area: Rect) -> bool {
 /// reports no cursor movement at all, so `egui` can be holding a position from before the drag began — and
 /// gating on it silently threw the picture away. Nothing else in Quill reads `dropped_files`, so a drop
 /// whose position is not known belongs here rather than nowhere.
+///
+/// **`hover_pos` alone, and not `latest_pos` behind it.** The zoom asks for both because a wheel event
+/// arrives with no pointer at all and the *last place it was seen* is still the honest answer. A drop is the
+/// opposite case: `latest_pos` during an OLE drag is a position from before the drag began, so falling back
+/// to it is falling back to a stale answer that reads as a confident one — which threw the picture away
+/// exactly where this was meant to stop it. Found by the `task-1771` review.
 fn dropped_pictures(ui: &egui::Ui, area: Rect) -> Vec<std::path::PathBuf> {
-    let pointer =
-        ui.ctx().input(|input| input.pointer.hover_pos().or_else(|| input.pointer.latest_pos()));
+    let pointer = ui.ctx().input(|input| input.pointer.hover_pos());
     if !belongs_here(pointer, area) {
         return Vec::new();
     }

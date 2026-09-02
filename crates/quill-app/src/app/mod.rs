@@ -333,6 +333,11 @@ struct Maximised {
     /// What was showing before, in `dock::Panel::index` order, and whether the editing area was.
     editor: bool,
     panels: [bool; dock::SLOTS],
+    /// And who had the keyboard, because putting a panel back **takes** it: `show_the_terminal_tile`
+    /// hands the keys to the terminal whenever it is shown, which is right when somebody presses the
+    /// terminal's own button and wrong when a restore happens to bring it back. Without this, maximising
+    /// the explorer and pressing Escape left the caret in a terminal nobody had asked for.
+    focus: Focus,
 }
 
 /// A tab being carried by the pointer.
@@ -667,6 +672,14 @@ pub struct QuillApp {
     /// out at the new size yet.
     explorer_scroll: f32,
     explorer_scroll_to: Option<f32>,
+    /// Which of the three tiles took the keyboard, while `focus` is `Focus::Terminal`.
+    ///
+    /// The terminal tile and the run tile both set `Focus::Terminal`, because the keys go to the program in
+    /// whichever grid was clicked and the two are the same emulator. That is fine for the zoom — all three
+    /// tiles are drawn at `terminal.font.size`, so they answer with the same setting — and wrong for
+    /// **maximising**, which asked to fill the window with the pane in front of somebody and filled it with
+    /// the terminal instead. Found by the `task-1771` review.
+    tile_with_the_keyboard: dock::Panel,
     /// Which plugin asked for the keyboard, while `focus` is `Focus::Plugin`.
     ///
     /// `Focus` says a plugin has the keys and cannot say **which**, because a plugin's pane is not a
@@ -675,6 +688,12 @@ pub struct QuillApp {
     plugin_with_the_keyboard: Option<String>,
     /// The pane filling the window, and what was showing before it did. See [`Maximised`].
     maximised: Option<Maximised>,
+    /// True while [`Self::toggle_maximised`] is putting panels away or back.
+    ///
+    /// Every function that shows or hides a panel ends a maximise first — see
+    /// [`Self::leave_the_maximised_pane`] — and the maximise itself shows and hides panels, so without this
+    /// it would end itself on its first call.
+    settling_the_maximise: bool,
     /// Set by a double click on the empty part of a tab strip, acted on once the pane loop is over.
     ///
     /// After the loop for the reason every other decision about the panes is: maximising changes what is
@@ -990,7 +1009,9 @@ impl QuillApp {
             explorer_scroll: 0.0,
             explorer_scroll_to: None,
             plugin_with_the_keyboard: None,
+            tile_with_the_keyboard: dock::Panel::Terminal,
             maximised: None,
+            settling_the_maximise: false,
             maximise_wanted: false,
             reading_preview: false,
             preview_images: PreviewImages::new(),
@@ -1311,9 +1332,17 @@ impl QuillApp {
             pane_widths: self.files.pane_widths().to_vec(),
             active_pane: self.files.focused_pane(),
             expanded_folders: self.tree.expanded_folders(),
-            explorer_visible: self.explorer_visible,
-            editor_visible: self.editor_visible,
-            terminal_visible: self.terminal.visible,
+            // **What was showing before a pane was maximised, when one is.** Maximising works by putting
+            // every other panel away, so the visibility flags while it is on are not an arrangement anybody
+            // chose — and this is written to the project's `.quill` every frame. Quill closed with the
+            // explorer maximised would have opened next time with the editing area and the terminal hidden
+            // and nothing left to say why. Found by the `task-1771` review.
+            explorer_visible: self.was_showing(dock::Panel::Explorer, self.explorer_visible),
+            editor_visible: match self.maximised.as_ref() {
+                Some(was) => was.editor,
+                None => self.editor_visible,
+            },
+            terminal_visible: self.was_showing(dock::Panel::Terminal, self.terminal.visible),
             terminal_tabs: self.terminal.tabs.count(),
             // The names a person typed, and nothing else: `Tabs::names` would give back
             // `powershell.exe 2` for a tab nobody has named, which is a name the next run would
@@ -1325,13 +1354,41 @@ impl QuillApp {
                 .iter()
                 .map(|session| session.given_name().unwrap_or_default().to_owned())
                 .collect(),
-            run_visible: self.run.visible,
+            run_visible: self.was_showing(dock::Panel::Run, self.run.visible),
             run_selected: self.run_selected.clone().unwrap_or_default(),
             // Where the window is, which is the other half of "in the same location and state". It
             // is read from egui once a frame and is `None` until there has been one, so a window
             // that has not drawn yet never writes a geometry over the one it was opened with.
             window: self.window_place,
         }
+    }
+
+    /// Whether `panel` was showing before a pane was maximised, or is showing now when none is.
+    ///
+    /// What a project remembers is the arrangement a person chose, and maximising is not one: it is every
+    /// other panel put away for as long as one pane fills the window. See [`Maximised`].
+    fn was_showing(&self, panel: dock::Panel, now: bool) -> bool {
+        match self.maximised.as_ref() {
+            Some(was) => was.panels[panel.index()],
+            None => now,
+        }
+    }
+
+    /// What the project's `.quill` would record about which panels are showing.
+    ///
+    /// **Not what is showing**, while a pane is maximised: see [`Self::was_showing`]. Public for a test, for
+    /// the reason [`Self::panel_rect_for_tests`] is — the difference between the two is the whole of the
+    /// fault this exists to pin, and it is invisible from outside without it.
+    pub fn remembered_panels_for_tests(&self) -> (bool, Vec<bool>) {
+        let editor = match self.maximised.as_ref() {
+            Some(was) => was.editor,
+            None => self.editor_visible,
+        };
+        let panels = dock::Panel::all(self.plugin_ui.pane_count())
+            .into_iter()
+            .map(|panel| self.was_showing(panel, self.panels_showing()[panel.index()]))
+            .collect();
+        (editor, panels)
     }
 
     /// Write what is open down, if it has changed since it was last written.
@@ -1801,6 +1858,7 @@ impl QuillApp {
             }
             Action::SetViewMode(mode) => self.set_view_mode(mode),
             Action::ToggleExplorer => {
+                self.leave_the_maximised_pane();
                 self.explorer_visible = !self.explorer_visible;
                 // Hiding the last panel while the editing area is hidden would leave a window with nothing in
                 // it, so the editing area comes back instead. The other half of this rule is in `ToggleEditor`.
@@ -1811,10 +1869,11 @@ impl QuillApp {
             // The pane holding the keyboard, or the editing area when it is the one holding it. Which is
             // the same question the zoom keys ask, and it is asked in one place. `task-1771`.
             Action::ToggleMaximisedPane => {
-                let pane = self.the_pane_the_keys_zoom();
+                let pane = self.the_pane_the_keys_hold();
                 self.toggle_maximised(pane);
             }
             Action::ToggleEditor => {
+                self.leave_the_maximised_pane();
                 let hiding = self.editor_visible;
                 self.editor_visible = !self.editor_visible;
                 // Hiding it with nothing else showing shows the explorer, rather than the button doing nothing.
@@ -2196,7 +2255,7 @@ impl QuillApp {
         match self.run.start(configuration, &root, size, waker) {
             Ok(_) => {
                 self.show_the_run_tile(true);
-                self.focus = Focus::Terminal;
+                self.a_tile_took_the_keyboard(dock::Panel::Run);
                 self.message = Some(format!("Running {name}"));
                 Ok(())
             }
@@ -3273,10 +3332,11 @@ impl QuillApp {
     /// the command line used to leave both `visible`, and the two grids were then drawn into the
     /// same rectangle, one over the other. `task-1687` made the pair a trio, on the same terms.
     pub fn show_the_run_tile(&mut self, showing: bool) {
+        self.leave_the_maximised_pane();
         self.run.visible = showing;
         if showing {
             self.put_the_other_tiles_away(dock::Panel::Run);
-            self.focus = Focus::Terminal;
+            self.a_tile_took_the_keyboard(dock::Panel::Run);
         } else if self.focus == Focus::Terminal {
             self.focus = Focus::Editor;
         }
@@ -3620,6 +3680,7 @@ impl QuillApp {
     /// terminal, the run tile and the debug tile already keep. What went wrong, if anything did, is said
     /// in the status bar rather than swallowed, which is what every honest miss in Quill does.
     pub fn show_the_plugin_pane(&mut self, pane: &str, showing: bool) {
+        self.leave_the_maximised_pane();
         let Some(slot) = self.plugin_ui.slot_of(pane) else {
             self.message = Some(format!("there is no `{pane}` pane"));
             return;
@@ -3976,11 +4037,12 @@ impl QuillApp {
     ///
     /// The second of the three; see [`Self::show_the_run_tile`] for why there is a function at all.
     pub fn show_the_terminal_tile(&mut self, showing: bool) {
+        self.leave_the_maximised_pane();
         self.terminal.visible = showing;
         if showing {
             self.put_the_other_tiles_away(dock::Panel::Terminal);
             self.open_terminal_tab();
-            self.focus = Focus::Terminal;
+            self.a_tile_took_the_keyboard(dock::Panel::Terminal);
         } else if self.focus == Focus::Terminal {
             self.focus = Focus::Editor;
         }
@@ -3993,6 +4055,7 @@ impl QuillApp {
     /// editor to look at a variable would mean pressing `F8` moved the caret rather than the
     /// program. The stepping keys work wherever the keyboard is, because they are menu entries.
     pub fn show_the_debug_tile(&mut self, showing: bool) {
+        self.leave_the_maximised_pane();
         self.debug_panel.visible = showing;
         if showing {
             self.put_the_other_tiles_away(dock::Panel::Debug);
@@ -5976,7 +6039,11 @@ impl QuillApp {
         if !self.git_looked {
             self.open_repository();
         }
-        self.zoom_taken = false;
+        // **A zoom is nobody's while a modal is open.** Every pane claims the gesture by finding the pointer
+        // inside itself, and a modal covers them without being one of them - so a wheel turned over a ticket
+        // would have zoomed whatever pane happened to be underneath it. Taken before anything can claim it,
+        // which is the same lock `zoom_taken` already is.
+        self.zoom_taken = a_modal_has_the_keyboard(ui.ctx());
         self.zoom_offered_to_the_keyboard = false;
         // Frame local, like the tab drag: every panel that is drawn says whether it is in the air,
         // and `settle_the_panel_drag` reads the answer once they all have. Cleared here rather than
@@ -6597,14 +6664,14 @@ impl QuillApp {
             self.zoom_over_a_panel(ui, dock::Panel::Terminal, terminal_rect);
             self.note_a_panel_grab(dock::Panel::Terminal, panel_outcome.grab);
             if panel_outcome.take_focus {
-                self.focus = Focus::Terminal;
+                self.a_tile_took_the_keyboard(dock::Panel::Terminal);
             }
             if let Some(text) = panel_outcome.copy {
                 ui.ctx().copy_text(text);
             }
             if panel_outcome.new_tab {
                 self.new_terminal_tab();
-                self.focus = Focus::Terminal;
+                self.a_tile_took_the_keyboard(dock::Panel::Terminal);
             }
             if panel_outcome.hide {
                 self.terminal.visible = false;
@@ -6642,7 +6709,7 @@ impl QuillApp {
             self.zoom_over_a_panel(ui, dock::Panel::Run, run_rect_tile);
             self.note_a_panel_grab(dock::Panel::Run, panel_outcome.grab);
             if panel_outcome.take_focus {
-                self.focus = Focus::Terminal;
+                self.a_tile_took_the_keyboard(dock::Panel::Run);
                 // Clicking a run's tab is choosing it, so the widget and the tile agree about what
                 // `Run` with no name means.
                 if let Some(run) = self.run.active() {
@@ -7296,10 +7363,13 @@ impl QuillApp {
         };
         match panel {
             dock::Panel::Explorer => {
-                // The rows start below the heading and the filter box, which do not scroll; `above` is
-                // measured from the top of the panel, so anything above the list anchors the first row,
-                // which is the honest answer for a pointer that was over the filter box.
-                let into_the_list = (above - self.explorer_scroll_offset_to_the_rows()).max(0.0);
+                // **Measured against the layout the pointer was in.** The rows start below a heading and a
+                // filter box that scale with the zoom, so `above` — which was taken in the old layout — has
+                // to have the **old** header taken off it, not the new one. Reading the new one moved the
+                // row about half a row, which the `task-1771` review measured. The header scales by the same
+                // ratio as everything else, so the old one is the new one divided by it.
+                let header = self.explorer_scroll_offset_to_the_rows() / ratio.max(f32::EPSILON);
+                let into_the_list = (above - header).max(0.0);
                 let put = (self.explorer_scroll + into_the_list) * ratio - into_the_list;
                 self.explorer_scroll_to = Some(put.max(0.0));
             }
@@ -7324,6 +7394,14 @@ impl QuillApp {
     /// Public because the menu, the command line and a double click on a header all reach it, which is the
     /// one-action-one-place rule `run_action` keeps.
     pub fn toggle_maximised(&mut self, pane: Option<dock::Panel>) {
+        // Every `show_*` below ends a maximise first, and this **is** the maximise. See
+        // [`Self::settling_the_maximise`].
+        self.settling_the_maximise = true;
+        self.settle_the_maximise(pane);
+        self.settling_the_maximise = false;
+    }
+
+    fn settle_the_maximise(&mut self, pane: Option<dock::Panel>) {
         match self.maximised.take() {
             // The same one again: put everything back where it was.
             Some(was) if was.pane == pane => {
@@ -7337,6 +7415,10 @@ impl QuillApp {
                 if !self.editor_visible && !self.anything_is_showing_in_the_panes() {
                     self.editor_visible = true;
                 }
+                // **And who had the keyboard.** Putting a panel back takes it: `show_the_terminal_tile`
+                // hands the keys to the terminal whenever it is shown, which is right when somebody presses
+                // its own button and wrong when a restore happens to bring it back.
+                self.focus = was.focus;
             }
             // A different one, or none: this pane fills the window and the memory is kept.
             was => {
@@ -7344,6 +7426,7 @@ impl QuillApp {
                     pane,
                     editor: self.editor_visible,
                     panels: self.panels_showing(),
+                    focus: self.focus,
                 });
                 for panel in dock::Panel::all(self.plugin_ui.pane_count()) {
                     self.show_a_panel(panel, pane == Some(panel));
@@ -7376,6 +7459,25 @@ impl QuillApp {
     /// The four have their own flags and a contributed pane has a registry, so "put this panel away" was
     /// four `match` arms written out wherever it was needed. One function, so maximising cannot forget a
     /// kind of panel the day a fifth is added — the compiler names it here.
+    /// Put the window back before a panel is shown or hidden by anything but the maximise itself.
+    ///
+    /// **A maximised window is one pane and nothing else**, so a toggle inside it has no arrangement to
+    /// change: hiding the maximised pane left a body with nothing in it at all, and showing a second one
+    /// left two panes up with the menu still offering `Restore Pane`. The arrangement comes back first and
+    /// the toggle then means what it has always meant. Found by the `task-1771` review.
+    fn leave_the_maximised_pane(&mut self) {
+        if self.maximised.is_some() && !self.settling_the_maximise {
+            self.restore_the_maximised_pane();
+        }
+    }
+
+    /// A tile took the keyboard. `Focus::Terminal` says a grid has it and cannot say which of the three,
+    /// so the answer is kept beside it — see [`Self::tile_with_the_keyboard`].
+    fn a_tile_took_the_keyboard(&mut self, tile: dock::Panel) {
+        self.focus = Focus::Terminal;
+        self.tile_with_the_keyboard = tile;
+    }
+
     fn show_a_panel(&mut self, panel: dock::Panel, showing: bool) {
         match panel {
             dock::Panel::Explorer => self.explorer_visible = showing,
@@ -7391,12 +7493,6 @@ impl QuillApp {
     }
 
     /// Which panel the zoom keys are about, or `None` when they are about the editing area.
-    ///
-    /// `Focus` is the one value that says who holds the keyboard, so it is the one thing asked. Two cases
-    /// are worth writing down. The three tiles share `terminal.font.size`, so it does not matter which of
-    /// them `Focus::Terminal` meant — they all answer with the same setting. And a plugin showing as a
-    /// **tab** is in the editing area, drawn at the editor's own font, so it is not a panel and the keys
-    /// go where they always went; only a contributed **pane** answers here.
     fn the_pane_the_keys_zoom(&self) -> Option<dock::Panel> {
         // **A picture is the one exception, and it is not a nicety.** `task-1658` asks that control and
         // plus zoom an image, and an image is opened by clicking it in the tree - which leaves the keyboard
@@ -7404,13 +7500,27 @@ impl QuillApp {
         // the keyboard alone would therefore mean the one gesture that ticket exists for could never be made
         // without clicking somewhere else first. A picture has no text in it to be typing at, so there is
         // nothing to be lost by saying the keys are always its own.
+        //
+        // It is the **zoom's** exception and nobody else's, which is why this is not the function
+        // [`Self::the_pane_the_keys_hold`] is: maximising a pane while a picture happens to be open in a tab
+        // is still about the pane holding the keyboard.
         if self.files.active().picture.is_some() {
             return None;
         }
+        self.the_pane_the_keys_hold()
+    }
+
+    /// Which panel holds the keyboard, or `None` for the editing area.
+    ///
+    /// `Focus` is the one value that says who holds it, so it is the one thing asked. Two cases are worth
+    /// writing down. The three tiles share `terminal.font.size` and are one strip at a time, so it does not
+    /// matter which of them `Focus::Terminal` meant. And a plugin showing as a **tab** is in the editing
+    /// area, so it is not a panel and the keys are the editing area's; only a contributed **pane** answers.
+    fn the_pane_the_keys_hold(&self) -> Option<dock::Panel> {
         match self.focus {
             Focus::Editor => None,
             Focus::Explorer => Some(dock::Panel::Explorer),
-            Focus::Terminal => Some(dock::Panel::Terminal),
+            Focus::Terminal => Some(self.tile_with_the_keyboard),
             Focus::Plugin => {
                 let plugin = self.plugin_with_the_keyboard.as_deref()?;
                 (0..self.plugin_ui.pane_count())
@@ -7856,19 +7966,24 @@ impl QuillApp {
     ///
     /// **The room is shared out in proportion when the editing area is hidden**, which `dock::fill_the_depth`
     /// does so that hiding it gives the room to the panels rather than leaving a hole. That is right for the
-    /// layout and wrong for a drag: a panel's stored width is then a *share* rather than a size, so ten
+    /// layout and wrong for a drag: a panel's stored measurement is then a *share* rather than a size, so ten
     /// points of pointer became three points of movement, less the wider it got — and it stopped altogether
-    /// at [`crate::settings::PANEL_MAX_WIDTH`]. `task-1771` reports that as the Agent-Chat pane having a
-    /// maximum width; the cap is gone, and this is the other half.
+    /// at what [`crate::settings::PANEL_MAX_WIDTH`] used to be. `task-1771` reports that as the Agent-Chat
+    /// pane having a maximum width; the cap is gone, and this is the other half.
     ///
     /// Two steps, and the first is what makes the second exact. **Write the rendered measurements back**, so
     /// the stored numbers add up to the room and the proportional share is the identity. Then **take what
-    /// this panel gains off the side facing it**, so they go on adding up to the room and the divider lands
+    /// this side gains off the side facing it**, so they go on adding up to the room and the divider lands
     /// under the pointer rather than a fraction of the way towards it.
     ///
-    /// With nothing on the far side there is nothing to take from and a panel cannot grow: it already has
-    /// everything, which is what its divider sitting against the edge of the window says. Shrinking still
-    /// works, because the room it gives up goes to the panels beside it on its own side.
+    /// **A column's side is the sum of its panels and a strip's side is the greatest of them**, which is
+    /// `dock::regions`' own rule, and it is what decides who moves. Growing a column's side by `by` means
+    /// growing the one panel that was dragged; growing a strip's side means growing **every** panel on it,
+    /// because they share one depth — a strip whose other panel still asked for the old depth did not move
+    /// at all, which is the case the `task-1771` review found.
+    ///
+    /// With nothing on the far side there is nothing to take from and a side cannot grow: it already has
+    /// everything, which is what its divider sitting against the edge of the window says.
     fn move_a_divider_with_no_editor(&mut self, panel: dock::Panel, by: f32) {
         let side = self.panes.dock.side_of(panel);
         let column = side.is_a_column();
@@ -7903,28 +8018,54 @@ impl QuillApp {
                 set(&mut self.panes, one, drawn.max(least));
             }
         }
-        // What the far side can give, which is everything above each of its own smallest sizes.
+        let mine: Vec<dock::Panel> =
+            here.iter().copied().filter(|one| self.panes.dock.side_of(*one) == side).collect();
         let facing: Vec<dock::Panel> = here
             .into_iter()
             .filter(|one| self.panes.dock.side_of(*one) == side.opposite())
             .collect();
-        let givable: f32 = facing
-            .iter()
-            .map(|one| (measured(&self.panes, *one) - smallest(&self.panes, *one)).max(0.0))
-            .sum();
-        let mine = measured(&self.panes, panel);
-        let by = by.clamp(-(mine - smallest(&self.panes, panel)).max(0.0), givable);
+        // How deep each side is, and how far each can be squeezed — by its own rule.
+        let depth = |panes: &Panes, of: &[dock::Panel]| -> f32 {
+            match column {
+                true => of.iter().map(|one| measured(panes, *one)).sum(),
+                false => of.iter().map(|one| measured(panes, *one)).fold(0.0_f32, f32::max),
+            }
+        };
+        let floor = |panes: &Panes, of: &[dock::Panel]| -> f32 {
+            match column {
+                true => of.iter().map(|one| smallest(panes, *one)).sum(),
+                false => of.iter().map(|one| smallest(panes, *one)).fold(0.0_f32, f32::max),
+            }
+        };
+        let givable = (depth(&self.panes, &facing) - floor(&self.panes, &facing)).max(0.0);
+        let sparable = (depth(&self.panes, &mine) - floor(&self.panes, &mine)).max(0.0);
+        let by = by.clamp(-sparable, givable);
         if by == 0.0 {
             return;
         }
-        set(&mut self.panes, panel, mine + by);
-        // Taken from the far side in proportion to what each of them has to give, so a side holding two
-        // panels shrinks as one thing rather than emptying the first of them first.
+        match column {
+            // One panel moves and its side's total moves with it, because a column's side is a sum.
+            true => {
+                let was = measured(&self.panes, panel);
+                set(&mut self.panes, panel, was + by);
+            }
+            // Every panel moves, because a strip's side is one depth and the greatest of them is it.
+            false => {
+                for one in mine {
+                    let was = measured(&self.panes, one);
+                    let least = smallest(&self.panes, one);
+                    set(&mut self.panes, one, (was + by).max(least));
+                }
+            }
+        }
+        // And the far side gives it up: in proportion to what each panel has to give for a column, and
+        // together for a strip, which is the same rule read the other way round.
         for one in facing {
             let spare = (measured(&self.panes, one) - smallest(&self.panes, one)).max(0.0);
-            let share = match givable > 0.0 {
-                true => by * (spare / givable),
-                false => 0.0,
+            let share = match column {
+                true if givable > 0.0 => by * (spare / givable),
+                true => 0.0,
+                false => by.min(spare),
             };
             let now = measured(&self.panes, one);
             set(&mut self.panes, one, now - share);

@@ -501,14 +501,31 @@ impl Group {
 /// **A sprint and an epic are named by name, and a name has spaces in it.** `August 2nd Half` is three
 /// arguments, so a command taking `<sprint> <name>` cannot simply read the first of them — and asking
 /// somebody to look an id up first would be asking them to read the database to rename a fortnight. So the
-/// longest prefix that names one wins, which is unambiguous in the one way that matters: a name cannot be a
-/// prefix of itself and something else at the same time.
+/// longest prefix that names one wins.
+///
+/// **The longest prefix is a guess, and it is a guess with a way out.** With sprints called `August` and
+/// `August 2nd Half`, `sprint-rename August 2nd Half Planning` renames the longer one and there is no way to
+/// spell the other reading — the `task-1771` review is right about that. What there is instead is the **id**,
+/// which is one argument, cannot be a prefix of anything, and is tried first: `sprint-rename 3 2nd Half
+/// Planning` says exactly one thing. `plugins view agent-tasks` is where an id is read off, and it is what
+/// the board's own buttons pass. A quoting rule would be the alternative and would be a second grammar in a
+/// command line that has none.
 ///
 /// `found` says whether a run of words names something, and answers which one. `None` when nothing does.
 fn split_off_a_name(
     arguments: &[String],
     found: impl Fn(&str) -> Option<usize>,
 ) -> Option<(usize, String)> {
+    // **An id is one argument and settles it outright**, which is what the board's own buttons pass and
+    // what a caller with two sprints of the same name reaches for. It is tried first because it cannot be
+    // ambiguous: a name is words and an id is a number, and no sprint is called `7`.
+    if let Some(first) = arguments.first() {
+        if first.parse::<i64>().is_ok() {
+            if let Some(at) = found(first) {
+                return Some((at, arguments[1..].join(" ")));
+            }
+        }
+    }
     for taken in (1..=arguments.len()).rev() {
         let said = arguments[..taken].join(" ");
         if let Some(at) = found(&said) {
@@ -2982,7 +2999,14 @@ impl UiProvider for AgentTasks {
             "sprint-rename" => {
                 let sprints = self.store()?.sprints()?;
                 let (sprint, name) = split_off_a_name(arguments, |said| {
-                    sprints.iter().position(|sprint| sprint.name.eq_ignore_ascii_case(said))
+                    sprints
+                        .iter()
+                        .position(|sprint| sprint.name.eq_ignore_ascii_case(said))
+                        .or_else(|| {
+                            said.parse::<i64>()
+                                .ok()
+                                .and_then(|id| sprints.iter().position(|sprint| sprint.id == id))
+                        })
                 })
                 .map(|(at, name)| (sprints[at].clone(), name))
                 .map_or_else(
@@ -3014,7 +3038,14 @@ impl UiProvider for AgentTasks {
             "epic-rename" => {
                 let epics = self.store()?.epics()?;
                 let (epic, name) = split_off_a_name(arguments, |said| {
-                    epics.iter().position(|epic| epic.name.eq_ignore_ascii_case(said))
+                    epics
+                        .iter()
+                        .position(|epic| epic.name.eq_ignore_ascii_case(said))
+                        .or_else(|| {
+                            said.parse::<i64>()
+                                .ok()
+                                .and_then(|id| epics.iter().position(|epic| epic.id == id))
+                        })
                 })
                 .map(|(at, name)| (epics[at].clone(), name))
                 .map_or_else(
@@ -3037,15 +3068,24 @@ impl UiProvider for AgentTasks {
             // The colour is the **last** word and the epic is everything before it, so an epic whose name
             // has a space in it can be recoloured without knowing its id.
             "epic-colour" | "epic-color" => {
+                if arguments.len() < 2 {
+                    return Err(
+                        "say which epic and what colour: `epic-colour Quill #8B6BFF`".to_owned()
+                    );
+                }
                 let colour = arguments.last().map(String::as_str).unwrap_or("");
                 let named = arguments
                     .get(..arguments.len().saturating_sub(1))
                     .map(|said| said.join(" "))
                     .unwrap_or_default();
                 let epic = self.epic_named(&named)?;
+                // **Any `#RRGGBB` the board's own colour reader accepts.** The seven in `SWATCHES` are what
+                // the Epics view offers, because seven swatches are what the browser board offers; they are
+                // not a set the column is restricted to, and a refusal that named them as though they were
+                // said something the store does not enforce. The refusal names them as the ones on offer.
                 if crate::services::plugins::colour(colour).is_none() {
                     return Err(format!(
-                        "`{colour}` is not a colour: say one of {}",
+                        "`{colour}` is not a colour: say `#RRGGBB`. The Epics view offers {}",
                         SWATCHES.join(", ")
                     ));
                 }
@@ -3055,6 +3095,17 @@ impl UiProvider for AgentTasks {
             }
             "epic-delete" => {
                 let epic = self.epic_named(&rest(0))?;
+                // **`general` is the one epic that stays**, which is the browser board's own rule and what
+                // the Epics view draws — it offers no Delete on that card. Enforced here rather than only
+                // there, because a rule a control hides and a command allows is not a rule. Found by the
+                // `task-1771` review, which pointed out that renaming it first would have exposed the
+                // control anyway.
+                if epic.name.eq_ignore_ascii_case("general") {
+                    return Err(
+                        "`general` is the epic every ticket falls back to, so it cannot be deleted"
+                            .to_owned(),
+                    );
+                }
                 self.store()?.delete_epic(epic.id, &now)?;
                 self.refresh()?;
                 Ok(Answer::said(format!(
@@ -3235,6 +3286,11 @@ impl UiProvider for AgentTasks {
     }
 
     fn modal(&mut self, ctx: &egui::Context, look: &Look<'_>) -> (Vec<Request>, bool) {
+        // **Cleared before anything else, on every frame.** A `ShapeIdx` belongs to one frame's shape list
+        // and means nothing on the next, so a slot left behind by a modal that has since closed is a slot
+        // the window would paint into on some later frame. It is filled in again below when a modal really
+        // is drawn.
+        self.modal_canvas = None;
         if !self.modal_open || self.detail.task.is_none() {
             return (Vec::new(), false);
         }

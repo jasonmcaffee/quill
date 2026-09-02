@@ -915,12 +915,7 @@ impl Store {
                     .map_err(|problem| format!("a ticket could not be read: {problem}"))?
             };
             for task in &unfinished {
-                self.connection
-                    .execute(
-                        "UPDATE task SET sprint_id = NULL, updated_at = ?2 WHERE id = ?1",
-                        params![task, now],
-                    )
-                    .map_err(|problem| format!("a ticket could not go back to the backlog: {problem}"))?;
+                self.to_the_foot_of_the_backlog(*task, now)?;
             }
             self.connection
                 .execute("UPDATE sprint SET status = 'completed' WHERE id = ?1", params![id])
@@ -943,17 +938,53 @@ impl Store {
     /// a fortnight somebody named; the work in it is the work, and it outlives the name.
     pub fn delete_sprint(&self, id: i64, now: &str) -> Result<(), String> {
         self.in_transaction(|| {
-            self.connection
-                .execute(
-                    "UPDATE task SET sprint_id = NULL, updated_at = ?2 WHERE sprint_id = ?1",
-                    params![id, now],
-                )
-                .map_err(|problem| format!("its tickets could not go back to the backlog: {problem}"))?;
+            // One at a time, because each has to be given a place at the foot of the backlog's own lane —
+            // see `to_the_foot_of_the_backlog`. A sprint holds tens of tickets, not thousands.
+            let leaving: Vec<i64> = {
+                let mut statement = self.prepared("SELECT id FROM task WHERE sprint_id = ?1")?;
+                let rows = statement
+                    .query_map(params![id], |row| row.get(0))
+                    .map_err(|problem| format!("the sprint's tickets could not be read: {problem}"))?;
+                rows.collect::<Result<Vec<i64>, _>>()
+                    .map_err(|problem| format!("a ticket could not be read: {problem}"))?
+            };
+            for task in leaving {
+                self.to_the_foot_of_the_backlog(task, now)?;
+            }
             self.connection
                 .execute("DELETE FROM sprint WHERE id = ?1", params![id])
                 .map_err(|problem| format!("the sprint could not be deleted: {problem}"))?;
             Ok(())
         })
+    }
+
+    /// Put one ticket at the foot of the backlog's own lane, keeping the lane it is in.
+    ///
+    /// **A position belongs to a `(status, sprint)` list**, which is what `set_sprint_of` says and what
+    /// completing or deleting a sprint used not to honour: a ticket carrying position 0 out of a sprint
+    /// landed on top of the backlog's own position 0, so returned work was interleaved with what was
+    /// already there instead of arriving after it. Found by the `task-1771` review.
+    fn to_the_foot_of_the_backlog(&self, id: i64, now: &str) -> Result<(), String> {
+        let status: String = self
+            .connection
+            .query_row("SELECT status FROM task WHERE id = ?1", params![id], |row| row.get(0))
+            .map_err(|problem| format!("the ticket could not be read: {problem}"))?;
+        let position: i64 = self
+            .connection
+            .query_row(
+                "SELECT COALESCE(MAX(position), -1) + 1 FROM task \
+                 WHERE status = ?1 AND sprint_id IS NULL",
+                params![status],
+                |row| row.get(0),
+            )
+            .map_err(|problem| format!("the ticket's place could not be worked out: {problem}"))?;
+        self.connection
+            .execute(
+                "UPDATE task SET sprint_id = NULL, position = ?2, updated_at = ?3 WHERE id = ?1",
+                params![id, position, now],
+            )
+            .map_err(|problem| format!("a ticket could not go back to the backlog: {problem}"))?;
+        Ok(())
     }
 
     /// Rename an epic, recolour it, or both. A `None` leaves that half alone.

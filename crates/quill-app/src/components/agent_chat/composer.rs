@@ -341,6 +341,7 @@ fn prompt(parts: Parts<'_>, ui: &mut egui::Ui, look: &Look<'_>, area: Rect) -> V
         Pos2::new(disc.left() - 8.0 * scale, area.bottom() - 6.0 * scale),
     );
 
+    parts.state.prompt_focused = false;
     if field.width() > 30.0 {
         let rows = ((field.height() / (look.font_size * 1.45)).floor() as usize).max(1);
         let response = ui.put(
@@ -356,6 +357,8 @@ fn prompt(parts: Parts<'_>, ui: &mut egui::Ui, look: &Look<'_>, area: Rect) -> V
         // Named, because every control in Quill has a plain name and a test finds one by it. Its hint
         // text is not a name: it is what the field says when it is empty.
         response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Message"));
+        // Recorded so the paste knows whose key press it is reading — see `PaneState::prompt_focused`.
+        parts.state.prompt_focused = response.has_focus();
         // **Enter sends and Shift+Enter is a new line**, which is what the page this copies does and
         // what everybody expects of a chat.
         //

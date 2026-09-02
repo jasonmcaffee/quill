@@ -152,8 +152,11 @@ fn contents(
     } else {
         // One column: the fields first, because at this width they are what a person came for — the description
         // is easier to read in a tab — and then whatever height is left goes to the rest.
-        let fields =
-            Rect::from_min_max(body.min, Pos2::new(body.max.x, body.min.y + FIELDS_ALONE_AT_DEFAULT * look.scale()));
+        // **Never more than half of it**, and it scrolls inside whatever it gets — see `right_column`. A
+        // fixed 330 points was a rectangle the fields plainly did not fit in, and nothing was clipped to it,
+        // so the description below started underneath them.
+        let wanted = (FIELDS_ALONE_AT_DEFAULT * look.scale()).min(body.height() * 0.5);
+        let fields = Rect::from_min_max(body.min, Pos2::new(body.max.x, body.min.y + wanted));
         let rest = Rect::from_min_max(Pos2::new(body.min.x, fields.max.y + PAD), body.max);
         outcome.requests.extend(right_column(board, ui, fields, look, task, new));
         if rest.height() > 120.0 {
@@ -291,6 +294,13 @@ fn left_column(
     let comment_height = give(comment_want, comment_least, &mut short);
     let todo_height = give(todo_want, todo_least, &mut short);
     let description_height = give(description_want.max(description_least), description_least, &mut short);
+    // **And whatever is still short comes off the description**, which is the only section that can be
+    // drawn small and still be a section: the todos are rows, the terminal is a character grid and the
+    // comments are a list with a box under them, and each has a size below which it is a strip. A modal
+    // dragged down to `modal::MIN_HEIGHT` has less room than every minimum added up, and a budget that
+    // stopped at "every section is at its least" would still have run off the bottom. Found by the
+    // `task-1771` review.
+    let description_height = (description_height - short).max(0.0);
 
     label(ui, look, Pos2::new(area.min.x, pen), "Description");
     // The two view buttons, on the label's own row and right aligned, which is where a section's controls go.
@@ -339,8 +349,10 @@ fn left_column(
     }
     pen += heading;
     if todos_open {
-        let todos_at =
-            Rect::from_min_size(Pos2::new(area.min.x, pen), Vec2::new(area.width(), todo_height));
+        let todos_at = Rect::from_min_size(
+            Pos2::new(area.min.x, pen),
+            Vec2::new(area.width(), todo_height.min((area.max.y - pen).max(0.0))),
+        );
         requests.extend(super::detail::todo_rows(board, ui, todos_at, look));
         pen = todos_at.max.y + gap;
     }
@@ -354,29 +366,20 @@ fn left_column(
     if disclosure(ui, look, Pos2::new(area.min.x, pen), &said, !terminal_open) {
         board.terminal_shut = terminal_open;
     }
-    // Only a ticket that already has a session gets a button here. Starting an agent is `Start Work`'s job,
-    // so there is no second control that does it. On the heading's own row, right aligned, which is where a
-    // section's controls go and where the description's two view buttons already are.
-    if !attached && task.session_id.is_some() {
-        let at = Rect::from_min_size(
-            Pos2::new(area.max.x - 110.0, pen - 3.0),
-            Vec2::new(110.0, 22.0),
-        );
-        if crate::components::controls::choice_button(ui, at, "Resume session", false) {
-            match board.command_now("resume", std::slice::from_ref(&task.key)) {
-                Ok(answer) if !answer.message.is_empty() => {
-                    requests.push(Request::Message(answer.message))
-                }
-                Ok(_) => {}
-                Err(problem) => requests.push(Request::Message(problem)),
-            }
-        }
-    }
+    // **No second `Resume session` here.** The one button at the top of the right column already becomes
+    // it when a ticket has a session and no terminal, and a copy beside this heading was a second control
+    // with the same plain name — which `choice_button` also derives its id from, so the two shared that as
+    // well. Found by the `task-1771` review; the rule is `CLAUDE.md`'s "give every control a name", and two
+    // controls with one name is the case it exists to stop.
     pen += heading;
     if terminal_open {
-        let terminal_at =
-            Rect::from_min_size(Pos2::new(area.min.x, pen), Vec2::new(area.width(), terminal_height));
-        requests.extend(super::detail::terminal_section(board, ui, terminal_at, look, task, false));
+        let terminal_at = Rect::from_min_size(
+            Pos2::new(area.min.x, pen),
+            Vec2::new(area.width(), terminal_height.min((area.max.y - pen).max(0.0))),
+        );
+        if terminal_at.height() > 20.0 {
+            requests.extend(super::detail::terminal_section(board, ui, terminal_at, look, task, false));
+        }
         pen = terminal_at.max.y + gap;
     }
 
@@ -411,6 +414,43 @@ fn right_column(
     task: &Task,
     new: bool,
 ) -> Vec<Request> {
+    // **It scrolls, because it cannot be made to fit.** A button, seven fields, two lines of prose, a JIRA
+    // key, a date and a Delete are about 570 points at the default size — more than the column has in a
+    // modal dragged down towards its smallest, and far more than the 330 points the one-column layout gives
+    // it. Nothing here can be dropped: every one of them is a thing a ticket needs before an agent can be
+    // started, which is what `task-28` added them for. So the room is what it is and the column scrolls,
+    // which is what the page this is modelled on does with the whole of its own body. Found by the
+    // `task-1771` review, which measured the overlap.
+    let mut requests = Vec::new();
+    let mut inside = ui.new_child(egui::UiBuilder::new().max_rect(area));
+    inside.set_clip_rect(area);
+    egui::ScrollArea::vertical()
+        .id_salt("agent-tasks-ticket-fields")
+        .auto_shrink([false, false])
+        .show(&mut inside, |ui| {
+            let top = ui.cursor().min.y;
+            let at = Rect::from_min_size(
+                Pos2::new(area.min.x, top),
+                Vec2::new(area.width(), area.height().max(1.0)),
+            );
+            let (asked, used) = fields(board, ui, at, look, task, new);
+            requests = asked;
+            // What the scrollbar measures itself against. Allocated rather than left to the widgets, none of
+            // which allocate at all: every one of them is drawn at a rectangle this function worked out.
+            ui.allocate_space(Vec2::new(area.width(), (used - top).max(0.0)));
+        });
+    requests
+}
+
+/// The fields themselves, answering where the last of them ended.
+fn fields(
+    board: &mut AgentTasks,
+    ui: &mut egui::Ui,
+    area: Rect,
+    look: &Look<'_>,
+    task: &Task,
+    new: bool,
+) -> (Vec<Request>, f32) {
     let mut requests = Vec::new();
     let mut pen = area.min.y;
     let width = area.width() - PAD;
@@ -447,7 +487,7 @@ fn right_column(
                 Err(problem) => requests.push(Request::Message(problem)),
             }
         }
-        pen += 34.0 + 14.0;
+        pen += 34.0 + 10.0;
     }
 
     // ---------------------------------------------------------------- what the ticket is
@@ -471,7 +511,7 @@ fn right_column(
                 }
             }
         }
-        pen += tall + 6.0;
+        pen += tall + 4.0;
     }
 
     let (chosen, tall) = dropdown_row(
@@ -486,7 +526,7 @@ fn right_column(
     if let Some(chosen) = chosen {
         requests.extend(write(board, task, Field::Assignee(chosen)));
     }
-    pen += tall + 6.0;
+    pen += tall + 4.0;
 
     // **Absent** for a ticket assigned to a person rather than disabled, which is Quill's rule: the `F` button
     // is not drawn for a `.rs` file either.
@@ -505,7 +545,7 @@ fn right_column(
         if let Some(chosen) = chosen {
             requests.extend(write(board, task, Field::Model(chosen)));
         }
-        pen += tall + 6.0;
+        pen += tall + 4.0;
 
         let (chosen, tall) = dropdown_row(
             ui,
@@ -561,7 +601,7 @@ fn right_column(
     if let Some(chosen) = chosen {
         requests.extend(write(board, task, Field::Priority(chosen)));
     }
-    pen += tall + 6.0;
+    pen += tall + 4.0;
 
     let epics: Vec<(String, String)> =
         board.board().epics.iter().map(|epic| (epic.id.to_string(), epic.name.clone())).collect();
@@ -577,7 +617,7 @@ fn right_column(
     if let Some(chosen) = chosen {
         requests.extend(write(board, task, Field::Epic(chosen)));
     }
-    pen += tall + 6.0;
+    pen += tall + 4.0;
 
     // ---------------------------------------------------------------- the JIRA issue, and when it was made
     //
@@ -661,15 +701,16 @@ fn right_column(
                 false => board.delete_asked = true,
             }
         }
+        pen += 28.0;
         if asking {
-            pen += 28.0;
             let at = Rect::from_min_size(Pos2::new(area.min.x, pen), Vec2::new(width, 22.0));
             if crate::components::controls::choice_button(ui, at, "Keep it", false) {
                 board.delete_asked = false;
             }
+            pen += 26.0;
         }
     }
-    requests
+    (requests, pen)
 }
 
 /// The one control on a ticket that destroys work: a bin, a word, and the board's own red.
@@ -846,7 +887,7 @@ fn dropdown_row(
     }
     let picked =
         super::value_dropdown_over(ui, at, name, options, chosen, empty, !look.chrome.is_recording());
-    (picked, look.font_size + 32.0)
+    (picked, look.font_size + 30.0)
 }
 
 /// A named field, answering what was typed when it changed.
@@ -861,15 +902,26 @@ fn field_row(
     label(ui, look, area.min, name);
     let at = Rect::from_min_size(
         Pos2::new(area.min.x, area.min.y + look.font_size + 2.0),
-        Vec2::new(area.width(), 22.0),
+        Vec2::new(area.width(), 24.0),
     );
-    ui.painter().rect(
-        at,
-        CornerRadius::same(look.corner_radius as u8),
-        look.palette.field,
-        egui::Stroke::new(1.0, look.palette.control_border),
-        egui::StrokeKind::Inside,
-    );
+    // The same well every value on this column sits in, so the one field among eight dropdowns does not read
+    // as a different kind of control. See `dropdown_row`.
+    if look.chrome.is_recording() {
+        look.chrome.sunken(
+            at,
+            look.corner_radius + 2.0,
+            look.ground(look.palette.board_well),
+            crate::services::vello_canvas::Lift::Small,
+        );
+    } else {
+        ui.painter().rect(
+            at,
+            CornerRadius::same(look.corner_radius as u8),
+            look.palette.field,
+            egui::Stroke::new(1.0, look.palette.control_border),
+            egui::StrokeKind::Inside,
+        );
+    }
     let mut typed = value.to_owned();
     // Its own id scope for the reason a row of choices has one: two fields whose hint happens to match would be
     // two text boxes sharing an id.
@@ -886,5 +938,5 @@ fn field_row(
             response.changed()
         })
         .inner;
-    (changed.then_some(typed), look.font_size + 28.0)
+    (changed.then_some(typed), look.font_size + 30.0)
 }

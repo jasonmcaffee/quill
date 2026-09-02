@@ -378,6 +378,30 @@ runs inside a frame and a command that blocked would stop the window drawing for
 model's answer, which is the sentence `quill_git::Worker` exists for; `state` says when it has
 finished, which is the shape `run start` and `run output` already have.
 
+### Pasting a picture is seen on the key going **up**, and it could never have been seen any other way
+
+`task-1771` reported that pasting a picture into the composer did nothing, and the reason is in
+`egui-winit` rather than here. Its `on_keyboard_input` recognises the paste chord, reads the
+clipboard's **text**, pushes `Event::Paste` only `if !contents.is_empty()`, and then returns — so the
+`V` key press is swallowed as well. With a picture on the clipboard `get_text()` fails outright and
+the frame carries **no event at all**. This pane was watching for an *empty* `Event::Paste`, which is
+a thing that library never sends, so the condition could not once have been true.
+
+The `return` is taken only while the key is **down**. The release comes back through the ordinary path
+as `Event::Key { key: V, pressed: false, modifiers }` with the modifier still held, and that is the one
+report of the chord that reaches Quill. `components::agent_chat::pasting` reads it, and
+`is_a_paste_chord` is its own function so a test can hold the two event shapes side by side.
+
+Two things follow from asking a keystroke late. **Nothing on the clipboard is not a fault** —
+`picture::from_the_clipboard` answers `Ok(null)` rather than refusing, because the release arrives
+after an ordinary *text* paste too and "there is no picture on the clipboard" under the composer every
+time somebody pasted a sentence would be a message about nothing. A picture that is there and will not
+decode is still a failure and still says so.
+
+And **a drop with no pointer is this pane's**. Windows carries a file over a window through OLE and
+sends no cursor movement at all, so `egui` can be holding a position from before the drag began;
+gating the drop on it threw the picture away silently. Nothing else in Quill reads `dropped_files`.
+
 ## A plugin's pane has depth, and `epaint` cannot draw any of it
 
 `task-1765` asks the Agent-Tasks board to look like the tasks page of `ai-service`, which is **dark
@@ -500,6 +524,69 @@ not `components::activity_bar`: that rail is on the window's edge and belongs to
 adding entries to it would be a plugin deciding what the window's furniture is. And the rail is inset
 **16** points where everything else is inset 8, because a raised surface's shadow reaches about 24 and the
 canvas is cut to the pane: at 8 the rail's own shadow was clipped and it read as a strip stuck to the side.
+
+### A surface has four corners, and a modal has a canvas of its own
+
+Two things `task-1771` added to the renderer, both because something was being faked without one.
+
+**`Decor::Rect` and `Decor::Clip` carry four radii.** `Chrome` took one, so a chat bubble's squared-off
+corner — `.messageWrapper`'s `border-top-left-radius: 6px` — was squared by painting a *flat* patch of
+`board_card` over it with `egui`. Flat, so it carried none of the inset shadow the rest of the bubble
+has, and it read as a lighter block sitting proud of the top left of every answer, which is exactly
+what the ticket reported. `vello_canvas::Corners` is `From<f32>`, so every existing caller goes on
+passing one number and meaning all four. A **shadow** still takes one: `fill_blurred_rounded_rect` has
+no per-corner form, and nine points of difference on one corner of a Gaussian is not visible.
+
+**A modal reserves its own canvas, from inside.** A pane's decoration is rasterised into a slot the
+*window* reserved, because the window paints the pane's ground. A modal is drawn by `egui::Modal` on a
+foreground layer the window never touches — and `egui::Painter::set` writes to the layer its own
+painter belongs to — so the slot has to be reserved from inside the modal and the painter has to come
+back with it. That is `plugin_ui::ChromeSlot` and `UiProvider::take_the_modals_canvas`, taken once on
+the frame the modal was drawn because a `ShapeIdx` belongs to one frame's shape list.
+
+Without it the ticket modal had **no decoration at all**: every well, field and button on it fell back
+to the flat form, which is why it looked plain beside the board it opens from. A control that has to
+draw over such a well asks `look.chrome.is_recording()` and skips its own ground —
+`controls::dropdown_over`, beside the `choice_button_over` and `search_field_over` that already existed
+for the same reason.
+
+### The board's three listings are the browser board's, and a ticket is the modal
+
+`task-1771` asked for the Backlog, Completed and Epics views to be what `ui/src/app/tasks` has, and for
+the ticket modal to stop looking like nobody had arranged it. Four things fell out of that, and each is
+worth knowing before touching any of them.
+
+**A listing groups by sprint, and a row is a row.** `components::agent_tasks::listings` is the whole of
+it. Backlog is every sprint that is not finished, then the backlog itself, each with its own heading,
+badge, count and buttons; Completed is the finished ones newest first, each folding shut and nothing in
+it draggable, because a record of what was done is not somewhere to work. A card on the board is a
+hundred points tall and carries a play button and three counts, because a lane holds a dozen of them and
+each is a thing to act on; a listing holds hundreds and what somebody is doing there is **finding** one,
+so a row is one line. That difference is the difference between a board and a list.
+
+**A row dragged between groups changes its sprint, and where it landed is settled after the loop.** Each
+group is drawn before the ones below it, so a group cannot be asked "is the pointer over you" while the
+row reporting the drag has not been drawn yet — every group's rectangle is collected and the question is
+asked once afterwards. That is `settle_the_tab_drag`'s own reason, kept a third time.
+
+**A ticket is the modal and nothing else.** The tab used to draw the lanes on the left and the open
+ticket on the right, and `task-1771` reported that as *"a side panel opening up"* — which it was, and the
+thing that opened it was an agent **reading** the ticket. `task <key>` and `open <key>` are two commands
+now: one answers with a ticket and changes nothing about the window, the other is what puts one in front
+of somebody. `components::agent_tasks::detail`'s in-place ticket went with the split.
+
+**The modal's heights add up, and that is the whole of its difficulty.** Four sections are laid out one
+under another with no scroll, so a budget that overflows does not clip — it draws the last section off
+the bottom edge and the one before it over its own buttons. The description used to be given "whatever is
+left, floored at ninety", and a floor is exactly the thing that makes a budget stop adding up. Every
+section says what it **wants** and what it can be **cut to**, and the shortfall comes off them in order:
+the terminal first, then the comments, then the todos, and the description last.
+
+Two smaller rules the modal keeps. A section's name is painted in small spaced capitals and **named** in
+the case a person reads — `paint_label` and `label` are that split, and a disclosure follows it, so a
+test asks for `Todos` and the drawing is what shouts. And a sprint or an epic is named on the command
+line **by its name**, because that is what is on the screen: `split_off_a_name` takes the longest run of
+arguments that names one, so `sprint-rename August 2nd Half September` needs no id.
 
 ## The look is written down, and a new control is measured against it
 
@@ -2229,6 +2316,65 @@ a pane earlier in the row must not claim a gesture aimed at one later in it.
 The correction lands on the frame **after** the size changed, since `set_font_size` only marks the
 layout stale. An idle window draws nothing, so `set_the_font_everywhere` asks for a repaint —
 without it the last notch of a gesture sits uncorrected until something else wakes the window.
+
+## Every pane zooms, and what one step means is the pane's own business
+
+`task-1771` asks that *"every pane (file panel, folders, terminal, agent chat, agent tasks, etc) be
+zoomable with Ctrl/Cmd + or Ctrl/Cmd scroll wheel"*, centred on the text under the pointer.
+
+**The claim is the editing area's own rule, widened.** A gesture belongs to the window and the pointer
+says whose it is: `zoom_taken` is set by the first pane to find the pointer inside itself, and
+`QuillApp::zoom_over_a_panel` is what the explorer, the three tiles and each contributed pane call.
+`zoom_steps` is the accumulation, split out of `zoom_the_text` and called **at most once a frame** by
+whichever pane claimed it — calling it twice would spend the same notch twice. The keyboard's fallback
+(a gesture nobody was pointing at) is settled after **every** panel has been drawn rather than after the
+row of editing panes, or a wheel turned over the terminal went to the editor.
+
+**What one step means differs by pane, and that is deliberate.** Where a pane already has a point size a
+person chooses, the zoom walks *that setting*, so there is one number saying how big the text is rather
+than a setting and a multiplier that can disagree: the editing area walks `appearance.font.size` and the
+terminal, run and debug tiles walk `terminal.font.size`. The explorer and a pane a plugin contributed
+have no such number, so theirs is a multiplier over everything they draw — `settings::ZOOMS`, kept in
+`panes.<name>.zoom`, per pane. `Look::zoomed_by` is how it reaches a provider, which is why a board that
+already scaled with the editor's font zooms with no change to the provider at all.
+
+**The keys go where the keyboard is**, which is `the_pane_the_keys_zoom` reading `Focus`. One exception,
+and it is not a nicety: a **picture** always takes them, because `task-1658` asks that control and plus
+zoom an image and an image is opened by clicking it in the tree — which leaves the keyboard in the
+explorer, so routing by focus alone would mean the gesture that ticket exists for could never be made.
+
+**The point under the pointer stays there**, which is `task-1672`'s rule applied to a list. A list's
+content scales with its zoom, so the point at `offset + above` lands at `(offset + above) * ratio` and
+putting it back is one subtraction. The explorer's scroll is read back off its own `ScrollArea` and
+handed to it once on the next frame; a provider corrects its own, because a provider's scrolling belongs
+to the provider — `UiProvider::zoomed` is that call.
+
+`quill-cli panel zoom <panel> [factor]` is the agent's half, and it answers with whichever of the two
+numbers really decides that panel's size.
+
+## Two presses at the top of a pane fill the window with it
+
+`task-1771`: *"I should be able to double click anywhere in the top of a pane to get it to maximize,
+then Esc or double click to put it back to the size it was."*
+
+**Maximising is putting everything else away, and that is the whole of it.** Quill already has a way for
+a panel not to be showing, and `dock::regions` already gives the room to whatever is left. So a maximised
+pane is not a fifth kind of layout with its own arithmetic to get wrong; it is the layout there already
+is, with one thing switched on and the rest switched off — and the dividers, the rail's lit buttons,
+`panel list` and the drop bands all report the truth without being told. What has to be remembered is
+what *was* showing, which is `app::Maximised`, and it is not written to the settings file: a window that
+opened maximised with no memory of what it was hiding would be one somebody reassembles by hand.
+
+The handle is the same one a panel is dragged by, so `components::dock::Grab` gained `twice`. The
+explorer's project row reports into the same `Grab`, because the row is added *after* the handle and
+therefore takes the pointer over the words — see `components::dock::handle` for that ordering rule, which
+is used the other way up in `file_tabs::show`: the strip's empty part is added **before** the tabs, so it
+is left with exactly what no tab wanted. That empty part is the editing area's own top.
+
+`Escape` restores, read and **consumed** before anything else reads the frame's keys: `Escape` already
+means "give the keyboard back" to the explorer and "leave the terminal", and a key that did two things at
+once would be worse than one that did neither. `View -> Maximise Pane` and `Cmd`+`Shift`+`M` are the same
+action, so the command line has it for nothing.
 
 ## The source and its preview scroll together, through the text rather than the height
 
