@@ -343,12 +343,16 @@ fn rail_button(
     } else if response.hovered() && enabled {
         painter.rect_filled(hit, CornerRadius::same(size::CONTROL_CORNER), color::control());
     }
+    // The rail's three states, through the palette's icon roles rather than through the text ladder they
+    // used to borrow. Each role defaults to exactly the colour that was passed before `task-1776`, so
+    // nothing moved when they arrived — what they buy is that a theme can tint the rail without also
+    // moving every heading and every placeholder in the window.
     let tint = if !enabled {
-        color::text_faint().gamma_multiply(0.6)
+        color::icon_disabled().gamma_multiply(0.6)
     } else if on {
-        color::text_strong()
+        color::icon_active()
     } else {
-        color::text_dim()
+        color::icon()
     };
     draw(painter, centre, tint);
     response.widget_info(|| {

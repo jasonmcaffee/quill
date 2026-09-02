@@ -680,20 +680,30 @@ fn folder_row(
         );
     }
     let x = row.left() + view.at(16.0) + depth as f32 * view.at(size::INDENT);
-    icon::disclosure_at(
-        ui.painter(),
-        Pos2::new(x, row.center().y),
-        entry.expanded,
-        color::text_dim(),
-        view.zoom,
-    );
+    // A folder that is open is drawn in its own colour, which is Atom Material Icons' one loud move and
+    // the reason `color::folder` and `color::folder_open` are two roles rather than one: the path down to
+    // what you are reading is visible without reading any of the names.
+    let tint = if entry.expanded { color::folder_open() } else { color::folder() };
+    icon::disclosure_at(ui.painter(), Pos2::new(x, row.center().y), entry.expanded, tint, view.zoom);
+    // The mark in front of the name, when the icon set draws one. The `quill` set draws none and answers
+    // zero, so the name sits exactly where it always has — nothing here knows which set is on.
+    let mark = icon::folder_mark_width(view.zoom);
+    if mark > 0.0 {
+        icon::folder_mark(
+            ui.painter(),
+            Pos2::new(x + view.at(12.0) + mark / 2.0, row.center().y),
+            entry.expanded,
+            tint,
+            view.zoom,
+        );
+    }
     let galley = ui.painter().layout_no_wrap(
         name.to_owned(),
         egui::FontId::proportional(view.at(12.5)),
         color::text_control(),
     );
     ui.painter().galley(
-        Pos2::new(x + view.at(12.0), row.center().y - galley.size().y / 2.0),
+        Pos2::new(x + view.at(12.0) + mark, row.center().y - galley.size().y / 2.0),
         galley,
         color::text_control(),
     );

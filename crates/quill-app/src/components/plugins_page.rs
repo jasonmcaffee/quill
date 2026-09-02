@@ -323,6 +323,15 @@ fn detail(
                     "It draws with Quill's own controls, so it takes the font and the transparency from Appearance and cannot name a colour of its own.".to_owned(),
                 );
             }
+            crate::services::plugins::Kind::Theme => {
+                let names: Vec<&str> =
+                    plugin.themes.iter().map(|theme| theme.name.as_str()).collect();
+                note(ui, format!("Carries {}", names.join(", ")));
+                note(
+                    ui,
+                    "A theme says what every name in Quill's own palette means, so the list of colours stays closed while what they are changes. Choose one in Appearance & Behavior -> Theme.".to_owned(),
+                );
+            }
         }
         if !plugin.limitations.is_empty() {
             heading(ui, "What it does not do");

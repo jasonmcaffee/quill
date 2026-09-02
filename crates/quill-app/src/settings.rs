@@ -104,6 +104,20 @@ pub const MAX_FONT_SIZE: f32 = 144.0;
 /// The sizes the terminal font size control offers.
 pub const TERMINAL_FONT_SIZES: &[f32] = &[10.0, 11.0, 12.0, 13.0, 14.0, 16.0, 18.0, 20.0];
 
+/// The point size egui sets a body of text in, which is what the window's own text has always been.
+///
+/// The default of `appearance.ui.font.size`, so a Quill that names no size in its settings file is drawn
+/// exactly as it was before `task-1776` — `theme::apply_scaled` does nothing at all at a scale of one.
+pub const DEFAULT_UI_FONT_SIZE: f32 = 12.5;
+/// The sizes the interface font size control offers, which is IntelliJ's own list around its default.
+pub const UI_FONT_SIZES: &[f32] = &[10.0, 11.0, 12.5, 14.0, 16.0, 18.0, 20.0];
+/// The smallest and largest the interface may be set to, whether from the dialog or a hand edited file.
+///
+/// Bounded harder than the editor's font, because this one moves the menus, the rail and the status bar:
+/// a window whose furniture is set in six points cannot be used to put it back.
+pub const MIN_UI_FONT_SIZE: f32 = 8.0;
+pub const MAX_UI_FONT_SIZE: f32 = 24.0;
+
 /// The next size up or down the list the Settings window offers.
 ///
 /// The keyboard walks the same list the dialog does, so the two cannot come to disagree about what
@@ -253,6 +267,13 @@ pub enum Page {
     /// The editor's font and the window's background.
     #[default]
     Appearance,
+    /// The theme, the accent and the icon set: what every colour in the window means.
+    ///
+    /// A page of its own rather than a section on Appearance, because the Settings window is one size for
+    /// every page, no page scrolls, and Appearance already fills its 640 points. IntelliJ separates them
+    /// too — Appearance holds the theme and Editor holds the colour scheme — and here the two are one
+    /// question, because a Quill theme carries both.
+    Theme,
     /// The editing area itself: the gutter, and the colour scheme code is set in.
     Editor,
     /// The plugins that are installed, and the marketplace they came from.
@@ -272,12 +293,12 @@ pub enum Page {
 }
 
 impl Page {
-    /// Quill's own five. A plugin's page is not in it, because there is no compile time list of them;
+    /// Quill's own six. A plugin's page is not in it, because there is no compile time list of them;
     /// [`Page::all`] is the one that includes them.
-    pub const ALL: [Page; 5] =
-        [Page::Appearance, Page::Editor, Page::Plugins, Page::Terminal, Page::Mcp];
+    pub const ALL: [Page; 6] =
+        [Page::Appearance, Page::Theme, Page::Editor, Page::Plugins, Page::Terminal, Page::Mcp];
 
-    /// Quill's own five, then one per plugin that contributed a page, in the order the plugins are
+    /// Quill's own six, then one per plugin that contributed a page, in the order the plugins are
     /// listed.
     pub fn all(contributed: usize) -> Vec<Page> {
         let mut found = Page::ALL.to_vec();
@@ -297,6 +318,7 @@ impl Page {
     pub fn title(self) -> &'static str {
         match self {
             Page::Appearance => "Appearance",
+            Page::Theme => "Theme",
             Page::Editor => "Editor",
             Page::Plugins => "Plugins",
             Page::Terminal => "Terminal",
@@ -312,6 +334,8 @@ impl Page {
     pub fn group(self) -> &'static str {
         match self {
             Page::Appearance => "Appearance & Behavior",
+            // Beside Appearance, which is where IntelliJ keeps the theme picker.
+            Page::Theme => "Appearance & Behavior",
             Page::Editor => "Editor",
             // No heading of its own, the way IntelliJ lists Plugins: it is one page rather than a
             // group with pages under it.
@@ -329,7 +353,8 @@ impl Page {
     /// The headings inside the page. They are what the search box matches on as well as being drawn.
     pub fn sections(self) -> &'static [&'static str] {
         match self {
-            Page::Appearance => &["Font", "Background"],
+            Page::Appearance => &["Font", "Interface", "Background"],
+            Page::Theme => &["Theme", "Accent", "Icons"],
             Page::Editor => &["Gutter", "Suggestions", "Debugger"],
             Page::Plugins => &["Marketplace", "Installed", "Colour Scheme", "Syntax"],
             Page::Terminal => &["Font", "Shell"],
@@ -385,6 +410,28 @@ pub struct Settings {
     pub mcp_port: u16,
     /// How many tools the catalogue is cut into for an agent. See `quill_cli::mcp::tools`.
     pub mcp_tools: quill_cli::mcp::Shape,
+    /// Which theme the window is painted in, as `<plugin>/<theme>` — `themes-bundle-1/dracula`.
+    ///
+    /// Empty means `quill/dark`, which is the palette Quill shipped with. Empty rather than the key
+    /// written out, for `terminal_shell`'s reason once more: a settings file that names nothing is a file
+    /// that asks for whatever this Quill's default is, and one that names a theme whose plugin has been
+    /// switched off falls back to it rather than to nothing.
+    pub theme: String,
+    /// One colour used for everything the accent means, over whatever the theme said.
+    ///
+    /// Written as `#RRGGBB`, empty meaning the theme's own. Material Theme UI's best known setting.
+    pub accent: String,
+    /// Which drawn icon set is used, from `plugins::ICON_SETS`. Empty means the theme's own choice,
+    /// which is what `Follow the theme` is on the Theme page.
+    pub icons: String,
+    /// The family the window's own text is set in — menus, the explorer, the status bar.
+    ///
+    /// Empty means the editor's family, which is what the interface was always set in and is why this can
+    /// be added without anything moving. IntelliJ's `Appearance -> Use custom font`.
+    pub ui_font_family: String,
+    /// The point size the window's own text is set in. [`DEFAULT_UI_FONT_SIZE`] leaves egui exactly as it
+    /// was.
+    pub ui_font_size: f32,
     /// Where each debug adapter lives, when this machine keeps one somewhere Quill would not look.
     ///
     /// `debug.lldb`, `debug.node` — one entry per name in `plugins::DEBUGGERS`, and empty meaning
@@ -428,6 +475,13 @@ impl Settings {
             mcp_enabled: false,
             mcp_port: quill_cli::mcp::DEFAULT_PORT,
             mcp_tools: quill_cli::mcp::Shape::default(),
+            // The four `task-1776` added, each empty or at the number that changes nothing, so a Quill
+            // that has never been run is painted in exactly the palette it always was.
+            theme: String::new(),
+            accent: String::new(),
+            icons: String::new(),
+            ui_font_family: String::new(),
+            ui_font_size: DEFAULT_UI_FONT_SIZE,
             // Empty, for `terminal_shell`'s reason: where `lldb-dap` lives is a question about this
             // machine, and the settings file is copied between machines.
             debug_adapters: Vec::new(),
@@ -474,6 +528,21 @@ impl Settings {
         {
             settings.mcp_tools = shape;
         }
+        if let Some(theme) = values.text("appearance.theme") {
+            settings.theme = theme.trim().to_owned();
+        }
+        if let Some(accent) = values.text("appearance.accent") {
+            settings.accent = accent.trim().to_owned();
+        }
+        if let Some(icons) = values.text("appearance.icons") {
+            settings.icons = icons.trim().to_lowercase();
+        }
+        if let Some(family) = values.text("appearance.ui.font.family") {
+            settings.ui_font_family = family.trim().to_owned();
+        }
+        if let Some(size) = values.number("appearance.ui.font.size") {
+            settings.ui_font_size = size.clamp(MIN_UI_FONT_SIZE, MAX_UI_FONT_SIZE);
+        }
         for name in crate::services::plugins::DEBUGGERS {
             if let Some(path) =
                 values.text(&format!("debug.{name}")).map(str::trim).filter(|path| !path.is_empty())
@@ -496,6 +565,22 @@ impl Settings {
         if !self.terminal_shell.is_empty() {
             values.set("terminal.shell", self.terminal_shell.clone());
         }
+        // The four written only once they have been chosen, exactly as the shell and the adapters are: a
+        // file that names nothing asks for this Quill's own default, and a blank line would read as a
+        // theme called nothing.
+        if !self.theme.is_empty() {
+            values.set("appearance.theme", self.theme.clone());
+        }
+        if !self.accent.is_empty() {
+            values.set("appearance.accent", self.accent.clone());
+        }
+        if !self.icons.is_empty() {
+            values.set("appearance.icons", self.icons.clone());
+        }
+        if !self.ui_font_family.is_empty() {
+            values.set("appearance.ui.font.family", self.ui_font_family.clone());
+        }
+        values.set("appearance.ui.font.size", format!("{:.1}", self.ui_font_size));
         values.set("editor.line_numbers", if self.line_numbers { "true" } else { "false" });
         values.set("editor.suggestions", self.suggestions.name());
         values.set("debug.value_tooltip", self.value_tooltip.name());
@@ -520,6 +605,30 @@ impl Settings {
             .iter()
             .find(|(known, _)| known == name)
             .map(|(_, path)| path.as_str())
+    }
+
+    /// How much larger or smaller than egui's own the window's text is set.
+    ///
+    /// One function rather than the division written wherever the interface is laid out, so the size in
+    /// the dialog and the scale egui is given can never come to disagree — the rule [`Settings::shell`]
+    /// keeps for the shell.
+    pub fn interface_scale(&self) -> f32 {
+        (self.ui_font_size / DEFAULT_UI_FONT_SIZE).clamp(0.6, 2.0)
+    }
+
+    /// The accent this settings file asks for, or nothing when it asks for the theme's own.
+    pub fn accent_colour(&self) -> Option<egui::Color32> {
+        let read = crate::services::plugins::colour(self.accent.trim())?;
+        Some(egui::Color32::from_rgb(read.r, read.g, read.b))
+    }
+
+    /// Which drawn icon set to use, or nothing when the theme's own choice is wanted.
+    ///
+    /// A name Quill has not got reads as "follow the theme" rather than as an error, which is the rule
+    /// `store.rs` keeps for a settings file with a stray line in it: a hand edited value should never be
+    /// the reason a window comes up with no icons.
+    pub fn icon_set(&self) -> Option<crate::theme::IconSet> {
+        crate::theme::IconSet::parse(&self.icons)
     }
 
     /// The program a new terminal should run, or nothing when this machine's own default is wanted.
@@ -947,6 +1056,11 @@ mod tests {
             mcp_enabled: true,
             mcp_port: 9001,
             mcp_tools: quill_cli::mcp::Shape::Every,
+            theme: "themes-bundle-1/monokai-pro".to_owned(),
+            accent: "#FF79C6".to_owned(),
+            icons: "material".to_owned(),
+            ui_font_family: "Segoe UI".to_owned(),
+            ui_font_size: 14.0,
             debug_adapters: vec![("lldb".to_owned(), r"C:\tools\codelldb.exe".to_owned())],
         };
         let mut values = Values::new();

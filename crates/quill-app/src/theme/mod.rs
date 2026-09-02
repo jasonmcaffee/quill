@@ -166,13 +166,6 @@ palette! {
     /// A file git is not tracking at all.
     git_untracked = Color32::from_rgb(0x9A, 0x8C, 0x5A);
 
-    /// The band behind the line the program is stopped on.
-    ///
-    /// The accent, at an alpha of its own so it cannot be mistaken for a passage somebody marked:
-    /// the four highlight colours are all at `HIGHLIGHT_ALPHA` and this is deliberately not one of
-    /// them. It is painted under the glyphs, where `paint_highlights` paints.
-    execution_point = Color32::from_rgba_premultiplied(0x1C, 0x3C, 0x5E, 0x9E);
-
     /// The blue a plugin's own page is built on, when that page is a copy of somebody else's.
     ///
     /// **This is the one place a second blue is right, and it took two reviews to be sure of it.** Quill's
@@ -253,6 +246,39 @@ pub mod derived {
     pub const HIGHLIGHT_BLUE: Rgba = Rgba::new(0x48, 0x9F, 0xF8, HIGHLIGHT_ALPHA);
     pub const HIGHLIGHT_PINK: Rgba = Rgba::new(0xB4, 0x58, 0x8C, HIGHLIGHT_ALPHA);
 
+    /// How opaque the band behind the line a program is stopped on is, and how much of the accent's
+    /// brightness it keeps.
+    ///
+    /// Fitted to the colour the design shipped with: `#1C3C5E` at `0x9E`, premultiplied, is the accent at
+    /// a shade over 61 per cent of its brightness. The three channels want 0.628, 0.609 and 0.612, because
+    /// the original was sampled off the design rather than computed from the accent, so one number
+    /// reproduces it to **within one unit a channel** — which is a difference no eye has ever seen at an
+    /// alpha of 158, and worth far less than a band that follows the accent under a pink theme.
+    const EXECUTION_ALPHA: u8 = 0x9E;
+    const EXECUTION_BRIGHTNESS: f32 = 0.615;
+
+    /// The band behind the line the program is stopped on.
+    ///
+    /// The accent, at an alpha of its own so it cannot be mistaken for a passage somebody marked: the four
+    /// highlight colours are all at [`HIGHLIGHT_ALPHA`] and this is deliberately not one of them. It is
+    /// painted under the glyphs, where `paint_highlights` paints.
+    ///
+    /// **Derived rather than a role a manifest can set**, and that is a trap avoided rather than a
+    /// simplification. Every other colour in the palette is opaque and is written `#RRGGBB`; this one is
+    /// the only one whose alpha carries meaning, so a theme that set it in the same three bytes as the
+    /// rest would paint an opaque band over the line the debugger stopped on and hide the code under it.
+    /// Following the accent is also what a person means by choosing a pink theme.
+    pub fn execution_point() -> Color32 {
+        let accent = color::accent();
+        let dim = |channel: u8| (channel as f32 * EXECUTION_BRIGHTNESS).round() as u8;
+        Color32::from_rgba_unmultiplied(
+            dim(accent.r()),
+            dim(accent.g()),
+            dim(accent.b()),
+            EXECUTION_ALPHA,
+        )
+    }
+
     /// The breakpoint dot in the gutter.
     ///
     /// The palette is closed and this does not open it: it is the close button's red, which is the one red
@@ -296,10 +322,18 @@ pub mod derived {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum IconSet {
     /// The marks Quill shipped with: a solid disclosure triangle, stroked rail buttons, no folder mark.
+    ///
+    /// Kept and selectable rather than deleted, which is what makes this a **set** rather than a
+    /// redrawing: One Dark names it, because One Dark's own IntelliJ icons are the IDE's rather than
+    /// Material's, and anybody who preferred the triangles has them back in one line.
+    Classic,
+    /// Heavier, rounder and filled where the classic one is a stroke, in the manner of Atom Material
+    /// Icons: a chevron for a disclosure, and a folder mark in front of a folder's name.
+    ///
+    /// **The default**, because `task-1776` asks for the marks on the rail and the explorer's arrow to be
+    /// *improved* — not merely to become choosable. A seam that left the default where it was would have
+    /// answered half the ticket.
     #[default]
-    Quill,
-    /// Heavier, rounder and filled where the Quill one is a stroke, in the manner of Atom Material Icons:
-    /// a chevron for a disclosure, and a folder mark in front of a folder's name.
     Material,
 }
 
@@ -307,21 +341,21 @@ impl IconSet {
     /// The word a manifest, the settings file and the command line call it.
     pub fn name(self) -> &'static str {
         match self {
-            IconSet::Quill => "quill",
+            IconSet::Classic => "classic",
             IconSet::Material => "material",
         }
     }
 
     pub fn parse(name: &str) -> Option<IconSet> {
         match name.trim().to_lowercase().as_str() {
-            "quill" => Some(IconSet::Quill),
+            "classic" => Some(IconSet::Classic),
             "material" => Some(IconSet::Material),
             _ => None,
         }
     }
 
     /// Both of them, for the Settings page's dropdown and for `plugins::ICON_SETS`.
-    pub const ALL: [IconSet; 2] = [IconSet::Quill, IconSet::Material];
+    pub const ALL: [IconSet; 2] = [IconSet::Material, IconSet::Classic];
 }
 
 /// One theme: what every name in the palette means, what the tokens are coloured, and which icons are
@@ -361,24 +395,18 @@ impl Theme {
             dark: true,
             palette: Palette::QUILL_DARK,
             syntax: None,
-            icons: IconSet::Quill,
+            icons: IconSet::default(),
         }
     }
 
     /// The same theme with one colour used for everything the accent means.
     ///
     /// Material Theme UI's best known setting, and the one thing on its configuration page somebody
-    /// changes twice a year. It reaches every role that **is** the accent rather than merely being blue:
-    /// the accent itself, an open folder's mark, and the wash behind the line a program is stopped on,
-    /// which is the accent at an alpha of its own and would otherwise stay azure under a pink theme.
+    /// changes twice a year. It reaches the two roles that **are** the accent rather than merely being
+    /// blue: the accent itself and an open folder's mark. The wash behind the line a program is stopped on
+    /// follows it without being named here, because `derived::execution_point` is worked out from the
+    /// accent rather than stored.
     pub fn with_accent(mut self, accent: Color32) -> Theme {
-        let alpha = self.palette.execution_point.a();
-        self.palette.execution_point = Color32::from_rgba_premultiplied(
-            (accent.r() as u16 * alpha as u16 / 255) as u8,
-            (accent.g() as u16 * alpha as u16 / 255) as u8,
-            (accent.b() as u16 * alpha as u16 / 255) as u8,
-            alpha,
-        );
         self.palette.folder_open = accent;
         self.palette.accent = accent;
         self
@@ -680,15 +708,22 @@ mod tests {
 
     #[test]
     fn an_accent_reaches_everything_that_means_the_accent() {
-        let themed = Theme::quill_dark().with_accent(Color32::from_rgb(0xFF, 0x79, 0xC6));
-        assert_eq!(themed.palette.accent, Color32::from_rgb(0xFF, 0x79, 0xC6));
-        assert_eq!(themed.palette.folder_open, Color32::from_rgb(0xFF, 0x79, 0xC6));
-        assert_eq!(
-            themed.palette.execution_point.a(),
-            Palette::QUILL_DARK.execution_point.a(),
-            "the wash keeps its own alpha, so it cannot be mistaken for a mark somebody made"
-        );
-        assert_ne!(themed.palette.execution_point, Palette::QUILL_DARK.execution_point);
+        activate(Theme::quill_dark());
+        // What the design shipped, to within one unit a channel — see `EXECUTION_BRIGHTNESS`.
+        let shipped = Color32::from_rgba_premultiplied(0x1C, 0x3C, 0x5E, 0x9E);
+        let derived = color::execution_point();
+        assert_eq!(derived.a(), shipped.a());
+        for (was, now) in shipped.to_array().iter().zip(derived.to_array()) {
+            assert!(was.abs_diff(now) <= 1, "{shipped:?} against {derived:?}");
+        }
+
+        activate(Theme::quill_dark().with_accent(Color32::from_rgb(0xFF, 0x79, 0xC6)));
+        assert_eq!(color::accent(), Color32::from_rgb(0xFF, 0x79, 0xC6));
+        assert_eq!(color::folder_open(), Color32::from_rgb(0xFF, 0x79, 0xC6));
+        let wash = color::execution_point();
+        assert_eq!(wash.a(), 0x9E, "the wash keeps its own alpha, not a highlight's");
+        assert!(wash.r() > wash.b(), "and it followed the accent into the pink");
+        activate(Theme::quill_dark());
     }
 
     /// Why the active theme is thread-local rather than global — see the note at the top of this file.
