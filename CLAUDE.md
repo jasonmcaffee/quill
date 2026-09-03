@@ -3080,6 +3080,10 @@ trade that away to be a shade nearer a screenshot.
 
 - `README.md` — what Quill is and how to run it.
 - `documentation/overview.md` — what Quill looks like: a capture of each part of the window, over a real desktop.
+- `documentation/database.md` — the Database plugin in pictures: the tree, a grid, a console running a
+  `SELECT`, a pending update and delete before and after `Submit`, the DDL modal, adding a data source,
+  and the Settings page — each a real capture, its state built through `quill-cli` against a small
+  SQLite fixture made for the page.
 - `design/style-guide.md` — how a control in Quill is built, and what the baselines are.
 - `design/icons.md` — how the `material` icon set was designed: the two Krea 2 sheets, the prompts
   that made them, what was measured off each mark, and the one the sheet got wrong.
