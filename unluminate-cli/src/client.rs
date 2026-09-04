@@ -50,8 +50,21 @@ pub fn running() -> Vec<Instance> {
     alive
 }
 
-/// True when something is listening on this instance's port.
+/// True when this instance's window is still there.
+///
+/// **The process is asked first, and the port only if the process is there.** Dialling the port is
+/// the authority — a process id can be handed to something else entirely — but it is also the only
+/// slow thing here, and a window that has gone has no process to have inherited its id. `task-1805`
+/// measured what asking in the other order cost: a dead loopback port on this machine does not
+/// answer with a refusal, it answers with nothing, so one stale file spent the whole [`PROBE`] —
+/// 431 ms on the next `unluminate-cli` command and 414 ms of the next window's startup.
+///
+/// A killed Unluminate leaves a stale file behind, and Unluminate is killed rather than closed often
+/// enough that this was the ordinary case rather than the rare one.
 fn answers(instance: &Instance) -> bool {
+    if !instances::is_running(instance.pid) {
+        return false;
+    }
     let address = std::net::SocketAddr::from(([127, 0, 0, 1], instance.port));
     std::net::TcpStream::connect_timeout(&address, PROBE).is_ok()
 }

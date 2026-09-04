@@ -151,6 +151,7 @@ fn print_menus() {
 
 fn main() -> eframe::Result {
     let arguments = parse_arguments();
+    unluminate_app::services::frame_trace::mark("arguments");
 
     if arguments.print_menus {
         print_menus();
@@ -169,6 +170,7 @@ fn main() -> eframe::Result {
         unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
     }
     unluminate_app::services::crash_log::install(unluminate_app::services::store::folder_for_this_person());
+    unluminate_app::services::frame_trace::mark("crash-log");
 
     // Started here, and by nothing else, because it runs the person's shell profile: an Unluminate started
     // from the Finder or the Dock has `PATH=/usr/bin:/bin:/usr/sbin:/sbin` and cannot find a program
@@ -177,6 +179,7 @@ fn main() -> eframe::Result {
     // anything to ask, long before a person can press a button that starts one.
     // `services::login_shell` says what is read and why the profile rather than a list of folders.
     unluminate_app::services::login_shell::start_reading();
+    unluminate_app::services::frame_trace::mark("login-shell");
 
     // Proving the crash log works has to be possible on the machine it matters on, from the installed
     // application, where there is no terminal and no test harness. `UNLUMINATE_PANIC_TEST=1 unluminate` panics
@@ -198,6 +201,7 @@ fn main() -> eframe::Result {
     let program = std::env::current_exe().ok();
     let store = unluminate_app::services::store::Store::open();
     let recent = store.recent_projects();
+    unluminate_app::services::frame_trace::mark("recent-projects");
 
     // The windows that were open last time, which `task-1693` asks to have back. Only on a launch
     // from the desktop: `unluminate .` typed in a folder has to open that folder and nothing else, which
@@ -220,9 +224,19 @@ fn main() -> eframe::Result {
     // `running` rather than `listed`, because a window that was killed rather than closed leaves its
     // instance file behind — and a project skipped on the strength of a dead window is a project
     // that never comes back.
-    let already_open: Vec<PathBuf> =
-        unluminate_cli::client::running().into_iter().map(|instance| instance.folder).collect();
-    session.retain(|folder| !already_open.iter().any(|open| open == folder));
+    //
+    // Asked **only when there is a session to filter**, which is the desktop launch. Every other
+    // start — `unluminate .` in a terminal, `unluminate-cli launch`, `File -> New Window`, a file
+    // opened from the shell — names its folder, so `session` is empty and there is nothing for this
+    // answer to say anything about. It used to be asked on every start regardless, and `task-1805`
+    // measured that at **414 ms of a 1234 ms startup**: a third of the time to a usable window spent
+    // working out something that was then thrown away.
+    if !session.is_empty() {
+        let already_open: Vec<PathBuf> =
+            unluminate_cli::client::running().into_iter().map(|instance| instance.folder).collect();
+        session.retain(|folder| !already_open.iter().any(|open| open == folder));
+    }
+    unluminate_app::services::frame_trace::mark("running-instances");
     let mine = session.pop();
 
     let fallback = unluminate_app::starting_folder(
@@ -246,6 +260,7 @@ fn main() -> eframe::Result {
     // the person's settings, because Unluminate's windows are one per project: a geometry kept per person
     // would open the second window exactly on top of the first.
     let place = unluminate_app::services::project_state::load(&folder).window;
+    unluminate_app::services::frame_trace::mark("project-state");
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Unluminate")
@@ -288,15 +303,20 @@ fn main() -> eframe::Result {
         "Unluminate",
         options,
         Box::new(move |cc| {
+            unluminate_app::services::frame_trace::mark("eframe-window");
             let mut app = UnluminateApp::new(folder);
+            unluminate_app::services::frame_trace::mark("app-new");
             app.prepare(&cc.egui_ctx);
+            unluminate_app::services::frame_trace::mark("prepare");
             // The settings, the pane sizes and the recent projects come from disk here rather than in
             // `UnluminateApp::new`, so that a test never reads or writes the settings of the person running it.
             app.load_settings();
+            unluminate_app::services::frame_trace::mark("settings");
             // What was left open in this project last time. After the settings, because it opens files
             // and they have to be set in the font the settings name; before the file argument, so a file
             // named on the command line is the tab that ends up showing.
             app.restore_project();
+            unluminate_app::services::frame_trace::mark("restore-project");
             if let Some(file) = file {
                 // A file named on the command line that will not open leaves its reason in the
                 // status bar of the window that has just come up, which is where a person is
@@ -325,6 +345,7 @@ fn main() -> eframe::Result {
             if arguments.control {
                 app.open_control_channel(&cc.egui_ctx);
             }
+            unluminate_app::services::frame_trace::mark("ready");
             Ok(Box::new(app))
         }),
     )

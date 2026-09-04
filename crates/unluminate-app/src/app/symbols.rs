@@ -131,7 +131,7 @@ impl UnluminateApp {
             return;
         }
         let waker = self.thread_waker();
-        let grammars = Arc::new(self.plugins.grammars());
+        let grammars = Arc::new(self.plugins.grammars().clone());
         let list = self.tree.all_files().to_vec();
         let indexer = self.symbols.get_or_insert_with(|| Indexer::start(waker));
         indexer.rebuild(list, grammars);
@@ -819,7 +819,7 @@ impl UnluminateApp {
             return;
         };
         let files = self.tree.all_files().to_vec();
-        let grammars = Arc::new(self.plugins.grammars());
+        let grammars = Arc::new(self.plugins.grammars().clone());
         let open = Arc::new(self.open_texts());
         modal.pump(&files, grammars, open);
         self.references = Some(modal);

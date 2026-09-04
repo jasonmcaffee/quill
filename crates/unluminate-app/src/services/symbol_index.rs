@@ -335,7 +335,7 @@ mod tests {
     }
 
     fn grammars() -> Grammars {
-        Plugins::load(None).0.grammars()
+        Plugins::load(None).0.grammars().clone()
     }
 
     /// A little project: two Rust files that both define `new`, one TypeScript class, and two files

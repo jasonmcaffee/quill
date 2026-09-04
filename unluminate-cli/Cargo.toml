@@ -22,3 +22,14 @@ path = "src/main.rs"
 
 [dependencies]
 serde_json.workspace = true
+
+# Asking the operating system whether a process is still running, which is how a window that was
+# killed rather than closed is told from one that is there. It is one call — `kill(pid, 0)` on Unix
+# and `OpenProcess` on Windows — and it replaces dialling a dead window's port and waiting for the
+# connection to time out. See `instances::is_running`. Both crates are already in the tree by
+# another route, so this adds nothing to a build.
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true

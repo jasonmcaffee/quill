@@ -718,7 +718,8 @@ mod tests {
     fn the_symbol_entries_apply_to_the_files_a_language_can_read() {
         // The gate `task-1675` added, answered from the plugins that are switched on so the menu,
         // the right click menu and the command line cannot disagree.
-        let grammars = crate::services::plugins::Plugins::load(None).0.grammars();
+        let plugins = crate::services::plugins::Plugins::load(None).0;
+        let grammars = plugins.grammars();
         for code in ["main.rs", "app.js", "index.ts"] {
             let path = Path::new(code);
             assert!(definitions_apply(Some(path), &grammars), "{code} has definitions");

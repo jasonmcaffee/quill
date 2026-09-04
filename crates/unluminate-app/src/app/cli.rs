@@ -271,6 +271,14 @@ impl UnluminateApp {
             Some(server) => server.take(),
             None => Vec::new(),
         };
+        if !arrived.is_empty() {
+            // A window whose project has terminals restores them at the end of its first frame, so
+            // that it appears before it starts a shell. A command that arrives before that has
+            // happened has to see the finished window rather than a half-restored one — `terminal
+            // list` would otherwise answer that there were none. Taking the list is idempotent, so
+            // this costs one comparison on every later frame.
+            self.start_the_restored_terminals();
+        }
         for pending in arrived {
             // A request whose caller gave up before the window ever picked it up is thrown away
             // rather than run. It has already been told the command did not happen — `task-1691`

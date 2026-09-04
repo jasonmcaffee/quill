@@ -480,6 +480,12 @@ impl Plugin {
 #[derive(Debug, Clone, Default)]
 pub struct Plugins {
     installed: Vec<Plugin>,
+    /// The grammars of the plugins that are switched on, worked out whenever that list changes.
+    ///
+    /// The one thing here that is remembered rather than derived on demand, and [`Plugins::grammars`]
+    /// says what that is worth. Every function that changes `installed` calls [`Plugins::settle`],
+    /// and all of them are in this file.
+    grammars: Grammars,
 }
 
 impl Plugins {
@@ -531,7 +537,24 @@ impl Plugins {
             }
         }
         installed.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-        (Self { installed }, problems)
+        let mut plugins = Self { installed, grammars: Grammars::default() };
+        plugins.settle();
+        (plugins, problems)
+    }
+
+    /// Work out again everything that is kept rather than derived. Called by every function here
+    /// that changes which plugins there are or which of them are on.
+    fn settle(&mut self) {
+        let mut by_extension: Vec<(String, Grammar)> = Vec::new();
+        for plugin in self.installed.iter().filter(|plugin| plugin.enabled) {
+            for extension in &plugin.extensions {
+                if by_extension.iter().any(|(known, _)| known == extension) {
+                    continue; // the first plugin that claims an extension is the one `for_path` gives
+                }
+                by_extension.push((extension.clone(), plugin.grammar.clone()));
+            }
+        }
+        self.grammars = Grammars { by_extension };
     }
 
     pub fn all(&self) -> &[Plugin] {
@@ -710,6 +733,7 @@ impl Plugins {
         if let Some(plugin) = self.installed.iter_mut().find(|plugin| plugin.id == id) {
             plugin.enabled = on;
         }
+        self.settle();
         let Some(store) = store else {
             return;
         };
@@ -746,6 +770,7 @@ impl Plugins {
         self.installed.retain(|known| known.id != plugin.id);
         self.installed.push(plugin);
         self.installed.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        self.settle();
         Ok(())
     }
 
@@ -780,6 +805,7 @@ impl Plugins {
             }
         }
         self.installed.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        self.settle();
         Ok(())
     }
 
@@ -788,23 +814,23 @@ impl Plugins {
         store.folder().join(FOLDER).join(id)
     }
 
-    /// The grammars of the plugins that are switched on, in a form a worker thread can hold.
+    /// The grammars of the plugins that are switched on.
     ///
-    /// Taken as a snapshot rather than borrowed, because the two threads that read a project —
-    /// `services::symbol_index` and the reference mode of `services::text_search` — outlive the
-    /// frame that started them, and a plugin switched off while one is running must not change what
-    /// it is half way through answering.
-    pub fn grammars(&self) -> Grammars {
-        let mut by_extension: Vec<(String, Grammar)> = Vec::new();
-        for plugin in self.installed.iter().filter(|plugin| plugin.enabled) {
-            for extension in &plugin.extensions {
-                if by_extension.iter().any(|(known, _)| known == extension) {
-                    continue; // the first plugin that claims an extension is the one `for_path` gives
-                }
-                by_extension.push((extension.clone(), plugin.grammar.clone()));
-            }
-        }
-        Grammars { by_extension }
+    /// **Borrowed, and worked out only when the plugins change.** It used to build the whole set on
+    /// every call, deep-cloning each plugin's `Grammar` — its keywords, its builtins, its types, its
+    /// definers and its import words, several hundred `String`s for a language like TypeScript —
+    /// **once per extension that plugin claims**. Eleven plugins claiming two dozen extensions
+    /// between them made that two dozen full copies a call, and `UnluminateApp::menu_state` asks
+    /// three times a frame, to answer three questions each of which is "does this file's language
+    /// name a definer". `task-1805` measured it at **0.43 ms of a 1.4 ms frame** — the largest single
+    /// thing left in an idle one, and a tax on every interactive frame as well.
+    ///
+    /// A thread still takes a **copy**, and that has not changed: `services::symbol_index` and the
+    /// reference mode of `services::text_search` outlive the frame that started them, and a plugin
+    /// switched off while one is running must not change what it is half way through answering. They
+    /// clone it themselves, which is the caller that needs a snapshot paying for one.
+    pub fn grammars(&self) -> &Grammars {
+        &self.grammars
     }
 }
 
@@ -2234,6 +2260,27 @@ language.extensions = .aa
         assert!(found.contains(&("background-color", Token::Builtin)), "{found:?}");
         assert!(found.contains(&("#ff79c6", Token::Number)), "{found:?}");
         assert!(found.contains(&("flex", Token::Type)), "{found:?}");
+    }
+
+    /// The grammars are kept rather than worked out on every call, and the thing a kept answer can
+    /// do that a derived one cannot is go stale. `task-1805`: `grammars()` deep-cloned every
+    /// plugin's word lists once per extension it claims, three times a frame, so it became a field —
+    /// and every function that changes which plugins are on calls `settle`. This is what says so.
+    #[test]
+    fn switching_a_plugin_off_changes_the_grammars_it_offers() {
+        let (mut plugins, _) = Plugins::load(None);
+        let rust = || Path::new("main.rs");
+        assert!(
+            plugins.grammars().for_path(rust()).is_some(),
+            "the bundled Rust plugin claims .rs and is on"
+        );
+        plugins.set_enabled(None, "rust", false);
+        assert!(
+            plugins.grammars().for_path(rust()).is_none(),
+            "a plugin that is switched off must stop claiming its extensions, kept answer or not"
+        );
+        plugins.set_enabled(None, "rust", true);
+        assert!(plugins.grammars().for_path(rust()).is_some(), "and start again when it comes back");
     }
 
     #[test]

@@ -32,10 +32,97 @@
 //! ## Stale files
 //!
 //! An Unluminate that is killed rather than closed leaves its file behind. Nothing sweeps them on a
-//! timer: [`running`] treats a file it cannot connect to as not being an instance, and removes it.
-//! That is the only sweep there is, and it happens when somebody is looking.
+//! timer: `client::running` treats a file whose window is not there as not being an instance, and
+//! removes it. That is the only sweep there is, and it happens when somebody is looking.
+//!
+//! **What "not there" means is the process, not the port**, and `task-1805` is what that is worth.
+//! The question used to be answered by dialling the recorded port with a 400 ms timeout — and a dead
+//! loopback port does not always answer with a refusal. Measured on this machine it answers with
+//! nothing at all, so a single stale file cost the **whole** timeout: **431 ms on the next
+//! `unluminate-cli` command**, and **414 ms of the next window's startup**, which was a third of it.
+//! Unluminate is killed rather than closed routinely — the task manager, a crash, a script — so this was
+//! not a rare path.
+//!
+//! [`is_running`] asks the operating system instead, which takes microseconds and is the question
+//! that was actually being asked. The port is still dialled when the process **is** there, because a
+//! live process id can have been handed to something else entirely and only the port can settle
+//! that; what has gone is paying a network timeout to learn something the process table knows.
 
 use std::path::{Path, PathBuf};
+
+/// Whether a process with this id is running.
+///
+/// The fast half of "is that window still there". A process that has gone is a window that has gone,
+/// with no room for doubt and nothing to wait for; a process that is there might be an unrelated
+/// program that inherited the id, which is why the caller still dials the port.
+///
+/// `kill(pid, 0)` sends no signal — it only reports whether the process exists and whether this user
+/// may signal it, which is exactly the question, and it cannot affect the process. `OpenProcess` with
+/// `PROCESS_QUERY_LIMITED_INFORMATION` is Windows' equivalent: it opens no access to affect the
+/// process, only to ask whether it is there.
+pub fn is_running(pid: u32) -> bool {
+    if pid == std::process::id() {
+        return true;
+    }
+    running_process(pid)
+}
+
+
+/// A zombie answers "yes" here too — `kill(pid, 0)` succeeds until the parent reaps it — and that is
+/// left alone. An Unluminate window is started from a desktop, a terminal or another Unluminate, and
+/// each of those reaps or is itself long gone; the Windows case above is the one that was measured
+/// failing, because a process object there outlives the process for as long as any handle exists.
+#[cfg(unix)]
+fn running_process(pid: u32) -> bool {
+    // Safety: signal 0 is the no-op form `kill` documents for existence checks.
+    unsafe { libc::kill(pid as i32, 0) == 0 }
+}
+
+/// **Opening a handle is not enough, and that was measured rather than reasoned about.**
+///
+/// Windows keeps a process *object* alive for as long as anything holds a handle to it, so a
+/// process that has been killed is still openable — by its parent shell, by a task manager, by
+/// whatever started it. `OpenProcess` on one of those succeeds and answers "yes", which is exactly
+/// the case this whole function exists to catch: the window that was killed a moment ago.
+///
+/// The measurement: with the process asked about only by `OpenProcess`, a run of the startup
+/// harness answered in **1399 ms** where the first run of the batch — the only one with no
+/// just-killed window behind it — answered in 937. Every later run was paying the port probe's whole
+/// 400 ms for a window that had been dead for half a second.
+///
+/// So the exit code is what is asked. A process still running has none, and Windows says so with
+/// `STILL_ACTIVE`. A process that really did exit with 259 is read as running and falls through to
+/// the port probe, which is what this replaced — so the ambiguity Windows is known for costs a
+/// little time in a rare case and can never give a wrong answer.
+#[cfg(windows)]
+fn running_process(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    // Safety: the handle carries no permission to affect the process, only to ask about it, and it
+    // is closed as soon as it has been read. `GetExitCodeProcess` writes one `u32`.
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return false;
+        }
+        let mut code: u32 = 0;
+        let read = GetExitCodeProcess(handle, &mut code);
+        CloseHandle(handle);
+        // A handle that will not answer is a process nothing can be said about, and the port probe
+        // is the honest place to settle that.
+        read == 0 || code == STILL_ACTIVE as u32
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn running_process(_pid: u32) -> bool {
+    // Nowhere else is a target here. Answering "yes" leaves the port probe as the only judge, which
+    // is exactly the behaviour this replaced, so a platform with no answer loses nothing.
+    true
+}
+
 
 /// What one running Unluminate advertises.
 #[derive(Debug, Clone, PartialEq, Eq)]

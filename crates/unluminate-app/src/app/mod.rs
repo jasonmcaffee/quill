@@ -638,6 +638,18 @@ pub struct UnluminateApp {
     /// every window a test builds: the released binary turns it on by calling
     /// [`UnluminateApp::restore_project`], so a test neither reads nor writes a `.unluminate` folder.
     written_project: Option<ProjectState>,
+    /// The shells this project was left with, waiting to be started once a frame has been drawn.
+    ///
+    /// One entry per tab, holding the name a person gave it or an empty string. See
+    /// [`UnluminateApp::start_the_restored_terminals`] for why they are not started with the rest of
+    /// the project.
+    terminals_to_restore: Vec<String>,
+    /// How many frames this window has drawn.
+    ///
+    /// Only one thing reads it, and it needs to: eframe keeps the window hidden until it has
+    /// painted once, so "the window is on the screen" is "more than nought frames have been drawn"
+    /// and there is no other way to ask.
+    frames: u64,
     /// The macOS menu bar, once it has been installed.
     native_menu: Option<NativeMenu>,
     /// What each pane has asked for the explorer to scroll to, and what it last scrolled to.
@@ -983,11 +995,19 @@ impl UnluminateApp {
     pub fn new(folder: impl Into<PathBuf>) -> Self {
         let folder = folder.into();
         let renderer = TextRenderer::new();
+        crate::services::frame_trace::mark("fonts");
         let mut document = Document::new();
         let mut settings = Settings::new();
         settings.font_family = renderer.default_family();
         // Start in a family this system actually has, so the first thing typed is visible.
         document.set_base_style(settings.as_style_change());
+        // Read here rather than in the struct below so that starting up can be measured: the
+        // plugins are read from disk and the icons are decoded, and both are worth a mark of their
+        // own. See `services::frame_trace`.
+        let plugins = Plugins::load(None).0;
+        crate::services::frame_trace::mark("plugins");
+        let tree = FileTree::new(&folder);
+        crate::services::frame_trace::mark("file-tree");
         Self {
             plugin_wants_a_repaint: false,
             plugin_wants_copied: None,
@@ -998,7 +1018,7 @@ impl UnluminateApp {
             files: OpenFiles::new(document),
             browser: BrowserHost::new(),
             browser_placements: Vec::new(),
-            tree: FileTree::new(&folder),
+            tree,
             renderer,
             settings,
             panes: Panes::new(),
@@ -1028,6 +1048,8 @@ impl UnluminateApp {
             store: None,
             unsaved_settings: false,
             written_project: None,
+            terminals_to_restore: Vec::new(),
+            frames: 0,
             native_menu: None,
             revealed: None,
             selected: None,
@@ -1055,7 +1077,7 @@ impl UnluminateApp {
             bold_family: egui::FontFamily::Proportional,
             context: None,
             last_focus: Focus::Editor,
-            plugins: Plugins::load(None).0,
+            plugins,
             icons: Icons::new(),
             git: None,
             git_looked: false,
@@ -1334,17 +1356,12 @@ impl UnluminateApp {
         if state.terminal_visible && state.terminal_tabs > 0 {
             self.terminal.visible = true;
             self.run.visible = false;
-            for _ in 0..state.terminal_tabs {
-                self.new_terminal_tab();
-            }
-            // A name somebody typed is the one thing about a terminal that survives its shell, so
-            // it is put back. A blank leaves the tab named after whatever program it is running,
-            // which is what `Session::rename` already means by an empty name.
-            for (index, name) in state.terminal_tab_names.iter().enumerate() {
-                if !name.is_empty() {
-                    self.terminal.tabs.rename(index, name);
-                }
-            }
+            // Written down rather than started. See [`UnluminateApp::start_the_restored_terminals`]:
+            // starting a shell is the one thing this function does that the first frame does not
+            // need, and it was a fifth of the time before the window appeared.
+            self.terminals_to_restore = (0..state.terminal_tabs)
+                .map(|index| state.terminal_tab_names.get(index).cloned().unwrap_or_default())
+                .collect();
         }
         self.written_project = Some(self.project_state());
     }
@@ -4550,6 +4567,42 @@ impl UnluminateApp {
 
     /// Start another terminal, in the folder the explorer is showing, running the shell the settings
     /// name — or this machine's own when they name none.
+    /// Start the shells this project was left with, once there is a window to show them in.
+    ///
+    /// **Nothing that the first frame does not need should happen before the first frame.** eframe
+    /// keeps the window hidden until it has painted once, so every millisecond spent in
+    /// `restore_project` is a millisecond of blank desktop — and starting a shell is a pseudoconsole
+    /// and a process, which is by far the most expensive thing that function does. Measured for
+    /// `task-1805` on a project left with two terminals: `restore_project` was **179 ms of a 724 ms
+    /// startup**, and 179 of those 179 were these.
+    ///
+    /// Called from the end of the **second** frame, so the ordinary path is a window that appears and
+    /// then fills its terminal tile a frame later. It is called from `pump_control` as well, because a
+    /// command that arrives before then must not be answered with a window that is still half
+    /// restored — `terminal list` would say there were none. Taking the list is what makes two call
+    /// sites safe: whichever asks first does the work and the other finds nothing to do.
+    ///
+    /// The size is the same one the tile would have used before: `terminal_grid_size` falls back to a
+    /// guess until the window has drawn, and after one frame it has the real rectangle — so this is,
+    /// if anything, a better answer than the one it replaced.
+    pub fn start_the_restored_terminals(&mut self) {
+        if self.terminals_to_restore.is_empty() {
+            return;
+        }
+        let names = std::mem::take(&mut self.terminals_to_restore);
+        for _ in 0..names.len() {
+            self.new_terminal_tab();
+        }
+        // A name somebody typed is the one thing about a terminal that survives its shell, so it is
+        // put back. A blank leaves the tab named after whatever program it is running, which is what
+        // `Session::rename` already means by an empty name.
+        for (index, name) in names.iter().enumerate() {
+            if !name.is_empty() {
+                self.terminal.tabs.rename(index, name);
+            }
+        }
+    }
+
     pub fn new_terminal_tab(&mut self) {
         // Both measurements from the rectangle the tile really has, since `task-1697`: a terminal
         // docked to the right is as tall as the body and as narrow as its column, and eighty columns
@@ -6563,6 +6616,7 @@ impl UnluminateApp {
     /// Draw the whole window. Split out from the `eframe::App` implementation so the screenshot tests can
     /// drive it without a real window.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
+        crate::services::frame_trace::begin();
         self.receive_browser_events();
         self.browser_placements.clear();
         if self.files.iter().any(|file| file.browser.as_ref().and_then(|tab| tab.location.source_path()).is_some()) {
@@ -6595,22 +6649,30 @@ impl UnluminateApp {
         // Before anything is drawn, so that what a command asked for is in the frame about to be
         // painted and therefore in the next screenshot.
         self.pump_control(ui.ctx());
+        crate::services::frame_trace::phase("control");
         self.ask_git_about_the_open_file();
+        crate::services::frame_trace::phase("git");
         // Everything the adapter has said since the last frame, taken beside git's own replies
         // because it is the same kind of thing: a thread has answered and the window has to draw it.
         self.take_the_debug_replies(ui.ctx());
+        crate::services::frame_trace::phase("debug");
         self.colour_the_open_file();
+        crate::services::frame_trace::phase("colour");
         // The project's definitions, read on a thread. Beside the colouring because it is the same
         // kind of thing — what the files say, worked out from what they hold — and because both are
         // keyed on something cheap enough to ask about every frame.
         self.keep_the_symbol_index_fresh();
+        crate::services::frame_trace::phase("index");
         // Before the explorer is drawn, so a file another program has just made is in the tree on
         // this frame rather than the next one.
         self.notice_what_changed_on_disk();
+        crate::services::frame_trace::phase("watch");
         // Where the window is, so the project can be opened here again next time — `task-1693`.
         self.note_where_the_window_is(ui.ctx());
+        crate::services::frame_trace::phase("geometry");
         // Before the explorer is drawn, so the folders it needs are already open on this frame.
         self.follow_the_open_file();
+        crate::services::frame_trace::phase("follow");
         // Before any button is drawn, so that on the very first frame the focus is here and not on the
         // first thing in the title bar.
         hold_the_keyboard(ui);
@@ -6639,6 +6701,7 @@ impl UnluminateApp {
         // gets the clock, which is the watchdog.
         self.let_the_plugins_catch_up(ui.ctx());
         self.tick_the_plugins();
+        crate::services::frame_trace::phase("plugins");
         let full = ui.max_rect();
 
         // The window is one painted surface with rounded corners, because it has no operating system
@@ -6712,6 +6775,7 @@ impl UnluminateApp {
 
         // The menus, which the title bar draws when they are not in the screen's own bar.
         let menus = actions::menus(&self.menu_state());
+        crate::services::frame_trace::phase("menus");
         let mut action = None;
 
         // The title bar.
@@ -6891,6 +6955,7 @@ impl UnluminateApp {
         }
 
         // The explorer, and the divider that sets its width.
+        crate::services::frame_trace::phase("chrome");
         if self.explorer_visible {
             let explorer_outcome = {
                 let open = self.files.active().path().map(std::path::Path::to_path_buf);
@@ -7003,6 +7068,7 @@ impl UnluminateApp {
         }
 
         // The panes: a strip of tabs and an editing area each, left to right. One pane is the
+        crate::services::frame_trace::phase("explorer");
         // ordinary case and takes the same path as any other number.
         //
         // The loop **borrows the focus**: `files.active()` answers with the pane being drawn for as
@@ -7051,6 +7117,7 @@ impl UnluminateApp {
             }
         }
         self.files.focus_pane(keyboard);
+        crate::services::frame_trace::phase("panes");
         if let Some(index) = close {
             self.close_tab(index);
         }
@@ -7382,6 +7449,7 @@ impl UnluminateApp {
         // is zoomed instead.
         let style = self.document().active_style();
         let branch = self.git.as_ref().and_then(|git| git.status_label());
+        crate::services::frame_trace::phase("tiles");
         let picture = self.editor_area.size();
         let (position, detail) = match self.files.active().picture.as_ref() {
             Some(picture_in_the_tab) => (None, picture_in_the_tab.description(picture)),
@@ -7694,6 +7762,20 @@ impl UnluminateApp {
         if settled {
             self.remember_the_run_configurations();
         }
+        // The shells this project was left with, on the **second** frame. Not the first: eframe
+        // keeps the window hidden until it has painted once, so work at the end of the first frame
+        // is still blank desktop and would give back nothing of what moving it here is for. The
+        // window is asked to draw again at once, so the terminal tile is empty for one frame rather
+        // than until `HEARTBEAT` next wakes it half a second later.
+        if !self.terminals_to_restore.is_empty() {
+            match self.frames {
+                0 => ui.ctx().request_repaint(),
+                _ => self.start_the_restored_terminals(),
+            }
+        }
+        self.frames += 1;
+        crate::services::frame_trace::phase("rest");
+        crate::services::frame_trace::end();
     }
 
     /// What the run widget in the title bar needs to know to draw itself.

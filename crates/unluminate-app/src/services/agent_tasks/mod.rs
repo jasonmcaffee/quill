@@ -2397,38 +2397,11 @@ fn owner_is_gone(recorded: Option<&str>) -> bool {
     if pid == std::process::id() as i32 {
         return false;
     }
-    !process_is_running(pid)
-}
-
-/// Asks the operating system whether a process with this id is still running.
-///
-/// `kill(pid, 0)` sends no signal; it only reports whether the process exists and whether this user
-/// may signal it, which is exactly the question, and it cannot affect the process.
-#[cfg(unix)]
-fn process_is_running(pid: i32) -> bool {
-    // Safety: signal 0 is the no-op form `kill` documents for existence checks.
-    unsafe { libc::kill(pid, 0) == 0 }
-}
-
-/// Asks the operating system whether a process with this id is still running.
-///
-/// `OpenProcess` with no rights beyond querying is Windows' equivalent of `kill(pid, 0)`: it opens no
-/// access to affect the process, and a null handle means no process with this id exists.
-#[cfg(windows)]
-fn process_is_running(pid: i32) -> bool {
-    use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
-    // Safety: the handle this opens carries no permission to affect the process, only to ask
-    // whether it exists, and it is closed immediately after being read.
-    unsafe {
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid as u32);
-        if handle.is_null() {
-            false
-        } else {
-            CloseHandle(handle);
-            true
-        }
-    }
+    // The one answer to "is that process still there", which lives beside the instance files that
+    // ask it about a window. There were two copies of this — one here and one written in
+    // `unluminate-cli` for `task-1805`, where a stale instance file was costing 414 ms of every
+    // startup — and two answers to one question would be one too many.
+    !unluminate_cli::instances::is_running(pid as u32)
 }
 
 /// A conversation id: a hyphenated hexadecimal string of the shape both agents accept.

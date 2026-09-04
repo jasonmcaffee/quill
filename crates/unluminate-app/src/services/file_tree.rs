@@ -82,6 +82,9 @@ pub struct FileTree {
     /// Every file under the root, found once when the tree is loaded. The filter searches this, so it
     /// finds files inside folders that have never been opened.
     all_files: Vec<PathBuf>,
+    /// How many of `all_files` can be opened, counted while they were walked. See
+    /// [`FileTree::openable_count`] for why this is a number and not a question.
+    openable_files: usize,
     /// What this project leaves out of `all_files`: its `.gitignore`, its `.git/info/exclude` and
     /// the `editor.exclude` setting. `task-1804` §7.3.
     ///
@@ -109,6 +112,7 @@ impl FileTree {
             root,
             entries: Vec::new(),
             all_files: Vec::new(),
+            openable_files: 0,
             ignores: Ignores::default(),
             exclude: String::new(),
             last_error: None,
@@ -161,7 +165,9 @@ impl FileTree {
         // when a subfolder of it is the root.
         let repository = crate::services::ignore::repository_root(&self.root);
         self.ignores = Ignores::read(&repository, &self.exclude);
-        self.all_files = walk_files(&self.root, SEARCH_DEPTH, &self.ignores);
+        let walked = walk_files(&self.root, SEARCH_DEPTH, &self.ignores);
+        self.all_files = walked.files;
+        self.openable_files = walked.openable;
         self.folder_times = self.read_folder_times();
     }
 
@@ -209,8 +215,29 @@ impl FileTree {
     }
 
     /// How many of those files Unluminate can open.
+    ///
+    /// A **number worked out once**, when the list was walked, rather than a question asked of the
+    /// disk. It used to be `all_files.iter().filter(is_openable).count()`, and the footer that shows
+    /// it is drawn on every frame — so an idle window ran `metadata` over every file in the project
+    /// twice a second, and **opened and read** every file whose extension `file_kind` has not heard
+    /// of, to draw one line of text that had not changed. Measured on this repository, 618 files:
+    /// **13.5 to 19.8 ms of a 15 to 21 ms frame**, which was ninety per cent of everything an idle
+    /// Unluminate did. `task-1805`.
+    ///
+    /// It is the same fault `task-28` found in [`Entry::new`] and fixed there — that comment says in
+    /// as many words that `file_kind::openable` "does its own `metadata` call and then, for a name
+    /// with an unknown extension, **opens the file and reads it**" — left behind in the one caller
+    /// that ran it over the whole project instead of over one row.
+    ///
+    /// Counting while the walk runs also settles a disagreement. The rows are drawn from
+    /// [`file_kind::openable_in_a_listing`], which offers a name it has never heard of; the footer
+    /// asked `file_kind::openable`, which reads the file and refuses it if the bytes are not text.
+    /// So a `.bin` full of text was drawn as an ordinary row and left out of the count under it. A
+    /// footer counts rows, and rows are drawing, so the drawing rule is the right one — which is what
+    /// `file_kind`'s own documentation says: ask `openable` when a file is being opened, and
+    /// `openable_in_a_listing` when a row is being drawn.
     pub fn openable_count(&self) -> usize {
-        self.all_files.iter().filter(|path| is_openable(path)).count()
+        self.openable_files
     }
 
     /// The files whose name contains `filter`, ignoring case. Searching the whole folder rather than only
@@ -365,20 +392,32 @@ impl FileTree {
     }
 }
 
+/// What one walk of the project found: the files, and how many of them can be opened.
+///
+/// The count rides along with the walk because it is free there — `read_directory` has already
+/// asked the disk about every child, and `Entry::new` has already decided from that answer whether
+/// the row would be drawn as openable. Asked afterwards it is a second pass over the file system.
+/// [`FileTree::openable_count`] is what that cost.
+#[derive(Debug, Default)]
+struct Walked {
+    files: Vec<PathBuf>,
+    openable: usize,
+}
+
 /// Every file under `root`, to a depth of `depth`, folders before files and both by name.
 ///
 /// This is a separate walk from the tree itself because the tree only reads a folder when it is opened,
 /// and the filter and the file count have to know about files the user has not gone looking for yet.
-fn walk_files(root: &Path, depth: usize, ignores: &Ignores) -> Vec<PathBuf> {
-    let mut out = Vec::new();
+fn walk_files(root: &Path, depth: usize, ignores: &Ignores) -> Walked {
+    let mut out = Walked::default();
     fn walk(
         root: &Path,
         directory: &Path,
         remaining: usize,
         ignores: &Ignores,
-        out: &mut Vec<PathBuf>,
+        out: &mut Walked,
     ) {
-        if remaining == 0 || out.len() >= SEARCH_LIMIT * 4 {
+        if remaining == 0 || out.files.len() >= SEARCH_LIMIT * 4 {
             return;
         }
         let Ok(entries) = read_directory(directory) else {
@@ -404,7 +443,10 @@ fn walk_files(root: &Path, depth: usize, ignores: &Ignores) -> Vec<PathBuf> {
                 if !relative.is_empty() && ignores.ignores(&relative, false) {
                     continue;
                 }
-                out.push(entry.path);
+                // Counted here, from the one `metadata` call `read_directory` already made, so the
+                // footer's number costs nothing at all. See [`FileTree::openable_count`].
+                out.openable += usize::from(entry.openable);
+                out.files.push(entry.path);
             }
         }
     }

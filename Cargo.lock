@@ -4704,7 +4704,9 @@ dependencies = [
 name = "unluminate-cli"
 version = "0.35.0"
 dependencies = [
+ "libc",
  "serde_json",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

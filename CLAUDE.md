@@ -1916,6 +1916,86 @@ with the real fonts of the machine, colours it as the window colours it, and pri
 a frame costs. `tasks/task-1666-performance-tdd.md` has the before and after tables and the two
 designs that were rejected.
 
+## An idle window costs nothing, and the way to find out why it does not is to ask it
+
+`task-1666` measured a frame while somebody was working. `task-1805` measured one while nobody was,
+and it was **43 ms of processor time a second** — a twenty-third of a core, for ever, to show a
+picture that was not changing. egui's own README says the opposite is the design; Unluminate draws
+twice a second anyway, for the reason `app::HEARTBEAT` records, so an idle frame has to be nearly
+free and it was costing **24 ms**.
+
+**Nothing inside the window could say why**, and that is the part worth keeping. There are five cost
+examples, each measured one component with no eframe, no wgpu, no plugins and no project behind it,
+and every one of them was right about its own piece and silent about the whole.
+
+**`services::frame_trace` is the missing instrument.** `UNLUMINATE_FRAME_TRACE=<file> unluminate`
+writes one line per frame — every phase of `UnluminateApp::ui`, plus `outside`, which is egui's own
+tessellation and the graphics card — and `mark` lines during startup saying when the program had got
+to each step of `main`. **It costs one relaxed atomic load when it is off**, which is the only way an
+instrument may live in a hot path. `examples/startup_cost.rs` is its other half: the one step the
+marks cannot see inside, which is eframe building a window and a graphics device, and `--no-graphics`
+is how the memory question is answered.
+
+Four things came out of it, and each is a rule rather than a line.
+
+**A number drawn on the screen is not a reason to ask the disk.** The explorer's footer says "917
+files · 916 can be opened", and `openable_count` was `all_files.iter().filter(is_openable).count()` —
+where `file_kind::openable` does a `metadata` per file and **opens and reads** any file whose
+extension it has not heard of. Drawn every frame, that is 917 syscalls twice a second at idle and
+about 55,000 a second while somebody is working, for one line of text that had not changed: **13.5 to
+19.8 ms of a 15 to 21 ms frame**. It is the same fault `task-28` fixed in `Entry::new`, left behind
+in the one caller that ran it over the whole project rather than over one row. The count is worked
+out during the walk that already read every file's metadata, and it uses
+`file_kind::openable_in_a_listing` — the rule the rows are drawn with — so the footer and the rows
+can no longer disagree about the same file.
+
+**A question about a process is asked of the process.** `client::running()` dialled every listed
+instance's port with a 400 ms timeout, and a dead loopback port on this machine answers with nothing
+rather than with a refusal — so one stale instance file, which is what a window that was killed
+rather than closed leaves behind, cost **414 ms of the next window's startup and 431 ms of the next
+`unluminate-cli` command**. `instances::is_running` asks the operating system first. On Windows that
+is `GetExitCodeProcess` and **not** merely `OpenProcess`: the operating system keeps a process object
+alive while anything holds a handle to it, so a killed process is still openable and answered "yes"
+— which was measured, because the first run of a batch answered in 937 ms and every later one in
+1399. The port is still dialled when the process is really there, because a live process id can have
+been handed to something else. And `main` asks the question **only when there is a session to
+filter**, which is the desktop launch; every other start named its folder and threw the answer away.
+
+**Anything derived from the plugins is worked out when the plugins change, not when it is asked.**
+`Plugins::grammars()` built the whole extension→grammar set on every call, deep-cloning each
+`Grammar` — its keywords, builtins, types, definers and import words — **once per extension that
+plugin claims**. `menu_state` asks three times a frame to answer three yes/no questions: **0.43 ms of
+a 1.4 ms frame**. It is a field now, and every function in `plugins.rs` that changes which plugins
+there are calls `Plugins::settle`. A thread still takes a clone, because `symbol_index` and the
+reference mode of `text_search` outlive the frame that started them.
+
+**Nothing the first frame does not need happens before the first frame.** eframe keeps the window
+hidden until it has painted once, so every millisecond of `restore_project` is blank desktop — and
+starting a shell is a pseudoconsole and a process, which is by far the most expensive thing it does:
+**179 ms of a 724 ms startup, all of it two terminals**. They start on the **second** frame, because
+work at the end of the first is still before the window is shown, which had to be measured to be
+believed. `pump_control` starts them too, so a command arriving first is never answered by a
+half-restored window.
+
+**The memory is the graphics driver's**, and that is a finding rather than an omission. Measured with
+`startup_cost --no-graphics` against `startup_cost`: the fonts, the plugins and a walk of 917 files
+are **12.3 MB** of working set, and adding a DX12 device and egui's shader takes it to **135.7**. A
+whole Unluminate window is 223 MB, so the driver is 55% of it and there is no amount of care inside
+Unluminate that gets that back. Zed benchmarks at about 222 MB. Do not go looking for it again.
+
+| | before | after |
+|---|---|---|
+| window on the screen | 1162 ms | **584 ms** |
+| processor time while idle | 43.4 ms/s | **5.6 ms/s** |
+| one idle frame | ~24 ms | **0.65 ms** |
+| `unluminate-cli` with a stale instance file | 431 ms | **75 ms** |
+| working set | 222.6 MB | 223.1 MB |
+
+`tasks/task-1805-performance-tdd.md` has the rest: what `lto = "fat"` really buys, why `strip` and
+`panic = "abort"` are refused, why the heartbeat stays at half a second, and the four things left in
+the order they would be done. The scripts that produced every number are in
+`_agent_output/task-1805-performance/`.
+
 ## The Markdown preview is a document, which is what makes it read like one
 
 `task-1685` reported four things: tables were not drawn, the preview could not be selected or copied,
@@ -3094,6 +3174,14 @@ number on every machine. What *is* a test is the work itself — how many glyphs
 how many clusters the fonts were asked to measure — because those are the same on every machine.
 `tasks/task-1666-performance-tdd.md` §11 lists the five that fail on the code as it was.
 
+**And every one of those examples measures one component with no window behind it**, which is exactly
+why they all said the code was fast while an idle window was using a twenty-third of a core.
+`UNLUMINATE_FRAME_TRACE=<file> unluminate` is the one that measures the **whole thing**: the real
+binary, on this machine, writing what each phase of each frame cost and when startup got to each step
+of `main`. `cargo run --release -p unluminate-app --example startup_cost` is its other half, for the
+one step those marks cannot see inside. Reach for those two first when the question is "why is the
+window slow" rather than "why is this function slow"; `task-1805` is what they found.
+
 A screenshot test must be the same on every run. The terminal's screenshot tests feed fixed bytes to a
 session with no shell behind it, through `UnluminateApp::new_detached_terminal_tab`, because when a real shell
 answers is not something a test can know. Tests that do run a shell assert on text and wait with a timeout.
@@ -3320,6 +3408,12 @@ trade that away to be a shade nearer a screenshot.
   position cannot survive a change of size, the three ways of putting the view back that were
   weighed, where the anchor lives and when it is cleared, and the split view where one notch of the
   wheel was worth two sizes.
+- `tasks/task-1805-performance-tdd.md` — why an idle window used a twenty-third of a core: the
+  instrument that had to be built before anything could be said, the four faults it found — a footer
+  that stat-ed every file in the project on every frame, a killed window costing 414 ms of the next
+  one's startup, a grammar set deep-cloned three times a frame, and shells started before the window
+  was shown — what the memory turned out to be and why none of it is Unluminate's, and the five
+  things weighed and rejected with the numbers for each.
 - `tasks/task-1666-performance-tdd.md` — why a frame cost 818 ms and now costs 20: the eight faults
   that were found, what each was worth, the two revisions a document counts, the incremental layout
   and why its fingerprint is derived rather than reported, and what was deliberately not done.

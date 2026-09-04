@@ -134,4 +134,12 @@ dispatch2 = { version = "0.3", default-features = false, features = ["std"] }
 
 [profile.release]
 opt-level = 3
+# Thin rather than fat, and the default number of codegen units rather than one, because `task-1805`
+# measured what the other setting buys and it is only the file size. `lto = "fat"` with
+# `codegen-units = 1` takes `unluminate.exe` from **29.9 MB to 26.8 MB** and `unluminate-cli.exe` from
+# 1.29 to 1.0 -- and moves **nothing** that anybody can feel: startup 738 ms against 734, a keystroke
+# on a 380 KB file 2.498 ms against 2.508, working set 220.4 MB against 220.9. What it costs is the
+# build, from **52 seconds to 4 minutes 25**, five times over, on a repository whose rule is that
+# finishing a task means running a release build. A tenth off the installer is worth having and it is
+# not worth that; the numbers are here so the trade can be made again rather than argued.
 lto = "thin"
