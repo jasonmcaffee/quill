@@ -1,7 +1,7 @@
 # Fetch a debug adapter so `Run -> Debug` has something to drive, and print the setting to point at
 # it.
 #
-# **Unluminate itself fetches nothing** — that is the rule that keeps a document from making a network
+# **Unluminous itself fetches nothing** — that is the rule that keeps a document from making a network
 # request, and it keeps the editor from making one too, so pressing Debug with nothing installed is a
 # sentence naming what was looked for rather than a download. This script is the other side of that
 # sentence: a person who read it and wants an adapter runs this, once, deliberately. It is the same
@@ -17,14 +17,14 @@
 # answer and ships inside every LLVM distribution — `winget install LLVM.LLVM`, which does need
 # elevation.
 #
-# Nothing here touches Unluminate's settings file. It prints the line to paste, because a script that
+# Nothing here touches Unluminous's settings file. It prints the line to paste, because a script that
 # edited somebody's settings behind their back would be doing more than it was asked.
 
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     # Where to put it. Under the local application data by default, which needs no elevation and is
     # a folder a person can delete.
-    [string] $Into = (Join-Path $env:LOCALAPPDATA 'Unluminate\adapters'),
+    [string] $Into = (Join-Path $env:LOCALAPPDATA 'Unluminous\adapters'),
     # The CodeLLDB release to fetch. Pinned rather than 'latest' so two runs of this script a year
     # apart install the same thing.
     [string] $Version = 'v1.12.3',
@@ -44,7 +44,7 @@ if ($Remove) {
     if ($PSCmdlet.ShouldProcess($folder, 'Remove')) {
         Remove-Item -Recurse -Force $folder
         Write-Host "Removed $folder."
-        Write-Host 'Take the `debug.lldb` line out of the settings as well, or Unluminate will look for an adapter that has gone.'
+        Write-Host 'Take the `debug.lldb` line out of the settings as well, or Unluminous will look for an adapter that has gone.'
     }
     return
 }
@@ -52,7 +52,7 @@ if ($Remove) {
 if (Test-Path $adapter) {
     Write-Host "Already there: $adapter"
     Write-Host ''
-    Write-Host 'Put this in Unluminate''s settings file, under Edit -> Settings, or write it by hand:'
+    Write-Host 'Put this in Unluminous''s settings file, under Edit -> Settings, or write it by hand:'
     Write-Host "  debug.lldb = $adapter"
     return
 }
@@ -87,10 +87,10 @@ if (-not (Test-Path $adapter)) {
 $size = [math]::Round((Get-ChildItem -Recurse $folder | Measure-Object -Property Length -Sum).Sum / 1MB)
 Write-Host ''
 Write-Host "CodeLLDB $Version is in $folder ($size MB)."
-Write-Host 'Put this in Unluminate''s settings file:'
+Write-Host 'Put this in Unluminous''s settings file:'
 Write-Host "  debug.lldb = $adapter"
 Write-Host ''
 Write-Host 'The real-adapter test finds it through an environment variable of the same shape:'
-Write-Host "  `$env:UNLUMINATE_LLDB_ADAPTER = '$adapter'; cargo test -p unluminate-app --test screenshots -- a_real_debugger"
+Write-Host "  `$env:UNLUMINOUS_LLDB_ADAPTER = '$adapter'; cargo test -p unluminous-app --test screenshots -- a_real_debugger"
 Write-Host ''
 Write-Host 'pwsh tools/get-debug-adapter.ps1 -Remove takes it away again.'

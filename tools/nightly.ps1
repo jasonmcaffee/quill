@@ -3,7 +3,7 @@
   The six end-to-end agent tests, on this machine, once.
 
 .DESCRIPTION
-  `task-1804` §2.2 asks for a scheduled run of `crates/unluminate-app/tests/agent_board.rs` — the
+  `task-1804` §2.2 asks for a scheduled run of `crates/unluminous-app/tests/agent_board.rs` — the
   deepest tests in the repository, every one of them `#[ignore]`d because they take minutes and cost
   tokens.
 
@@ -38,7 +38,7 @@ $ErrorActionPreference = 'Stop'
 
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Repo = Resolve-Path (Join-Path $Here '..')
-$TaskName = 'Unluminate nightly agent tests'
+$TaskName = 'Unluminous nightly agent tests'
 
 if ($Unregister) {
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
@@ -81,7 +81,7 @@ Write-Host "    Writing to $log"
 
 # One at a time, because each starts an agent that reads and writes files in its own temporary folder
 # and this machine has one key with one rate limit behind it. That is `agent_board.rs`'s own rule.
-& cargo test --manifest-path (Join-Path $Repo 'Cargo.toml') -p unluminate-app --test agent_board -- --ignored --test-threads=1 2>&1 |
+& cargo test --manifest-path (Join-Path $Repo 'Cargo.toml') -p unluminous-app --test agent_board -- --ignored --test-threads=1 2>&1 |
     Tee-Object -FilePath $log
 
 $passed = $LASTEXITCODE -eq 0

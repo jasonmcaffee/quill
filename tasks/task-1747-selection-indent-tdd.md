@@ -2,7 +2,7 @@
 
 ## 1. Introduction
 
-Two things a person does every day in an editor, and Unluminate answered both the way a text field
+Two things a person does every day in an editor, and Unluminous answered both the way a text field
 answers them. Select a block of lines and press `Tab`, and the block is **replaced by one tab
 character**; press `Space`, and it is replaced by one space. Every other editor indents the block
 instead, which is what a person means by "indent", and what the ticket asks for.
@@ -21,8 +21,8 @@ normal cursor there.
 - With no selection, both keys keep doing exactly what they do now: typing the character at the
   caret, inside the current run of typing.
 - One key press is one undo step, whatever the selection spans.
-- The same two edits are reachable from the command line as `unluminate-cli editor indent`, with and
-  without `--space`, and documented in `unluminate-cli/docs/commands.md`.
+- The same two edits are reachable from the command line as `unluminous-cli editor indent`, with and
+  without `--space`, and documented in `unluminous-cli/docs/commands.md`.
 - The panel header's hover and drag no longer change the cursor; the pointer stays the normal
   arrow, and the blue drop zones remain the feedback while a panel is carried.
 - Tests at every layer: the core rules with no window, the window's key handling and the cursor in
@@ -36,12 +36,12 @@ normal cursor there.
   is only half selected — each of which needs a decision the ticket does not give. Until it is asked
   for, `Shift+Tab` indents the same way `Tab` does, which is strictly better than the current
   behaviour of throwing the selection away, and undo is the way back.
-- **An indent setting.** Unluminate has no tab width and no "insert spaces for tabs" preference, and the
+- **An indent setting.** Unluminous has no tab width and no "insert spaces for tabs" preference, and the
   ticket asks for a tab from `Tab` and a space from `Space`, which is the one answer that needs no
-  setting. A document Unluminate saves is plain text, and what the key says is what goes in.
+  setting. A document Unluminous saves is plain text, and what the key says is what goes in.
 - **Auto-indent on `Enter`.** A new line taking the indentation of the line above is a different
   feature with its own rules, and it is not asked for.
-- **Block (column) selections.** Unluminate has no rectangular selection, so there is nothing to answer
+- **Block (column) selections.** Unluminous has no rectangular selection, so there is nothing to answer
   here.
 
 ## 3. Problem statement
@@ -73,19 +73,19 @@ The three editors a person would compare this against all agree on the shape:
 
 The one rule all four share, and the one this design keeps, is that **the selection is what makes
 the key an indent rather than a type**. The character the key names is what the indent is made of —
-a tab from `Tab`, a space from `Space` — which is also what Unluminate needs no setting to answer.
+a tab from `Tab`, a space from `Space` — which is also what Unluminous needs no setting to answer.
 
 What the surveyed editors do not agree on is what the indent is *made of*: IntelliJ and VS Code
 insert the configured tab size, in tabs or in spaces, and VS Code even has a setting for how `Tab`
-behaves. Unluminate has no such setting and no reason to grow one for this: the ticket names the two
+behaves. Unluminous has no such setting and no reason to grow one for this: the ticket names the two
 characters, and a literal tab and a literal space are the only answers that cannot be wrong on a
-machine that has not told Unluminate anything about its house style.
+machine that has not told Unluminous anything about its house style.
 
 ## 5. Design
 
 ### 5.1 The command
 
-`unluminate_core::document` gains one command and one small type:
+`unluminous_core::document` gains one command and one small type:
 
 ```rust
 pub enum IndentUnit { Tab, Space }
@@ -153,23 +153,23 @@ with an arrow under it would be the drag the person cannot see.
 
 ### 5.4 The command line
 
-`unluminate-cli editor indent` is the agent's half, and it is a row in the catalogue like every other
+`unluminous-cli editor indent` is the agent's half, and it is a row in the catalogue like every other
 command with no menu entry:
 
 ```
-unluminate-cli editor indent [--space]
+unluminous-cli editor indent [--space]
 ```
 
 It indents the lines the selection touches, or the caret's line when nothing is selected, with a tab
 by default and a space with `--space` — the two keys, one command each. It goes through the same
-`Command` the keys do, in `UnluminateApp::run_cli`'s one place a command turns into a change, so an
+`Command` the keys do, in `UnluminousApp::run_cli`'s one place a command turns into a change, so an
 indent done by an agent and the same thing done by hand are the same thing. The MCP tool, the
 usage line and the documentation section come from the catalogue, and the tests that fail while a
 command is not offered as a tool or has no section in `commands.md` cover it without new code.
 
 ## 6. Tests
 
-- **`unluminate-core`, no window.** `Indent` over a multi-line selection puts a character at the start of
+- **`unluminous-core`, no window.** `Indent` over a multi-line selection puts a character at the start of
   each touched line and nowhere else, and leaves the bytes between the line starts exactly as they
   were; a selection ending on a line break indents the line above it and not the one below; a bare
   caret indents its own line and moves past the character; the selection's ends each move by the
@@ -189,7 +189,7 @@ command is not offered as a tool or has no section in `commands.md` cover it wit
 
 The screenshot tests are the baseline, and the images are opened, because that is how a person
 confirms the indents are where they should be. On top of that the change is released with
-`tools/release.ps1` and the installed window is driven with `unluminate-cli` — a selection made, `Tab`
+`tools/release.ps1` and the installed window is driven with `unluminous-cli` — a selection made, `Tab`
 pressed, the text read back, and a screenshot taken of the result — because the ticket asks for the
 thing to be seen, and the copy on the desktop is the build that answers "is this the one with the
 fix in it".

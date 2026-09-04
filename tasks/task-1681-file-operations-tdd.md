@@ -19,7 +19,7 @@ Three asks that look unrelated and are not. All three are about the explorer and
 what was typed into it, and a file can be put somewhere else without the code that names it going
 stale. The third is the large one and the ticket says so.
 
-Two of them also need something Unluminate has never had, and it is the same thing: **the explorer has to
+Two of them also need something Unluminous has never had, and it is the same thing: **the explorer has to
 be able to hold the keyboard.** `Delete` cannot mean "throw this file away" while the editing area
 has the keys, because there it means "take away the letter in front of the caret". §5 is that piece,
 and it is what makes the first ask an editor feature rather than a menu entry.
@@ -52,8 +52,8 @@ don't save, cancel — and VS Code additionally keeps the buffer alive in "hot e
 can be dodged for the window as a whole.
 
 The ticket asks for none of that: **"it should save and close"**. That is a deliberate, and
-defensible, different answer, and it is the one Unluminate is better placed to give than the editors
-above, because Unluminate saves plain text and nothing else. There is no format conversion, no "save as"
+defensible, different answer, and it is the one Unluminous is better placed to give than the editors
+above, because Unluminous saves plain text and nothing else. There is no format conversion, no "save as"
 decision, no lossy round trip. Writing the buffer to the file it came from is exactly what the person
 typed, and a dialog in front of it is a dialog that gets clicked through. It is also what a modern
 note editor does — Obsidian, Bear, Apple Notes — and nobody misses the dialog.
@@ -86,9 +86,9 @@ Three things to take from all of this:
 1. **Dragging in the file tree means "move and refactor"**, not "move" — IntelliJ has been the proof
    of that for twenty years.
 2. **There is no single right spelling of a specifier**, which is why VS Code makes it a setting.
-   Unluminate already decided this in `task-1680`: a relative specifier is the one that is always right.
+   Unluminous already decided this in `task-1680`: a relative specifier is the one that is always right.
 3. **Say what tier you are on.** VS Code's is a type checker. rust-analyzer's is a compiler front end
-   that still cannot do the whole job. Unluminate's is neither, and §4 says exactly what that buys and
+   that still cannot do the whole job. Unluminous's is neither, and §4 says exactly what that buys and
    what it costs.
 
 ## 3. The shape of the answer
@@ -97,27 +97,27 @@ Three things to take from all of this:
 |---|---|
 | The explorer holds the keyboard, has a selection, and is walked with the arrow keys | `components::explorer`, `app::Focus::Explorer` |
 | `Delete` and a `Delete` row on the right click menu | `Action::DeletePath`, `services::recycle` |
-| A modified tab is written when it is closed | `UnluminateApp::close_tab` |
+| A modified tab is written when it is closed | `UnluminousApp::close_tab` |
 | A row is dragged onto a folder | `components::explorer` reports it; the window settles it |
-| Where a file's references are and what they should say | `unluminate_core::imports` reads, `services::file_move` decides |
-| Doing it | `UnluminateApp::move_path`, which `Rename...` now goes through too |
+| Where a file's references are and what they should say | `unluminous_core::imports` reads, `services::file_move` decides |
+| Doing it | `UnluminousApp::move_path`, which `Rename...` now goes through too |
 
 ## 4. The move refactor: which tier, and what that means
 
 ### 4.1 The tier is the one `task-1675` and `task-1680` already chose
 
 `task-1675` §2 weighed a language server client, tree-sitter with stack graphs, and a syntactic index
-built from the token stream Unluminate already produces, and chose the third. Every reason holds here and
+built from the token stream Unluminous already produces, and chose the third. Every reason holds here and
 one more is added: a move refactor that depended on a language server would work on a machine where
 one happened to be installed and silently do nothing on a machine where one was not — and *silently
 doing nothing* is the worst of the three possible outcomes, because the person has already dropped
 the file.
 
 So this is a **syntactic** refactor, and it rests on exactly two readings of the text, both of which
-already exist in `unluminate_core`:
+already exist in `unluminous_core`:
 
 - For the **quoted** family — TypeScript, JavaScript, CSS — a module specifier is a string, and
-  whether a given string *is* one is `unluminate_core::imports`' existing question, asked forwards over
+  whether a given string *is* one is `unluminous_core::imports`' existing question, asked forwards over
   the file instead of backwards from a caret.
 - For the **path** family — Rust — a module reference is a chain of segments, and where a file sits
   in the module tree is arithmetic over its path, its source root and its `import_index` names, all
@@ -172,7 +172,7 @@ half a second into five.
 
 What replaces the preview is a **report**: the status bar says what moved, how many references were
 rewritten in how many files, and — in the same sentence — every file that was skipped and why.
-`unluminate-cli explorer move --dry-run` prints the whole change set without touching anything, which is
+`unluminous-cli explorer move --dry-run` prints the whole change set without touching anything, which is
 the preview for anybody who wants one, and is what a test asserts against.
 
 ### 4.4 The ownership rule is `task-1675`'s, unchanged
@@ -215,8 +215,8 @@ being written as the folder, because `specifier_for` already answers that way.
 A file's **module** is arithmetic: its nearest ancestor named by `language.source_roots` is the
 source root, the package is that root's parent folder with `-` read as `_`, and the segments are the
 path from the root down, with a final `import_index` stem (`mod`, `lib`, `main`) dropped. So
-`crates/unluminate-app/src/services/file_clipboard.rs` is `unluminate_app` + `["services", "file_clipboard"]`,
-and `crates/unluminate-app/src/services/mod.rs` is `unluminate_app` + `["services"]`.
+`crates/unluminous-app/src/services/file_clipboard.rs` is `unluminous_app` + `["services", "file_clipboard"]`,
+and `crates/unluminous-app/src/services/mod.rs` is `unluminous_app` + `["services"]`.
 
 Moving the file changes those segments, and three kinds of text have to follow.
 
@@ -270,7 +270,7 @@ therefore mostly need no edits at all, which §4.5 relies on.
 ## 5. The explorer takes the keyboard
 
 `Focus` gains a third value. Today it is `Editor` or `Terminal`; it becomes `Editor`, `Explorer` or
-`Terminal`, and `UnluminateApp::selected` holds the path the explorer's own cursor is on.
+`Terminal`, and `UnluminousApp::selected` holds the path the explorer's own cursor is on.
 
 **What a click means.** A single click on a row selects it, opens the file in the tab a single click
 reuses, and leaves the keyboard **in the explorer** — which is IntelliJ's behaviour and is what makes
@@ -304,7 +304,7 @@ ring, which is the ordinary case of clicking a file and is exactly what it shoul
 
 ## 6. Saving a tab that is closed
 
-`UnluminateApp::close_tab` is the one place a tab is closed — the tab's cross, `Ctrl+W`, the tab menu, the
+`UnluminousApp::close_tab` is the one place a tab is closed — the tab's cross, `Ctrl+W`, the tab menu, the
 command line and the rename that reopens a tab at a new path all reach it — so this is one change in
 one function.
 
@@ -329,7 +329,7 @@ announce itself.
 `Action::DeletePath(PathBuf)`, on the explorer's right click menu under `Rename...` with `Delete`
 shown beside it, and on the `Delete` key when the explorer has the keyboard.
 
-**It asks first**, through the one confirmation Unluminate already has. To do that, `UnluminateApp::Confirmation`
+**It asks first**, through the one confirmation Unluminous already has. To do that, `UnluminousApp::Confirmation`
 stops holding a git request and starts holding an `Answer`, which is either a git request or a path to
 delete. That is one enum and two arms; the alternative is a second confirmation dialog that almost
 agrees with the first, which is the thing `components::modal` exists to prevent.
@@ -341,14 +341,14 @@ Recycle Bin, so it can be got back."* for a file, and for a folder it counts wha
 **Where it goes.** `services::recycle` is the one function that answers that.
 
 - On **Windows** it is the Recycle Bin, through `SHFileOperationW` with `FOF_ALLOWUNDO`. That is one
-  feature flag on the `windows-sys` dependency Unluminate already has for the window's transparency, and
+  feature flag on the `windows-sys` dependency Unluminous already has for the window's transparency, and
   no new crate.
 - **Everywhere else** it is `std::fs::remove_file`/`remove_dir_all`, and the question says so: *"This
   cannot be undone."*
 
 That divergence is a stated cost rather than a hidden one. The `trash` crate would close it and
 brings a dependency tree per platform; macOS's own `NSFileManager.trashItemAtURL` would close it with
-no new crate and cannot be compiled, let alone tested, on the machine Unluminate is built on.
+no new crate and cannot be compiled, let alone tested, on the machine Unluminous is built on.
 `Destination` is an enum with two values and the dialog's wording is derived from it, so the day the
 second platform is answered there is one place to change and the sentence follows.
 
@@ -361,7 +361,7 @@ the project changed. A tab closing here does **not** save first, for the obvious
 The explorer's rows already sense `click_and_drag`, so the gesture costs nothing to start. What it
 needs is somewhere to land.
 
-**The component reports and decides nothing**, which is Unluminate's rule for a component and is the same
+**The component reports and decides nothing**, which is Unluminous's rule for a component and is the same
 shape `task-1673` gave the tab drag. While a row is being dragged the explorer collects every row's
 rectangle and path as it draws them, and after the list is drawn it works out which row the pointer
 is over. A folder row is that folder; a file row is the folder the file is in, which is what IntelliJ
@@ -372,7 +372,7 @@ Three things it refuses, silently, by not offering a target: a folder dropped in
 anything under it, a path dropped into the folder it is already in, and anything dropped outside the
 explorer — the last so a drag can be thought better of, exactly as a tab drag can.
 
-**What the window does with it** is `UnluminateApp::move_path(from, to)`, which is §4 and which
+**What the window does with it** is `UnluminousApp::move_path(from, to)`, which is §4 and which
 `Rename...` now calls as well — renaming a file *is* moving it to a new name, and a rename that
 updated no references while a drag did would be two answers to one question.
 
@@ -385,19 +385,19 @@ Everything above is reachable, because `task-1661` says it has to be.
 
 | Command | What it does |
 |---|---|
-| `unluminate-cli explorer select [path]` | Set the explorer's selection, or print it |
-| `unluminate-cli explorer delete <path>` | Delete, without the question — a command line *is* the deliberate act |
-| `unluminate-cli explorer move <path> <folder>` | Move it, and rewrite what refers to it |
-| `unluminate-cli explorer move <path> <folder> --dry-run` | Print the whole change set and change nothing |
-| `unluminate-cli explorer move <path> <folder> --no-refactor` | Move the bytes and leave the references alone |
-| `unluminate-cli tab close --discard` | Close without the save §6 added |
+| `unluminous-cli explorer select [path]` | Set the explorer's selection, or print it |
+| `unluminous-cli explorer delete <path>` | Delete, without the question — a command line *is* the deliberate act |
+| `unluminous-cli explorer move <path> <folder>` | Move it, and rewrite what refers to it |
+| `unluminous-cli explorer move <path> <folder> --dry-run` | Print the whole change set and change nothing |
+| `unluminous-cli explorer move <path> <folder> --no-refactor` | Move the bytes and leave the references alone |
+| `unluminous-cli tab close --discard` | Close without the save §6 added |
 
 `action run delete-path --path x` reaches the same action the menu row does, because the names are
 walked out of the real menus.
 
 ## 10. What is tested
 
-**Pure, with no window** — `unluminate-core`:
+**Pure, with no window** — `unluminous-core`:
 
 - `imports::specifiers_in` finds the specifier in each of `import x from './a'`, `import './a'`,
   `import { a } from "./a"`, `export * from './a'`, `require('./a')`, `import('./a')` and `@import
@@ -424,7 +424,7 @@ file list and a closure that answers with each file's text):
   order, with its visibility and its attributes;
 - a destination folder with no module file produces a **note**, not an edit.
 
-**With a window** — `crates/unluminate-app/tests/screenshots.rs`:
+**With a window** — `crates/unluminous-app/tests/screenshots.rs`:
 
 - the explorer's menu holds `Delete` and running it opens the confirmation, which names the file;
 - confirming it takes the file off the disk and closes the tab that was on it;
@@ -432,7 +432,7 @@ file list and a closure that answers with each file's text):
 - `Delete` with the explorer focused deletes, and `Delete` with the editor focused still edits the
   text — the two must never both fire;
 - closing a modified tab writes it, and closing an untitled one does not;
-- a move through `unluminate-cli explorer move` rewrites a real importing file on disk and leaves an open
+- a move through `unluminous-cli explorer move` rewrites a real importing file on disk and leaves an open
   importing tab modified but unwritten;
 - `--dry-run` changes nothing at all.
 
@@ -442,10 +442,10 @@ design.
 ## 11. Performance
 
 Nothing here runs once a frame. The plan is built once per move, and its cost is one reading of every
-file in the project that has an import-capable grammar. `unluminate-cli explorer move --dry-run` prints
+file in the project that has an import-capable grammar. `unluminous-cli explorer move --dry-run` prints
 the elapsed time, so it stays measured rather than assumed.
 
-Measured against Unluminate's own repository — 1,001 files in the walk — planning the move of a Rust
+Measured against Unluminous's own repository — 1,001 files in the walk — planning the move of a Rust
 module file is **62 ms** and planning the move of a whole module folder, which is 56 references in
 37 files, is **56 ms**. That is a plan built on the frame the row is dropped, and at that size it is
 one frame's worth of work rather than a pause anybody sees.
@@ -475,4 +475,4 @@ The one thing that *is* on a frame is the drag: while a row is being carried the
 - **Multiple selection**, and therefore moving or deleting several files at once.
 - **Undo for a move.** Dragging it back is the undo, and it really is one — §4.3 says why.
 - **Saving every modified tab when the window closes.** It is the same rule as §6 and it belongs with
-  a decision about what Unluminate does on quit generally, which is a ticket of its own.
+  a decision about what Unluminous does on quit generally, which is a ticket of its own.

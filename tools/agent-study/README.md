@@ -1,13 +1,13 @@
-# Watching an agent drive Unluminate
+# Watching an agent drive Unluminous
 
-Unluminate's contract is that everything a person can do, an agent can do too. The tests in the tree prove
+Unluminous's contract is that everything a person can do, an agent can do too. The tests in the tree prove
 an agent **can**. This folder is how you find out whether it **does** — which is a different question,
 and the one `task-1695` was filed about after an agent turned out to be doing 24% of its work with
 `grep` and `bash` in a window that had a command for every job.
 
 It drives a real agent, against a real window, through instructions phrased the way a person speaks —
 *"I want main.rs on the left and shapes.rs on the right"* — and grades what happened by reading
-Unluminate's own state back, never by believing what the agent said it did.
+Unluminous's own state back, never by believing what the agent said it did.
 
 ## What has to be standing up
 
@@ -20,7 +20,7 @@ Unluminate's own state back, never by believing what the agent said it did.
 
    Any model `opencode` can reach works; set `STUDY_MODEL` to its `provider/model`.
 
-2. **A config that equips the Unluminate MCP**, pointed at by `OPENCODE_CONFIG`. Use a file of the study's
+2. **A config that equips the Unluminous MCP**, pointed at by `OPENCODE_CONFIG`. Use a file of the study's
    own rather than editing the machine's — then equipping and unequipping changes nothing on disk:
 
    ```json
@@ -28,17 +28,17 @@ Unluminate's own state back, never by believing what the agent said it did.
      "provider": { "qwen38-study": { "npm": "@ai-sdk/openai-compatible",
        "options": { "baseURL": "http://localhost:8087/v1" },
        "models": { "qwen38-27b": { "limit": { "context": 96000, "output": 16000 } } } } },
-     "mcp": { "unluminate": { "type": "local", "enabled": true,
-       "command": ["<repo>/target/release/unluminate-cli.exe", "mcp", "serve"] } }
+     "mcp": { "unluminous": { "type": "local", "enabled": true,
+       "command": ["<repo>/target/release/unluminous-cli.exe", "mcp", "serve"] } }
    }
    ```
 
-3. **An Unluminate window open on the sample project**, and `unluminate-cli` built:
+3. **An Unluminous window open on the sample project**, and `unluminous-cli` built:
 
    ```sh
-   cargo build --release -p unluminate-cli -p unluminate-app
+   cargo build --release -p unluminous-cli -p unluminous-app
    node tools/agent-study/make-sample-project.mjs
-   ./target/release/unluminate-cli.exe launch _agent_output/agent-study/scratch-project --no-wait
+   ./target/release/unluminous-cli.exe launch _agent_output/agent-study/scratch-project --no-wait
    ```
 
 ## Running it
@@ -63,7 +63,7 @@ to grade, and the raw event stream beside them.
                debugger, and when it stops there tell me what the value of total is."] }
 ```
 
-`before` and `after` are `unluminate-cli` commands run either side of the conversation. They are the point:
+`before` and `after` are `unluminous-cli` commands run either side of the conversation. They are the point:
 they are what makes the transcript a measurement rather than a story. `prompts` may hold several
 turns, which are run in one session.
 
@@ -76,17 +76,17 @@ nobody knows is reachable in practice.
 
 ```
 tool calls           126
-  through Unluminate      96  76%
+  through Unluminous      96  76%
   the agent's own    30  24%   <- the number to drive down
 refused calls        9
-scenarios that went round Unluminate   13 of 23
+scenarios that went round Unluminous   13 of 23
 ```
 
 Two things to look at in the transcripts, both of which the first run found:
 
-- **Every refusal.** Each one is an agent guessing a name Unluminate does not accept. The refusal messages
+- **Every refusal.** Each one is an agent guessing a name Unluminous does not accept. The refusal messages
   are good and it self-corrects, but every one is a wasted round trip that will happen to every agent.
-- **Every non-Unluminate tool call.** Each is a job Unluminate either cannot do, or can do and did not get
+- **Every non-Unluminous tool call.** Each is a job Unluminous either cannot do, or can do and did not get
   asked to. The second kind is the more interesting, and it is usually a naming or a payload problem
   rather than a missing feature.
 

@@ -7,9 +7,9 @@
 >   the right for chatting with an agent.
 > - should be able to render as a tab in the text editor pane. e.g. file.txt has a tab, Agent-tasks
 >   should have a tab.
-> - should be able to define menu items. e.g we have Unluminate, File, etc so I should be able to add
+> - should be able to define menu items. e.g we have Unluminous, File, etc so I should be able to add
 >   Agent-Tasks with sub items and nested sub items
-> - add to settings menu in Unluminate settings
+> - add to settings menu in Unluminous settings
 > - understand current settings like font and background transparency, so the plugin can match the
 >   settings of the app.
 >
@@ -20,14 +20,14 @@ Five contributions, one manifest, no restart. This is the design. `services/plug
 manifest keys and the registry, `services/plugin_ui.rs` is the registry's code half, and
 `components/plugin_pane.rs` draws a contributed pane.
 
-## 1. What Unluminate has today, and why it cannot answer the ask as it stands
+## 1. What Unluminous has today, and why it cannot answer the ask as it stands
 
-A plugin in Unluminate is data. A folder holds `plugin.conf`, an icon and the words that make up a
+A plugin in Unluminous is data. A folder holds `plugin.conf`, an icon and the words that make up a
 language, and loading one is reading a file. Nothing in a plugin is executed. `plugin.kind` is read
 and checked, and a manifest saying anything but `language` is refused with a message rather than
 loaded halfway.
 
-**Source:** [`unluminate`, `crates/unluminate-app/src/services/plugins.rs` lines 96 to 101](https://github.com/jasonmcaffee/unluminate/blob/4fc49f1ce68258bcaec1ca9e4eeb16bc0aec2307/crates/unluminate-app/src/services/plugins.rs#L96-L101)
+**Source:** [`unluminous`, `crates/unluminous-app/src/services/plugins.rs` lines 96 to 101](https://github.com/jasonmcaffee/unluminous/blob/4fc49f1ce68258bcaec1ca9e4eeb16bc0aec2307/crates/unluminous-app/src/services/plugins.rs#L96-L101)
 
 ```rust
 /// The kind of plugin. One today, and the field exists so that a second one can be refused rather
@@ -39,14 +39,14 @@ pub enum Kind {
 }
 ```
 
-**Source:** [`unluminate`, `crates/unluminate-app/src/services/plugins.rs` lines 465 to 478](https://github.com/jasonmcaffee/unluminate/blob/4fc49f1ce68258bcaec1ca9e4eeb16bc0aec2307/crates/unluminate-app/src/services/plugins.rs#L465-L478)
+**Source:** [`unluminous`, `crates/unluminous-app/src/services/plugins.rs` lines 465 to 478](https://github.com/jasonmcaffee/unluminous/blob/4fc49f1ce68258bcaec1ca9e4eeb16bc0aec2307/crates/unluminous-app/src/services/plugins.rs#L465-L478)
 
 ```rust
 pub fn parse(values: &Values, bundled: bool) -> Result<Plugin, String> {
     let id = values.text("plugin.id").ok_or("plugin.id is missing")?.to_owned();
     let kind = match values.text("plugin.kind").unwrap_or("language") {
         "language" => Kind::Language,
-        other => return Err(format!("plugin.kind is `{other}`, and this version of Unluminate only runs `language` plugins")),
+        other => return Err(format!("plugin.kind is `{other}`, and this version of Unluminous only runs `language` plugins")),
     };
     let extensions: Vec<String> = list(values, "language.extensions")
         .into_iter()
@@ -67,7 +67,7 @@ claims no file type at all, so the check has to become a check per kind.
 **A panel is an enum, deliberately.** The four panels that can be docked are variants, and the
 comment on them says a fifth is a variant rather than a registry entry.
 
-**Source:** [`unluminate`, `crates/unluminate-app/src/app/dock.rs` lines 32 to 43](https://github.com/jasonmcaffee/unluminate/blob/4fc49f1ce68258bcaec1ca9e4eeb16bc0aec2307/crates/unluminate-app/src/app/dock.rs#L32-L43)
+**Source:** [`unluminous`, `crates/unluminous-app/src/app/dock.rs` lines 32 to 43](https://github.com/jasonmcaffee/unluminous/blob/4fc49f1ce68258bcaec1ca9e4eeb16bc0aec2307/crates/unluminous-app/src/app/dock.rs#L32-L43)
 
 ```rust
 /// The panels that can be moved.
@@ -91,13 +91,13 @@ arrays of four.
 document with `picture: Some(..)` beside it. There is no third kind of tab.
 
 **An action is an enum.** `app::actions::Action` has one variant per thing the window can be asked to
-do, and `UnluminateApp::run_action` is the single place a variant becomes a change. A plugin's command is
+do, and `UnluminousApp::run_action` is the single place a variant becomes a change. A plugin's command is
 not a variant known at compile time.
 
 **A command line command is `'static`.** The catalogue is a `&'static [Command]` whose every field is
 a `&'static str`, and the MCP tools are generated from it.
 
-**Source:** [`unluminate`, `unluminate-cli/src/catalogue.rs` lines 60 to 72](https://github.com/jasonmcaffee/unluminate/blob/4fc49f1ce68258bcaec1ca9e4eeb16bc0aec2307/unluminate-cli/src/catalogue.rs#L60-L72)
+**Source:** [`unluminous`, `unluminous-cli/src/catalogue.rs` lines 60 to 72](https://github.com/jasonmcaffee/unluminous/blob/4fc49f1ce68258bcaec1ca9e4eeb16bc0aec2307/unluminous-cli/src/catalogue.rs#L60-L72)
 
 ```rust
 /// One command.
@@ -110,7 +110,7 @@ pub struct Command {
     pub arguments: &'static [Argument],
     pub flags: &'static [Flag],
     pub examples: &'static [&'static str],
-    /// True when the client answers it without a running Unluminate.
+    /// True when the client answers it without a running Unluminous.
     pub local: bool,
 }
 ```
@@ -133,7 +133,7 @@ each other.
 |---|---|---|
 | **IntelliJ Platform** | `com.intellij.toolWindow` in `plugin.xml` gives an id, an icon, an anchor of left, right or bottom, a primary or secondary group flag, and a factory class. `createToolWindowContent()` runs the first time somebody clicks the button. Settings pages are `applicationConfigurable` and `projectConfigurable`. | More than 1700 extension points. Loading and unloading without a restart is possible but fenced: every extension point used has to be declared dynamic, action groups need ids, load and unload happen on the event thread under a write action, cached values are dropped, and a plugin that cannot meet the rules declares `require-restart="true"`. |
 | **VS Code** | About 46 contribution points in `package.json`, all data. `viewsContainers` puts an icon on the activity bar, `views` fills it, `menus` names about 40 fixed anchors with a `when` expression and a `group` for ordering, `submenus` nests them. | A view is filled either by a tree data provider, where VS Code draws and the extension supplies rows, or by a webview, where the extension renders HTML. Microsoft's own guidance on the second: webviews "are resource heavy and run in a separate context", "should be used sparingly and only when VS Code's native API is inadequate", and "a poorly designed webview can also easily feel out of place". A webview reaches the theme only through CSS variables. |
-| **Zed** | Nothing. `extension.toml` provides languages, debuggers, themes, icon themes, snippets and MCP servers. There is no way for an extension to put a button or a pane in the window. | Procedural parts compile to `wasm32-wasip2`. The closest comparison to Unluminate, a Rust editor with its own renderer, and it has not opened this door at all. |
+| **Zed** | Nothing. `extension.toml` provides languages, debuggers, themes, icon themes, snippets and MCP servers. There is no way for an extension to put a button or a pane in the window. | Procedural parts compile to `wasm32-wasip2`. The closest comparison to Unluminous, a Rust editor with its own renderer, and it has not opened this door at all. |
 | **Lapce** | Nothing. WASI plugins speak JSON-RPC through `psp-types`, and they run in `lapce-proxy` rather than in the window, which is also what makes remote development work. | Plugins mostly exist to wire up language servers. The second Rust editor, and the second one with no way to draw. |
 | **Eclipse** | OSGi bundles and an extension registry, with lazy activation through proxies so a bundle nobody uses is never started. | The ancestor of the whole model. Its declarative manifest plus lazy activation is the part that survived into IntelliJ and VS Code. |
 | **Obsidian** | A plugin is TypeScript running in the application's own process with access to its DOM, so it can draw anything. | Nothing separates a plugin from the application. A plugin can break the editor, and Obsidian's answer is a review process rather than a boundary. |
@@ -143,16 +143,16 @@ each other.
 
 | | What it is | Verdict |
 |---|---|---|
-| **Compiled into the binary, named by the manifest** | A Rust module in `unluminate-app` that the manifest names by a key checked against a list. The manifest is data saying what is contributed and where; the code shipped with Unluminate. | **Chosen for the first UI plugin.** It is the pattern `language.renders`, `run.project` and `debug.adapter` already follow three times, and no fourth mechanism has to be invented before anything can be drawn. |
-| **A dynamic library** | A `cdylib` loaded with `libloading`, exporting a function Unluminate calls with an `egui::Ui`. | Refused. A Rust type passed over that boundary is undefined behaviour unless both sides were built by the same compiler with the same flags, so every plugin would need rebuilding for every release, and a plugin that crashes takes the window with it. `hot-lib-reloader` is the honest state of this: a development tool, dylib only, no generic functions, global state breaks across a reload, and the library needs codesigning on macOS. `egui::Ui` is generic and closure heavy, which is the exact shape that cannot cross the boundary. |
+| **Compiled into the binary, named by the manifest** | A Rust module in `unluminous-app` that the manifest names by a key checked against a list. The manifest is data saying what is contributed and where; the code shipped with Unluminous. | **Chosen for the first UI plugin.** It is the pattern `language.renders`, `run.project` and `debug.adapter` already follow three times, and no fourth mechanism has to be invented before anything can be drawn. |
+| **A dynamic library** | A `cdylib` loaded with `libloading`, exporting a function Unluminous calls with an `egui::Ui`. | Refused. A Rust type passed over that boundary is undefined behaviour unless both sides were built by the same compiler with the same flags, so every plugin would need rebuilding for every release, and a plugin that crashes takes the window with it. `hot-lib-reloader` is the honest state of this: a development tool, dylib only, no generic functions, global state breaks across a reload, and the library needs codesigning on macOS. `egui::Ui` is generic and closure heavy, which is the exact shape that cannot cross the boundary. |
 | **WebAssembly** | A component in a `wasmtime` sandbox, called through a WIT interface. | Right for computation, wrong for drawing. The component model has no pointers and cannot pass object graphs or recursive structures, which is what an immediate mode UI call graph is. VS Code's own account of the component model says arguments are copied by value and the limits are JSON's limits. Drawing through it means designing a widget protocol first, which §13 keeps as its own work. |
-| **A separate process over the control channel** | The plugin is a program. It declares its contributions in the manifest and answers questions over the socket Unluminate already listens on. | **The named route for third party plugins, and left empty for now.** It is what Unluminate already does for git, for debug adapters, for terminals and for the command line, and a plugin that crashes is a plugin that has exited. It needs the same widget protocol WebAssembly needs, so it waits for the same work. |
+| **A separate process over the control channel** | The plugin is a program. It declares its contributions in the manifest and answers questions over the socket Unluminous already listens on. | **The named route for third party plugins, and left empty for now.** It is what Unluminous already does for git, for debug adapters, for terminals and for the command line, and a plugin that crashes is a plugin that has exited. It needs the same widget protocol WebAssembly needs, so it waits for the same work. |
 
 ### 2.3 What a contributed pane may draw with
 
 This is the design's central question, and both precedents in the repository answer it the same way.
 
-A Mermaid diagram is laid out in `unluminate-core` and drawn in `unluminate-app`, and the seam between them is a
+A Mermaid diagram is laid out in `unluminous-core` and drawn in `unluminous-app`, and the seam between them is a
 `Scene` of five kinds of item: rectangles, circles, polygons, lines and text at absolute positions.
 `components::diagram_view` has no diagram knowledge at all, which is why a twenty first diagram type
 needs no change there. A syntax theme colours the tokens and not the background, and Dracula's own
@@ -162,12 +162,12 @@ VS Code arrived at the same split from the other direction. Its tree views hand 
 draws them; its webviews hand over HTML and look foreign. It needed the second one because its
 extensions are JavaScript and cannot call into its renderer.
 
-Unluminate's first UI plugin is Rust in the same binary, so it does not need a protocol to draw through.
+Unluminous's first UI plugin is Rust in the same binary, so it does not need a protocol to draw through.
 The decision is therefore split in two, and saying so plainly is what keeps the design buildable:
 
 - **A provider compiled into the binary draws with `egui`,** through the same
   `components::controls`, `components::modal` and `theme` every other part of the window uses. It is
-  Unluminate's own code, held to `design/style-guide.md`, and covered by Unluminate's own screenshot tests.
+  Unluminous's own code, held to `design/style-guide.md`, and covered by Unluminous's own screenshot tests.
 - **A provider that is not in the binary draws through a widget tree,** which is the Mermaid `Scene`
   decision applied to controls rather than diagrams. That tree is not designed here. §13 says why,
   and nothing in this design has to change when it arrives, because the contributions are already
@@ -181,10 +181,10 @@ arrangement of the window inside the plugin rather than in a file a person can r
 manifest is what makes the same keys serve both.
 
 **A `when` expression language.** VS Code's context keys are the most copied part of its model and the
-hardest to test. Unluminate has a smaller answer already in use: a control that cannot apply is absent, and
+hardest to test. Unluminous has a smaller answer already in use: a control that cannot apply is absent, and
 the question is a function. `file_kind::definitions_apply` decides whether Go to Definition is on the
 Edit menu. A plugin's contribution gets the same treatment through one optional key, `pane.applies`,
-whose value names a condition Unluminate knows. Two conditions exist to start with, `always` and
+whose value names a condition Unluminous knows. Two conditions exist to start with, `always` and
 `in_project`, and the value is checked against the list.
 
 **Per plugin colours.** A plugin naming its own palette would undo the reason the palette is closed.
@@ -199,7 +199,7 @@ Four values, and the last one is the only new idea.
 ```
 Contribution   what a manifest adds to the window: a rail button, a pane, a tab, a menu, a settings page
 UiProvider     code in the binary that fills a pane, a tab or a settings page, and answers a command
-Registry       the list of provider names this version of Unluminate has, checked when a manifest is read
+Registry       the list of provider names this version of Unluminous has, checked when a manifest is read
 Surfaces       everything every enabled plugin contributes, worked out once per load and read by the window
 ```
 
@@ -223,10 +223,10 @@ refused for claiming no file type.
 built the same way.
 
 ```rust
-/// The UI providers built into this version of Unluminate that a plugin's `ui.provider` may name.
+/// The UI providers built into this version of Unluminous that a plugin's `ui.provider` may name.
 ///
 /// The fourth registry of this shape, checked the same way and for the same reason: a manifest naming
-/// a provider Unluminate does not have should say so plainly rather than load as a plugin whose pane is
+/// a provider Unluminous does not have should say so plainly rather than load as a plugin whose pane is
 /// permanently empty.
 pub const UI_PROVIDERS: &[&str] = &["agent-tasks"];
 ```
@@ -243,9 +243,9 @@ the Agent-Tasks plugin ships.
 plugin.id          = agent-tasks
 plugin.name        = Agent-Tasks
 plugin.version     = 1.0.0
-plugin.vendor      = Unluminate
+plugin.vendor      = Unluminous
 plugin.kind        = ui
-plugin.description = A task board whose tickets are worked by an agent in a terminal Unluminate owns.
+plugin.description = A task board whose tickets are worked by an agent in a terminal Unluminous owns.
 plugin.limitations = The board is local to this machine and its database is a single file.
 
 ui.provider = agent-tasks
@@ -287,9 +287,9 @@ Six keys, and five of them have a default so that a manifest asking for a pane w
 | `pane.group` | `top` or `bottom`. The rail's two groups say what a panel is: the top group holds lists and the bottom holds tiles with a character grid in them. | `top`. |
 | `pane.side` | `left`, `right`, `top` or `bottom`, the side the pane is docked to the first time it is shown. | `right`. |
 | `pane.width` and `pane.height` | The two measurements a panel carries, because one number cannot be both. A width for when it is a column at the side and a height for when it is in a strip. | 320 and 260, which are the explorer's width and the terminal's height. |
-| `pane.applies` | `always` or `in_project`, checked against the conditions Unluminate has. | `always`. |
+| `pane.applies` | `always` or `in_project`, checked against the conditions Unluminous has. | `always`. |
 
-The icon is checked rather than taken on trust. A manifest naming an icon Unluminate cannot draw is refused
+The icon is checked rather than taken on trust. A manifest naming an icon Unluminous cannot draw is refused
 with the list of icons, which is the same refusal `language.renders` gives.
 
 ### 4.2 A tab in the editing area
@@ -301,7 +301,7 @@ tab.label = Agent-Tasks
 
 Two keys. A contributed tab has no path on disk, is never modified, and cannot be saved. It appears in
 the tab strip beside file tabs, is closed the way a file tab is closed, and is remembered in the
-project's `.unluminate` folder so that reopening the project reopens it, which is what a file tab already
+project's `.unluminous` folder so that reopening the project reopens it, which is what a file tab already
 does.
 
 ### 4.3 Menu entries, including nested ones
@@ -319,12 +319,12 @@ menu.submenu.new.entries = task=Task, epic=Epic, sprint=Sprint
 is `menu.submenu.new.submenu.other`. The nesting is recursive in the reader and in `Entry::Submenu`,
 which already holds a `Vec<Entry>`.
 
-A plugin's menu is added after the six Unluminate has, so `Unluminate`, `File`, `Edit`, `View`, `Run` and `Git`
+A plugin's menu is added after the six Unluminous has, so `Unluminous`, `File`, `Edit`, `View`, `Run` and `Git`
 never move. A plugin cannot add an entry to one of those six. VS Code allows that through about 40
-named anchors and it is the largest part of its contribution model; Unluminate's answer for now is a menu of
+named anchors and it is the largest part of its contribution model; Unluminous's answer for now is a menu of
 the plugin's own, and §13 records what adding anchors would take.
 
-No plugin entry carries a keyboard shortcut. Unluminate tests that no two menu items claim one key
+No plugin entry carries a keyboard shortcut. Unluminous tests that no two menu items claim one key
 equivalent, because two items claiming one chord is a real fault on macOS, and a manifest that could
 claim `Cmd+S` would be able to break that test from outside the repository. A plugin's command is
 reachable from its menu, from its pane and from the command line, which is three ways.
@@ -350,13 +350,13 @@ asked for, and what this version has.
 
 | What is wrong | What is said |
 |---|---|
-| `plugin.kind` is not `language` or `ui` | ``plugin.kind is `wasm`, and this version of Unluminate runs `language` and `ui` plugins`` |
+| `plugin.kind` is not `language` or `ui` | ``plugin.kind is `wasm`, and this version of Unluminous runs `language` and `ui` plugins`` |
 | `plugin.kind = ui` with no `ui.provider` | ``ui.provider is missing, and a ui plugin with no provider would draw nothing`` |
-| `ui.provider` names something unknown | ``ui.provider is `chat`, and this version of Unluminate has agent-tasks`` |
+| `ui.provider` names something unknown | ``ui.provider is `chat`, and this version of Unluminous has agent-tasks`` |
 | `pane.group` is not `top` or `bottom` | ``pane.group is `middle`, and the rail has top and bottom`` |
 | `pane.side` is not one of the four | ``pane.side is `middle`, and a panel docks to left, right, top or bottom`` |
-| `pane.icon` names an icon Unluminate cannot draw | ``pane.icon is `sparkle`, and this version of Unluminate draws board, explorer, git, terminal, run, debug`` |
-| `pane.applies` names an unknown condition | ``pane.applies is `has_git`, and this version of Unluminate knows always, in_project`` |
+| `pane.icon` names an icon Unluminous cannot draw | ``pane.icon is `sparkle`, and this version of Unluminous draws board, explorer, git, terminal, run, debug`` |
+| `pane.applies` names an unknown condition | ``pane.applies is `has_git`, and this version of Unluminous knows always, in_project`` |
 | `menu.entries` holds an entry that is not `command=Name` | ``menu.entries holds `board`, which is not `command=Name``` |
 | `language.extensions` is empty on a `language` plugin | unchanged: ``language.extensions is empty, so nothing would ever use this plugin`` |
 
@@ -392,7 +392,7 @@ pub trait UiProvider {
     fn settings(&mut self, ui: &mut egui::Ui, look: &Look) -> Vec<Request>;
 
     /// Answer a command from the menu, the pane or the command line. The one path a change goes down,
-    /// which is what `UnluminateApp::run_action` is for the window.
+    /// which is what `UnluminousApp::run_action` is for the window.
     fn command(&mut self, command: &str, arguments: &[String]) -> Result<Answer, String>;
 
     /// What the command line prints and what a test reads: the pane's contents as data rather than as
@@ -415,18 +415,18 @@ startup and opening it when the board is first looked at.
 **Drawing returns requests instead of doing things.** A provider that wanted to open a file would have
 to reach the window's `OpenFiles`, and then two things would own the tab strip. So a provider returns
 `Request::OpenFile(PathBuf)`, `Request::ShowPane`, `Request::Message(String)` and the handful of others
-it needs, and `UnluminateApp` acts on them after the pane has been drawn. This is the rule
+it needs, and `UnluminousApp` acts on them after the pane has been drawn. This is the rule
 `components::activity_bar` already keeps: nothing there changes anything, and each button reports the
 `Action` it stands for.
 
-**`view` is not optional.** Unluminate's rule is that everything a person can do in the window an agent can
+**`view` is not optional.** Unluminous's rule is that everything a person can do in the window an agent can
 do too, through the same code, and both are covered by tests. A pane drawn with `egui` is invisible to
-both a test and an agent unless it can also be read as data. `view` is what `unluminate-cli plugin view`
+both a test and an agent unless it can also be read as data. `view` is what `unluminous-cli plugin view`
 prints and what a unit test asserts against, so a plugin's contents are testable with no window.
 
 **`command` is the only mutating path.** The menu entry, the button inside the pane and the command
 line all call it with the same string, so a thing done by hand and the same thing done by an agent are
-the same thing. This is what `UnluminateApp::run_cli` and `run_action` already guarantee for Unluminate's own
+the same thing. This is what `UnluminousApp::run_cli` and `run_action` already guarantee for Unluminous's own
 commands.
 
 **`Look` is how the plugin matches the window.** It is a value, built once a frame from the settings
@@ -451,7 +451,7 @@ pub struct Look {
 ```
 
 `Palette` is `theme::color` passed through, so a plugin's rows, fields, buttons and selected row are
-the ones every list in Unluminate draws. `row_height` is 28 and `menu_row_height` is 24, which is what
+the ones every list in Unluminous draws. `row_height` is 28 and `menu_row_height` is 24, which is what
 `design/style-guide.md` says a list row and a menu row are. The provider is given the numbers rather
 than the file, so a plugin cannot disagree with the style guide by accident.
 
@@ -460,9 +460,9 @@ than the file, so a plugin cannot disagree with the style guide by accident.
 ### 6.1 The rail
 
 `components::activity_bar` gains a third group: the plugin buttons, drawn in the group each manifest
-asks for, after Unluminate's own. `RailState` grows one field, a slice of `(pane_id, on)`, and `RailOutcome`
+asks for, after Unluminous's own. `RailState` grows one field, a slice of `(pane_id, on)`, and `RailOutcome`
 already carries an `Action`, so a plugin's button reports `Action::PluginPane { plugin, pane }` and
-goes down `UnluminateApp::run_action` with every other button.
+goes down `UnluminousApp::run_action` with every other button.
 
 The rail is 36 points wide and a button is 24 with a 30 point step, so eight buttons fit in a 300 point
 tall rail and about twenty in a tall window. A plugin contributing one pane is the common case. With
@@ -533,7 +533,7 @@ out from `Surfaces` when the plugins are loaded rather than once a frame.
 pub enum Action {
     // ... the existing variants ...
     /// Run a command a plugin declared. The strings are the plugin's id and the command's name, which
-    /// is what the menu entry, the pane's own button and `unluminate-cli plugin run` all carry.
+    /// is what the menu entry, the pane's own button and `unluminous-cli plugin run` all carry.
     PluginCommand { plugin: String, command: String },
     /// Show or hide a pane a plugin contributed.
     PluginPane { plugin: String, pane: String },
@@ -541,7 +541,7 @@ pub enum Action {
 ```
 
 `app/action_names.rs` fails when a menu entry has no name, and it walks `actions::menus` to build
-`unluminate-cli action list`. Both keep working: a plugin's entry has a name because `menu.entries` gives
+`unluminous-cli action list`. Both keep working: a plugin's entry has a name because `menu.entries` gives
 it one, and the walk finds it because the menu is in the list the walk reads. So a plugin's menu entry
 is agent reachable the day the manifest is written, with no further work, which is the property the
 machinery exists to give.
@@ -550,7 +550,7 @@ machinery exists to give.
 
 `settings_dialog::Page` gains `Page::Plugin(PluginId)`, and `Page::ALL` becomes a function of
 `Surfaces` the way `Panel::ALL` does. The page list down the left of the Settings window grows a row
-per contributing plugin, after the five Unluminate has. The page's body is `provider.settings(ui, look)`
+per contributing plugin, after the five Unluminous has. The page's body is `provider.settings(ui, look)`
 inside the same rectangle every page gets.
 
 The Plugins page itself is unchanged in shape and gains one thing: a `ui` plugin's row says what it
@@ -593,7 +593,7 @@ sees the result without leaving the window.
 That is worth setting against IntelliJ, whose dynamic plugin support is a list of restrictions:
 extension points declared dynamic, no components, ids on every action group, load and unload on the
 event thread under a write action, cached values dropped, no stored PSI, and `require-restart="true"`
-for a plugin that cannot comply. Unluminate avoids all of it by not loading code at run time. The cost is
+for a plugin that cannot comply. Unluminous avoids all of it by not loading code at run time. The cost is
 stated rather than hidden: **a third party cannot ship a UI plugin in this version.** Its manifest
 would name a provider that does not exist and would be refused with a message saying so. §13 is where
 that door is named.
@@ -620,10 +620,10 @@ a test and to an agent unless there is a way to ask what is in it, and a screens
 "how many tickets are in progress". So the same call that a test asserts against is the one an agent
 reads, and there is no second path that could drift from it.
 
-Eight verbs are added to `unluminate-cli/src/catalogue.rs` and eight arms to `app/cli.rs`. The MCP tools are
+Eight verbs are added to `unluminous-cli/src/catalogue.rs` and eight arms to `app/cli.rs`. The MCP tools are
 generated from the catalogue, so all eight are offered to an agent with no further work, and
 `every_command_is_offered_as_a_tool_in_both_shapes` keeps passing. Each verb gets a section in
-`unluminate-cli/docs/commands.md`, because `unluminate-cli/src/documentation.rs` fails while a command has none.
+`unluminous-cli/docs/commands.md`, because `unluminous-cli/src/documentation.rs` fails while a command has none.
 
 ## 9. Tests
 
@@ -666,24 +666,24 @@ docked right, the same pane as a tile along the bottom, the plugin's tab filling
 plugin's menu open with its submenu open inside it, and the plugin's Settings page.
 
 **The command line.** Each of the eight verbs is driven against a real window and its answer checked
-against the window's own state read back through `unluminate-cli status`, rather than against what the
+against the window's own state read back through `unluminous-cli status`, rather than against what the
 command said it did. `plugin view` is asserted to answer the same numbers the pane is drawing.
 
 ## 10. Deliberately not here
 
 **Code that is not in the binary.** A third party UI plugin needs a widget tree and a transport, and
 both are their own design. The transport is named: a separate process over the socket
-`services::control` already listens on, because that is what Unluminate does for git, for debug adapters and
+`services::control` already listens on, because that is what Unluminous does for git, for debug adapters and
 for terminals, and because a plugin that crashes should be a plugin that exited. WebAssembly is the
 alternative and its limits are recorded in §2.2.
 
-**A widget tree.** VS Code needed one because its extensions cannot call its renderer; Unluminate's first UI
+**A widget tree.** VS Code needed one because its extensions cannot call its renderer; Unluminous's first UI
 plugin is Rust in the same binary and does not. Designing a closed list of widgets before anything has
 been drawn with it would be designing against a guess. The place it plugs in is already decided: a
 provider that is not in the binary returns a tree where a provider in the binary draws, which is the
-`Scene` decision `unluminate-core::mermaid` already made for diagrams.
+`Scene` decision `unluminous-core::mermaid` already made for diagrams.
 
-**Menu anchors inside Unluminate's own six menus.** VS Code's roughly 40 named anchors with `when`
+**Menu anchors inside Unluminous's own six menus.** VS Code's roughly 40 named anchors with `when`
 expressions are the largest part of its contribution model and the hardest part to keep tested. A
 plugin gets a menu of its own here. Adding anchors later is a list of names and a condition per anchor,
 and it does not change anything in this design.
@@ -694,11 +694,11 @@ outside the repository. A plugin's commands are reachable three other ways.
 
 **A `when` expression language.** §2.4. Two named conditions instead, checked against a list.
 
-**Floating a contributed pane into a window of its own.** An Unluminate window is a project, and a floating
+**Floating a contributed pane into a window of its own.** An Unluminous window is a project, and a floating
 panel would be a second operating system window with no project behind it. That is true of the four
-panels Unluminate already has and is refused there for the same reason.
+panels Unluminous already has and is refused there for the same reason.
 
-**Downloading a plugin.** Nothing in Unluminate is ever fetched. A plugin is a folder in the settings
+**Downloading a plugin.** Nothing in Unluminous is ever fetched. A plugin is a folder in the settings
 folder, and installing one is copying it there.
 
 **Per plugin colour schemes.** §2.4.

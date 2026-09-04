@@ -1,17 +1,17 @@
 sequenceDiagram
   autonumber
   actor Reader
-  participant Unluminate
+  participant Unluminous
   participant Disk as The disk
-  Reader ->>+ Unluminate: Open notes.md
-  Unluminate ->>+ Disk: Read it
-  Disk -->>- Unluminate: The bytes
-  Note right of Unluminate: nothing is fetched
+  Reader ->>+ Unluminous: Open notes.md
+  Unluminous ->>+ Disk: Read it
+  Disk -->>- Unluminous: The bytes
+  Note right of Unluminous: nothing is fetched
   loop every keystroke
-    Unluminate ->> Unluminate: Lay the preview out
+    Unluminous ->> Unluminous: Lay the preview out
   end
   alt it parsed
-    Unluminate -->>- Reader: The drawn page
+    Unluminous -->>- Reader: The drawn page
   else it did not
-    Unluminate --x Reader: The line it went wrong on
+    Unluminous --x Reader: The line it went wrong on
   end

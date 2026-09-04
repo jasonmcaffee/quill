@@ -16,7 +16,7 @@ flowchart LR
 
 ## Introduction
 
-Unluminate currently serialises one complete debug envelope for nearly every debug command. In the task-1695 s08 run, `debug start`, `debug step-over`, `debug status`, and `debug variables` each carried nineteen stack frames, fourteen marked `subtle`, plus the selected frame's variables and watches. The 3,214 byte reply held `total = 35.5`, but the agent derived the value from the source instead of reading the debugger's answer.
+Unluminous currently serialises one complete debug envelope for nearly every debug command. In the task-1695 s08 run, `debug start`, `debug step-over`, `debug status`, and `debug variables` each carried nineteen stack frames, fourteen marked `subtle`, plus the selected frame's variables and watches. The 3,214 byte reply held `total = 35.5`, but the agent derived the value from the source instead of reading the debugger's answer.
 
 We don't need to change what the debugger reads. This change keeps the full debugger state in `DebugState` for the window, then shapes each CLI and MCP reply around the command that was asked, with a paused reply starting at the stop location and the selected frame's locals. `debug frames` hides subtle frames by default, and `debug frames --include-subtle` returns the complete stack.
 
@@ -28,24 +28,24 @@ We don't need to change what the debugger reads. This change keeps the full debu
 - `debug frames` omits every frame whose DAP `presentationHint` is `subtle`, reports how many were hidden, and `--include-subtle` restores the full list.
 - `debug variables` returns its variable rows without duplicating the stack or watches.
 - Every debug verb returns only its own result plus the minimum state needed to interpret it.
-- The s08 agent run reports `total = 35.5` from Unluminate's debugger output.
+- The s08 agent run reports `total = 35.5` from Unluminous's debugger output.
 
 ### Non-Goals
 
 - We won't change DAP request flow, adapter discovery, stepping behaviour, the debugger panel, stored debug state, etc.
-- No adapter-side stack filtering. Unluminate already receives the full stack and needs it for the UI and `--include-subtle`.
+- No adapter-side stack filtering. Unluminous already receives the full stack and needs it for the UI and `--include-subtle`.
 - No change to how scopes or children are fetched. Expensive scopes and nested variables stay lazy.
 - No change to runtime-frame rendering in the human debug panel.
 
 ## Problem Statement
 
-`UnluminateApp::debug_value()` combines session metadata, all frames, all currently read variables, and all watches. Most debug command handlers call it, including commands with dedicated payloads such as `debug frames` and `debug variables`. The `lines()` helper then adds the requested rows to the same object, so the human-readable MCP text may be concise while `structuredContent` still carries the complete envelope.
+`UnluminousApp::debug_value()` combines session metadata, all frames, all currently read variables, and all watches. Most debug command handlers call it, including commands with dedicated payloads such as `debug frames` and `debug variables`. The `lines()` helper then adds the requested rows to the same object, so the human-readable MCP text may be concise while `structuredContent` still carries the complete envelope.
 
 The design makes the payload grow with the call stack instead of with the question. Runtime frames therefore compete with the value an agent is meant to observe. It also makes commands semantically indistinct, because `status`, `frames`, `variables`, `watch`, and a waited step expose the same data with a different message.
 
 ## Architectural Overview
 
-The DAP overview describes a staged read from threads to stack trace to scopes and variables, with nested values fetched only when opened. Unluminate already follows that model, and we're keeping it. The change is at the final presentation seam, after `DebugState` has read the stopped state and before `Reply` is serialised.
+The DAP overview describes a staged read from threads to stack trace to scopes and variables, with nested values fetched only when opened. Unluminous already follows that model, and we're keeping it. The change is at the final presentation seam, after `DebugState` has read the stopped state and before `Reply` is serialised.
 
 The surveyed clients make the same separation:
 
@@ -58,7 +58,7 @@ The surveyed clients make the same separation:
 
 ### Components and Interfaces
 
-`crates/unluminate-app/src/app/cli.rs` will replace the single complete envelope with small builders:
+`crates/unluminous-app/src/app/cli.rs` will replace the single complete envelope with small builders:
 
 | Builder | Contents | Used by |
 |---|---|---|
@@ -72,7 +72,7 @@ The pause snapshot's `message` names where execution stopped. Its `lines` contai
 
 `debug frames` gains a boolean `--include-subtle` catalogue flag. Without it, the command filters `frame.subtle`, keeps original order among visible frames, and returns `hiddenFrames`. With it, the complete list is returned and each frame keeps its `subtle` field. The full stack remains in `DebugState` in both cases.
 
-`unluminate-cli/docs/commands.md` is regenerated from the catalogue, so the command reference and both MCP tool shapes receive the flag and its description from the same source.
+`unluminous-cli/docs/commands.md` is regenerated from the catalogue, so the command reference and both MCP tool shapes receive the flag and its description from the same source.
 
 ### Data Flows and Security
 
@@ -80,7 +80,7 @@ The pause snapshot's `message` names where execution stopped. Its `lines` contai
 sequenceDiagram
     participant Adapter as Debug adapter
     participant State as DebugState
-    participant CLI as UnluminateApp CLI
+    participant CLI as UnluminousApp CLI
     participant Agent as MCP client
     Adapter->>State: stopped, frames, scopes, variables
     State->>State: retain full paused state
@@ -122,4 +122,4 @@ The existing waited stepping and status commands already know when the paused st
 - Assert `debug frames --include-subtle` returns every frame and preserves each `subtle` marker.
 - Assert a waited step uses the same pause snapshot as status, so the command that lands on the value exposes it directly.
 - Regenerate the command reference and run the catalogue documentation checks for the new flag.
-- Build the release binaries and drive the real s08 scenario through `tools/agent-study/run-scenario.mjs`, using a task-specific output directory. Record the model's tool calls, Unluminate replies, payload size, and final answer, and verify the answer cites the debugger value rather than source arithmetic.
+- Build the release binaries and drive the real s08 scenario through `tools/agent-study/run-scenario.mjs`, using a task-specific output directory. Record the model's tool calls, Unluminous replies, payload size, and final answer, and verify the answer cites the debugger value rather than source arithmetic.

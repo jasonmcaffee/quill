@@ -22,7 +22,7 @@ The list, in the ticket's own order, with the section that answers each:
 
 ### What was measured
 
-`unluminate_core::layout` gives every `PlacedLine` four numbers: `y`, `height`, `baseline` and the pair
+`unluminous_core::layout` gives every `PlacedLine` four numbers: `y`, `height`, `baseline` and the pair
 `ascent`/`descent`. They are not the same box. The **glyphs** occupy `ascent + descent` below the
 line's top — the baseline is `ascent` from the top, deliberately, so that "extra line spacing is
 added below the text rather than above it, so single and double spaced paragraphs start at the same
@@ -107,7 +107,7 @@ at length. The gutter is what is wrong, so the gutter is what changes.
 `fs::write`. Making the folder opens it out in the tree and selects it; there is nothing to open in a
 tab.
 
-`Action::NewFolder(_)` is named `new-folder`, so `unluminate-cli action` reaches it the day it exists,
+`Action::NewFolder(_)` is named `new-folder`, so `unluminous-cli action` reaches it the day it exists,
 which is `action_names.rs`'s whole purpose. Two commands are added beside it for an agent that wants
 the folder rather than the dialog — `explorer new-file <path>` and `explorer new-folder <path>` —
 because "the agent creates a new file or folder" is a sentence in this very ticket and there was no
@@ -120,7 +120,7 @@ way to do it from the command line at all.
 ### What was measured
 
 Driven with real mouse input against a real window on this machine — `SetCursorPos` and
-`mouse_event`, the window brought to the front first — a freshly started Unluminate resizes correctly from
+`mouse_event`, the window brought to the front first — a freshly started Unluminous resizes correctly from
 **all four edges**:
 
 ```
@@ -154,15 +154,15 @@ bar hits the early `return`.
 
 That is what was seen live. In the run where the window was maximised and an edge was dragged, every
 subsequent drag — the edges *and* the title bar — did nothing for the rest of that process's life; a
-freshly started Unluminate worked again immediately. Two separate instances behaved the same way.
+freshly started Unluminous worked again immediately. Two separate instances behaved the same way.
 
 It also explains the shape of the report. One refused drag is enough, it is silent, and afterwards
-nothing about moving or resizing works until Unluminate is restarted — so which edge a person notices
+nothing about moving or resizing works until Unluminous is restarted — so which edge a person notices
 first is a matter of which one they happened to try.
 
 ### What is done
 
-**A grip is not added when the window is maximised.** That is Unluminate's own rule for a control that can
+**A grip is not added when the window is maximised.** That is Unluminous's own rule for a control that can
 never apply, made once more: a maximised window has no size to change, so there is nothing to grab,
 nothing sets a resize cursor over it, and — the part that matters — **no request is ever sent that
 the window manager will throw away.** `resize_edges::show` takes whether the viewport is maximised
@@ -189,10 +189,10 @@ with: the flag is private to winit and its only reset is a message Windows will 
 
 ---
 
-## 4. What Unluminate comes back as
+## 4. What Unluminous comes back as
 
 The ticket asks for four things at once — *the windows/projects I had open should all open, and be in
-the same location and state, including open files, scroll position, terminal windows* — and Unluminate
+the same location and state, including open files, scroll position, terminal windows* — and Unluminous
 today does about half of one of them. `services::project_state` remembers which files were open,
 which folders were expanded, whether the terminal was up and how many tabs it had. It does not
 remember where in a file you were, where the window was, how big it was, or that there was more than
@@ -200,8 +200,8 @@ one window at all.
 
 ### 4.1 One window's own state
 
-Three additions to `.unluminate/workspace.conf`, in the comma-list shape `files.panes` already uses so
-that an Unluminate which has never heard of them reads the file unchanged:
+Three additions to `.unluminous/workspace.conf`, in the comma-list shape `files.panes` already uses so
+that an Unluminous which has never heard of them reads the file unchanged:
 
 ```text
 files.scrolls = 0,412.5,0
@@ -227,7 +227,7 @@ one without the other puts the caret at the top of a file you are reading half w
 key press jumps the view.
 
 **The geometry is the project's**, written beside the rest of its state rather than in the person's
-settings file, because Unluminate's windows are one per project: remembering it per person would mean the
+settings file, because Unluminous's windows are one per project: remembering it per person would mean the
 second window opened on top of the first. It is read in `main.rs` — which already knows the folder
 before the window is built — and applied through `ViewportBuilder::with_position`,
 `with_inner_size` and `with_maximized`. A position that is not on any monitor now is dropped, so a
@@ -235,41 +235,41 @@ project last used on a second screen still opens.
 
 ### 4.2 Every window
 
-An Unluminate window is a process, which `services::launcher` records as a deliberate decision and which
+An Unluminous window is a process, which `services::launcher` records as a deliberate decision and which
 nothing here changes. So "the windows I had open" has to be written down somewhere both processes can
 see, and that is the person's own folder beside `recent.txt`:
 
 ```text
 session.txt
 ------------
-C:\jason\dev\unluminate
+C:\jason\dev\unluminous
 C:\jason\dev\ai-service
 ```
 
 - A window **adds its project** to the list when it opens, newest last, capped at
   `SESSION_LIMIT = 8`.
 - A window **leaves its line behind** when it closes.
-- Starting Unluminate **with no folder named** — which is the shortcut case, and is exactly the condition
+- Starting Unluminous **with no folder named** — which is the shortcut case, and is exactly the condition
   `starting_folder` already tests for by asking whether the current directory is the folder
-  `unluminate.exe` lives in — opens the first line itself, starts a process for each of the others through
+  `unluminous.exe` lives in — opens the first line itself, starts a process for each of the others through
   `launcher::open_window`, and **rewrites the file to exactly that list**, dropping any folder that
   is no longer there.
-- Starting Unluminate **with a folder named** — `unluminate .`, a file dropped on the icon, `unluminate-cli launch`
+- Starting Unluminous **with a folder named** — `unluminous .`, a file dropped on the icon, `unluminous-cli launch`
   — restores nothing and only adds itself.
 - **A project that already has a window is skipped**, live windows being what
-  `unluminate_cli::client::running` answers. Two Unluminates on one folder would be two processes writing one
-  `.unluminate` folder and the last one to write would win, which is the same reason `OpenFiles::open`
+  `unluminous_cli::client::running` answers. Two Unluminouss on one folder would be two processes writing one
+  `.unluminous` folder and the last one to write would win, which is the same reason `OpenFiles::open`
   shows a file that is already open rather than opening it twice. `running` rather than `listed`,
   because a window that was *killed* leaves its instance file behind and a project skipped on the
   strength of a dead window is a project that never comes back.
 
 **The trade-off is stated rather than hidden.** A line is kept when a window is closed, so closing one
 window while another is open still brings both back next time. That is what the ticket asks for in as
-many words, and it is the only rule available: Unluminate has no application-wide quit to hang the
+many words, and it is the only rule available: Unluminous has no application-wide quit to hang the
 question on, and by the time the last window closes the ones that closed before it are long gone from
 any live registry. The cost is that a folder opened once stays in the list until eight others push it
 out. The cap and the rewrite-on-restore are what bound it, and the file is one path a line in the
-person's own settings folder, which is where every other list Unluminate keeps already is.
+person's own settings folder, which is where every other list Unluminous keeps already is.
 
 `a_window_started_on_a_named_folder_restores_nothing` and
 `restoring_rewrites_the_list_to_what_was_restored` are the tests, and neither needs a window: the
@@ -288,8 +288,8 @@ because they closed a window would be a surprise.
 
 ## 5. The explorer notices what changed on disk
 
-`FileTree` is read when Unluminate is told to read it — opening a project, a menu entry, a file operation
-Unluminate itself did. An agent writing a file with its own tools is none of those, so the row never
+`FileTree` is read when Unluminous is told to read it — opening a project, a menu entry, a file operation
+Unluminous itself did. An agent writing a file with its own tools is none of those, so the row never
 appears.
 
 **The folders that are showing are asked for their modification time, and the tree is read again when
@@ -306,7 +306,7 @@ thread or a timer of its own.
 The `notify` crate is the right answer to *watching a tree*, and it is a dependency, a thread, a
 channel and a lifecycle — plus a debounce, because `ReadDirectoryChangesW` on a `target` folder
 during a build produces thousands of events a second and the tree walk that answers each one is the
-expensive part. Unluminate does not need to watch a tree. It needs to notice that a **folder somebody can
+expensive part. Unluminous does not need to watch a tree. It needs to notice that a **folder somebody can
 see** has changed, and there are never more than a few dozen of those. Comparing a few dozen numbers
 is smaller than the debounce alone would be.
 
@@ -363,7 +363,7 @@ and opens the same menu a folder does"). The list's leftover height takes a righ
 
 `explorer_menu` takes that as a fourth argument, and the entries that are about a particular file —
 `Cut`, `Copy`, `Copy Path`, `Rename...`, `Delete`, and the whole `Git` submenu — are **dimmed**
-rather than absent. That is deliberately the other half of Unluminate's own rule: absent is for a control
+rather than absent. That is deliberately the other half of Unluminous's own rule: absent is for a control
 that can never apply to this kind of thing, and dimmed is for one that could be used in a moment —
 and every one of these is live the instant the pointer is over a row. It is also what the ticket asks
 for in as many words.
@@ -375,8 +375,8 @@ the project folder and all four are what somebody who right clicked the empty sp
 
 ## 9. Tests
 
-- `unluminate-core`: nothing changes. The gutter reads the numbers `PlacedLine` already carries.
-- `unluminate-app` unit tests: the gutter's band arithmetic; the two ratios giving exactly today's sizes at
+- `unluminous-core`: nothing changes. The gutter reads the numbers `PlacedLine` already carries.
+- `unluminous-app` unit tests: the gutter's band arithmetic; the two ratios giving exactly today's sizes at
   the default font; the session list's cap, its rewrite and its refusal to restore when a folder was
   named; the scroll and caret lists surviving a file that has been deleted; the folder-time
   comparison; `explorer_menu`'s dimmed entries.
@@ -389,24 +389,24 @@ the project folder and all four are what somebody who right clicked the empty sp
 
 ## 10. What was measured on the real window
 
-All of this against `target/release/unluminate.exe`, driven through `unluminate-cli` and, where a pointer was
+All of this against `target/release/unluminous.exe`, driven through `unluminous-cli` and, where a pointer was
 needed, through `SetCursorPos` and `mouse_event`.
 
 - **The eight grips.** A freshly started window resized from all four edges: top `H 720 -> 660`,
   bottom `H 660 -> 720`, left `W 1100 -> 1040`, right `W 1040 -> 1100`. After one edge drag on a
   **maximised** window, every later drag — the edges *and* the title bar — did nothing for the rest
-  of that process's life, and a freshly started Unluminate worked at once. Twice, in two processes.
+  of that process's life, and a freshly started Unluminous worked at once. Twice, in two processes.
 - **Two windows, quit and brought back.** Projects A and B, each closed with `close-window`, then one
-  launch from the folder `unluminate.exe` lives in: both windows came back, A at 500,200 sized 1300x850
+  launch from the folder `unluminous.exe` lives in: both windows came back, A at 500,200 sized 1300x850
   with `long.md` scrolled to 900 points and its terminal tab still called `build`, B at 120,90 sized
   900x600. `long.md` kept its 900 while `thing.rs`, the tab that was showing, kept its 0 — so the
   scrolls really do belong to their own tabs.
 - **A project that already has a window is not opened twice.** With a window open on A, the shortcut
   launch opened **B**. Before the liveness check it opened a second A, because the first run had been
   killed rather than closed and its instance file was still there.
-- **A file made outside Unluminate.** `from-an-agent.md` and `new-folder-outside/` written from a shell:
+- **A file made outside Unluminous.** `from-an-agent.md` and `new-folder-outside/` written from a shell:
   both were in the tree within two seconds with nothing asked of the window.
 - **`explorer new-folder src/services` and `explorer new-file src/services/thing.rs`** made the
   folders above them and opened the file.
 - **The gutter at 30 points** in the real window, over a real desktop:
-  `_agent_output/task-1693-unluminate-gutter-and-misc/live-large-font.png`.
+  `_agent_output/task-1693-unluminous-gutter-and-misc/live-large-font.png`.

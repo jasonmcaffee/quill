@@ -1,6 +1,6 @@
 # Changelog
 
-What changed in each release of Unluminate, for somebody deciding whether to update.
+What changed in each release of Unluminous, for somebody deciding whether to update.
 
 Written by `tools/changelog.mjs` from the git history, and rewritten by `tools/release.ps1` and
 `tools/release.sh` on every release, so it cannot fall behind. One line per ticket; the version
@@ -29,8 +29,8 @@ bumps the release script makes are left out, because they are the boundaries rat
 
 ## 0.34.0 — 2026-09-03
 
-- Rename Quill to Unluminate (`task-1800`)
-- "an Unluminate", not "a Unluminate" (`task-1800`)
+- Rename Quill to Unluminous (`task-1800`)
+- "an Unluminous", not "a Unluminous" (`task-1800`)
 
 ## 0.33.0 — 2026-09-03
 

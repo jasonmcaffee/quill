@@ -45,7 +45,7 @@ The pattern is the same everywhere a multiplexer is built to be driven by a prog
 - **tmuxr (R)** — states the default in one line: *target … if NULL, the currently active pane is
   used.*
 
-The convention this settles on is tmux's, in Unluminate's spelling: **`--tab <index>`**, counting from 0,
+The convention this settles on is tmux's, in Unluminous's spelling: **`--tab <index>`**, counting from 0,
 optional, defaulting to the tab that is showing, and the one way every tab-targeting verb names a
 tab. It is not a new mechanism so much as the mechanism `rename` and `move` already use, extended to
 the four verbs that did not have it.
@@ -91,7 +91,7 @@ have it.
 
 ### 3.3 The tab is reached by number, and the number is checked
 
-`unluminate_terminal::Tabs` gains `at(index)` and `at_mut(index)`, which answer `Option<&Session>` and
+`unluminous_terminal::Tabs` gains `at(index)` and `at_mut(index)`, which answer `Option<&Session>` and
 `Option<&mut Session>` for a number, the way `active()` does for the active index. A number past the
 end is `None`, and the verbs answer with the not-found refusal they already use for the same
 condition, so a `send --tab 9` says *there is no terminal tab 9* rather than sending to the tab that
@@ -121,8 +121,8 @@ happens to be showing.
    leaves the showing tab alone; a `read --tab` reads the tab that is not showing without selecting
    it; a `read --tab --wait-for` holds for the named tab and is answered by it; `select --tab` and
    `close --tab` do what their positional spellings do; and a `--tab` past the end is refused.
-3. The unit tests in `unluminate-terminal` for `at` and `at_mut`, beside the ones that already cover
+3. The unit tests in `unluminous-terminal` for `at` and `at_mut`, beside the ones that already cover
    `active`.
-4. A real window with two terminal tabs running different things, driven by `unluminate-cli`: a command
+4. A real window with two terminal tabs running different things, driven by `unluminous-cli`: a command
    sent to each by number, read back from each by number, with the tab that is showing never
    changed, is the acceptance test the ticket asks for.

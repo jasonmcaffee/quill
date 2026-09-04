@@ -4657,7 +4657,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
 
 [[package]]
-name = "unluminate-app"
+name = "unluminous-app"
 version = "0.36.0"
 dependencies = [
  "ab_glyph",
@@ -4677,13 +4677,13 @@ dependencies = [
  "rusqlite",
  "serde_json",
  "unicode-segmentation",
- "unluminate-chat",
- "unluminate-cli",
- "unluminate-core",
- "unluminate-dap",
- "unluminate-db",
- "unluminate-git",
- "unluminate-terminal",
+ "unluminous-chat",
+ "unluminous-cli",
+ "unluminous-core",
+ "unluminous-dap",
+ "unluminous-db",
+ "unluminous-git",
+ "unluminous-terminal",
  "ureq",
  "url",
  "vello_cpu",
@@ -4693,7 +4693,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "unluminate-chat"
+name = "unluminous-chat"
 version = "0.36.0"
 dependencies = [
  "serde_json",
@@ -4701,7 +4701,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "unluminate-cli"
+name = "unluminous-cli"
 version = "0.36.0"
 dependencies = [
  "libc",
@@ -4710,21 +4710,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "unluminate-core"
+name = "unluminous-core"
 version = "0.36.0"
 dependencies = [
  "unicode-segmentation",
 ]
 
 [[package]]
-name = "unluminate-dap"
+name = "unluminous-dap"
 version = "0.36.0"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
-name = "unluminate-db"
+name = "unluminous-db"
 version = "0.36.0"
 dependencies = [
  "base64 0.22.1",
@@ -4737,11 +4737,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "unluminate-git"
+name = "unluminous-git"
 version = "0.36.0"
 
 [[package]]
-name = "unluminate-terminal"
+name = "unluminous-terminal"
 version = "0.36.0"
 dependencies = [
  "alacritty_terminal",

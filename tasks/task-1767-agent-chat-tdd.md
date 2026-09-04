@@ -2,7 +2,7 @@
 
 A pane docked to the right of the window, opened from a button in the rail, in which you talk to a
 model: your words go up, the answer comes back a token at a time, a picture can be attached to
-either, and what the model asks Unluminate to do is shown as it happens. Which model, at which URL, is a
+either, and what the model asks Unluminous to do is shown as it happens. Which model, at which URL, is a
 row on a Settings page rather than a constant in the binary.
 
 The ticket asks for four things and names a fifth by pointing at another one:
@@ -65,12 +65,12 @@ Every one of those is a soft shadow, an inset shadow, a gradient or a glow. Ther
 rectangle with a hard edge anywhere in it — which is the sentence `task-1765` ends its own
 measurements with, and it is why this plugin asks for the same renderer.
 
-### 1.2 The palette is Unluminate's, and it gains nothing
+### 1.2 The palette is Unluminous's, and it gains nothing
 
-The dark token set and Unluminate's own colours line up almost exactly, and the ladder
+The dark token set and Unluminous's own colours line up almost exactly, and the ladder
 `plugin_ui::Palette` grew for the board is the ladder a chat needs:
 
-| The chat's surface | The dark token | `Palette` | Unluminate's colour |
+| The chat's surface | The dark token | `Palette` | Unluminous's colour |
 |---|---|---|---|
 | The pane behind the panel | `--surface-0` `#1C1F25` | `board_page` | `EDITOR` `#1A1F26` |
 | The panel | `--surface-1` `#23272E` | `board_lane` | `EXPLORER` `#1F232A` |
@@ -90,13 +90,13 @@ second blue for a plugin's own buttons is a decision that was made once.
 
 ## 2. Where the code goes, and why some of it is a crate of its own
 
-### 2.1 `crates/unluminate-chat` — the protocol, the conversation and the thread
+### 2.1 `crates/unluminous-chat` — the protocol, the conversation and the thread
 
-A new crate, and the argument for it is the argument `unluminate-dap` already makes. Reading a stream of
+A new crate, and the argument for it is the argument `unluminous-dap` already makes. Reading a stream of
 server-sent events, turning it into a conversation, and knowing what state a request is in are all
 things that can be tested **with no window, no graphics card and no fonts**, and they are the half
-of this feature most likely to be wrong. `unluminate-dap`'s own tests run against scripted adapters with
-no process; `unluminate-chat`'s run against a scripted server with no network beyond loopback, and a few
+of this feature most likely to be wrong. `unluminous-dap`'s own tests run against scripted adapters with
+no process; `unluminous-chat`'s run against a scripted server with no network beyond loopback, and a few
 run against no server at all because the framing is a pure function.
 
 | Module | What is in it |
@@ -112,13 +112,13 @@ run against no server at all because the framing is a pure function.
 What must never be in it: any user interface dependency, for the same reason as the four crates
 above it in the table in `CLAUDE.md`.
 
-### 2.2 `unluminate-app` — the provider and the drawing
+### 2.2 `unluminous-app` — the provider and the drawing
 
 `services/agent_chat/` is the `UiProvider`: the conversations it holds, the settings it reads and
 writes, the pictures it has been given, and the one place a command becomes a change.
 `components/agent_chat/` is the drawing, one file a part, exactly as `components/agent_tasks/` is.
 
-`crates/unluminate-app/plugins/agent-chat/plugin.conf` is the manifest. It is **data**: it says there is
+`crates/unluminous-app/plugins/agent-chat/plugin.conf` is the manifest. It is **data**: it says there is
 a pane, which side it docks to, what its button looks like, what its menu holds and that it wants
 the `vello` renderer. It cannot name a colour, and nothing in it is executed. That is the property
 the plugin system has had since it was written and this does not give it up.
@@ -131,7 +131,7 @@ the plugin system has had since it was written and this does not give it up.
 "a config in settings to allow configure url for Claude, codex etc.", and *url* was taken to mean the
 APIs behind those two names — `api.anthropic.com` and `api.openai.com`. Jason's clarification on the
 ticket is the correction: *"this is not meant to interact with ai server. This is supposed to be
-solely in the confines of unluminate and connection to Claude and codex etc through cli."*
+solely in the confines of unluminous and connection to Claude and codex etc through cli."*
 
 So the two rows the ticket names run the **command-line agent already installed on this machine**.
 That is not a cheaper version of talking to those APIs; it is better in four ways, and each of them is
@@ -139,8 +139,8 @@ a thing the HTTP design had to work at and this one gets for nothing:
 
 | | Through the CLI | Through the API |
 |---|---|---|
-| The key | **There is none.** `claude` and `codex` hold their own credentials. | An environment variable Unluminate names, reads and must redact out of every error. |
-| Tools | **The agent's own**, with its own sandbox and permission model. | Unluminate's catalogue, offered behind two switches, run by the window, bounded by a round limit. |
+| The key | **There is none.** `claude` and `codex` hold their own credentials. | An environment variable Unluminous names, reads and must redact out of every error. |
+| Tools | **The agent's own**, with its own sandbox and permission model. | Unluminous's catalogue, offered behind two switches, run by the window, bounded by a round limit. |
 | The project | **Read**, because the agent starts in the folder the window has open and finds its `CLAUDE.md` or `AGENTS.md`. | Nothing but a path in a system prompt. |
 | A second question | **`--resume <session>`** with one turn's words: the context the agent built is the context it keeps. | The whole transcript, sent again, paid for again. |
 
@@ -168,7 +168,7 @@ completed, where a shell command the agent ran is an item beside the words it sa
 the decoder remembers how much of each item it has passed on and sends only the rest. Without that
 the answer appeared twice.
 
-Both are read into the same `Reply` values, so nothing above `unluminate-chat` knows which agent answered.
+Both are read into the same `Reply` values, so nothing above `unluminous-chat` knows which agent answered.
 
 ### 3.0.1 What an agent may do is a setting, because it cannot stop and ask
 
@@ -188,7 +188,7 @@ a sandbox and the other a permission mode:
 Every one of these was found by driving the released binary against the agents on this machine, and
 each is a rule rather than a preference.
 
-- **Unluminate runs none of an agent's tool calls.** The first version handed them to `tools::resolve`,
+- **Unluminous runs none of an agent's tool calls.** The first version handed them to `tools::resolve`,
   which answered `claude`'s `Grep` and `Read` with *"There is no tool called `Grep`"* — put the
   refusal in the transcript, made a `tool` message nobody asked for, and sent another round. The
   agent recovered, having been argued with by its own client. `WaitingForTools` still means what it
@@ -196,7 +196,7 @@ each is a rule rather than a preference.
   pane is already drawing.
 - **The prompt goes down standard input.** npm installs `codex` on Windows as `codex.cmd`, and Rust's
   own `Command` refuses to spawn a batch file with an argument it cannot escape — *"batch file
-  arguments are invalid"*. Unluminate's first line tells the agent it is answering in a pane, so every
+  arguments are invalid"*. Unluminous's first line tells the agent it is answering in a pane, so every
   prompt has a blank line in it and every `codex` turn failed. Standard input is better on every
   platform besides: a Windows command line stops at 32,767 characters and a pasted stack trace would
   reach it.
@@ -217,13 +217,13 @@ not look at a stop flag until the next line arrives — which for an agent think
 is not soon. Measured: `stop` put the pane back to `finished` at once, kept what had arrived, and left
 the agent running and billing. So `agent::Running` is a handle shared with whoever started the turn,
 and stopping kills through it; the blocked read then ends because the pipe has closed, which unwedges
-the thread as well. It is the same answer `unluminate_terminal::Session::kill` gives, for the same reason.
+the thread as well. It is the same answer `unluminous_terminal::Session::kill` gives, for the same reason.
 
-## 3.1 Talking to a server, which Unluminate had never done before
+## 3.1 Talking to a server, which Unluminous had never done before
 
 The three address shapes are still here, so this section still applies to them.
 
-This is the first thing in Unluminate that makes an outbound network request, and that deserves to be
+This is the first thing in Unluminous that makes an outbound network request, and that deserves to be
 said out loud rather than slipped in.
 
 Every existing rule about the network is a rule about something happening **without being asked**: a
@@ -245,18 +245,18 @@ it would add no crate at all. It would also be two implementations of chunked re
 error reporting and two of proxy handling, both written in `unsafe`, and neither testable from the
 other platform. The feature would then be twice as likely to be wrong in the half nobody could see.
 
-**`reqwest`** is the obvious crate and brings `tokio` with it. Unluminate has no async runtime anywhere;
-`unluminate_git::Worker`, the terminal's reader loop, `services::text_search`, `services::symbol_index`
-and `unluminate_dap`'s reader are all plain threads with channels. A runtime added for one pane would be
+**`reqwest`** is the obvious crate and brings `tokio` with it. Unluminous has no async runtime anywhere;
+`unluminous_git::Worker`, the terminal's reader loop, `services::text_search`, `services::symbol_index`
+and `unluminous_dap`'s reader are all plain threads with channels. A runtime added for one pane would be
 a second concurrency model in a program that has one, and it is a large one.
 
 **`ureq` 3 with `native-tls`** is what is used. It is blocking, which is what a worker thread wants;
 its response body is a `Read`, which is what an incremental parser wants; and `native-tls` is
-**schannel on Windows and Security.framework on macOS**, so the certificates Unluminate trusts are the
-certificates the machine trusts. That is `unluminate-git`'s own argument made again: git is shelled out
+**schannel on Windows and Security.framework on macOS**, so the certificates Unluminous trusts are the
+certificates the machine trusts. That is `unluminous-git`'s own argument made again: git is shelled out
 to rather than reimplemented because the machine's git already knows about this machine's
-credential helper, its ssh agent and its proxy, and a push from Unluminate has to be the same push you
-get in the terminal. A request from Unluminate should reach the same servers `curl` reaches, including
+credential helper, its ssh agent and its proxy, and a push from Unluminous has to be the same push you
+get in the terminal. A request from Unluminous should reach the same servers `curl` reaches, including
 behind whatever inspects the traffic on a corporate network, and the way to get that is to use the
 store the machine already keeps rather than to ship a copy of the internet's root certificates.
 
@@ -273,9 +273,9 @@ reason: this is a small open protocol somebody else defined, not a Rust type goi
 
 Server-sent events look line-oriented and are not: a chunk from a socket can end in the middle of a
 UTF-8 character, in the middle of a `data:` line, or exactly on the blank line that ends an event.
-`unluminate_chat::sse::Reader` therefore holds a byte buffer, is fed whatever arrived, and yields whole
+`unluminous_chat::sse::Reader` therefore holds a byte buffer, is fed whatever arrived, and yields whole
 events. It is a pure function of its input and its tests feed it the same stream split at every
-byte boundary and assert the same events come out — which is the test `unluminate_dap`'s
+byte boundary and assert the same events come out — which is the test `unluminous_dap`'s
 `Content-Length` framing already has.
 
 Two shapes are read from the events, and they are genuinely different protocols rather than one with
@@ -284,7 +284,7 @@ two spellings:
 - **OpenAI** (`/v1/chat/completions`): one event per delta, `choices[0].delta.content` a string,
   `choices[0].delta.tool_calls[]` accumulating a function name and a *string* of arguments across
   many deltas, `data: [DONE]` at the end. Usage arrives only if `stream_options.include_usage` was
-  asked for, which Unluminate asks for.
+  asked for, which Unluminous asks for.
 - **Anthropic** (`/v1/messages`): named events — `message_start`, `content_block_start`,
   `content_block_delta` (either `text_delta` or `input_json_delta`), `content_block_stop`,
   `message_delta` carrying the stop reason and the output tokens, `message_stop`. Blocks are
@@ -304,14 +304,14 @@ Reply::Failed(String)
 ```
 
 **A refusal is the server's own words.** A 401, a 404, a 429, a model that does not exist, a URL
-with a typo in it — each explains itself better than Unluminate could, so the body of a failed response
+with a typo in it — each explains itself better than Unluminous could, so the body of a failed response
 is what the pane shows, cut to a sentence with the whole of it under a disclosure. That is
-`unluminate-git`'s rule ("nothing invents an error message") applied to a second kind of program Unluminate
+`unluminous-git`'s rule ("nothing invents an error message") applied to a second kind of program Unluminous
 does not control.
 
 ### 3.1.3 The thread, and how the window finds out
 
-`unluminate_chat::Client::send` spawns a thread, exactly as `unluminate_git::Worker` does. It owns the
+`unluminous_chat::Client::send` spawns a thread, exactly as `unluminous_git::Worker` does. It owns the
 request, reads the body incrementally, and pushes `Reply`s down an `mpsc` channel; after each push
 it calls the waker the provider was handed in `plugin_ui::Context`, which is `egui`'s
 `request_repaint`. `UiProvider::catch_up` drains the channel once a frame and answers `true` while
@@ -328,21 +328,21 @@ the thread as an `AtomicU64`, and replies from a passed generation are dropped. 
 `services::text_search`'s own arrangement, and it is what makes "send, change your mind, send again"
 work with no timer anywhere.
 
-### 3.1.4 Where the key is, which is nowhere Unluminate writes — and for the two rows that ship, there is no key
+### 3.1.4 Where the key is, which is nowhere Unluminous writes — and for the two rows that ship, there is no key
 
 `services::agent_tasks::keychain` says it plainly: a secret is never written into a settings file,
 because a settings file is copied between machines, readable by anything that can read the folder,
-and pasted into a bug report. It also says, honestly, that **there is no Windows keychain in Unluminate**
+and pasted into a bug report. It also says, honestly, that **there is no Windows keychain in Unluminous**
 — on Windows `read` answers `None` and `write` refuses with a sentence.
 
-That leaves this pane, on the platform Unluminate is developed on, with nowhere safe to put a key. So it
-does not put one anywhere: **a provider names an environment variable, and Unluminate reads it at the
+That leaves this pane, on the platform Unluminous is developed on, with nowhere safe to put a key. So it
+does not put one anywhere: **a provider names an environment variable, and Unluminous reads it at the
 moment a request is sent.**
 
 - `provider.key_env = ANTHROPIC_API_KEY` — the name every tool on this machine already uses, and the
   variable `claude` itself reads.
 - On macOS and Linux a provider may name a keychain entry instead, through the code that is already
-  there; on Windows that row is **absent** rather than present and refusing, which is Unluminate's rule
+  there; on Windows that row is **absent** rather than present and refusing, which is Unluminous's rule
   for a control that cannot apply.
 - A local endpoint names neither, because llama.cpp wants no key.
 
@@ -374,7 +374,7 @@ pane.applies = always
 `pane.side = right` is the right panel. `pane.group = top` puts its button in the upper group of the
 rail, which is the left side toggle icon. Dragging its header to another edge, the four blue drop
 bands, the `Move to` menu on its header and its rail button, `Reset Panel Layout`, and
-`unluminate-cli plugins pane agent-chat/chat --side bottom` are all `task-1697`'s and need no code here.
+`unluminous-cli plugins pane agent-chat/chat --side bottom` are all `task-1697`'s and need no code here.
 
 `pane.icon = chat` is the one new name: `plugins::PANE_ICONS` has ten and none of them is a speech
 bubble. `theme::icon::chat` draws one — a rounded box with two lines in it and a tail, at the size
@@ -413,11 +413,11 @@ Five kinds, and each is a value in `model.rs` rather than a shape the drawing de
 | a failure | `Chrome::sunken` with a `CLOSE` coloured left edge and the server's own words |
 
 The body of a message is **markdown**, through `components::markdown_text`, which is the same
-`unluminate_core::markdown::render` the editor's own preview is made of. So headings, lists, quotes,
+`unluminous_core::markdown::render` the editor's own preview is made of. So headings, lists, quotes,
 tables and fenced code all work, a fence is coloured by whichever plugin claims its language through
 the `CodeHighlighter` seam `PluginHighlighter` already implements, and none of it is a second
 renderer. A fenced block sits in a **pressed panel** and inline code in a **chip**, which
-`unluminate_core::markdown` already answers with `Preview::panels` and `Preview::code_spans` and which
+`unluminous_core::markdown` already answers with `Preview::panels` and `Preview::code_spans` and which
 `markdown_text` was throwing away — so a fence used to be a line of coloured text floating on the
 surface behind it. What it does **not** do is pictures and Mermaid diagrams inside a message body, for the
 reason `components/markdown_text.rs` already records: resolving those needs two further passes that
@@ -435,7 +435,7 @@ pointless.
 ### 4.5 What the empty pane says
 
 The heading, the line under it and four starter chips, from `ChatPage.tsx`'s own `STARTER_PROMPTS`
-adapted to what Unluminate is: **Explain this file**, **Find the bug**, **Write a test**, **Summarise the
+adapted to what Unluminous is: **Explain this file**, **Find the bug**, **Write a test**, **Summarise the
 diff**. A chip fills the prompt rather than sending it, which is what the page it comes from does.
 
 ---
@@ -446,7 +446,7 @@ The body of the message being streamed changes on every chunk, and rendering mar
 style span per run and a layout line per wrapped line. Rendering it once per chunk would be the
 whole cost of the feature.
 
-Two things bound it, and both are rules that already exist in Unluminate:
+Two things bound it, and both are rules that already exist in Unluminous:
 
 - **Nothing is rendered more than once a frame.** `markdown_text::Cache` re-renders only when the
   source or the width has changed, and the source is compared rather than a change being reported —
@@ -456,7 +456,7 @@ Two things bound it, and both are rules that already exist in Unluminate:
 - **Only the streaming message is re-rendered.** Every finished message keeps its `Rendered` under
   its own key, so a conversation of forty messages costs nothing while the forty-first is arriving.
 
-`cargo run --release -p unluminate-app --example chat_cost` measures it: a message of a given length,
+`cargo run --release -p unluminous-app --example chat_cost` measures it: a message of a given length,
 rendered and laid out at the pane's width, and a whole pane's worth of decoration recorded. §11 has
 the numbers. It is an example rather than a test, for the reason `frame_cost` is: a threshold in
 milliseconds would be a different number on every machine.
@@ -503,31 +503,31 @@ text. The rule that a document cannot make a network request is not weakened by 
 The ticket says to understand them, and understanding them turns out to answer a bigger question.
 
 **All of this section is about a row that sends to an address.** A command-line agent has its own
-tools, its own sandbox and its own permission model, so Unluminate offers it none, runs none of its calls
+tools, its own sandbox and its own permission model, so Unluminous offers it none, runs none of its calls
 and bounds none of its rounds — see §3.0.2, where doing otherwise was measured arguing with a real
 `claude` about the existence of its own `Grep`. What the pane does with an agent's tool call is
 **show** it: the same block, the same disclosure, the same timing, filled in from the agent's own
-report of what it did rather than from a command Unluminate ran. So everything below about *drawing* one
+report of what it did rather than from a command Unluminous ran. So everything below about *drawing* one
 holds for both, and everything about *running* one holds for an address alone.
 
-### 7.1 What the page being copied does, and why Unluminate's answer is different
+### 7.1 What the page being copied does, and why Unluminous's answer is different
 
 The ai-service chat's `StatusTopicEl` is a **report**: its server ran a tool and streamed progress
-about it, and the client draws a tree of topics with timings. Unluminate has no server. A model talking
+about it, and the client draws a tree of topics with timings. Unluminous has no server. A model talking
 to `api.anthropic.com` emits `tool_use` blocks and then *waits* for the client to run them.
 
-So there are two honest positions and no third. Either Unluminate shows the tool call and answers
-nothing — in which case every conversation with tools switched on hangs on the first one — or Unluminate
+So there are two honest positions and no third. Either Unluminous shows the tool call and answers
+nothing — in which case every conversation with tools switched on hangs on the first one — or Unluminous
 runs it. Showing a tool call it will never answer is the worse of the two, because it looks like a
 feature and behaves like a bug.
 
-### 7.2 The tools are Unluminate's own commands, and that is the point of the product
+### 7.2 The tools are Unluminous's own commands, and that is the point of the product
 
 `CLAUDE.md`'s first section is not a suggestion: *everything a person can do in this window, an
 agent can do too, through the same command*. There are already a hundred and forty-seven of those
-commands in `unluminate-cli/src/catalogue.rs`, already offered as MCP tools generated from that
+commands in `unluminous-cli/src/catalogue.rs`, already offered as MCP tools generated from that
 catalogue, already tested. A chat pane inside the editor that could not reach them would be the one
-agent-facing surface in Unluminate that is not agent-facing.
+agent-facing surface in Unluminous that is not agent-facing.
 
 So the tools offered are the catalogue's, generated the way `mcp::tools` generates them — never
 written out by hand, which is the rule that section states twice.
@@ -549,7 +549,7 @@ through `editor rename` or `explorer move` is one undo step by construction.
 
 ### 7.3 How a provider runs one without becoming a second window
 
-A provider cannot reach `UnluminateApp`. It draws, and it returns `Request`s that the window acts on once
+A provider cannot reach `UnluminousApp`. It draws, and it returns `Request`s that the window acts on once
 the pane has been drawn — the rule `components::activity_bar` set and everything since has kept.
 
 Two things are added, one in each direction:
@@ -559,8 +559,8 @@ Request::RunCommand { id: String, line: String }   // provider -> window
 fn answered(&mut self, id: &str, answer: Result<serde_json::Value, String>)  // window -> provider
 ```
 
-The window parses `line` against the catalogue exactly as `unluminate-cli` does, runs it through
-`UnluminateApp::run_cli` — **the one place a command turns into a change**, so a tool call and a person
+The window parses `line` against the catalogue exactly as `unluminous-cli` does, runs it through
+`UnluminousApp::run_cli` — **the one place a command turns into a change**, so a tool call and a person
 pressing the same menu entry are the same thing — and hands the answer back on the next frame. A
 command that *waits* (`Outcome::Hold`) is refused with a sentence naming it rather than held: a tool
 call that never returned would wedge the conversation, and the commands that wait are the ones an
@@ -572,7 +572,7 @@ decides to list every file in a loop should stop being funded by a pane nobody i
 
 ### 7.4 What a tool call looks like
 
-The `StatusTopicEl` block, in Unluminate's palette: a `Chrome::sunken` well, a raised round disc holding
+The `StatusTopicEl` block, in Unluminous's palette: a `Chrome::sunken` well, a raised round disc holding
 `icon::terminal` for a command, `icon::run` while it is running, `icon::tick` when it worked and
 `icon::cross` when it did not; the command's own name; the elapsed time; and, behind a caret, the
 arguments and the answer as mono rows. Collapsed once it has finished, open while it is running,
@@ -617,7 +617,7 @@ keep.
   that will not stream needs.
 - `chat.tools` — off, and what the composer's button writes.
 - `chat.tool_limit` — eight.
-- `chat.system` — a system prompt, empty by default. Unluminate sends its own line ahead of it saying
+- `chat.system` — a system prompt, empty by default. Unluminous sends its own line ahead of it saying
   which project is open and which file is showing, because a chat in an editor that does not know
   what you are looking at is a browser tab.
 - `chat.history` — how many conversations to keep, twenty.
@@ -630,9 +630,9 @@ keep.
 ## 9. What an agent can do with it
 
 The plugin machinery already gives every command to the command line and to MCP with no new
-catalogue rows: `unluminate-cli plugins run agent-chat <command> …` and
-`unluminate-cli plugins view agent-chat --json`, and `plugins show agent-chat` lists them. That is how
-Agent-Tasks' twenty-odd commands are reached and it is the path `UnluminateApp::run_cli` already owns.
+catalogue rows: `unluminous-cli plugins run agent-chat <command> …` and
+`unluminous-cli plugins view agent-chat --json`, and `plugins show agent-chat` lists them. That is how
+Agent-Tasks' twenty-odd commands are reached and it is the path `UnluminousApp::run_cli` already owns.
 
 | Command | What it does |
 |---|---|
@@ -651,7 +651,7 @@ Agent-Tasks' twenty-odd commands are reached and it is the path `UnluminateApp::
 
 **`send` does not wait**, and that is deliberate rather than a shortcut. `UiProvider::command` is
 called inside a frame; a command that blocked would stop the window drawing for the length of a
-model's answer, which on a long one looks exactly like a crash — the sentence `unluminate-git`'s worker
+model's answer, which on a long one looks exactly like a crash — the sentence `unluminous-git`'s worker
 exists for. So `send` starts it and `state` says whether it has finished, which is the shape
 `run start` and `run output` already have.
 
@@ -665,15 +665,15 @@ and this can.
 
 Four layers, as everywhere else.
 
-1. **`unluminate-chat`, with no window.** The SSE reader fed the same stream split at every byte
+1. **`unluminous-chat`, with no window.** The SSE reader fed the same stream split at every byte
    boundary. Both wire shapes built from a conversation and compared to the exact JSON the API
    documents. Both parsed from recorded event streams — a plain answer, an answer with a tool call,
    an answer with two tool calls interleaved with text, a refusal, a stream cut off mid-message.
    The state machine driven by hand-built `Reply`s. Base64 round-tripped at every length.
    A **scripted server**: a `TcpListener` on `127.0.0.1:0` that replays fixed bytes, which is
-   `unluminate-dap`'s scripted-adapter arrangement with a socket instead of a pipe, and it is what makes
+   `unluminous-dap`'s scripted-adapter arrangement with a socket instead of a pipe, and it is what makes
    "the whole client, end to end" a unit test.
-2. **`unluminate-app`, with no window.** The provider's commands, its settings round-tripping through
+2. **`unluminous-app`, with no window.** The provider's commands, its settings round-tripping through
    the plugin folder, the conversation store, the tool loop's limit, and `view()` answering what the
    drawing draws.
 3. **Screenshot tests.** The pane empty; a conversation with a message each way; one with a code
@@ -683,11 +683,11 @@ Four layers, as everywhere else.
    one of them builds its conversation out of the same `Reply` values the wire would have produced,
    which is the terminal's own rule stated exactly: its screenshot tests feed **fixed bytes** to a
    session with no shell behind it, because when a real one answers is not something a test can know.
-   The **scripted server** is where the transport is driven end to end, in `unluminate-chat`, and
+   The **scripted server** is where the transport is driven end to end, in `unluminous-chat`, and
    `tests/wire_shapes.rs` reads recorded streams off disk for the two shapes whose escaping is too
    awkward to write as a literal without getting it wrong.
 4. **The real thing.** A real request to the local endpoint on this machine, and to
-   `api.anthropic.com` with a real key, driven through `unluminate-cli plugins run agent-chat send` and
+   `api.anthropic.com` with a real key, driven through `unluminous-cli plugins run agent-chat send` and
    read back through `plugins view`. §11 records what that run said.
 
 ---
@@ -695,7 +695,7 @@ Four layers, as everywhere else.
 ## 11. What was measured
 
 The numbers live here rather than in a comment so a later change can be compared against them.
-`cargo run --release -p unluminate-app --example chat_cost -- [messages] [width] [height]` is how the
+`cargo run --release -p unluminous-app --example chat_cost -- [messages] [width] [height]` is how the
 frame ones are measured again, and it is an example rather than a test for the reason `frame_cost`
 and `vello_cost` are: a threshold in milliseconds would be a different number on every machine.
 
@@ -742,7 +742,7 @@ Both answered; both streamed; both resumed. `claude` asked for its own `Read` to
 the call and its answer; `codex` ran a shell command and the pane drew that the same way. A second
 question to each named something only the first question could have told it — the file it had read,
 the word it had said — which is the whole proof that `--resume` carries the agent's own session
-rather than Unluminate re-sending a transcript. Stopping a long answer put the pane back at once, kept what
+rather than Unluminous re-sending a transcript. Stopping a long answer put the pane back at once, kept what
 had arrived, and killed the child.
 
 The four faults in §3.0.2 and the one in §3.0.3 are what those runs found. None of them could have
@@ -752,10 +752,10 @@ are specifically about Windows.
 ### 11.4 The round trip
 
 Driven through the **released binary** against a real OpenAI-compatible server on loopback that
-writes out the body it was sent, with `unluminate-cli plugins run agent-chat` on the other end. The pane
+writes out the body it was sent, with `unluminous-cli plugins run agent-chat` on the other end. The pane
 showed on the right, a chunked SSE answer streamed back a token at a time, `state` went
 `sending` → `finished`, and `last` read the answer. With the tools on, the model asked for
-`unluminate_tab list`, the window ran it through `run_cli`, the real answer came back into the
+`unluminous_tab list`, the window ran it through `run_cli`, the real answer came back into the
 conversation, and the turn stopped at the eight round limit with the sentence that says so.
 
 **It found three things, and all three were faults rather than surprises**: `ureq`'s default TLS
@@ -774,18 +774,18 @@ Each with its reason, so that a later ticket can pick one up knowing what it is 
   them. Two at once is a tab strip inside a pane, which is a different feature.
 - **Editing a message and re-sending from there.** The conversation is append-only. Branching a
   conversation is a tree, and a tree needs a way to see it.
-- **Attaching a file's text automatically.** Unluminate sends which project is open and which file is
+- **Attaching a file's text automatically.** Unluminous sends which project is open and which file is
   showing; it does not send the file. A pane that quietly uploaded whatever was on the screen is a
   pane nobody could use on anything confidential. `@`-mentioning a file to include it deliberately
   is the right shape and is its own ticket.
 - **Audio, speech and the microphone.** Four of the buttons on the page being copied are a
-  text-to-speech service and a speech-to-text service that Unluminate has not got. A button that cannot
+  text-to-speech service and a speech-to-text service that Unluminous has not got. A button that cannot
   apply is absent.
 - **Web search and the datasource chips.** Both are that server's own features.
 - **Gemini's wire shape**, per §8.1.
 - **Retrying automatically on a 429.** The server says how long to wait and the pane says so; a
   client that retried on its own would be a client billing somebody's account while they were not
   looking.
-- **A conversation shared between two Unluminate windows.** An Unluminate window is a process, and the
+- **A conversation shared between two Unluminous windows.** An Unluminous window is a process, and the
   conversations are files in the person's own folder read when the pane opens. Two windows chatting
   into one conversation is the same problem `session.txt` has and is not worth it for this.

@@ -1,4 +1,4 @@
-# Unluminate
+# Unluminous
 
 A text editor for macOS and Windows, written in Rust. It opens any file holding text, has a file explorer
 with folders that expand in place, a terminal along the bottom with tabs, and it lets the desktop show
@@ -17,14 +17,14 @@ And it is an **AI-first IDE**, which is a claim with a definition rather than a 
 person can do in this window, an agent can do too, through the Model Context Protocol, and both are
 held to the same automated tests.* Not a plugin bolted on, not a subset of the interesting parts — the
 same commands, reaching the same code, in the same window a person is looking at. `Ctrl/Cmd+Shift+O`
-and `unluminate_modal open go-to-file` are one feature. A breakpoint set by clicking the gutter and one set
-by `unluminate_debug breakpoint add` are the same breakpoint. [What that costs and how it is
+and `unluminous_modal open go-to-file` are one feature. A breakpoint set by clicking the gutter and one set
+by `unluminous_debug breakpoint add` are the same breakpoint. [What that costs and how it is
 enforced](#every-feature-is-reachable-by-an-agent-and-that-is-a-test) is a section of its own.
 
-The first half of this file is what Unluminate is and how to use it. The second half is how it is built:
+The first half of this file is what Unluminous is and how to use it. The second half is how it is built:
 [Architecture](#architecture) for the crates, the seams and what one frame does,
 [How plugins work](#how-plugins-work) for what is in a manifest and what the tokeniser does with it,
-[The command line](#the-command-line-and-the-channel-underneath-it) for the channel a running Unluminate is
+[The command line](#the-command-line-and-the-channel-underneath-it) for the channel a running Unluminous is
 driven down and the MCP server on top of it, and [Where a change goes](#where-a-change-goes) for which
 file to open first.
 
@@ -38,41 +38,41 @@ installer/macos/build.sh --install                        # macOS
 ```
 
 `installer/` builds a real installer for each platform out of the same drawn icon: on Windows a single
-`UnluminateSetup-<version>-x64.exe` that puts Unluminate in the Start Menu, on the PATH and in *Open with*, and
-on macOS an `Unluminate.app` and a disk image to drag into `/Applications`. `installer/README.md` says what
-each switch does; `tasks/unluminate-installer-tdd.md` says why it is built the way it is.
+`UnluminousSetup-<version>-x64.exe` that puts Unluminous in the Start Menu, on the PATH and in *Open with*, and
+on macOS an `Unluminous.app` and a disk image to drag into `/Applications`. `installer/README.md` says what
+each switch does; `tasks/unluminous-installer-tdd.md` says why it is built the way it is.
 
 ## Driving it from the command line
 
 ```sh
-unluminate-cli launch .                                   # start an Unluminate here and wait for it
-unluminate-cli tab open README.md                         # open a file
-unluminate-cli editor view preview                        # look at its Markdown preview
-unluminate-cli browser open examples/site/index.html      # render a local web page
-unluminate-cli terminal send cargo test                   # run something in the terminal
-unluminate-cli terminal read --wait-for "test result"     # wait for it, and read what it said
-unluminate-cli window screenshot shot.png                 # a real picture of the window
+unluminous-cli launch .                                   # start an Unluminous here and wait for it
+unluminous-cli tab open README.md                         # open a file
+unluminous-cli editor view preview                        # look at its Markdown preview
+unluminous-cli browser open examples/site/index.html      # render a local web page
+unluminous-cli terminal send cargo test                   # run something in the terminal
+unluminous-cli terminal read --wait-for "test result"     # wait for it, and read what it said
+unluminous-cli window screenshot shot.png                 # a real picture of the window
 ```
 
 Everything the menus, the keyboard and the mouse can ask for is a command, and `--json` makes every
-answer machine-readable. `unluminate-cli/README.md` says how it works; `unluminate-cli/docs/commands.md` is the
+answer machine-readable. `unluminous-cli/README.md` says how it works; `unluminous-cli/docs/commands.md` is the
 reference, written to be handed to an AI agent whole.
 
 ## Giving it to an AI agent
 
 `Settings -> Tools -> MCP`, then **Install for Claude Code** or **Install for Codex**. Restart the
-agent and it can drive Unluminate: open files, read and change the text, run things in the terminal,
+agent and it can drive Unluminous: open files, read and change the text, run things in the terminal,
 search the project, work the Git menu, and take a screenshot of the real window and look at it.
 
-The tools are **generated from the same catalogue the command line is**, so a command added to Unluminate
+The tools are **generated from the same catalogue the command line is**, so a command added to Unluminous
 is a tool the day it is added and there is no second list to fall behind. By default an agent is
-given one tool an area rather than one a command, which names everything Unluminate does for about a
-third of the context. `unluminate-cli/docs/mcp.md` is the whole of it, including what a fixed open port
+given one tool an area rather than one a command, which names everything Unluminous does for about a
+third of the context. `unluminous-cli/docs/mcp.md` is the whole of it, including what a fixed open port
 does and does not defend against — which is why it is off until you turn it on.
 
 ## Every feature is reachable by an agent, and that is a test
 
-Unluminate is built to be driven by a person and by an AI agent equally, and the rule is one sentence:
+Unluminous is built to be driven by a person and by an AI agent equally, and the rule is one sentence:
 
 > **Every piece of functionality a person can reach, an agent can reach, through the same command,
 > and both are covered by automated tests.**
@@ -84,18 +84,18 @@ no test is an unfinished feature. There is no lane where one of the two is optio
 Three mechanisms make it true rather than aspirational, and none of them is a promise anybody has to
 remember to keep:
 
-- **A menu entry needs nothing at all.** `unluminate-cli action list` is built by walking the real menus, so
+- **A menu entry needs nothing at all.** `unluminous-cli action list` is built by walking the real menus, so
   an entry added tomorrow can be run from the command line and by an agent tomorrow. A test in
   `app/action_names.rs` fails the day a menu entry has no name.
-- **Anything with no menu entry is a row in `unluminate-cli/src/catalogue.rs`** — the one list the CLI parses
-  against and the window dispatches on. `UnluminateApp::run_cli` is to that list what `run_action` is to the
+- **Anything with no menu entry is a row in `unluminous-cli/src/catalogue.rs`** — the one list the CLI parses
+  against and the window dispatches on. `UnluminousApp::run_cli` is to that list what `run_action` is to the
   menus: the single place a command turns into a change, using the same path a person's click takes.
-- **The MCP tools are generated from that catalogue.** A command added to Unluminate is a tool the day it is
+- **The MCP tools are generated from that catalogue.** A command added to Unluminous is a tool the day it is
   added, and `every_command_is_offered_as_a_tool_in_both_shapes` fails if one ever is not. Nothing is
   written out by hand, so there is no second list to fall behind.
 
-And the documentation is a test too: `unluminate-cli/src/documentation.rs` fails while a command has no
-section in `unluminate-cli/docs/commands.md`, while a usage line is out of date, or while a section
+And the documentation is a test too: `unluminous-cli/src/documentation.rs` fails while a command has no
+section in `unluminous-cli/docs/commands.md`, while a usage line is out of date, or while a section
 describes a command that no longer exists.
 
 ### Reachable is not the same as reached
@@ -103,20 +103,20 @@ describes a command that no longer exists.
 That machinery guarantees an agent *can* do everything. It does not guarantee an agent *will*, and
 `task-1695` measured the difference by watching a local Qwen 3.8 27B drive a real window across 23
 scenarios phrased the way a person speaks. It made 126 tool calls, and 30 of them — 24%, in 13 of the
-23 scenarios — went to its own `grep`, `bash`, `read` and `edit` for jobs Unluminate has a first-class
+23 scenarios — went to its own `grep`, `bash`, `read` and `edit` for jobs Unluminous has a first-class
 command for: git status, find-references, go-to-definition, making a folder, and renaming a symbol
 across the project.
 
-The rename is the one that shows why it matters. Unluminate's `editor rename` is one undo step per file, it
+The rename is the one that shows why it matters. Unluminous's `editor rename` is one undo step per file, it
 leaves comments and strings alone unless asked, and it knows which files are open. The agent's
-replace-all was none of those things, and it silently rewrote a Mermaid diagram that Unluminate's rename
+replace-all was none of those things, and it silently rewrote a Mermaid diagram that Unluminous's rename
 would have left alone.
 
 So the contract has a second half, and it is the harder one: **a feature is not finished when an agent
 *can* use it, but when an agent *does* — because the command exists, is named the way an agent guesses,
 answers in a payload proportionate to the question, and says what it knows that a generic file tool
 does not.** The findings, with the transcripts behind them, are in
-`_agent_output/task-1695-unluminate-agent-testing/FINDINGS.md`, and the gaps are open tickets.
+`_agent_output/task-1695-unluminous-agent-testing/FINDINGS.md`, and the gaps are open tickets.
 
 ## Running it
 
@@ -126,7 +126,7 @@ cargo run --release -- sample/welcome.md
 
 The argument is a folder to show in the explorer, or a file to open, in which case the explorer shows the
 folder that file is in. With no argument the explorer shows the current directory — except when the
-current directory is the folder `unluminate.exe` itself lives in, which is what a desktop shortcut gives you
+current directory is the folder `unluminous.exe` itself lives in, which is what a desktop shortcut gives you
 and nobody chose, and then it reopens the project that was open last time.
 
 Switches, all of which exist so a starting state can be chosen without clicking, which is what makes it
@@ -137,20 +137,20 @@ possible to capture the window in a particular state:
 | `--opacity N` | The starting background opacity, from 0.05 to 1.0. The same setting as `Settings -> Appearance -> Background`. |
 | `--view raw\|side\|preview` | Which of the three ways of looking at a Markdown file it starts on. |
 | `--terminal` | Open the terminal at the bottom straight away. |
-| `--menu-bar native\|in-window` | Where the menus are drawn. macOS uses the bar along the top of the screen and everything else uses Unluminate's own title bar; naming it is how the bar inside the window can be looked at on a Mac. |
-| `--control on\|off` | Whether this window listens for the command line. On unless it is turned off, which closes the channel `unluminate-cli` drives it down. |
+| `--menu-bar native\|in-window` | Where the menus are drawn. macOS uses the bar along the top of the screen and everything else uses Unluminous's own title bar; naming it is how the bar inside the window can be looked at on a Mac. |
+| `--control on\|off` | Whether this window listens for the command line. On unless it is turned off, which closes the channel `unluminous-cli` drives it down. |
 | `--print-menus` | Print the menus and their shortcuts, and stop. The macOS menu bar cannot be read by a test, so this is how what went into it can be checked. |
 
-Several Unluminates can run at once, each on its own project. `File -> New Window` opens another window on the
+Several Unluminouss can run at once, each on its own project. `File -> New Window` opens another window on the
 same project, `File -> Open Folder` opens one on a folder you choose, and `File -> Recent Projects` opens
 one on a folder that has been open before. Each is its own process, so they share nothing but the settings
 file. What each project had open — its tabs, which of them was showing, which folders in the explorer were
-opened out, and whether the terminal was up — is kept in a `.unluminate` folder beside the project and put back
+opened out, and whether the terminal was up — is kept in a `.unluminous` folder beside the project and put back
 when it is opened again.
 
 ## What the window looks like
 
-A title bar Unluminate draws itself, holding the menus at the left, the project's name after them, and the text
+A title bar Unluminous draws itself, holding the menus at the left, the project's name after them, and the text
 options and the three Markdown view modes at the right beside the window buttons. Down the far left a thin
 rail with a button for each pane: the explorer, git, and the terminal at the bottom. Then the explorer with
 its filter box, a tab for each open file, the editing area, the terminal along the bottom when it is
@@ -160,7 +160,7 @@ a strip of their own, a file without them does not move anything below it. The p
 `design/intial-design-screenshot.png` rather than chosen by eye; run `cargo run --example sample_design` to
 print the colour of each region of that image.
 
-The window is dragged by its title bar and resized by any of its four edges or four corners, which Unluminate
+The window is dragged by its title bar and resized by any of its four edges or four corners, which Unluminous
 draws itself because a window with no operating system frame has none of its own.
 
 `documentation/overview.md` is the whole of this file in pictures: twenty-four captures of the running
@@ -175,35 +175,35 @@ is solid on top of it, which is what the opacity setting is for. It was taken be
 into the settings and before the text options moved into the title bar, so it has a strip across the top
 that the window no longer has.
 `design/verification/terminal-claude.png` and `terminal-codex.png` are captures of `claude` and `codex`
-running in Unluminate's terminal, with `terminal-claude-resized.png` and `terminal-codex-resized.png` showing the
+running in Unluminous's terminal, with `terminal-claude-resized.png` and `terminal-codex-resized.png` showing the
 same programs after the tile was made shorter and the explorer wider.
 
 ## The menus
 
-`Unluminate`, `File`, `Edit`, `View` and `Git`, in that order, with `Unluminate` first. On macOS they are in the bar along the
-top of the screen, where macOS puts menus. On Windows they are drawn at the left of Unluminate's own title bar,
+`Unluminous`, `File`, `Edit`, `View` and `Git`, in that order, with `Unluminous` first. On macOS they are in the bar along the
+top of the screen, where macOS puts menus. On Windows they are drawn at the left of Unluminous's own title bar,
 and the three window buttons move to the right hand end, where Windows puts them.
 
 | Menu | What is in it |
 |---|---|
-| `Unluminate` | About Unluminate, Settings, Quit. |
+| `Unluminous` | About Unluminous, Settings, Quit. |
 | `File` | New Window, Open File, Go to File, Open Folder, Recent Projects, Save, Save As, Close Window. Opening a folder opens it in a window of its own, the way Recent Projects does. |
 | `Edit` | Undo, Redo, Cut, Copy, Paste, Select All, a `Highlight` submenu holding the four colours and the two ways of clearing one, Find in Files, Settings. |
 | `View` | The three view modes, show or hide the explorer, show or hide the line numbers, the editor's font size and how to put it back, close a tab and move between tabs, select the opened file in the explorer, a `Split` submenu holding everything to do with the panes, show or hide the terminal, a new terminal tab and closing one. |
 | `Git` | Commit, Add, Show Diff, Compare with Revision, Show History, Show Current Revision, Annotate with Git Blame, Rollback, Push, Pull, Fetch, Merge, Rebase, Branches, New Branch, New Tag, Reset HEAD, Stash, Unstash, Manage Remotes, Clone. Dimmed when the folder is not in a repository, and it grows `Continue` and `Abort` while a merge or a rebase has stopped on a conflict. |
 
 Both bars are built from one list, so they hold the same entries with the same shortcuts. Run
-`unluminate --print-menus` to see it.
+`unluminous --print-menus` to see it.
 
 ## Settings
 
-`Edit -> Settings`, `Unluminate -> Settings`, or command and comma, opens a modal laid out like the reference editor's: the
+`Edit -> Settings`, `Unluminous -> Settings`, or command and comma, opens a modal laid out like the reference editor's: the
 pages down the left under their headings, and the chosen page on the right.
 
 - `Appearance & Behavior -> Appearance -> Font` sets the family and the size the editor shows the document
   in. It applies to the whole document and leaves bold, italic and colour as they were. It is not an edit:
   it pushes nothing onto the undo history and does not mark the file as having unsaved changes, because what
-  Unluminate saves is plain text and carries no formatting.
+  Unluminous saves is plain text and carries no formatting.
 - `Appearance & Behavior -> Appearance -> Background` sets the background opacity, which is what lets the
   desktop show through the window. It works on both platforms, though Windows takes three things to get
   there that macOS does not need, all of them in `services/windows_transparency.rs`: wgpu is told to use
@@ -213,7 +213,7 @@ pages down the left under their headings, and the chosen page on the right.
   composites the window from — is filled with black once a frame, because winit asks the manager to
   honour its alpha but never clears it, so it holds undefined bytes that read as opaque white. Without
   the last of those the window really does fade, but towards white rather than towards the desktop.
-  Section 9.2 of `tasks/unluminate-technical-design-document.md` records how each was measured and what was
+  Section 9.2 of `tasks/unluminous-technical-design-document.md` records how each was measured and what was
   rejected.
 - `Appearance & Behavior -> Appearance -> Interface` sets the family and the size the **window's own**
   text is drawn in — the menus, the rail, the explorer and the status bar. Empty means the editor's
@@ -221,28 +221,28 @@ pages down the left under their headings, and the chosen page on the right.
   drawn exactly as it always was. It is separate from the font above because a large document and a
   compact window is a reasonable thing to want.
 - `Appearance & Behavior -> Theme` is the theme, the accent and the icon set. A theme says what every
-  colour in Unluminate's own palette means, and one that names the nine token colours also colours code, in
+  colour in Unluminous's own palette means, and one that names the nine token colours also colours code, in
   every language at once. `Themes Bundle 1` ships five: Islands Dracula Colorful, Material Palenight,
   Material Deep Ocean, Monokai Pro and One Dark. The accent is one colour over whatever the theme
   chose, and the icon set is which drawn marks the rail and the explorer's folder arrow use — `material`
-  by default, or `classic` for the ones Unluminate shipped with. `unluminate-cli theme list` says what there is.
+  by default, or `classic` for the ones Unluminous shipped with. `unluminous-cli theme list` says what there is.
 - `Editor -> Editor -> Gutter` shows or hides the line numbers.
 - `Plugins` is the marketplace and what is installed.
 - `Tools -> Terminal` sets which program a terminal tab runs and the size the terminal draws its grid
   at. Left empty, it is `$SHELL` on macOS and the newer PowerShell this machine has on Windows, and the
   note under the field says which that is.
-- `Tools -> MCP` is how Unluminate is given to an AI agent: a button that writes it into Claude Code's or
+- `Tools -> MCP` is how Unluminous is given to an AI agent: a button that writes it into Claude Code's or
   Codex's own configuration, the block to paste into anything else, and a tick box for serving the
   same thing over HTTP on a port. The button needs no port and is what should be preferred; the port
   is off until it is turned on.
 
 Changes take effect as they are made. The settings, the recent projects and where the dividers between the
-panes were left are kept in `~/Library/Application Support/Unluminate` on macOS and `%APPDATA%\Unluminate` on Windows,
+panes were left are kept in `~/Library/Application Support/Unluminous` on macOS and `%APPDATA%\Unluminous` on Windows,
 in two plain text files that can be read and edited by hand.
 
 ## Writing code in it
 
-**Line numbers** down the left of the editing area. Unluminate wraps, so a paragraph that runs over several
+**Line numbers** down the left of the editing area. Unluminous wraps, so a paragraph that runs over several
 rows on screen carries one number against its first row and nothing against its continuations, which
 is what a line number means everywhere else. Right clicking the gutter puts them away or annotates
 the file with git blame.
@@ -254,8 +254,8 @@ edge. `Ctrl+Tab` and `Ctrl+Shift+Tab` move between them and `Ctrl+F4` closes one
 
 **A right click menu on the explorer**: New > File with any extension you like, Cut, Copy, Copy Path,
 Paste, Rename, Show in Explorer or Reveal in Finder, Reload from Disk, and a `Git` submenu aimed at
-that row. Cut and paste go through Unluminate's own clipboard rather than the operating system's, so a
-file cut in Unluminate cannot be pasted in Explorer; pasting onto a name that is taken adds a number
+that row. Cut and paste go through Unluminous's own clipboard rather than the operating system's, so a
+file cut in Unluminous cannot be pasted in Explorer; pasting onto a name that is taken adds a number
 rather than overwriting what is there.
 
 **Git**, in the `Git` menu, in the same submenu on any explorer row, and in three places you do not
@@ -266,20 +266,20 @@ differs from the version git has.
 `Commit...` opens a panel laid out like the reference editor's: a changes tree with a tick box a file, the
 repository's row carrying its branch, an `Unversioned Files` group, `Amend`, the counts, the message
 box with the last twenty messages behind a button, and `COMMIT` and `COMMIT AND PUSH...`. **Ticking a
-file stages it at once**, so Unluminate's idea of what is staged and git's cannot disagree while the panel
+file stages it at once**, so Unluminous's idea of what is staged and git's cannot disagree while the panel
 is open.
 
-Unluminate runs the `git` program rather than a library, so a push from Unluminate is the same push you get in
+Unluminous runs the `git` program rather than a library, so a push from Unluminous is the same push you get in
 your terminal — the same credential helper, the same ssh agent, the same hooks, the same signing.
 When something goes wrong it shows **git's own message**, because a rejected push and a merge
-conflict explain themselves better than anything Unluminate could say about them. Every command runs on a
+conflict explain themselves better than anything Unluminous could say about them. Every command runs on a
 thread, so the window never stops drawing to wait for one. `Rollback`, a hard `Reset HEAD` and
 dropping a stash each ask first, because none of them can be undone. Pushing with force always uses
 `--force-with-lease`.
 
 A merge or a rebase that stops on a conflict is not hidden: the status bar says so, the conflicted
 files are marked, the Git menu grows `Continue` and `Abort`, and the file opens with its markers in
-it — which is a file holding text, and therefore something Unluminate already edits.
+it — which is a file holding text, and therefore something Unluminous already edits.
 
 **A debugger**, in the `Run` menu under the run entries. Click the gutter to put a red dot on a line,
 press `Shift+F9` to start the configuration the play button starts *under a debugger*, and the
@@ -288,7 +288,7 @@ the bottom, and `F8`, `F7`, `Shift+F8` and `F9` step over, into, out and on. Dou
 change it in the running program, `Alt+F8` evaluates any expression, and while the program is paused
 each local's value is painted at the end of the line that names it.
 
-Unluminate speaks the **Debug Adapter Protocol**, so one client drives every language's debugger: Rust and
+Unluminous speaks the **Debug Adapter Protocol**, so one client drives every language's debugger: Rust and
 native code through `lldb-dap` or CodeLLDB, JavaScript and TypeScript through Microsoft's js-debug.
 Which debugger a language uses is one line in its plugin and the code that drives it shipped with the
 binary, so nothing in a plugin is executed — and **nothing is fetched**: pressing Debug with no
@@ -296,13 +296,13 @@ adapter installed is one sentence saying what was looked for and where it comes 
 `Settings` takes an explicit path in `debug.lldb` or `debug.node` for a machine that keeps one
 somewhere else.
 
-Breakpoints move with the text as you edit above them, survive a restart in `.unluminate/breakpoints.conf`,
+Breakpoints move with the text as you edit above them, survive a restart in `.unluminous/breakpoints.conf`,
 and carry a condition or a message to log instead of stopping. What the debugger says about one is
-what is drawn: a breakpoint it could not bind stays hollow rather than pretending. `unluminate-cli debug`
+what is drawn: a breakpoint it could not bind stays hollow rather than pretending. `unluminous-cli debug`
 is the whole of it from the command line, which is what lets an agent set a breakpoint, run to it and
 read a variable rather than guessing about a program.
 
-**Plugins** colour a file by what its text is. Six ship with Unluminate — JavaScript, TypeScript, Rust,
+**Plugins** colour a file by what its text is. Six ship with Unluminous — JavaScript, TypeScript, Rust,
 CSS, HTML and Mermaid — and each gives its files an icon, a set of words to colour, and the Dracula
 colour scheme. A plugin is a folder holding a `plugin.conf` and an icon, in the same `name = value` format
 the settings file uses; **nothing in one is executed**, so installing one is copying a folder.
@@ -329,7 +329,7 @@ The font: one family and one size for the whole window, the way the reference ed
 `Edit -> Settings -> Appearance -> Font`. Changing it changes every file that is open, not only the one
 showing. The size is also on the keyboard at command or control with plus and minus, on `View -> Reset Font
 Size` to put it back, and on a trackpad pinch or the wheel with the modifier held over the editing area.
-Whichever of them is used, it is the one setting, so it is still there next time Unluminate starts.
+Whichever of them is used, it is the one setting, so it is still there next time Unluminous starts.
 
 Finding things: `Ctrl/Cmd+Shift+O` opens `Go to File`, which narrows the project's files as a name is
 typed — the letters are matched in order rather than as a substring, so `mdrs` finds `markdown.rs` —
@@ -338,12 +338,12 @@ which searches every file's text as you type, on a thread so the window never st
 `Match case` beside the box. Choosing a result shows the whole of the file it is in underneath the
 results with the matching line picked out; opening one opens the file with the match itself selected.
 
-Modals: every dialog in Unluminate is dragged by its header and resized from any of its four edges or four
+Modals: every dialog in Unluminous is dragged by its header and resized from any of its four edges or four
 corners, and a double click on its header puts it back in the middle at the size it started.
 
 Files: any file holding text opens. A `.md` file is Markdown, which means the preview shows it rendered;
 a `.mmd` or `.mermaid` file is a Mermaid diagram, which means the preview **draws** it; everything else
-opens as plain text, whether Unluminate knows the file type or not, so a `.rs` or a `.js` file opens as what it
+opens as plain text, whether Unluminous knows the file type or not, so a `.rs` or a `.js` file opens as what it
 is. A picture opens too, in a tab that shows it: `.png`, `.jpg`, `.gif`, `.bmp`, `.ico`,
 `.webp` and `.tiff`, scaled to fit the editing area to begin with, zoomed with command or control and plus
 and minus, with the wheel and that modifier held, or with a pinch, dragged about with the mouse, and put
@@ -355,10 +355,10 @@ Diagrams: a `.mmd` file gets the same three view modes a Markdown file has — t
 diagram side by side, or the diagram filling the pane — and a ```mermaid block inside a Markdown document is
 drawn in its preview rather than shown as code. Twenty of Mermaid's diagram types are drawn: flowchart,
 sequence, class, state, entity relationship, requirement, pie, gantt, user journey, git graph, mindmap,
-timeline, quadrant, xy chart, sankey, block, packet, kanban, radar and treemap. The pictures are Unluminate's own
+timeline, quadrant, xy chart, sankey, block, packet, kanban, radar and treemap. The pictures are Unluminous's own
 drawing rather than `mermaid.js` output, so they are not pixel identical to it; ten further types are
 **named** rather than drawn. Nothing is fetched and nothing in a diagram is run.
-`tasks/unluminate-mermaid-plugin-tdd.md` sets out why it is written in Rust rather than by running Mermaid's own
+`tasks/unluminous-mermaid-plugin-tdd.md` sets out why it is written in Rust rather than by running Mermaid's own
 JavaScript, and what each type becomes on the screen.
 
 Panes: the explorer's width, the split between the Markdown source and its preview, and the terminal's
@@ -383,7 +383,7 @@ Highlighting a passage: select some words, right click, and choose one of four c
 colour wheel. The colour is behind those words in this file, next time it is opened, and until it is
 cleared, and it moves with the text as the file is edited. Marking is not an edit: it pushes nothing
 onto the undo history and does not mark the file as having unsaved changes. The marks are kept in the
-project's own `.unluminate` folder, and `unluminate-cli highlight` does the same thing across as many files as
+project's own `.unluminous` folder, and `unluminous-cli highlight` does the same thing across as many files as
 you like without opening any of them.
 
 The terminal: a tile along the bottom of the window with tabs, opened with control and backtick or from the
@@ -393,7 +393,7 @@ interpreter that runs a batch file rather than the shell a person actually uses.
 including 24 bit colour, bold, italic, underline, strikethrough, inverse and dim, wide characters, the
 alternate screen a full screen program draws on, ten thousand lines of scrollback, selecting with the mouse,
 copying with command and C, and mouse reporting for a program that asked for it. A tab is named after the
-title the program set, so a tab running `claude` says so. `tasks/unluminate-terminal-tdd.md` sets out how it
+title the program set, so a tab running `claude` says so. `tasks/unluminous-terminal-tdd.md` sets out how it
 works and what it does not do.
 
 Keyboard: command plus B, I or U for bold, italic and underline. Command plus shift plus X for
@@ -412,11 +412,11 @@ nothing about any of them but the names of the commands.
 
 ```mermaid
 flowchart TD
-    cli[unluminate-cli: the client program]
-    app[unluminate-app: the window]
-    core[unluminate-core: the editor]
-    term[unluminate-terminal: the terminal]
-    git[unluminate-git: git]
+    cli[unluminous-cli: the client program]
+    app[unluminous-app: the window]
+    core[unluminous-core: the editor]
+    term[unluminous-terminal: the terminal]
+    git[unluminous-git: git]
     shared[catalogue, protocol, instances]
 
     cli --> shared
@@ -427,26 +427,26 @@ flowchart TD
 ```
 
 An arrow is "depends on". Everything points towards the things with no user interface in them, and
-nothing points back: `unluminate-core`, `unluminate-terminal` and `unluminate-git` cannot mention `egui`, and
-`unluminate-cli` cannot mention `unluminate-app`. That is what makes the tests of most of Unluminate run with no
+nothing points back: `unluminous-core`, `unluminous-terminal` and `unluminous-git` cannot mention `egui`, and
+`unluminous-cli` cannot mention `unluminous-app`. That is what makes the tests of most of Unluminous run with no
 window, no graphics card and no fonts, and it is what keeps the client a small program you can run on
 a machine that has never drawn anything.
 
 The one shared piece is the box the client and the window both point at: the catalogue of command
-line commands, the wire format, and the file a running Unluminate writes to say how to reach it. Both halves read the same list, so the CLI
+line commands, the wire format, and the file a running Unluminous writes to say how to reach it. Both halves read the same list, so the CLI
 cannot accept a command the window has never heard of.
 
 ### The five crates
 
 | Crate | What is in it | What must never be in it |
 |---|---|---|
-| `crates/unluminate-core` | The editor: the rope, the character and paragraph formatting, the caret, layout, undo, the Markdown parser, the syntax tokeniser, the highlight ranges, and the Mermaid reader and diagram layout. One dependency, `unicode-segmentation`. | Any user interface dependency. |
-| `crates/unluminate-terminal` | The terminal: the session over a pseudoterminal, the screen the painter reads, the colour palette, the key encoding, the mouse reports, and which shell to start and where. `alacritty_terminal` supplies the escape sequence emulation and the pseudoterminal; the rest is ours. | Any user interface dependency. |
-| `crates/unluminate-git` | Reading and changing a repository: status, blame, log, diffs, branches, every operation on the Git menu, and the thread they run on. No dependencies at all, because it runs the `git` program. | Any user interface dependency, and any decision about what a dialog looks like. |
-| `crates/unluminate-app` | The window: drawing, input, real fonts, the settings on disk, the menus, the plugin registry, and the socket the command line drives it down. | Editor behaviour, terminal emulation or git plumbing. Those belong in the crates above. |
-| `unluminate-cli` | The command line: the catalogue of commands, the wire format, and the client program. It lives beside its own documentation rather than under `crates/`, because the two are read together. | Anything that depends on `unluminate-app`. |
+| `crates/unluminous-core` | The editor: the rope, the character and paragraph formatting, the caret, layout, undo, the Markdown parser, the syntax tokeniser, the highlight ranges, and the Mermaid reader and diagram layout. One dependency, `unicode-segmentation`. | Any user interface dependency. |
+| `crates/unluminous-terminal` | The terminal: the session over a pseudoterminal, the screen the painter reads, the colour palette, the key encoding, the mouse reports, and which shell to start and where. `alacritty_terminal` supplies the escape sequence emulation and the pseudoterminal; the rest is ours. | Any user interface dependency. |
+| `crates/unluminous-git` | Reading and changing a repository: status, blame, log, diffs, branches, every operation on the Git menu, and the thread they run on. No dependencies at all, because it runs the `git` program. | Any user interface dependency, and any decision about what a dialog looks like. |
+| `crates/unluminous-app` | The window: drawing, input, real fonts, the settings on disk, the menus, the plugin registry, and the socket the command line drives it down. | Editor behaviour, terminal emulation or git plumbing. Those belong in the crates above. |
+| `unluminous-cli` | The command line: the catalogue of commands, the wire format, and the client program. It lives beside its own documentation rather than under `crates/`, because the two are read together. | Anything that depends on `unluminous-app`. |
 
-### Inside `unluminate-core`: the editor with no window
+### Inside `unluminous-core`: the editor with no window
 
 A `Document` is four things and a history: a `Rope` of text, a `StyleSpans` of character formatting
 covering it with no gaps, a `ParagraphStyles` of one setting a line, and a sparse `Highlights` of
@@ -478,7 +478,7 @@ changed rather than the file it was in. The fingerprint is derived from the stat
 by the editor: a list of the places that have to say "I changed this" is a list whose next entry is
 the one that forgets.
 
-Measurement is a trait, `FontMetrics`. `unluminate-core` asks for the advance width of a grapheme cluster
+Measurement is a trait, `FontMetrics`. `unluminous-core` asks for the advance width of a grapheme cluster
 and the vertical metrics of a style, and never asks how a glyph is drawn, so the window backs it with
 real font files and the tests back it with a fixed width stub. Every layout test is then arithmetic a
 reader can check by hand, and it gives the same answer on macOS and on Windows.
@@ -495,7 +495,7 @@ rectangles, circles, polygons, lines and text at absolute positions, and nothing
 a filled polygon of three points and a crow's foot is three lines, both built where they can be tested
 with no window, so `components::diagram_view` has no diagram knowledge in it at all.
 
-### Inside `unluminate-app`: the window
+### Inside `unluminous-app`: the window
 
 Four folders, and a new file belongs in one of them.
 
@@ -519,8 +519,8 @@ no document behind it. Everything is painted at an absolute position rather than
 layout, because the measurements come from the design image and live in `theme::size`.
 
 **One action, one place.** Everything a menu or a keyboard shortcut can ask for is an
-`actions::Action`, and `UnluminateApp::run_action` is the only place an action turns into a change. There
-are two menu bars — the one macOS draws along the top of the screen and the one Unluminate draws in its own
+`actions::Action`, and `UnluminousApp::run_action` is the only place an action turns into a change. There
+are two menu bars — the one macOS draws along the top of the screen and the one Unluminous draws in its own
 title bar — and both are built from `actions::menus`, so they cannot drift apart. `run_cli` is the
 same rule for the command line, and wherever there is already a way in, it uses it.
 
@@ -530,7 +530,7 @@ be tested at all.
 
 ### What one frame does, in order
 
-`UnluminateApp::ui` is the frame, and the order in it is deliberate.
+`UnluminousApp::ui` is the frame, and the order in it is deliberate.
 
 1. Apply the theme and remember the context, on the first frame only.
 2. **Answer the command line.** The control channel's queue is drained before anything is drawn, so a
@@ -584,7 +584,7 @@ else. There are four, and they are arranged the same way: a request goes out, a 
 the thread holds a **waker** that asks the window to draw again — because a reply arriving while the
 window is idle has to draw itself rather than wait for the next mouse move.
 
-- **git.** `unluminate_git::Worker` runs one command at a time. One at a time on purpose: two commands at
+- **git.** `unluminous_git::Worker` runs one command at a time. One at a time on purpose: two commands at
   once in one repository fight over `index.lock`, and a person cannot press two menu entries at once.
 - **The terminal.** `alacritty_terminal`'s event loop reads the pseudoterminal and updates the grid
   behind a lock. A frame takes a `Screen` while holding that lock and then draws from it with the lock
@@ -610,9 +610,9 @@ Five places, and which one a thing belongs in is settled by asking who it belong
 | It belongs to | Where it lives | What is in it |
 |---|---|---|
 | The tab | `OpenFile` | the document, the scroll position, the view mode, what git said, which pane it is in, and everything laid out for it |
-| The window | `UnluminateApp` | the explorer, the terminal, the plugins, the repository, the modals, and the three caches that are not keyed on a document |
-| The project | `.unluminate/` beside the project | which files were open and in which pane, which folders were expanded, whether the terminal was up, and the marked passages |
-| The person | `%APPDATA%\Unluminate`, or `~/Library/Application Support/Unluminate` | the settings, the pane sizes, the recent projects, and the plugins installed by hand |
+| The window | `UnluminousApp` | the explorer, the terminal, the plugins, the repository, the modals, and the three caches that are not keyed on a document |
+| The project | `.unluminous/` beside the project | which files were open and in which pane, which folders were expanded, whether the terminal was up, and the marked passages |
+| The person | `%APPDATA%\Unluminous`, or `~/Library/Application Support/Unluminous` | the settings, the pane sizes, the recent projects, and the plugins installed by hand |
 | This run | `<settings folder>/instances/<pid>.conf` | the port this window is listening on, and the token a request has to carry |
 
 What was laid out belongs to the **tab**, not to the window, and that was not always true. With the
@@ -621,8 +621,8 @@ wrong: the first pane lays its file out, the second lays its own over the top, a
 it again for ever.
 
 A project's own state is written by the released binary and by nothing else, which is why
-`restore_project` is called from `main.rs` and never from `UnluminateApp::new`. A test must not read or
-write the settings of the person running it, and a `.unluminate` folder written into a screenshot test's
+`restore_project` is called from `main.rs` and never from `UnluminousApp::new`. A test must not read or
+write the settings of the person running it, and a `.unluminous` folder written into a screenshot test's
 sample project would change what the explorer draws in the middle of a test.
 
 ### What a frame costs
@@ -634,7 +634,7 @@ the painter touches the lines it can see, an edit costs the paragraph it changed
 runs once a letter may allocate.
 
 They are measured rather than asserted.
-`cargo run --release -p unluminate-app --example frame_cost -- <file> [width]` lays a real file out with
+`cargo run --release -p unluminous-app --example frame_cost -- <file> [width]` lays a real file out with
 the real fonts of this machine, colours it as the window colours it, and prints what each part of a
 frame costs. A threshold in milliseconds would be a different number on every machine; what *is* a
 test is the work itself — how many glyphs the painter placed, how many clusters the fonts were asked
@@ -652,7 +652,7 @@ The two alternatives were weighed and both are the right answer to a question th
 A **dynamic library** would let a plugin run arbitrary Rust, and it also means an unstable interface
 across a `dlopen` boundary — a Rust structure passed over one is undefined behaviour unless both sides
 were built by the same compiler with the same flags — so every plugin would have to be rebuilt for
-every release of Unluminate, and a plugin that crashes would take the editor with it. **WebAssembly**
+every release of Unluminous, and a plugin that crashes would take the editor with it. **WebAssembly**
 answers both of those and costs a runtime plus a host interface that has to be designed, versioned and
 documented before the first plugin can be written. For "colour these keywords", both are a great deal
 of risk bought for nothing.
@@ -660,7 +660,7 @@ of risk bought for nothing.
 So the seam is named, and widened in the open. `plugin.kind` is read and checked, and a manifest naming
 a kind this version does not run is refused **with a message** rather than half-loaded. It has three
 values: `language` describes a file type, `ui` contributes a pane, a tab, a menu and a Settings page
-that are drawn by code which shipped in the binary, and `theme` says what every colour in Unluminate's own
+that are drawn by code which shipped in the binary, and `theme` says what every colour in Unluminous's own
 palette means. Each of the two additions came with a check and a test rather than quietly, which is
 the whole value of the field — and it is still the line a later version widens again, the day a plugin
 wants to *do* something: run a formatter, talk to a language server, add a tool window.
@@ -703,7 +703,7 @@ A `plugin.kind = theme` manifest reads a different set, and one plugin carries s
 | `theme.<id>.name` | what a person reads in the list. Required. |
 | `theme.<id>.dark` | true unless it says otherwise. False is refused: this version draws dark themes only, and the reason is in `tasks/task-1776-themes-tdd.md` §5.3. |
 | `theme.<id>.icons` | which drawn icon set the rail and the explorer use — `material` or `classic`, checked against `plugins::ICON_SETS`. |
-| `theme.<id>.ui.<role>` | one colour a role, by the names in `theme::color` — `ui.editor`, `ui.accent`, `ui.folder_open`. A role that is not named keeps Unluminate Dark's, and a role Unluminate has not got is refused with the list. |
+| `theme.<id>.ui.<role>` | one colour a role, by the names in `theme::color` — `ui.editor`, `ui.accent`, `ui.folder_open`. A role that is not named keeps Unluminous Dark's, and a role Unluminous has not got is refused with the list. |
 | `theme.<id>.syntax.<token>` | the nine token colours, which then colour every language at once. **All nine or none**: eight would leave one line of code drawn in two schemes. |
 
 The three keys `word_characters`, `types` and `hex_colors` are **off unless a manifest names them**,
@@ -723,15 +723,15 @@ why a word-list plugin could not read HTML at all.
 
 Nine ship inside the binary: six languages — JavaScript, TypeScript, Rust, CSS, HTML and Mermaid —
 two that draw, Agent-Tasks and Agent-Chat, and one that carries themes, Themes Bundle 1. They are
-bundled so that an Unluminate that has just been installed colours a `.rs` file the first time it opens one,
+bundled so that an Unluminous that has just been installed colours a `.rs` file the first time it opens one,
 and so that the marketplace has something in it with no network involved.
 
 `Plugins::load` reads those first, then every folder under `<settings folder>/plugins`. **A plugin on
 disk shadows a bundled one with the same id**, so a bundled plugin can be corrected by hand without
-rebuilding Unluminate. Then `plugins.disabled` in the settings file switches off the ones that were
+rebuilding Unluminous. Then `plugins.disabled` in the settings file switches off the ones that were
 switched off last time.
 
-A plugin that will not parse is **skipped and its reason kept** rather than thrown away, and Unluminate
+A plugin that will not parse is **skipped and its reason kept** rather than thrown away, and Unluminous
 starts with one plugin fewer. That is the rule the settings file already keeps: starting with a
 default is better than refusing to start because a file has a stray line in it.
 
@@ -740,7 +740,7 @@ on and lists the extension. Nothing else asks the question.
 
 ### What the tokeniser does with a grammar
 
-`unluminate_core::syntax::highlight` takes the text and a `Grammar` and returns a range and a `Token` for
+`unluminous_core::syntax::highlight` takes the text and a `Grammar` and returns a range and a `Token` for
 each stretch. One linear pass, no regular expressions, no dependency, and the order of the rules is
 the whole design: a line comment, then a block comment, then a string, then a number, then a word in
 one of the three lists, then a word directly followed by `(` as a function or one starting with a
@@ -748,11 +748,11 @@ capital letter as a type, then text. Comments and strings win over everything, b
 inside a string is not a keyword.
 
 Those last two are a **heuristic and are meant to be one**. `Promise.all(` colours `all` as a function
-and `Promise` as a type without Unluminate understanding a single thing about JavaScript. Real
+and `Promise` as a type without Unluminous understanding a single thing about JavaScript. Real
 understanding is a language server, and that is not what this is.
 
 A grammar with `language.markup` on is read by a different pass rather than by the rules above,
-because HTML is **prose with code in the tags** where every other language Unluminate reads is code with
+because HTML is **prose with code in the tags** where every other language Unluminous reads is code with
 prose in the comments. Outside a tag everything is text — no strings, no numbers, no operators — so
 an apostrophe in a contraction is an apostrophe and `5 < 3` is arithmetic; a `<` opens a tag only
 when a letter, `/`, `!` or `?` follows it. The first word of a tag is a keyword if the language names
@@ -761,7 +761,7 @@ it does not, and the body of a raw text element is read as the language its mani
 by the plugin that claims that language. `tasks/task-1694-html-plugin-tdd.md` has the five states and
 the reasons for each.
 
-Nothing in `unluminate-core` knows what a colour scheme is. A `Token` says what a stretch of text *is*, and
+Nothing in `unluminous-core` knows what a colour scheme is. A `Token` says what a stretch of text *is*, and
 the window turns it into a colour: `colour_the_file` runs the tokeniser, maps each token through the
 plugin's theme, and hands the whole result to `Document::set_syntax` in one pass rather than one pass
 per token — 561 ms to 1.4 ms on a coloured 170 kilobyte file. It is keyed on the document's **text**
@@ -769,7 +769,7 @@ revision, so moving the caret does not re-tokenise the file, and a file over two
 plain text with a line in the status bar saying so.
 
 A colour scheme **colours the tokens and not the editing area**. Dracula's own background is not used
-and Unluminate's stays: the window letting the desktop show through is the whole character of the product,
+and Unluminous's stays: the window letting the desktop show through is the whole character of the product,
 and a scheme that repainted the editing area opaque would trade that away to be a shade nearer a
 screenshot.
 
@@ -779,7 +779,7 @@ Mermaid did not widen the seam. It **is** a language — keywords, comments, str
 it is an ordinary `language` plugin, and colouring `.mmd` source is worth having on its own.
 
 It carries one extra key, `language.renders = mermaid`, naming a renderer that is **built into
-Unluminate**. Nothing is loaded from the plugin and nothing is executed: the manifest says "files of this
+Unluminous**. Nothing is loaded from the plugin and nothing is executed: the manifest says "files of this
 language have a picture, and this is which picture", and the code that draws it shipped with the
 binary. The value is checked against the renderers this version has, and a manifest naming one it does
 not have is refused with a message, exactly as `plugin.kind` is.
@@ -801,16 +801,16 @@ is an ordinary plugin folder that can be edited by hand, and it shadows the bund
 
 A plugin's icon is `icon.png` beside the manifest, decoded once and drawn in front of every file the
 plugin claims. A bundled plugin's icon is generated rather than drawn, and each one records how:
-`crates/unluminate-app/plugins/mermaid/icon.md` and its neighbour under `css/` each hold the prompt, the endpoint and the two
+`crates/unluminous-app/plugins/mermaid/icon.md` and its neighbour under `css/` each hold the prompt, the endpoint and the two
 commands, so it can be made again without guessing. The HTML one is the exception: when it was made
 the image service's upstream was failing, so `plugins/html/icon.md` records the programmatic `< / >`
 mark drawn instead, and `task-1717` swaps in the generated picture.
 
 ### Writing one
 
-Copy a bundled plugin's folder out of `crates/unluminate-app/plugins`, or press `Install` and edit what it
+Copy a bundled plugin's folder out of `crates/unluminous-app/plugins`, or press `Install` and edit what it
 wrote. Change `plugin.id` and `language.extensions`, put the language's words in the three lists, and
-start Unluminate again. There is nothing to compile and nothing to register.
+start Unluminous again. There is nothing to compile and nothing to register.
 
 Which word goes in which list is the whole of a plugin's design, and one rule decides the awkward
 cases: **a word that is both a property and a value is coloured whichever way it is written more
@@ -820,21 +820,21 @@ of the same name. `tasks/task-1671-css-plugin-tdd.md` has the table and the reas
 
 ## The command line, and the channel underneath it
 
-`unluminate-cli` drives a **running** Unluminate. It is not a second way of doing things: `UnluminateApp::run_cli` is
+`unluminous-cli` drives a **running** Unluminous. It is not a second way of doing things: `UnluminousApp::run_cli` is
 to the command line what `run_action` is to the menus, and wherever there is already a way in it uses
 it, so a thing done from the command line and the same thing done by hand are the same thing.
 
 Three rules keep it honest, and all three are tests rather than promises.
 
-**A menu entry needs nothing at all.** `unluminate-cli action list` is built by walking the real menus, so
+**A menu entry needs nothing at all.** `unluminous-cli action list` is built by walking the real menus, so
 an entry added tomorrow can be run from the command line tomorrow. A test fails the day a menu entry
 has no name.
 
-**Anything with no menu entry** is a row in `unluminate-cli/src/catalogue.rs` and an arm in `app/cli.rs`.
+**Anything with no menu entry** is a row in `unluminous-cli/src/catalogue.rs` and an arm in `app/cli.rs`.
 The catalogue is one list in a crate both halves depend on, so a command the client accepts is a
 command the window knows.
 
-**Documentation is a test.** One fails while a command has no section in `unluminate-cli/docs/commands.md`,
+**Documentation is a test.** One fails while a command has no section in `unluminous-cli/docs/commands.md`,
 while a section's usage line is out of date, or while a section describes a command that no longer
 exists. A second parses every example in the catalogue and checks it runs the command it is filed
 under, because the examples are what an agent copies.
@@ -848,54 +848,54 @@ a per-run token in an instance file under the person's own settings folder:
 ```
 
 A loopback socket rather than a Unix domain socket or a named pipe, because it is the same `std::net`
-on both platforms — and because any language with a socket and a JSON library can drive Unluminate in three
-lines, which makes `unluminate-cli` the comfortable way in rather than the only one. Nothing is ever bound
+on both platforms — and because any language with a socket and a JSON library can drive Unluminous in three
+lines, which makes `unluminous-cli` the comfortable way in rather than the only one. Nothing is ever bound
 to anything but `127.0.0.1`, and there is a test for that. The token is what stops a page in a
 browser, which can post to a loopback port and cannot read a file, from driving somebody's editor; it
 is not protection against a program already running as them, and nothing on a desktop is.
-`unluminate --control off` closes the channel altogether.
+`unluminous --control off` closes the channel altogether.
 
 The sentence in `message` is written by the **window** rather than by the client, because the window
 is the only one that knows what actually happened — which tab the file landed in, what the setting was
-before it changed, how many results a search found. `unluminate-cli/docs/protocol.md` is what a client in
+before it changed, how many results a search found. `unluminous-cli/docs/protocol.md` is what a client in
 another language needs.
 
 ### And the MCP server on top of it
 
-An AI client that speaks the Model Context Protocol is given Unluminate's commands as **tools**, so it does
+An AI client that speaks the Model Context Protocol is given Unluminous's commands as **tools**, so it does
 not have to be handed a document first and does not have to know it may shell out to a program it has
-never heard of. `unluminate_cli::mcp` is the server, `unluminate-cli mcp serve` runs it, and the buttons in
+never heard of. `unluminous_cli::mcp` is the server, `unluminous-cli mcp serve` runs it, and the buttons in
 `Settings -> Tools -> MCP` write it into Claude Code's and Codex's own configuration.
 
-Three things about it are worth knowing here; `unluminate-cli/docs/mcp.md` is the rest.
+Three things about it are worth knowing here; `unluminous-cli/docs/mcp.md` is the rest.
 
 **The tools are generated from the catalogue**, which is the fourth rule of the three above: a command
-added to Unluminate is a tool the day it is added, with its summary, its arguments and its flags, and a
-test fails if one ever is not. A hand-written set of tools would be a third copy of what Unluminate can do,
+added to Unluminous is a tool the day it is added, with its summary, its arguments and its flags, and a
+test fails if one ever is not. A hand-written set of tools would be a third copy of what Unluminous can do,
 which is the exact thing the catalogue exists to prevent.
 
 **An agent is given one tool an area, not one a command.** Ninety-seven commands would be ninety-seven
 tool definitions in the agent's context on every conversation — measured at roughly three times what
-fourteen area tools cost, which still name every command Unluminate has, each with its usage line and its
+fourteen area tools cost, which still name every command Unluminous has, each with its usage line and its
 summary. `mcp.tools = every` is there for a client that permits tools by name and would rather pay.
 
 **It is a client of the channel above, not a peer of it.** A tool call becomes exactly the request
-`unluminate-cli` would have sent, down the same socket with the same token, so `run_cli` stays the one
+`unluminous-cli` would have sent, down the same socket with the same token, so `run_cli` stays the one
 place a command becomes a change. It also means one server drives every open window, which is why two
-Unluminates sharing one `mcp.port` is the behaviour rather than a collision.
+Unluminouss sharing one `mcp.port` is the behaviour rather than a collision.
 
 ## Where a change goes
 
 | To add | Change | And you get |
 |---|---|---|
 | A menu entry or a shortcut | a variant on `actions::Action`, an entry in `actions::menus`, an arm in `run_action` | both menu bars, the keyboard, and a command line command, with no further work |
-| A command with no menu entry | a row in `unluminate-cli/src/catalogue.rs`, an arm in `app/cli.rs`, a section in `docs/commands.md` | the client parses it, `--help` prints it, and the documentation test passes |
+| A command with no menu entry | a row in `unluminous-cli/src/catalogue.rs`, an arm in `app/cli.rs`, a section in `docs/commands.md` | the client parses it, `--help` prints it, and the documentation test passes |
 | A piece of the window | a file in `components/`, taking a rectangle and returning what happened | something a screenshot test can drive, and a name it can be found by |
 | A modal | `components::modal`'s frame, header, body, footer and rows | dragging, eight resize grips and a double click that puts it back, without asking |
 | A pane | `components::splitter` for its divider, and a size in `settings::Panes` | one grab width, one highlight, one pointer shape, and a pane that is where it was left |
 | A language | a folder with a `plugin.conf` and an `icon.png` | colours and an icon, with nothing compiled and nothing registered |
-| A diagram type | a module under `crates/unluminate-core/src/mermaid` producing a `Scene`, and a file in `sample-diagrams/` | the four properties every type is held to, and no change to the painter at all |
-| A setting | a field on `Settings`, a name in the file, a control on a Settings page | it is written, read back, and reachable as `unluminate-cli settings set` |
+| A diagram type | a module under `crates/unluminous-core/src/mermaid` producing a `Scene`, and a file in `sample-diagrams/` | the four properties every type is held to, and no change to the painter at all |
+| A setting | a field on `Settings`, a name in the file, a control on a Settings page | it is written, read back, and reachable as `unluminous-cli settings set` |
 
 ## Tests
 
@@ -910,39 +910,39 @@ open, which is said in the workflow rather than hidden behind `continue-on-error
 allowed to fail is a job nobody reads.
 
 There is a fifth workflow, `nightly.yml`, and one script beside it. The six end-to-end tests in
-`crates/unluminate-app/tests/agent_board.rs` start a real agent, so they cost money and minutes and
+`crates/unluminous-app/tests/agent_board.rs` start a real agent, so they cost money and minutes and
 are `#[ignore]`d — which left the deepest tests in the repository with no scheduled run at all. They
 have one now: the workflow for a repository with a key on it, and `tools/nightly.ps1 -Register` for
 the machine that already has one. Both say plainly when they covered nothing.
 
 There is a fifth thing, which is not a layer because nothing fails it: **`tools/agent-study/` watches
 an agent drive a real window** through instructions phrased the way a person speaks, and grades what
-happened by reading Unluminate's own state back rather than by believing what the agent said. The four
+happened by reading Unluminous's own state back rather than by believing what the agent said. The four
 layers prove an agent *can* reach a feature. The study is how you find out whether it *does* — and the
 first run found an agent doing 24% of its work with `grep` and `bash` in a window that had a command
 for every job. Add a scenario when you add a feature.
 
-**1. The crates with no window.** `unluminate-core` has 767 unit tests, including the Markdown parser, the
+**1. The crates with no window.** `unluminous-core` has 767 unit tests, including the Markdown parser, the
 syntax tokeniser, every Mermaid diagram type, and a randomised comparison of the rope against a plain
 `String` over 1,500 edits with the tree invariants checked after every one. Layout tests measure
 through a fixed width stub, so their expected numbers are arithmetic a reader can check and are the
-same on every machine. `unluminate-terminal` has 104: every key in the encoding table, the sixteen named
+same on every machine. `unluminous-terminal` has 104: every key in the encoding table, the sixteen named
 colours and the colour cube, what the screen holds after a run of escape sequences, the alternate
 screen, scrollback, resizing, the mouse reports and the tabs. Two of them start a real shell and wait
 for its output, which is what proves the pseudoterminal, the reader thread and the writing work
-together. `unluminate-git` has 66 tests, and the ones that build real repositories in a temporary folder and ask
-**git** what happened afterwards are among them. `unluminate-dap` has 87, `unluminate-db` 83 and
-`unluminate-chat` 87, each against a scripted adapter or a scripted server rather than a real one.
-`unluminate-cli` has 144, and among them are the ones that make the documentation a test rather than a
+together. `unluminous-git` has 66 tests, and the ones that build real repositories in a temporary folder and ask
+**git** what happened afterwards are among them. `unluminous-dap` has 87, `unluminous-db` 83 and
+`unluminous-chat` 87, each against a scripted adapter or a scripted server rather than a real one.
+`unluminous-cli` has 144, and among them are the ones that make the documentation a test rather than a
 promise, the ones that hold the tool preamble to a budget, and the ones that say what an agent
 equipped with two areas of the catalogue is given.
 
-**2. The window's own logic.** `unluminate-app` has 955 unit tests covering the file explorer and its
+**2. The window's own logic.** `unluminous-app` has 955 unit tests covering the file explorer and its
 filter, what counts as a text file or a picture, the settings file, the project's own state, the
 plugins and their manifests, the menus and their shortcuts, the panes and the tabs in them, real font
 measurement and glyph packing.
 
-**3. The whole window, rendered.** `crates/unluminate-app/tests/screenshots.rs` has 483 tests that build
+**3. The whole window, rendered.** `crates/unluminous-app/tests/screenshots.rs` has 483 tests that build
 the entire application through `egui_kittest`, feed it real events, render it through `wgpu` and write
 a PNG for each one. **Look at the images.** They are how a person or an agent confirms that bold text
 is bolder, that the settings window is laid out like the design, and that the terminal's colours are
@@ -951,7 +951,7 @@ fails a test.
 
 Each platform has its own accepted set, because the window is deliberately not the same on both: macOS
 has the menus in the bar along the top of the screen and the window buttons at the left, Windows draws
-both in Unluminate's own title bar, and the text is Arial rather than Helvetica because Helvetica is not
+both in Unluminous's own title bar, and the text is Arial rather than Helvetica because Helvetica is not
 installed there. macOS reads `tests/snapshots` and Windows `tests/snapshots/windows`.
 
 To accept new images after a deliberate change:
@@ -964,7 +964,7 @@ A run that differs writes `{name}.new.png` and `{name}.diff.png` next to the acc
 nothing should be accepted without opening it.
 
 Three rules those tests keep, each the answer to a test failing for a reason that was not a fault in
-Unluminate. **Nothing builds a graphics device of its own** — a small pool is built once and shared,
+Unluminous. **Nothing builds a graphics device of its own** — a small pool is built once and shared,
 because ninety one devices built and torn down across as many threads killed the process with an
 access violation about one run in nine. **A fixture two tests share is written once**, behind a
 `OnceLock`, or one test reads a file another has truncated and not yet filled in. And **a loop that
@@ -1010,11 +1010,11 @@ replace across everything it found — through the modal that already lists ever
 because a replacement across a project is a change somebody should see the size of first. An open
 tab is edited as a document and left with unsaved changes rather than written behind you; a closed
 file is read, checked that its matches are still the ones that were listed, and written once, with
-every byte outside the replaced ranges untouched. `unluminate-cli editor find` and
-`unluminate-cli editor replace` are the same thing from the command line, and `editor replace`
+every byte outside the replaced ranges untouched. `unluminous-cli editor find` and
+`unluminous-cli editor replace` are the same thing from the command line, and `editor replace`
 changes nothing without `--apply`.
 
-**Writing a file back in an encoding other than UTF-8.** Unluminate is a UTF-8 editor. It *opens* a
+**Writing a file back in an encoding other than UTF-8.** Unluminous is a UTF-8 editor. It *opens* a
 file with a UTF-16 byte order mark, and a file that is not valid UTF-8 at all — read as Latin-1,
 because every byte has a meaning there and so the reading cannot fail — but both open **read-only**,
 with the encoding named in the status bar beside the file's kind, and saving one is refused rather
@@ -1028,7 +1028,7 @@ written back with, so a one character edit is a one line diff. The status bar sa
 `Editor -> Editor -> Files` forces one for a project that has decided.
 
 A three way merge editor, a language server, and a marketplace that fetches a plugin over the
-network. Each is named with its reason in `tasks/unluminate-ide-tdd.md`.
+network. Each is named with its reason in `tasks/unluminous-ide-tdd.md`.
 
 In the syntax colouring: a regular expression literal, which cannot be told from division without
 parsing; nested block comments in Rust; interpolation inside a template literal; and JSX. Each
@@ -1040,13 +1040,13 @@ In diagrams: ten of Mermaid's thirty types — C4, ZenUML, architecture, swimlan
 Ishikawa, Wardley, Cynefin and tree view — which are named rather than drawn. A diagram's own `style`,
 `classDef` and `click` directives are read and ignored: a document does not choose the window's colours, and
 nothing in a diagram is going to run.
-Tables need layout Unluminate does not have; the rest are rare in prose. A picture **is** drawn, when it is
+Tables need layout Unluminous does not have; the rest are rare in prose. A picture **is** drawn, when it is
 the whole of a line and it is a file on this machine — one inside a line of prose stays its alt text,
 because it would need inline layout the engine does not have, and one with a scheme in front of it is
-refused, because Unluminate makes no network requests.
+refused, because Unluminous makes no network requests.
 
 In the terminal: images, the Kitty keyboard protocol, a blinking cursor, and searching the
-scrollback. `tasks/unluminate-terminal-tdd.md` lists them with the reasons.
+scrollback. `tasks/unluminous-terminal-tdd.md` lists them with the reasons.
 
 ## The documents
 
@@ -1054,23 +1054,23 @@ Each stands on its own, and states any fact it needs rather than pointing at ano
 
 | Document | What is in it |
 |---|---|
-| `documentation/overview.md` | What Unluminate looks like: captures of each part of the window, over a real desktop. They are of 0.1.0, and the page says what has changed since. |
+| `documentation/overview.md` | What Unluminous looks like: captures of each part of the window, over a real desktop. They are of 0.1.0, and the page says what has changed since. |
 | `documentation/README.md` | What re-taking either gallery needs, and why the scripts that took the first one have to move into `tools/` before it happens. |
-| `design/style-guide.md` | How a control in Unluminate is built: the closed palette, the row heights, the one shape a modal has, and the plain name every control carries. Read it before drawing anything new. |
+| `design/style-guide.md` | How a control in Unluminous is built: the closed palette, the row heights, the one shape a modal has, and the plain name every control carries. Read it before drawing anything new. |
 | `CLAUDE.md` | The conventions the code already follows, written for whoever changes it next. |
-| `unluminate-cli/docs/commands.md` | The command line reference, written to be handed to an AI agent whole. |
-| `unluminate-cli/docs/protocol.md` | The socket underneath it, for a client in another language. |
-| `unluminate-cli/docs/mcp.md` | The MCP server: installing it into an agent, the two tool shapes and what each costs, and what a local port does and does not defend against. |
-| `unluminate-cli/agent-assessment/qwen-38-27B-assessment.md` | How well a local model does with that reference, measured against a live window. |
+| `unluminous-cli/docs/commands.md` | The command line reference, written to be handed to an AI agent whole. |
+| `unluminous-cli/docs/protocol.md` | The socket underneath it, for a client in another language. |
+| `unluminous-cli/docs/mcp.md` | The MCP server: installing it into an agent, the two tool shapes and what each costs, and what a local port does and does not defend against. |
+| `unluminous-cli/agent-assessment/qwen-38-27B-assessment.md` | How well a local model does with that reference, measured against a live window. |
 | `tools/agent-study/README.md` | Watching an agent actually drive the window: how to run the study, what a scenario is, and the one number it reports. |
-| `tasks/task-1695-agent-study.md` | The first run of it: 23 scenarios, what an agent did instead of asking Unluminate, and the nine tickets it produced. |
+| `tasks/task-1695-agent-study.md` | The first run of it: 23 scenarios, what an agent did instead of asking Unluminous, and the nine tickets it produced. |
 | `installer/README.md` | How to build an installer, on either platform. |
-| `tasks/unluminate-technical-design-document.md` | The editor: what was chosen, what was rejected, and what is deliberately not included. |
-| `tasks/unluminate-ide-tdd.md` | The line numbers, the tabs, the explorer's menu, git, and the plugins. |
-| `tasks/unluminate-terminal-tdd.md` | The terminal: where the line was drawn between `alacritty_terminal` and Unluminate, and what it does not do. |
-| `tasks/unluminate-mermaid-plugin-tdd.md` | Mermaid: the four ways of drawing it that were weighed, what each of the twenty types becomes, and what `language.renders` buys. |
-| `tasks/unluminate-cli-tdd.md` | The command line: the transports that were weighed, the wire format, and what the token is and is not worth. |
-| `tasks/unluminate-installer-tdd.md` | How Unluminate is delivered: the icon, the Windows installer and the macOS bundle. |
+| `tasks/unluminous-technical-design-document.md` | The editor: what was chosen, what was rejected, and what is deliberately not included. |
+| `tasks/unluminous-ide-tdd.md` | The line numbers, the tabs, the explorer's menu, git, and the plugins. |
+| `tasks/unluminous-terminal-tdd.md` | The terminal: where the line was drawn between `alacritty_terminal` and Unluminous, and what it does not do. |
+| `tasks/unluminous-mermaid-plugin-tdd.md` | Mermaid: the four ways of drawing it that were weighed, what each of the twenty types becomes, and what `language.renders` buys. |
+| `tasks/unluminous-cli-tdd.md` | The command line: the transports that were weighed, the wire format, and what the token is and is not worth. |
+| `tasks/unluminous-installer-tdd.md` | How Unluminous is delivered: the icon, the Windows installer and the macOS bundle. |
 | `tasks/task-1666-performance-tdd.md` | Why a frame cost 818 ms and now costs 20: the eight faults, the two revisions a document counts, and the incremental layout. |
 | `tasks/task-1663-highlights-tdd.md` | Highlighting a passage: where the ranges live so they move with the text, and the file beside the project that remembers them. |
 | `tasks/task-1664-split-view-tdd.md` | The editing area split into panes: why a tab moves rather than being copied, and why the layout caches moved onto the tab. |

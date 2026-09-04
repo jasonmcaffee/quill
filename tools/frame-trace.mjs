@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Read a frame trace and print the median of each phase.
 //
-// `UNLUMINATE_FRAME_TRACE=<file> unluminate` writes one line per frame, which for a window left open
+// `UNLUMINOUS_FRAME_TRACE=<file> unluminous` writes one line per frame, which for a window left open
 // for a minute is a few thousand lines nobody can read. This turns them into the handful of numbers
 // worth reading: how long a frame took, how long between frames, and what each phase of one cost.
 //

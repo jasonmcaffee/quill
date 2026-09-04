@@ -41,7 +41,7 @@ inside its top left edge and six points of pale ramp inside its bottom right, wh
 with 24 points of shadow falling away from it, a card is a smaller one inside it, a well is the same
 shape pressed into the surface, the `Add Task` button is a diagonal blue gradient with a blue glow
 under it, the agent badge is a violet gradient inside a mint ring, and each lane's dot has a
-coloured halo. That list is the whole of the difference between the board Unluminate ships today and the
+coloured halo. That list is the whole of the difference between the board Unluminous ships today and the
 picture, and every item on it is a soft shadow, an inset shadow, a gradient or a glow.
 
 That is what makes this a rendering ticket rather than a colour ticket.
@@ -63,7 +63,7 @@ scene model**, and choosing between them is the whole of §3 and §4.
 All three are `Apache-2.0 OR MIT`, MSRV 1.88 (this machine is on 1.95), and edition 2024. `vello_cpu`
 and `vello_common` are `no_std` with an `std` feature on by default.
 
-**And one of them is already inside Unluminate.** `epaint` 0.36 — the crate egui draws through — depends on
+**And one of them is already inside Unluminous.** `epaint` 0.36 — the crate egui draws through — depends on
 `vello_cpu` 0.1 and rasterises the glyphs in its own font atlas with it. So this is not a question of
 whether to add a renderer to the binary; the renderer is in it, and the question is whether the board
 may use it. The dependency is therefore pinned to **epaint's version** rather than to the newest, so
@@ -104,7 +104,7 @@ egui is a copy and not a conversion.
 
 ## 3. The constraint that decides everything: wgpu 29 against wgpu 30
 
-Unluminate is an eframe application. `Cargo.toml` pins `egui = "0.36"` and `eframe = "0.36"`, and
+Unluminous is an eframe application. `Cargo.toml` pins `egui = "0.36"` and `eframe = "0.36"`, and
 `Cargo.lock` resolves that to **wgpu 30.0.1**.
 
 `vello` 0.10 and `vello_hybrid` 0.2 both declare **`wgpu ^29.0.3`**.
@@ -115,7 +115,7 @@ unrelated types; so are their `Queue`, `Texture`, `TextureView` and `CommandEnco
 renderer built on the first can never write into a texture eframe can read from the second, and
 there is no supported way across — the escape hatches that exist (`wgpu-hal`, external memory
 handles) are per-backend, unsafe, and not exposed by wgpu's safe API on all three of the platforms
-Unluminate runs on.
+Unluminous runs on.
 
 Three things follow, and each closes a door:
 
@@ -158,7 +158,7 @@ menu opened. Refused.
 
 ### 4.3 `vello_hybrid` with its WebGL backend — not applicable
 
-It exists for the browser. Unluminate is a native window.
+It exists for the browser. Unluminous is a native window.
 
 ### 4.4 `vello_cpu` into a pixmap, and the pixmap into an egui texture — **chosen**
 
@@ -172,13 +172,13 @@ The six reasons it is the right answer here rather than the one that was left:
   with it, so using it for the board adds no third-party renderer at all — which is not true of either
   of the other two, and is the fact that turns this from a compromise into the obvious answer.
 
-- **It is deterministic.** Unluminate's testing rests on 345 screenshot comparisons. A GPU renderer's
+- **It is deterministic.** Unluminous's testing rests on 345 screenshot comparisons. A GPU renderer's
   output depends on the driver; a CPU renderer's does not. §10 says what has to be pinned for that
   to be true in practice.
 - **It cannot fail to be available.** No compute shaders, no adapter, no feature bits. The board
   looks the same on a machine with no usable GPU as on one with a 5090.
 - **The upload is a memcpy.** `PremulRgba8` is `Color32`.
-- **It is `#![forbid(unsafe_code)]`.** Unluminate has one `unsafe` island already, in
+- **It is `#![forbid(unsafe_code)]`.** Unluminous has one `unsafe` island already, in
   `services/windows_transparency.rs`, and it is there because Windows left no alternative.
 - **The cost is bounded by what is on the screen, not by what is in the file** — which is
   `task-1666`'s rule. A board's chrome is a few hundred shapes over a pane a few hundred points
@@ -219,7 +219,7 @@ different name on it.
 
 ## 6. The seam: `Decor`, then pixels
 
-`unluminate-core` lays a Mermaid diagram out and `unluminate-app` draws it, and the seam between them is a
+`unluminous-core` lays a Mermaid diagram out and `unluminous-app` draws it, and the seam between them is a
 `Scene` of five kinds of item and nothing else. This is the same shape at a smaller size, and for
 the same reason: the thing that decides *what the board looks like* should be testable without a
 renderer, and the thing that turns it into pixels should know nothing about boards.
@@ -357,7 +357,7 @@ copied only on the frame it is drawn from.
 **The canvas is per pane, keyed on the `egui::Id`** the pane was drawn with, because the board can
 be showing in a docked pane and in a tab at once and the two are different widths — which is
 `task-1664`'s rule about the layout caches moving onto the tab, made again. `services::vello_canvas::Canvases`
-is the small map, owned by `UnluminateApp`, and a canvas whose id was not drawn this frame is dropped.
+is the small map, owned by `UnluminousApp`, and a canvas whose id was not drawn this frame is dropped.
 
 ## 7. What changes in the plugin architecture
 
@@ -393,20 +393,20 @@ methods on `UiProvider` — `pane`, `tab`, `settings`, `modal` — keep their si
 not care builds `Chrome::detached()`, which records into a list nobody rasterises. That is what lets
 every unit test that asserts on `Look` go on running with no window, no graphics card and no fonts.
 
-### 7.2 `Palette` gains the three surfaces the board has and Unluminate has not
+### 7.2 `Palette` gains the three surfaces the board has and Unluminous has not
 
 The palette is closed and this does not open it, for the reason the breakpoint red and the four
 highlight colours record beside themselves: what is added is named from what is already there.
 
 | New name | Value | Why it is not a new colour |
 |---|---|---|
-| `board_page` | `EDITOR` | The reference's `#181D24` against Unluminate's `#1A1F26`. |
+| `board_page` | `EDITOR` | The reference's `#181D24` against Unluminous's `#1A1F26`. |
 | `board_lane` | `EXPLORER` | `#1C222A` against `#1F232A`. |
 | `board_card` | `CODE_PANEL` | `#20252E` against `#232933`, and `CODE_PANEL`'s own comment says it is "a step up from `EDITOR` … so the block reads as a panel on the page", which is what a card is. |
 | `board_well` | `FIELD` | `#1B2026` against `#1D212A`. |
 
-**The board's blue is the picture's, not Unluminate's, and this section said the opposite until it was
-reviewed twice.** The reference's primary blue is a periwinkle around `#4C6EF5` and Unluminate's `ACCENT` is an
+**The board's blue is the picture's, not Unluminous's, and this section said the opposite until it was
+reviewed twice.** The reference's primary blue is a periwinkle around `#4C6EF5` and Unluminous's `ACCENT` is an
 azure `#489FF8`. The first pass kept the azure, on the grounds that a plugin should look like the rest of
 the window and that `nearly identical` could be read as *the same construction* rather than *the same
 hue*. The reviewer named it as the most obvious mismatch left in the picture, twice, and that reading does
@@ -415,24 +415,24 @@ the largest thing in that image that did not.
 
 So `color::BOARD_ACCENT` is the periwinkle, it reaches the `Palette` as `board_accent`, and only the
 board reads it — the primary button, the play buttons, the rail's chosen entry and the `IN PROGRESS` dot.
-Unluminate's own `ACCENT` still means *this is where the keyboard is* everywhere including the board, so the
+Unluminous's own `ACCENT` still means *this is where the keyboard is* everywhere including the board, so the
 two never say the same thing in two colours.
 
-Three colours in the picture have no name in Unluminate at all and are added with an argument, exactly as
+Three colours in the picture have no name in Unluminous at all and are added with an argument, exactly as
 `BREAKPOINT` was:
 
 | New colour | Value | Why |
 |---|---|---|
-| `AGENT` | `#9B7CF6` | The violet a card's agent badge is, and the dot on the `AGENT DONE` lane. Unluminate's palette has a red, an amber, a green, two blues and a pink; it has no violet, and the four lanes have to be four colours a person can tell apart at nine points across. |
-| `ATTACHED` | `GIT_ADDED` | The mint ring round a badge whose terminal is running. It is the green Unluminate already has for "there is something here that was not here before", which is what an attached terminal is. |
+| `AGENT` | `#9B7CF6` | The violet a card's agent badge is, and the dot on the `AGENT DONE` lane. Unluminous's palette has a red, an amber, a green, two blues and a pink; it has no violet, and the four lanes have to be four colours a person can tell apart at nine points across. |
+| `ATTACHED` | `GIT_ADDED` | The mint ring round a badge whose terminal is running. It is the green Unluminous already has for "there is something here that was not here before", which is what an attached terminal is. |
 
 ### 7.2b Only a pane and a tab get a canvas
 
-`UnluminateApp::chrome_for` is called from the two places a provider fills a surface of its own — its docked
+`UnluminousApp::chrome_for` is called from the two places a provider fills a surface of its own — its docked
 pane and its tab in the editing area. A provider's **Settings page** and its **modal** are handed a
 `Look` with `Chrome::off()`, so they draw flat.
 
-That is deliberate rather than an omission. Both of those live inside furniture that is Unluminate's:
+That is deliberate rather than an omission. Both of those live inside furniture that is Unluminous's:
 `components::modal` is the frame every one of the ten modals in the window shares, and the Settings
 window is one size with one look for every page. A plugin's page with soft shadows on it would be the
 one page in that window that had them, which is the fault `design/style-guide.md` exists to prevent.
@@ -504,7 +504,7 @@ ticket to is a broken board; a heading that is cut short is a heading that is cu
 | The search box | `sunken` at a pill radius, `board_well`, 44 points tall, taking **whatever is spare** between the heading and the button up to 460 points. A fixed width left a broad empty band where the reference has its search. |
 | `+ Add Task` | 127 by 44, `raised(Lift::Small)` with a `Linear` fill from the accent lightened by 14% to the accent darkened by 22% along the box's own diagonal, and a `glow` of the accent at 42% under it. |
 
-**`Sync JIRA` is absent**, and that is Unluminate's rule rather than an omission: JIRA is not implemented on
+**`Sync JIRA` is absent**, and that is Unluminous's rule rather than an omission: JIRA is not implemented on
 this board — the plugin's own `plugin.limitations` says so — and a control that can never apply is not
 drawn. It is the same decision as the `F` button not appearing for a `.rs` file.
 
@@ -525,7 +525,7 @@ radius 999.
 
 The four lane colours are `TEXT_DIM`, `CLOSE`, `ACCENT` and `AGENT` — grey, red, blue and violet,
 against the reference's `#8B95A4`, `#E5484D`, `#5B83FF` and `#9B7CF6`. Only the first is an exact match:
-`TEXT_DIM` is `#8B93A3`. `CLOSE` is Unluminate's own `#FF5F57` and `ACCENT` its own `#489FF8`, both a shade
+`TEXT_DIM` is `#8B93A3`. `CLOSE` is Unluminous's own `#FF5F57` and `ACCENT` its own `#489FF8`, both a shade
 off the reference's, and that is the palette's rule doing what it is for — see §7.2 on the accent.
 
 An empty lane draws `Nothing here` inside a `sunken` well at radius 14, which is the reference's own
@@ -544,7 +544,7 @@ between two.
 
 **Under the pointer the decoration does not change**, and that is a performance rule rather than a taste
 one — §9. What changes is a wash of `SELECTED_ROW` painted over it by `egui`, which is the pill every
-list in Unluminate draws for the row it is on, so a card still behaves like a row and the pointer crossing a
+list in Unluminous draws for the row it is on, so a card still behaves like a row and the pointer crossing a
 board costs nothing.
 
 Inside it, in the order the reference puts them:
@@ -558,11 +558,11 @@ Inside it, in the order the reference puts them:
 | Buttons | Play — a `Disc` **30** across with a diagonal `Linear` from the accent and a `glow` under it; the agent badge — a `Disc` **28** across with a diagonal `Linear` in `AGENT`, inside a `Ring` at radius 17.5 and 2 points wide in `ATTACHED` while a terminal is running. Two sizes and not one, because the reference has two: the button you press is the larger of the pair. |
 
 The reference's third round button is its JIRA link, and it is **absent** here for the reason
-`Sync JIRA` is: there is no JIRA on this board, and Unluminate draws no control that cannot apply.
+`Sync JIRA` is: there is no JIRA on this board, and Unluminous draws no control that cannot apply.
 
 The priority chevron points **up** for high and medium and **low draws nothing at all**. It pointed the
 other way, so every card wore a downward mark and the one ticket that mattered least wore the upward one;
-and low is now silent, which is the rule the rest of Unluminate keeps — a mark is drawn to say a thing is
+and low is now silent, which is the rule the rest of Unluminous keeps — a mark is drawn to say a thing is
 *unusual*, and low is what most tickets are. A downward chevron on every ordinary card says nothing while
 taking the place a mark that says something would go.
 
@@ -587,17 +587,17 @@ for the first lane, which had the same fault.
 **Everything in it scales together.** The height scaled the buttons while the placement scaled the padding
 and the gaps as well, so above the default font size the last button hung out of the bottom.
 
-**This is the board's rail and not Unluminate's.** `components::activity_bar` is the strip on the window's
+**This is the board's rail and not Unluminous's.** `components::activity_bar` is the strip on the window's
 own edge that puts panels away, and it belongs to the window: a plugin adding entries to it would be a
 plugin deciding what the window's furniture is. The reference has a rail *inside* its own page, which
 is a different thing — it is how the board switches between its four views — and that is what this is.
 
 **A pane too narrow for a rail and a lane draws no rail**, which is the absent-control rule again, and
-the four views stay reachable from the `Agent-Tasks` menu and from `unluminate-cli`.
+the four views stay reachable from the `Agent-Tasks` menu and from `unluminous-cli`.
 
 ## 9. What it costs, measured — and it misses its own budget
 
-`crates/unluminate-app/examples/vello_cost.rs` records a board of a stated shape, pushes it through the same
+`crates/unluminous-app/examples/vello_cost.rs` records a board of a stated shape, pushes it through the same
 `Canvas` the window uses, and prints what each part cost. The raw output of a run, with the machine and
 the toolchain, is at `_agent_output/task-1765-vello-board/vello-cost.txt` so the numbers below can be
 checked rather than taken.
@@ -725,7 +725,7 @@ text at the display's own resolution.
 
 ## 10. Determinism, and the screenshot tests
 
-`crates/unluminate-app/tests/screenshots.rs` compares rendered PNGs against an accepted set, one per
+`crates/unluminous-app/tests/screenshots.rs` compares rendered PNGs against an accepted set, one per
 platform. A renderer whose output varies between runs on one machine would make every board
 screenshot flake.
 
@@ -738,7 +738,7 @@ So: **the tests pin the SIMD level.** `Canvas::for_tests()` builds its `RenderCo
 `RenderSettings { level: Level::baseline(), num_threads: 0 }`, and the released binary uses the
 detected level. That makes the accepted images a property of the code rather than of the machine
 that ran them, and it costs nothing in the window, where the detected level is wanted.
-`UnluminateApp::draw_deterministically` is how the harness asks for it, called beside `prepare` in every
+`UnluminousApp::draw_deterministically` is how the harness asks for it, called beside `prepare` in every
 one of the five places `tests/screenshots.rs` builds a window.
 
 `Level::fallback()` is deliberately not what is pinned: it is **compiled out** on a target whose own
@@ -746,7 +746,7 @@ baseline is already above it, so on x86-64 with SSE4.2 statically enabled the va
 `Level::baseline()` is the set of features the target itself guarantees, which is the same on every
 machine of that target and is therefore the thing to pin.
 
-Unluminate already keeps a separate accepted set per platform, so a difference that survives that is
+Unluminous already keeps a separate accepted set per platform, so a difference that survives that is
 caught rather than papered over.
 
 `the_same_drawing_twice_gives_an_identical_list` is the unit test underneath all of it, and it is
@@ -755,7 +755,7 @@ function of the state.
 
 ## 11. Testing
 
-Four layers, as everything in Unluminate is.
+Four layers, as everything in Unluminous is.
 
 **`Decor` and `Chrome`, with no window.** `raised` emits five items in the right order — a band, the two
 shadows, the unclip and the surface — with the stylesheet's offsets; `sunken` emits its two inset shadows
@@ -793,12 +793,12 @@ accepted images quietly rest on.
 
 | Left out | Why |
 |---|---|
-| **Text drawn by Vello.** | `vello_cpu` takes shaped glyph ids and positions, so drawing the board's words with it means either a second font stack (`parley`, `fontique`, `swash`) beside `fontdb` and `ab_glyph`, or feeding it Unluminate's own shaping. Either way the text stops being egui text, and with it go selection, hit testing and every existing screenshot. The chrome is what the picture needs; the words already look right. |
+| **Text drawn by Vello.** | `vello_cpu` takes shaped glyph ids and positions, so drawing the board's words with it means either a second font stack (`parley`, `fontique`, `swash`) beside `fontdb` and `ab_glyph`, or feeding it Unluminous's own shaping. Either way the text stops being egui text, and with it go selection, hit testing and every existing screenshot. The chrome is what the picture needs; the words already look right. |
 | **The editing area, the explorer, the terminal, the menus.** | This is a plugin's pane. Re-skinning the window is a different ticket with a different risk, and `design/style-guide.md` is the document that would have to change first. |
 | **A second canvas layer for hover.** | §9's first lever. Measuring comes before optimising. |
 | **`multithreading`.** | §9's second lever. |
 | **Animation.** | The reference is a still. A shadow that eased on hover would mean asking for a repaint every frame while the pointer is over a card, which is the opposite of the rule that an idle window draws nothing. |
 | **A gradient a manifest could name.** | The palette is closed and `ui.chrome` names a renderer, not a colour. |
-| **Depth on a plugin's Settings page or its modal.** | §7.2b. Both live inside furniture that is Unluminate's, and one page with shadows in a window where no other page has them is the fault the style guide exists to prevent. |
+| **Depth on a plugin's Settings page or its modal.** | §7.2b. Both live inside furniture that is Unluminous's, and one page with shadows in a window where no other page has them is the fault the style guide exists to prevent. |
 | **A card that lifts under the pointer.** | §9. It would re-rasterise the whole pane every time the pointer crossed a card, which is the commonest thing anybody does on a board. The pointer's answer is a wash `egui` paints over the same decoration. |
 | **`vello_svg`.** | The board has no SVG in it. The plugin icons are PNGs already. |

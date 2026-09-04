@@ -1,6 +1,6 @@
 # Taking the pictures again
 
-`documentation/overview.md` is twenty-four captures of Unluminate 0.1.0 and
+`documentation/overview.md` is twenty-four captures of Unluminous 0.1.0 and
 `documentation/database.md` is nine of the Database plugin after `task-1777`. This file is what
 taking either of them again needs, written down here because the last time it was written down it was
 in a task's own scratch folder and went with it.
@@ -12,9 +12,9 @@ at all. **The pictures themselves were not re-taken, and this is why.**
 
 ## What a capture actually is
 
-Not a render. `crates/unluminate-app/tests/screenshots.rs` builds the same window offscreen and writes
+Not a render. `crates/unluminous-app/tests/screenshots.rs` builds the same window offscreen and writes
 a PNG for each of its tests, and those images are the right ones for checking that a control moved or
-a colour changed. They cannot show what this gallery is *for*: Unluminate's background is translucent,
+a colour changed. They cannot show what this gallery is *for*: Unluminous's background is translucent,
 and a picture with no desktop behind it cannot show that the colour in the editing area is the
 wallpaper rather than a shade somebody chose.
 
@@ -58,7 +58,7 @@ Two things, and both are the difference between a picture of the product and a p
 person's machine:
 
 - **The project is a fixture built under the temporary folder**, not `sample/`. `sample/` lives inside
-  Unluminate's own repository, so opening it where it lies makes the status bar say how many files
+  Unluminous's own repository, so opening it where it lies makes the status bar say how many files
   happened to be uncommitted that day. A copy with three commits of its own says `main`, which is what
   a reader with a fresh checkout sees.
 - **The window is given a settings folder of its own**, through its own `APPDATA`. Without it the

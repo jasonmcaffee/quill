@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/unluminate-core", "crates/unluminate-chat", "crates/unluminate-db", "crates/unluminate-dap", "crates/unluminate-git", "crates/unluminate-terminal", "crates/unluminate-app", "unluminate-cli"]
+members = ["crates/unluminous-core", "crates/unluminous-chat", "crates/unluminous-db", "crates/unluminous-dap", "crates/unluminous-git", "crates/unluminous-terminal", "crates/unluminous-app", "unluminous-cli"]
 
 [workspace.package]
 version = "0.36.0"
@@ -9,21 +9,21 @@ rust-version = "1.85"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-unluminate-core = { path = "crates/unluminate-core" }
-unluminate-chat = { path = "crates/unluminate-chat" }
-unluminate-db = { path = "crates/unluminate-db" }
-unluminate-dap = { path = "crates/unluminate-dap" }
-unluminate-git = { path = "crates/unluminate-git" }
-unluminate-terminal = { path = "crates/unluminate-terminal" }
+unluminous-core = { path = "crates/unluminous-core" }
+unluminous-chat = { path = "crates/unluminous-chat" }
+unluminous-db = { path = "crates/unluminous-db" }
+unluminous-dap = { path = "crates/unluminous-dap" }
+unluminous-git = { path = "crates/unluminous-git" }
+unluminous-terminal = { path = "crates/unluminous-terminal" }
 # The command catalogue and the wire format the CLI and the window share. It lives beside the client
-# it belongs to rather than under `crates`, because `unluminate-cli/` holds the CLI's documentation as
+# it belongs to rather than under `crates`, because `unluminous-cli/` holds the CLI's documentation as
 # well as its code and the two are read together.
-unluminate-cli = { path = "unluminate-cli" }
+unluminous-cli = { path = "unluminous-cli" }
 # `kill(pid, 0)` and nothing else: the one question a window asks about another window that owns a ticket's
 # worker, which is whether it is still running.
 libc = "0.2"
 unicode-segmentation = "1.13"
-# The Agent-Tasks plugin's database. `bundled` compiles SQLite's own C into Unluminate, so there is nothing
+# The Agent-Tasks plugin's database. `bundled` compiles SQLite's own C into Unluminous, so there is nothing
 # to install, no server to be running and no port: the board is one file. See
 # `tasks/agent-tasks-plugin-tdd.md` for why this rather than the PostgreSQL the application being
 # replaced needs. Nothing is fetched at run time, which is the rule the whole repository keeps.
@@ -36,14 +36,14 @@ rusqlite = { version = "0.32", features = ["bundled", "column_decltype"] }
 # language has to be able to speak, so the values are built and read as values.
 serde_json = "1.0"
 # The one HTTP client in the tree, for the Agent-Chat plugin and nothing else. Blocking rather than
-# async, because Unluminate has no runtime: `unluminate_git::Worker`, the terminal's reader, `text_search`,
-# `symbol_index` and `unluminate_dap` are all plain threads with channels, and a runtime added for one
+# async, because Unluminous has no runtime: `unluminous_git::Worker`, the terminal's reader, `text_search`,
+# `symbol_index` and `unluminous_dap` are all plain threads with channels, and a runtime added for one
 # pane would be a second concurrency model in a program that has one.
 #
 # **`native-tls` rather than rustls**, which is schannel on Windows and Security.framework on macOS:
-# the certificates Unluminate trusts are then the certificates the machine trusts, so a request from Unluminate
+# the certificates Unluminous trusts are then the certificates the machine trusts, so a request from Unluminous
 # reaches the same servers `curl` reaches, including behind whatever inspects the traffic on a
-# corporate network. That is `unluminate-git`'s argument for shelling out to the machine's real git rather
+# corporate network. That is `unluminous-git`'s argument for shelling out to the machine's real git rather
 # than linking a git library, made about a certificate store instead of a credential helper. Measured:
 # 31 crates in the tree against 121 for rustls with its own root store.
 #
@@ -73,7 +73,7 @@ wry = { version = "0.56.1", default-features = false, features = ["os-webview"] 
 # deterministic, which is what the screenshot tests rest on. See `tasks/agent-tasks-vello-ui-tdd.md`.
 #
 # **The version is epaint's, and it has to be.** `epaint` 0.36 already depends on `vello_cpu` 0.1 — it
-# rasterises the glyphs in its font atlas with it — so this renderer is already inside Unluminate and asking
+# rasterises the glyphs in its font atlas with it — so this renderer is already inside Unluminous and asking
 # for 0.2 would put a second copy of it in the binary rather than adding a renderer. Follow epaint when
 # egui is next upgraded.
 #
@@ -89,7 +89,7 @@ egui = "0.36"
 # `accesskit` builds the accessibility tree the operating system's screen reader reads: Narrator and
 # UI Automation on Windows, VoiceOver and NSAccessibility on macOS. It was **off**, and the whole of
 # what that cost is that the 112 `widget_info` calls already in `components/` reached nothing at all
-# in the shipped binary -- every control in Unluminate has carried a name since `task-1655`, and no
+# in the shipped binary -- every control in Unluminous has carried a name since `task-1655`, and no
 # screen reader could read one of them. `task-1804` §3.4; `design/accessibility.md` is what is
 # still missing.
 eframe = { version = "0.36", default-features = false, features = ["wgpu", "default_fonts", "accesskit"] }
@@ -136,7 +136,7 @@ dispatch2 = { version = "0.3", default-features = false, features = ["std"] }
 opt-level = 3
 # Thin rather than fat, and the default number of codegen units rather than one, because `task-1805`
 # measured what the other setting buys and it is only the file size. `lto = "fat"` with
-# `codegen-units = 1` takes `unluminate.exe` from **29.9 MB to 26.8 MB** and `unluminate-cli.exe` from
+# `codegen-units = 1` takes `unluminous.exe` from **29.9 MB to 26.8 MB** and `unluminous-cli.exe` from
 # 1.29 to 1.0 -- and moves **nothing** that anybody can feel: startup 738 ms against 734, a keystroke
 # on a 380 KB file 2.498 ms against 2.508, working set 220.4 MB against 220.9. What it costs is the
 # build, from **52 seconds to 4 minutes 25**, five times over, on a repository whose rule is that

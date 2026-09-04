@@ -10,7 +10,7 @@ What was asked for:
 
 ## 1. Why the file ran away
 
-Unluminate's editing area is not an `egui::ScrollArea`. Each tab holds `OpenFile::scroll`, **a number of
+Unluminous's editing area is not an `egui::ScrollArea`. Each tab holds `OpenFile::scroll`, **a number of
 points from the top of the document**, and the painter draws the text at `area.top() + padding -
 scroll`. That is the right thing to hold while the text is a fixed size, and the wrong thing to hold
 across a change of size, because the number means something different afterwards.
@@ -22,7 +22,7 @@ were not looking at, a third of the way back up the source. The complaint in the
 this and nothing else: the zoom itself was already right, and the size it lands on was already right.
 
 Three separate places change the size, and all three had the fault: the pinch and `Ctrl`+wheel
-(`UnluminateApp::zoom_the_text`), the keyboard (`Action::ChangeFontSize`, `Action::ResetFontSize`), and the
+(`UnluminousApp::zoom_the_text`), the keyboard (`Action::ChangeFontSize`, `Action::ResetFontSize`), and the
 Settings window's font panel. They all end in `set_font_size` and then `set_the_font_everywhere`,
 which is what makes one fix cover all three.
 
@@ -46,7 +46,7 @@ line comes back at its top, and each step of a gesture loses a fraction of a lin
 nine steps of a real pinch that adds up to a line or two of drift — small, but the ticket is about
 drift.
 
-**Remember the line and how far down it the point was.** What shipped. `unluminate_core::Anchor` is two
+**Remember the line and how far down it the point was.** What shipped. `unluminous_core::Anchor` is two
 numbers:
 
 ```rust
@@ -58,7 +58,7 @@ pub struct Anchor {
 }
 ```
 
-`Layout::anchor_at_y` takes one and `Layout::y_of_anchor` puts it back, and both are `unluminate-core`
+`Layout::anchor_at_y` takes one and `Layout::y_of_anchor` puts it back, and both are `unluminous-core`
 functions tested with no window, no fonts and no graphics card. The offset is the **start of the
 line** rather than the offset under the point, so a paragraph that wraps differently at the new size
 still has an answer: the line holding that byte is worked out again rather than remembered. The
@@ -177,10 +177,10 @@ In the real window, on this repository, driven through the control channel and w
 | `Ctrl`+wheel with the pointer 235 points down the pane, 9pt → 16pt | a different line under the pointer | the same line under the pointer |
 | One notch of `Ctrl`+wheel over one pane of a split | 16pt → 32pt | 16pt → 20pt, both panes keeping their place |
 
-Nine tests were added and all of Unluminate's 210 screenshot tests still pass:
+Nine tests were added and all of Unluminous's 210 screenshot tests still pass:
 
-- four in `unluminate-core` for the anchor itself, including the wrapped line and the empty document;
-- five in `unluminate-app` driving the real window through `egui_kittest` — the pinch, the keyboard, a tab
+- four in `unluminous-core` for the anchor itself, including the wrapped line and the empty document;
+- five in `unluminous-app` driving the real window through `egui_kittest` — the pinch, the keyboard, a tab
   that was not showing, the Markdown preview, and the split.
 
 ## 8. What was deliberately not done
@@ -190,7 +190,7 @@ Nine tests were added and all of Unluminate's 210 screenshot tests still pass:
 different kind of content. The ticket is about a line of code in a file.
 
 **Nothing is written to disk.** An anchor is a fact about a frame or two, not about a project, so it
-is not in `.unluminate/`. What survives a restart is the font size, exactly as it did before.
+is not in `.unluminous/`. What survives a restart is the font size, exactly as it did before.
 
-**The horizontal position is not anchored.** Unluminate's editing area wraps rather than scrolling
+**The horizontal position is not anchored.** Unluminous's editing area wraps rather than scrolling
 sideways, so there is nothing to keep still.

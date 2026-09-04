@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fetch a debug adapter on macOS or Linux, and print the setting to point at it.
 #
-# **Unluminate itself fetches nothing** — that is the rule that keeps a document from making a network
+# **Unluminous itself fetches nothing** — that is the rule that keeps a document from making a network
 # request, and it keeps the editor from making one too, so pressing Debug with nothing installed is a
 # sentence naming what was looked for rather than a download. This script is the other side of that
 # sentence: a person who read it and wants an adapter runs this, once, deliberately.
@@ -16,18 +16,18 @@
 #   bash tools/get-debug-adapter.sh node --remove
 #
 # js-debug is the one with no alternative. It ships as a `.js` file inside a GitHub release asset
-# rather than as a program, so there is nothing for Unluminate to look for on PATH and nothing a package
+# rather than as a program, so there is nothing for Unluminous to look for on PATH and nothing a package
 # manager installs — which is why `debug.node` has no default. lldb-dap is the other answer for
 # native code and does come from a package manager (`brew install llvm`, or your distribution's
 # `lldb` package), so CodeLLDB here is a convenience rather than the only road.
 #
-# Nothing touches Unluminate's settings file. It prints the line to paste, because a script that edited
+# Nothing touches Unluminous's settings file. It prints the line to paste, because a script that edited
 # somebody's settings behind their back would be doing more than it was asked.
 
 set -euo pipefail
 
 # Under the user's own data folder, which needs no privileges and is a folder a person can delete.
-INTO=${UNLUMINATE_ADAPTERS:-$HOME/.local/share/unluminate/adapters}
+INTO=${UNLUMINOUS_ADAPTERS:-$HOME/.local/share/unluminous/adapters}
 # Pinned rather than latest, so two runs of this script a year apart install the same thing.
 JS_DEBUG_VERSION=v1.117.0
 CODELLDB_VERSION=v1.12.3
@@ -84,14 +84,14 @@ fetch_node() {
     fi
     rm -rf "$folder"
     echo "Removed $folder."
-    echo 'Take the debug.node line out of the settings as well, or Unluminate will look for an adapter that has gone.'
+    echo 'Take the debug.node line out of the settings as well, or Unluminous will look for an adapter that has gone.'
     return
   fi
 
   if [ -f "$adapter" ]; then
     echo "Already there: $adapter"
     echo
-    echo "Put this in Unluminate's settings file, under Edit -> Settings, or write it by hand:"
+    echo "Put this in Unluminous's settings file, under Edit -> Settings, or write it by hand:"
     echo "  debug.node = $adapter"
     return
   fi
@@ -115,11 +115,11 @@ fetch_node() {
   fi
   echo
   echo "js-debug $JS_DEBUG_VERSION is in $folder ($(du -sh "$folder" | cut -f1))."
-  echo "Put this in Unluminate's settings file:"
+  echo "Put this in Unluminous's settings file:"
   echo "  debug.node = $adapter"
   echo
   echo 'The real-adapter test finds it through an environment variable of the same shape:'
-  echo "  UNLUMINATE_NODE_ADAPTER='$adapter' cargo test -p unluminate-app --test screenshots -- a_real_node_debugger"
+  echo "  UNLUMINOUS_NODE_ADAPTER='$adapter' cargo test -p unluminous-app --test screenshots -- a_real_node_debugger"
   echo
   echo 'bash tools/get-debug-adapter.sh node --remove takes it away again.'
 }
@@ -138,14 +138,14 @@ fetch_lldb() {
     fi
     rm -rf "$folder"
     echo "Removed $folder."
-    echo 'Take the debug.lldb line out of the settings as well, or Unluminate will look for an adapter that has gone.'
+    echo 'Take the debug.lldb line out of the settings as well, or Unluminous will look for an adapter that has gone.'
     return
   fi
 
   if [ -f "$adapter" ]; then
     echo "Already there: $adapter"
     echo
-    echo "Put this in Unluminate's settings file, under Edit -> Settings, or write it by hand:"
+    echo "Put this in Unluminous's settings file, under Edit -> Settings, or write it by hand:"
     echo "  debug.lldb = $adapter"
     return
   fi
@@ -173,11 +173,11 @@ fetch_lldb() {
   fi
   echo
   echo "CodeLLDB $CODELLDB_VERSION is in $folder ($(du -sh "$folder" | cut -f1))."
-  echo "Put this in Unluminate's settings file:"
+  echo "Put this in Unluminous's settings file:"
   echo "  debug.lldb = $adapter"
   echo
   echo 'The real-adapter test finds it through an environment variable of the same shape:'
-  echo "  UNLUMINATE_LLDB_ADAPTER='$adapter' cargo test -p unluminate-app --test screenshots -- a_real_debugger"
+  echo "  UNLUMINOUS_LLDB_ADAPTER='$adapter' cargo test -p unluminous-app --test screenshots -- a_real_debugger"
   echo
   echo 'bash tools/get-debug-adapter.sh lldb --remove takes it away again.'
 }

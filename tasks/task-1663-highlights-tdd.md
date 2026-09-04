@@ -2,7 +2,7 @@
 
 ## Introduction
 
-`task-1663` asks for something Unluminate has not had at all: **a way to mark a passage of text and have
+`task-1663` asks for something Unluminous has not had at all: **a way to mark a passage of text and have
 the mark stay there**. Select some words, right click, choose a colour, and the background behind
 those words is that colour — in this file, next time the file is opened, and written down beside the
 project rather than in anybody's private settings folder. The same thing from the command line, one
@@ -13,9 +13,9 @@ could be in; an agent working through a ticket paints every place it is about to
 person watching can see, in the editor, what the agent thinks the shape of the problem is. It is a
 shared surface between the two, which is why the command line half is not an afterthought.
 
-Unluminate already has the two halves this needs and has never joined them. `unluminate-core` keeps
+Unluminous already has the two halves this needs and has never joined them. `unluminous-core` keeps
 per-character formatting as spans that grow and shrink with every edit; `services::project_state`
-keeps a `.unluminate` folder beside the project holding what was open. A highlight is a span that has to
+keeps a `.unluminous` folder beside the project holding what was open. A highlight is a span that has to
 survive editing and a piece of project state that has to survive closing the window. What follows is
 how those two are joined, and what was rejected on the way.
 
@@ -30,19 +30,19 @@ how those two are joined, and what was rejected on the way.
 | 3 | Right clicking **on a highlight** offers `Clear Highlight`, which removes the one under the pointer. |
 | 4 | A file may hold any number of highlights, and any number of files in a project may hold them. |
 | 5 | Highlights survive editing the file around them, saving it, closing the tab and closing the window. They are gone only when cleared. |
-| 6 | Looking up what is highlighted is cheap enough to do while painting every frame, on a project of any size Unluminate opens. |
-| 7 | `unluminate-cli highlight` adds, lists and clears them, one at a time and in bulk across many files, and is documented in `unluminate-cli/docs/commands.md`. |
+| 6 | Looking up what is highlighted is cheap enough to do while painting every frame, on a project of any size Unluminous opens. |
+| 7 | `unluminous-cli highlight` adds, lists and clears them, one at a time and in bulk across many files, and is documented in `unluminous-cli/docs/commands.md`. |
 | 8 | All four test layers stay green, and the new drawing has screenshots a person has looked at. |
 
 **Non-goals**
 
-- **A highlight that follows the text through a change made outside Unluminate.** A highlight is anchored
-  to a byte range. Editing the file *in Unluminate* moves it, because the editor knows what changed;
+- **A highlight that follows the text through a change made outside Unluminous.** A highlight is anchored
+  to a byte range. Editing the file *in Unluminous* moves it, because the editor knows what changed;
   `git checkout` underneath the editor does not, and the highlight stays where the bytes used to be.
   Every editor's bookmarks behave this way, and the alternative — storing the highlighted text, or a
   hash of its neighbourhood — is a second copy of the file's contents in a file people commit.
-- **Highlights shared between two people.** `.unluminate/highlights.txt` is a file in the project as
-  `.idea/` is, and whether it is committed is the project's business, not Unluminate's.
+- **Highlights shared between two people.** `.unluminous/highlights.txt` is a file in the project as
+  `.idea/` is, and whether it is committed is the project's business, not Unluminous's.
 - **A note attached to a highlight.** The ask is a colour. A comment thread is a different feature
   with a different surface, and `services::file_marks` is shaped so it could hold one later.
 - **Highlighting in the Markdown preview or in a diagram.** The preview is worked out from the
@@ -54,13 +54,13 @@ how those two are joined, and what was rejected on the way.
 
 ## Problem statement
 
-There is nowhere to put this. Unluminate has three things that already know something about a range of
+There is nowhere to put this. Unluminous has three things that already know something about a range of
 text and none of them will do.
 
 **`Document::chars`** is the character formatting — bold, italic, a colour per run. It covers the
 whole document with no gaps, which is right for formatting and wrong for highlights: a document with
 two highlighted words would hold five spans, three of them saying "nothing here". It carries no
-alpha either, and its comment says so on purpose: *text in Unluminate is always fully opaque*. A highlight
+alpha either, and its comment says so on purpose: *text in Unluminous is always fully opaque*. A highlight
 is a background, and the ask is explicit that it has an opacity.
 
 **`Document::selection`** is one range and it is the caret. There can only ever be one of it.
@@ -70,7 +70,7 @@ no notion of anything inside a file.
 
 And the thing that makes this more than a list: **the text moves**. Typing a line above a highlight
 must carry it down; deleting the text under it must take it away. That is exactly what `StyleSpans`
-does for formatting, and it is the reason the answer belongs in `unluminate-core` rather than in a service
+does for formatting, and it is the reason the answer belongs in `unluminous-core` rather than in a service
 that watches the document from outside and tries to work out what changed.
 
 ## Architectural overview
@@ -78,11 +78,11 @@ that watches the document from outside and tries to work out what changed.
 Three pieces, in the three places the existing code says they belong.
 
 ```
-unluminate-core                          unluminate-app                                unluminate-cli
+unluminous-core                          unluminous-app                                unluminous-cli
 ----------                          ---------                                ---------
 highlights::Highlights              services::file_marks::FileMarks          the `highlight`
   a sorted, non-overlapping set       every file in the project that has       area of the
-  of (range, Rgba), shifted by        highlights, and .unluminate/highlights.txt    catalogue:
+  of (range, Rgba), shifted by        highlights, and .unluminous/highlights.txt    catalogue:
   every insert and delete and                                                  list, add,
   carried in the undo snapshot      components::text_menu                      clear, apply
                                       the editor's right click menu:
@@ -106,7 +106,7 @@ at a file that happens to be open goes to the document rather than round the sid
 there is never a moment where the two disagree.
 
 **Why the ranges live in `Document`.** Because `insert` and `remove_range` are the only two places in
-Unluminate that know a range of bytes moved, and they already shift `chars` and `paragraphs` there. A
+Unluminous that know a range of bytes moved, and they already shift `chars` and `paragraphs` there. A
 highlight set shifted in the same two lines cannot drift; a highlight set maintained outside the
 document would have to reconstruct what changed by comparing two ropes, sixty times a second.
 
@@ -120,12 +120,12 @@ it.
 
 **Highlighting is not an edit.** It bumps the revision, so the window repaints and the store is
 written, and it does **not** set `modified` and does **not** push an undo step. This is the rule the
-editor's font already follows, for the same reason: what Unluminate saves is plain text, and a highlight
+editor's font already follows, for the same reason: what Unluminous saves is plain text, and a highlight
 is not in it.
 
 ## Components and interfaces
 
-### 1. `unluminate_core::highlights` — the set, and the arithmetic
+### 1. `unluminous_core::highlights` — the set, and the arithmetic
 
 ```rust
 pub struct Rgba { pub r: u8, pub g: u8, pub b: u8, pub a: u8 }
@@ -171,9 +171,9 @@ pub fn clear_highlights(&mut self) -> bool;
 `insert` gains `self.highlights.insert(at, text.len())` beside the line that does the same to
 `chars`; `remove_range` gains `self.highlights.remove(range.clone())` beside its twin. `Snapshot`
 gains a `highlights` field, and `snapshot`, `push_undo` and `restore` carry it. That is the whole of
-the change to `unluminate-core` outside the new module.
+the change to `unluminous-core` outside the new module.
 
-### 3. `services::file_marks` — what Unluminate remembers about a file
+### 3. `services::file_marks` — what Unluminous remembers about a file
 
 `project_state` remembers what is true of the **project**; this remembers what is true of a **file**,
 and it is named for the thing rather than for highlights because a highlight is the first of these
@@ -200,10 +200,10 @@ opens; it is read once and written only when something changed, at the same mome
 written — once the pointer is up, so dragging never writes. Nothing walks the project and nothing is
 watched.
 
-**The format**, `.unluminate/highlights.txt`, in the plain text spirit of the two files beside it:
+**The format**, `.unluminous/highlights.txt`, in the plain text spirit of the two files beside it:
 
 ```
-# The highlighted passages in this project. Written by Unluminate, and safe to delete.
+# The highlighted passages in this project. Written by Unluminous, and safe to delete.
 120 240 #E8C04A59 src/main.rs
 300 312 #489FF880 src/main.rs
 16 64 #7FCA9866 docs/notes.md
@@ -215,14 +215,14 @@ it, so a project that moves still opens with its highlights. A line that cannot 
 rather than taken as a reason to refuse the file, which is the rule the settings file already keeps.
 
 **Only the released binary reads or writes it.** `FileMarks::load` is called from
-`UnluminateApp::restore_project` and from nowhere else, exactly as the project state is, so a test neither
-reads nor writes a `.unluminate` folder and a screenshot test's sample project is not changed underneath
+`UnluminousApp::restore_project` and from nowhere else, exactly as the project state is, so a test neither
+reads nor writes a `.unluminous` folder and a screenshot test's sample project is not changed underneath
 it. A window a test builds still has a `FileMarks` — an empty one, in memory — so every menu entry
 and every command works in a test.
 
 ### 4. `components::text_menu` — the editor's right click menu
 
-Unluminate has had no menu on the editing area at all. It gets one, built from the same
+Unluminous has had no menu on the editing area at all. It gets one, built from the same
 `controls::menu_rows` the other two context menus use so the rows cannot drift, with two things of
 its own drawn under them: a row of four colour blocks with the wheel icon at its end, and the wheel
 itself once the icon has been pressed.
@@ -255,7 +255,7 @@ right click anywhere else puts the caret there with no selection, which is what 
 ### 5. `components::color_wheel` — a hue ring, a square, and an opacity bar
 
 Drawn rather than borrowed. egui has a colour picker of its own and it is a saturation square with
-two strips beside it; the ask says *a colour wheel*, and the style guide says Unluminate paints its own
+two strips beside it; the ask says *a colour wheel*, and the style guide says Unluminous paints its own
 controls at measured positions.
 
 - A **hue ring**: an annulus built as one `Mesh`, a pair of vertices every few degrees, each pair
@@ -272,7 +272,7 @@ Every one of those has a name, so a test can find it: `Highlight hue`, `Highligh
 ### 6. The actions, and the Edit menu
 
 The four colours and the two ways of clearing are `Action`s, which is what makes them reachable from
-`unluminate-cli action run` the day they exist:
+`unluminous-cli action run` the day they exist:
 
 ```rust
 Action::Highlight(HighlightColor),   // Yellow | Green | Blue | Pink
@@ -284,7 +284,7 @@ named `highlight-yellow`, `highlight-green`, `highlight-blue`, `highlight-pink`,
 and `clear-highlights`. They sit on `Edit -> Highlight`, so both menu bars get them and `action list`
 lists them without anybody writing them down a second time. The colour chosen in the wheel is not an
 action — it carries a value no action name could hold — and it goes through the same
-`UnluminateApp::highlight_selection`, so there is still one place a highlight is made.
+`UnluminousApp::highlight_selection`, so there is still one place a highlight is made.
 
 **The four colours are in `theme::color`.** The palette is closed and this does not open it: the four
 are accents already sampled from the design — the unsaved amber, the accent blue, git's green and
@@ -292,14 +292,14 @@ blame's pink — at an alpha that leaves the writing readable. A colour chosen i
 somebody's own mark on their own text, which is the same exception the style guide already makes for
 a syntax theme's token colours, and it is written down there.
 
-### 7. `unluminate-cli highlight` — one at a time, or a hundred at once
+### 7. `unluminous-cli highlight` — one at a time, or a hundred at once
 
 ```
-unluminate-cli highlight list [path] [--all]
-unluminate-cli highlight add [path] [--from-line n] [--from-column n] [--to-line n] [--to-column n]
+unluminous-cli highlight list [path] [--all]
+unluminous-cli highlight add [path] [--from-line n] [--from-column n] [--to-line n] [--to-column n]
                                [--text <needle>] [--color <name|#rrggbbaa>]
-unluminate-cli highlight clear [path] [--from-line n] [--to-line n] [--all]
-unluminate-cli highlight apply [--from-file <path>] [--json-text <json>]
+unluminous-cli highlight clear [path] [--from-line n] [--to-line n] [--all]
+unluminous-cli highlight apply [--from-file <path>] [--json-text <json>]
 ```
 
 `add` with no path means the tab that is showing, which is what every other `editor` command means by
@@ -311,7 +311,7 @@ has worked out twenty places worth marking marks them in one call rather than in
 
 A file named by a command that is **not open** is read from the disk to turn its lines and columns
 into byte offsets, and the highlights go straight into `FileMarks`. A file that **is** open goes
-through its `Document`. One function, `UnluminateApp::change_highlights(path, f)`, is where that choice is
+through its `Document`. One function, `UnluminousApp::change_highlights(path, f)`, is where that choice is
 made, so no command has to think about it.
 
 ## Data flows, risks and error handling
@@ -323,7 +323,7 @@ under an opaque one would not be. The rectangles come from `Layout::selection_re
 turns a byte range into one rectangle per line and is exactly what a highlight needs, so the layout
 engine learns nothing at all about highlights.
 
-**A file that changed on disk.** Byte offsets against a file somebody rewrote outside Unluminate point at
+**A file that changed on disk.** Byte offsets against a file somebody rewrote outside Unluminous point at
 the wrong bytes. Ranges are clamped to the document's length when they are restored, so the worst
 case is a highlight in the wrong place, or one that has vanished — never a panic, and never a range
 that makes the layout engine reach past the end of the rope.
@@ -331,7 +331,7 @@ that makes the layout engine reach past the end of the rope.
 **A file that is open twice.** It cannot be: `open_path_in_tab` shows the tab that already holds a
 file rather than opening a second one.
 
-**Two Unluminate windows on one project.** Each writes `.unluminate/highlights.txt` when its own set changes
+**Two Unluminous windows on one project.** Each writes `.unluminous/highlights.txt` when its own set changes
 and the last to write wins — which is already true of `open-files.txt`. Not solving it is deliberate:
 a lock file, or merging on write, is a great deal of machinery for a case a person notices at once
 and fixes by highlighting it again.
@@ -345,8 +345,8 @@ sync back into `FileMarks` is an integer comparison per open tab per frame.
 |---|---|
 | **Extending `StyleSpans` with a background colour.** | It covers the whole document with no gaps, so every highlight would cost three spans and a document with none would still carry the machinery. It has no alpha, on purpose. And a background is not character formatting: it is not saved, not inherited by typing, and not undone. |
 | **A service that watches the document and works out what moved.** | The only honest way to do that is to diff two ropes on every change. `insert` and `remove_range` already know exactly what moved, and one line in each is the whole of it. |
-| **One `.unluminate/highlights/<path>.txt` per file.** | Six hundred files to open when a project opens, a directory tree mirroring the project, and a rename that has to move a metadata file. One file, read once. |
-| **A sqlite database in `.unluminate`.** | A dependency, a schema, a migration story and a binary file in a folder people put in git, in exchange for indexing a list measured in tens of entries. Everything else Unluminate remembers is plain text and this should be too. |
+| **One `.unluminous/highlights/<path>.txt` per file.** | Six hundred files to open when a project opens, a directory tree mirroring the project, and a rename that has to move a metadata file. One file, read once. |
+| **A sqlite database in `.unluminous`.** | A dependency, a schema, a migration story and a binary file in a folder people put in git, in exchange for indexing a list measured in tens of entries. Everything else Unluminous remembers is plain text and this should be too. |
 | **Storing the highlighted text, so a highlight can be found again after an outside change.** | A second copy of parts of the file, in a file people commit. A project's secrets would end up in it. |
 | **egui's own `color_picker_color32`.** | It is a square and two strips, and the ask says a wheel. It also brings egui's own sliders and layout into a window that paints everything itself at measured positions. |
 | **A second popup for the wheel.** | egui closes the first when the second opens. The three line spacings in the text options panel are buttons rather than a dropdown for exactly this reason. |
@@ -354,13 +354,13 @@ sync back into `FileMarks` is an integer comparison per open tab per frame.
 
 ## Testing strategy
 
-**Layer 1 — `unluminate-core`, no window.** The set: adding, cutting an overlap away, clearing, the binary
+**Layer 1 — `unluminous-core`, no window.** The set: adding, cutting an overlap away, clearing, the binary
 searches, and the two shifting rules — typing inside a highlight grows it, typing at either edge does
 not, deleting the text under one removes it. The document: a highlight moves by exactly the number of
 bytes inserted above it, survives an edit, and comes back with undo.
 
-**Layer 2 — `unluminate-app`, no window.** `FileMarks` round trips through a temporary folder, writes its
-paths relative to the project, skips a line it cannot read, and leaves a project with no `.unluminate`
+**Layer 2 — `unluminous-app`, no window.** `FileMarks` round trips through a temporary folder, writes its
+paths relative to the project, skips a line it cannot read, and leaves a project with no `.unluminous`
 folder opening normally. The colour names parse both ways. The actions round trip through their
 names, which the existing `action_names` test enforces the moment the variants exist.
 
@@ -373,7 +373,7 @@ window's own state, as the gutter's menu is, because the harness cannot press th
 a passage from the CLI and take a screenshot of the window to see it; highlight across several files
 with `highlight apply`; close the window, open it again, and check the highlights are still there.
 That last one is the only thing that proves the disk half, because no test is allowed to write a
-`.unluminate` folder.
+`.unluminous` folder.
 
 ## What was built, and what the real application found
 
@@ -409,7 +409,7 @@ new image was looked at and accepted.
 
 ### The real run
 
-`cargo run --release` on a three file project, driven by `unluminate-cli` from a terminal:
+`cargo run --release` on a three file project, driven by `unluminous-cli` from a terminal:
 
 - `highlight add alpha.rs --from-line 6 --to-line 10 --color blue` then
   `highlight add alpha.rs --text squared --color pink` gave **five** marks, not two — the pink cut the
@@ -417,12 +417,12 @@ new image was looked at and accepted.
 - `_agent_output/task-1663-highlights/live-marked.png` is that file in the window: the colours are
   behind the words, over a syntax coloured Rust file, and the writing is readable.
 - `highlight apply --from-file marks.json --replace` marked three passages across three files in one
-  request, none of which was open, and wrote `.unluminate/highlights.txt`.
+  request, none of which was open, and wrote `.unluminous/highlights.txt`.
 - Typing a line at the top of `beta.md` from the command line moved its mark from lines 5–9 to 6–10,
   and the file on the disk was rewritten with the new offsets.
-- Unluminate was then **quit and started again**, and `highlight list --all` returned the same three marks
+- Unluminous was then **quit and started again**, and `highlight list --all` returned the same three marks
   in the same places. `live-restored.png` is the window after that restart. That is the only thing
-  that proves the disk half, because no test is allowed to write a `.unluminate` folder.
+  that proves the disk half, because no test is allowed to write a `.unluminous` folder.
 
 ### One thing found along the way, and fixed
 

@@ -13,12 +13,12 @@ Two lists, asked for in one sentence. Start writing `import { } from '` and the 
 **the files** the project holds; put the caret between the braces and it should offer **what that
 file exports** — the classes, the functions, the constants and the types. TypeScript is named as
 the example rather than as the scope, so the mechanism has to be the language's own decision the
-way `language.definers` already is, and Unluminate's other three code plugins have to be able to ask for
+way `language.definers` already is, and Unluminous's other three code plugins have to be able to ask for
 it.
 
 `task-1677` and `task-1678` built the popup this hangs off: the stem under the caret, the
 subsequence match, the Sublime scoring rubric, the five keys, the eight rows, the `Ctrl+Space` that
-asks by hand and the `unluminate-cli editor complete` that prints the same list. **None of that changes.**
+asks by hand and the `unluminous-cli editor complete` that prints the same list. **None of that changes.**
 What this ticket adds is a fifth question asked before the four sources are gathered — *is the
 caret in the middle of an import?* — and, when the answer is yes, a different pool of candidates.
 
@@ -50,7 +50,7 @@ and "flyimport", which is auto-import. Its `imports.granularity` and `imports.pr
 the same admission VS Code's are — where a `use` line should be merged and whether it is written
 `crate::`, `self::` or plain is a house style, not a fact.
 
-### 2.3 The syntactic tier, which is the one Unluminate is on
+### 2.3 The syntactic tier, which is the one Unluminous is on
 
 Below the language servers there is a real, shipped, non-semantic tier, and it is where the honest
 version of this feature lives.
@@ -66,14 +66,14 @@ the folder is spelt.
 **Vim's `'include'` and `'define'` options**, and the `Ctrl+X Ctrl+I` completion that reads them,
 are the same shape as `language.definers`: the *editor* has no idea what an import is, and each
 language's settings say what one looks like as a pattern. That is the precedent this design
-follows exactly — a language describes its imports as data, and Unluminate does the arithmetic.
+follows exactly — a language describes its imports as data, and Unluminous does the arithmetic.
 
 So both halves the ticket asks for are reachable without a language server:
 
 | The ticket's ask | What answers it here | How honest it is |
 |---|---|---|
 | "auto complete for files" | the project's own file list, which `Go to File` and `Find in Files` already walk | exact: these are the files that are really there |
-| "classes, functions, etc that I can import" | the target file's definitions, from the same `unluminate_core::symbols` reading that `Go to Definition` uses, filtered to the exported ones | the same tier as `Go to Definition`: a syntactic reading, and it says so |
+| "classes, functions, etc that I can import" | the target file's definitions, from the same `unluminous_core::symbols` reading that `Go to Definition` uses, filtered to the exported ones | the same tier as `Go to Definition`: a syntactic reading, and it says so |
 
 ### 2.4 What was rejected
 
@@ -84,7 +84,7 @@ completion is one of the things that would be better with one, and it is not wor
 one.
 
 **Reading `node_modules` so bare specifiers can be offered.** `task-1659` measured what walking it
-costs: leaving `target`, `node_modules` and `__pycache__` out took Unluminate's own project from 2,022
+costs: leaving `target`, `node_modules` and `__pycache__` out took Unluminous's own project from 2,022
 files to 618 and the whole search from 60 ms to 20. Undoing that so `import … from 'rea│'` can
 offer `react` would make every *other* search slower for one that a person types from memory
 anyway. §12 records what a cheaper version would look like if it is ever asked for.
@@ -92,7 +92,7 @@ anyway. §12 records what a cheaper version would look like if it is ever asked 
 **Auto-import.** §12.
 
 **Parsing the language.** A parser for TypeScript's import grammar would be a second reader of the
-same text `unluminate_core::syntax` already reads, and it would drift from it, which is the exact fault
+same text `unluminous_core::syntax` already reads, and it would drift from it, which is the exact fault
 `syntax::scan` was made a visitor to avoid. What is needed is much less than a parser: where the
 statement starts, whether the caret is inside its string or inside its braces, and what the module
 is spelt as. §4 does that with one backwards walk.
@@ -102,21 +102,21 @@ is spelt as. §4 does that with one backwards walk.
 One sentence: **when the caret is inside an import, the four sources are replaced by one, and what
 that one offers is the project's own files or the target module's own exports.**
 
-Three pieces, in the three places Unluminate already puts these things:
+Three pieces, in the three places Unluminous already puts these things:
 
-- `unluminate_core::imports` — *what the caret is in the middle of*. Pure: a `&str`, an offset and a
+- `unluminous_core::imports` — *what the caret is in the middle of*. Pure: a `&str`, an offset and a
   `Grammar` in, a `Context` out. No disk, no window, tested with no fonts. The sibling of
-  `unluminate_core::completion`, which says what a stem is, and of `unluminate_core::symbols`, which says
+  `unluminous_core::completion`, which says what a stem is, and of `unluminous_core::symbols`, which says
   what a definition is.
-- `unluminate_app::services::imports` — *what that context could become*. This is where the disk is:
+- `unluminous_app::services::imports` — *what that context could become*. This is where the disk is:
   resolving `'./layout'` to a real file, turning a real file into the specifier that would reach
   it, and walking a module path down a folder tree.
-- `unluminate_app::app::completion` — one new branch, four lines long: ask `unluminate_core::imports` first,
+- `unluminous_app::app::completion` — one new branch, four lines long: ask `unluminous_core::imports` first,
   and if it answers, gather from `services::imports` instead of from the four sources.
 
 Everything downstream is untouched. The rows are `completion::Row`s, ranked by the same
 `completion::rank`, drawn by the same `components::completion`, steered by the same five keys,
-accepted by the same `Command::ReplaceMany`, and printed by the same `unluminate-cli editor complete`.
+accepted by the same `Command::ReplaceMany`, and printed by the same `unluminous-cli editor complete`.
 
 ## 4. What the caret is in the middle of
 
@@ -127,7 +127,7 @@ import { Layout, Caret } from './layout';   //  the module is a string
 @import 'theme.css';                        //  the module is a string
 ```
 ```rust
-use unluminate_core::completion::{Candidate, Row};   //  the module is a path of segments
+use unluminous_core::completion::{Candidate, Row};   //  the module is a path of segments
 ```
 
 A string specifier is resolved against the **file system**, relative to the file being edited. A
@@ -142,7 +142,7 @@ pub enum Context {
     Specifier { typed: Range<usize>, whole: Range<usize> },
     /// Inside the braces of an import whose module is written: `import { Lay│ } from './layout'`.
     Named { module: String, stem: Range<usize> },
-    /// Inside a path-family import: `use unluminate_core::comp│`.
+    /// Inside a path-family import: `use unluminous_core::comp│`.
     Segment { segments: Vec<String>, stem: Range<usize> },
 }
 
@@ -186,7 +186,7 @@ are half-typed cannot poison the answer.
 
 ### 4.3 The path family, anchored on its keyword
 
-`use unluminate_core::completion::{Candidate, R│ow};`
+`use unluminous_core::completion::{Candidate, R│ow};`
 
 One backwards walk from the stem, and the walk *is* the parse:
 
@@ -230,13 +230,13 @@ keeps. Five are the quoted family's, three are the path family's, and one turns 
 | `language.source_roots` | the folder a package's module tree is rooted in | — | — | `src` |
 | `language.path_roots` | `word=meaning`, for the segments that are not module names | — | — | `crate=package, self=module, super=parent` |
 
-`path_roots` is checked against the three meanings Unluminate has, exactly as `language.definers` is
+`path_roots` is checked against the three meanings Unluminous has, exactly as `language.definers` is
 checked against the five `SymbolKind`s and `plugin.kind` against the kinds this version loads: a
 manifest naming a fourth is refused with a message rather than loaded as a language whose `use`
 lines quietly never complete.
 
 Nine keys is more than any previous ticket has added at once, and the alternative was worse. The
-alternative is a list of languages inside Unluminate — a `match` on the extension saying that `.ts`
+alternative is a list of languages inside Unluminous — a `match` on the extension saying that `.ts`
 imports look like this and `.rs` imports look like that — which is the exact thing
 `language.definers` exists to prevent, and which would mean a plugin somebody writes for Python
 could never have the feature at all. Each key is one line of data, each is off by default, and
@@ -289,7 +289,7 @@ guard and keeps its callers. Nothing about the ordinary four sources changes.
 
 `Source::Module`, for a row that is a file or a module rather than a name inside one. It carries
 the kind glyph `SymbolKind::Module` already has, so no icon is drawn for this ticket, and its
-detail is the path relative to the project root — `crates/unluminate-core/src/completion.rs` — which is
+detail is the path relative to the project root — `crates/unluminous-core/src/completion.rs` — which is
 the sentence a person needs to be sure it is the file they meant.
 
 It sorts first among the sources, which only ever decides a tie, and a tie only happens in the
@@ -304,7 +304,7 @@ The same `Command::ReplaceMany`, one undo step, and the same two keys meaning th
 the reason §4.1 gives. A module path segment and a named import are ordinary identifiers, so those
 two use `word_at` exactly as every other row does.
 
-Accepting does **not** add a closing quote, a comma, a `from` clause or a `;`. Unluminate's editing area
+Accepting does **not** add a closing quote, a comma, a `from` clause or a `;`. Unluminous's editing area
 has never inserted a character nobody typed, and a completion is not the place to start.
 
 ## 6. Resolving a module
@@ -320,7 +320,7 @@ has never inserted a character nobody typed, and a completion is not the place t
 The folder is the edited file's own, `.` and `..` are applied, and the candidates are tried in the
 order the manifest lists them, so `.ts` beats `.js` because TypeScript's manifest says `.ts` first.
 A specifier with a scheme in it, or one that does not start with `.`, resolves to nothing — the
-first because `services::preview_images` already established that nothing in Unluminate fetches, the
+first because `services::preview_images` already established that nothing in Unluminous fetches, the
 second because a bare specifier is a package and §2.4 says why packages are not offered.
 
 The resolution is checked against the project's own file list rather than against the disk, which
@@ -331,17 +331,17 @@ is one answer to "what files are in this project" rather than two.
 ### 6.2 A segment path to a folder or a file
 
 ```
-crate::app::actions        from  crates/unluminate-app/src/components/editor_view.rs
-  crate     ->  the source root above this file      ->  crates/unluminate-app/src
-  app       ->  a folder or an `app.rs`              ->  crates/unluminate-app/src/app
-  actions   ->  a folder or an `actions.rs`          ->  crates/unluminate-app/src/app/actions.rs
+crate::app::actions        from  crates/unluminous-app/src/components/editor_view.rs
+  crate     ->  the source root above this file      ->  crates/unluminous-app/src
+  app       ->  a folder or an `app.rs`              ->  crates/unluminous-app/src/app
+  actions   ->  a folder or an `actions.rs`          ->  crates/unluminous-app/src/app/actions.rs
 ```
 
 ```
-unluminate_core::completion
-  unluminate_core  ->  a package folder whose name reads `unluminate_core`, and its source root
-                                                    ->  crates/unluminate-core/src
-  completion  ->                                    ->  crates/unluminate-core/src/completion.rs
+unluminous_core::completion
+  unluminous_core  ->  a package folder whose name reads `unluminous_core`, and its source root
+                                                    ->  crates/unluminous-core/src
+  completion  ->                                    ->  crates/unluminous-core/src/completion.rs
 ```
 
 `self` is the module the file is, `super` is the one above it, and repeated `super::super::` walks
@@ -357,7 +357,7 @@ would be a list that is never right.
 ## 7. What it costs
 
 The budget is `task-1678`'s, unchanged: **a keystroke under 5 ms on the largest file in this
-repository**, measured by `cargo run --release -p unluminate-app --example completion_cost`. Import
+repository**, measured by `cargo run --release -p unluminous-app --example completion_cost`. Import
 completion has to fit inside it, and three things about it are worth writing down.
 
 **Nothing new is indexed and no thread is added.** The file list is `FileTree::all_files`, which
@@ -367,7 +367,7 @@ worker; an open module's are `tab_symbols`, already cached on the tab and keyed 
 sentence `task-1677` §4.1 opens with and is why this is a small feature.
 
 **The one unbounded moment is the empty stem.** `from '│'` builds a relative specifier for every
-importable file in the project — 618 files on Unluminate's own repository, and a `.ts` project of that
+importable file in the project — 618 files on Unluminous's own repository, and a `.ts` project of that
 size would be similar. Each is a little path arithmetic and one `String`. It happens once per
 import statement, and the very next character typed makes `completion::could_match` throw nearly
 all of them away before a `Candidate` is built, which is the prefilter `task-1678` added for
@@ -376,22 +376,22 @@ assumed.
 
 **The index gains one table.** `Index::exports_of(path)`, so a closed module can answer without
 being read. It holds only the **exported** definitions, which is what makes it small: it is a
-second copy of a subset of names the table already holds, and on Unluminate's own repository that is
+second copy of a subset of names the table already holds, and on Unluminous's own repository that is
 some thousands of short strings. The alternative — reading the module off the disk on each
 keystroke — is 1.8 ms for the largest file in this repository and would be paid on every letter
 typed between the braces.
 
 ### 7.1 What it measured
 
-`cargo run --release -p unluminate-app --example completion_cost`, run against Unluminate's own repository
+`cargo run --release -p unluminous-app --example completion_cost`, run against Unluminous's own repository
 after the implementation:
 
 | Inside an import | offered | total |
 |---|---|---|
 | `use ` | 12 | 0.345 ms |
-| `use unluminate_core::` | 14 | 0.874 ms |
-| `use unluminate_core::completion::` | 12 | 0.530 ms |
-| `use unluminate_core::completion::Can` | 1 | 0.579 ms |
+| `use unluminous_core::` | 14 | 0.874 ms |
+| `use unluminous_core::completion::` | 12 | 0.530 ms |
+| `use unluminous_core::completion::Can` | 1 | 0.579 ms |
 
 So the import arm's worst case is **0.87 ms**, comfortably inside the 5 ms a keystroke has, and the
 unbounded moment turns out not to be the expensive one.
@@ -428,7 +428,7 @@ import context first. Neither change can affect a file whose language named no i
 **Reopening in the same frame.** `refresh_the_completion` closes the popup when the stem's start
 moves, which is what typing `::` does: a new segment is a new stem. So `keep_the_completion_fresh`
 gains one line — if the refresh closed the list and a character was typed this frame, ask again.
-Without it, `use unluminate_core::│` would need one more keystroke before the list came back. It changes
+Without it, `use unluminous_core::│` would need one more keystroke before the list came back. It changes
 nothing outside an import, because `offer_a_completion` still refuses a stem shorter than two
 characters.
 
@@ -437,7 +437,7 @@ characters.
 typed `from '` and waited will press. `editor.suggestions = manual` still turns the automatic popup
 off everywhere, imports included.
 
-**The command line.** `unluminate-cli editor complete` prints whatever the popup would show, and gains
+**The command line.** `unluminous-cli editor complete` prints whatever the popup would show, and gains
 nothing but the ability to print an import list — its one guard, "there is nothing to complete
 here" when the stem is empty, becomes "when the stem is empty *and* there are no rows", because an
 empty stem inside a specifier is now a real question with a real answer. `--choose` applies an
@@ -494,12 +494,12 @@ Fifty-one, which the implementation is held to. The numbering is what the tests 
 
 ### 10.2 Reading the context — the path family
 
-19. `use unluminate_core::comp│` is a `Segment` with segments `[unluminate_core]` and stem `comp`.
+19. `use unluminous_core::comp│` is a `Segment` with segments `[unluminous_core]` and stem `comp`.
 20. `use │` is a `Segment` with no segments and no stem.
-21. `use unluminate_core::│` is a `Segment` with segments `[unluminate_core]` and no stem.
-22. `use unluminate_core::completion::{Candidate, R│}` has segments `[unluminate_core, completion]`.
-23. `use unluminate_core::{a, b::c│}` has segments `[unluminate_core, b]` — the sibling list is stepped over.
-24. `pub use unluminate_core::comp│` reads the same as `use` does.
+21. `use unluminous_core::│` is a `Segment` with segments `[unluminous_core]` and no stem.
+22. `use unluminous_core::completion::{Candidate, R│}` has segments `[unluminous_core, completion]`.
+23. `use unluminous_core::{a, b::c│}` has segments `[unluminous_core, b]` — the sibling list is stepped over.
+24. `pub use unluminous_core::comp│` reads the same as `use` does.
 25. `let x = a::b::c│` is **not** an import: the anchor is not the keyword.
 26. `use a::b as c│` is not a context: a name being bound is not a name being chosen.
 27. A `::` inside a comment or a string is not a path, because the anchor walk never reaches a
@@ -514,8 +514,8 @@ Fifty-one, which the implementation is held to. The numbering is what the tests 
 32. `react` resolves to nothing: it is not relative.
 33. `https://example.com/a.js` resolves to nothing: it has a scheme.
 34. `./layout.css` from a stylesheet resolves with the extension written out.
-35. `crate::app::actions` resolves from a file under `crates/unluminate-app/src`.
-36. `unluminate_core::completion` resolves through the package folder whose name reads `unluminate_core`.
+35. `crate::app::actions` resolves from a file under `crates/unluminous-app/src`.
+36. `unluminous_core::completion` resolves through the package folder whose name reads `unluminous_core`.
 37. `super::super::x` walks two modules up.
 38. `self::parts` resolves inside the file's own folder.
 39. A segment that is both `app.rs` and `app/` offers the union of both.
@@ -551,18 +551,18 @@ Fifty-one, which the implementation is held to. The numbering is what the tests 
 
 | Where | What |
 |---|---|
-| `unluminate-core/src/imports.rs` | new. `Context`, `context_at`, and the two backwards walks. |
-| `unluminate-core/src/syntax.rs` | `Grammar` gains the nine import fields and `completes_imports`. |
-| `unluminate-core/src/symbols.rs` | `Definition` gains `exported`, set by `language.export_keyword`. |
-| `unluminate-core/src/completion.rs` | `Source::Module`; `rank_all` beside `rank`. |
-| `unluminate-app/src/services/plugins.rs` | reads the nine keys; refuses an unknown `path_roots` meaning. |
-| `unluminate-app/src/services/imports.rs` | new. Resolving a specifier and a segment path, and listing what each could become. |
-| `unluminate-app/src/services/symbol_index.rs` | `Entry` gains `exported`; `Index` gains `exports_of`. |
-| `unluminate-app/src/app/completion.rs` | the import branch, the trigger changes, and the accept range. |
-| `unluminate-app/src/app/cli.rs` | the one guard that has to allow an empty stem with rows. |
-| `unluminate-app/plugins/*/plugin.conf` | TypeScript, JavaScript, CSS and Rust say how their imports look. |
-| `unluminate-app/tests/screenshots.rs` | a TypeScript fixture project and two pictures. |
-| `unluminate-app/examples/completion_cost.rs` | an import arm, so §7's number is measured. |
+| `unluminous-core/src/imports.rs` | new. `Context`, `context_at`, and the two backwards walks. |
+| `unluminous-core/src/syntax.rs` | `Grammar` gains the nine import fields and `completes_imports`. |
+| `unluminous-core/src/symbols.rs` | `Definition` gains `exported`, set by `language.export_keyword`. |
+| `unluminous-core/src/completion.rs` | `Source::Module`; `rank_all` beside `rank`. |
+| `unluminous-app/src/services/plugins.rs` | reads the nine keys; refuses an unknown `path_roots` meaning. |
+| `unluminous-app/src/services/imports.rs` | new. Resolving a specifier and a segment path, and listing what each could become. |
+| `unluminous-app/src/services/symbol_index.rs` | `Entry` gains `exported`; `Index` gains `exports_of`. |
+| `unluminous-app/src/app/completion.rs` | the import branch, the trigger changes, and the accept range. |
+| `unluminous-app/src/app/cli.rs` | the one guard that has to allow an empty stem with rows. |
+| `unluminous-app/plugins/*/plugin.conf` | TypeScript, JavaScript, CSS and Rust say how their imports look. |
+| `unluminous-app/tests/screenshots.rs` | a TypeScript fixture project and two pictures. |
+| `unluminous-app/examples/completion_cost.rs` | an import arm, so §7's number is measured. |
 
 ## 12. What is deliberately not here
 

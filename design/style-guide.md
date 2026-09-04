@@ -1,6 +1,6 @@
-# Unluminate's style guide
+# Unluminous's style guide
 
-Read this before drawing anything new. It says how a control in Unluminate is built, so that a component
+Read this before drawing anything new. It says how a control in Unluminous is built, so that a component
 added today looks like the ones added a year ago rather than like a second design laid over the
 first.
 
@@ -18,20 +18,20 @@ finished until it has one.
 | Image | What it is the baseline for |
 |---|---|
 | `intial-design-screenshot.png` | The whole window: the palette, the bar heights, the explorer, the editing area. Every colour in `theme::color` was sampled from it. |
-| `unluminate mac screenshot.png` | The running window on macOS, with the terminal open. What "it looks right" means. |
+| `unluminous mac screenshot.png` | The running window on macOS, with the terminal open. What "it looks right" means. |
 | `verification/live-window-over-desktop.png` | The window over a real desktop, which is the only way to see that the transparency works. |
 | `verification/live-window-over-desktop-windows.png` | The same on Windows, over a backdrop of solid colours so that both halves of the requirement can be read off it: the background takes the colour behind it and every glyph stays solid. |
 | `verification/terminal-claude.png`, `terminal-codex.png` | A full screen program running in the terminal, and the same after the tile was resized. |
 | `components/*.png` | One capture per component added after this guide was written. |
 
-`crates/unluminate-app/tests/snapshots` is a different thing and must not be confused with these. Those
+`crates/unluminous-app/tests/snapshots` is a different thing and must not be confused with these. Those
 are **accepted test output** — a change that alters the rendering fails against them. The images in
 `design/` are **intent** — what the thing is meant to look like. A snapshot can be updated with
 `UPDATE_SNAPSHOTS=1`; a baseline is changed only when the design changes.
 
 ## The palette is closed
 
-`theme::color` is the whole list of colours Unluminate draws with. A new colour is added there, with a
+`theme::color` is the whole list of colours Unluminous draws with. A new colour is added there, with a
 comment saying which region of the design it was read from, or it is not used. Writing
 `Color32::from_rgb(0x3A, 0x40, 0x4C)` at the point of use is how a window comes to have four slightly
 different greys, and it must not happen.
@@ -40,7 +40,7 @@ different greys, and it must not happen.
 each of these read the theme the window is painted in, and the list of names is closed exactly as it
 was: a theme says what `editor` *means*, and it cannot add a forty-first name. The table below is that
 list; it is also what a `plugin.kind = theme` manifest may set, because both are generated from the one
-`palette!` invocation in `theme/mod.rs`. The numbers in it are Unluminate Dark's, which is what a window
+`palette!` invocation in `theme/mod.rs`. The numbers in it are Unluminous Dark's, which is what a window
 comes up in.
 
 Four colours are **derived** rather than being roles of their own, and they live in `theme::derived`
@@ -67,7 +67,7 @@ line the debugger stopped on.
 | `CODE_PANEL`, `CODE_CHIP` | Behind a code block, a table and the front matter in the Markdown preview, and behind one piece of inline code. Two steps up from `EDITOR` rather than colours of their own, so a block reads as a panel on the page rather than as a second surface. |
 | `UNSAVED` | The amber dot meaning there are changes that have not been written. |
 | `TEXT_STRONG` → `TEXT` → `TEXT_CONTROL` → `TEXT_DIM` → `TEXT_FAINT` | Five weights, brightest to faintest. A heading, body text, a control's label, a heading in the explorer, and placeholder text. |
-| `HIGHLIGHT_YELLOW`, `HIGHLIGHT_GREEN`, `HIGHLIGHT_BLUE`, `HIGHLIGHT_PINK` | The four colours a passage can be marked in. Held as `unluminate_core::Rgba` rather than `Color32`, because a mark is written to a file and sent over the command line as well as painted; `theme::color32` is the one place the two spellings meet. |
+| `HIGHLIGHT_YELLOW`, `HIGHLIGHT_GREEN`, `HIGHLIGHT_BLUE`, `HIGHLIGHT_PINK` | The four colours a passage can be marked in. Held as `unluminous_core::Rgba` rather than `Color32`, because a mark is written to a file and sent over the command line as well as painted; `theme::color32` is the one place the two spellings meet. |
 | `GIT_ADDED`, `GIT_MODIFIED`, `GIT_UNTRACKED` | What git says about a file, on its row in the explorer. `GIT_ADDED` is **also the green that means "this starts something"**: the run widget's play button, the play beside a row of its flyout, and the dot on a run that is going. A second green would have been a second green. |
 | `CLOSE`, `MINIMISE`, `MAXIMISE` | The three window buttons. `CLOSE` is **also the red that means "this went wrong"**: a removed line in a diff, and `exit code 101` on a run's tab. |
 | `ICON`, `ICON_ACTIVE`, `ICON_DISABLED` | A drawn icon sitting there, one whose pane is open, and one that cannot be used. They default to `TEXT_DIM`, `TEXT_STRONG` and `TEXT_FAINT`, which is what the rail was passing before they existed; they are roles of their own so a theme can tint the rail without moving every heading in the window. |
@@ -88,14 +88,14 @@ sampled from the design — the unsaved amber, the accent blue, git's added gree
 pink — each at `HIGHLIGHT_ALPHA`, which is low enough that the writing over them stays readable at
 every window opacity. The colour wheel then offers **any colour at all**, and that is the exception: a
 highlight is somebody's own mark on their own text rather than a part of the window, in the same way
-that a token's colour is a property of the colour scheme rather than of Unluminate. What it must not do is
+that a token's colour is a property of the colour scheme rather than of Unluminous. What it must not do is
 what a colour scheme must not do either — a mark is a background behind a passage and never repaints
 the editing area.
 
 The second is **a syntax theme's token colours**. Those come from a
 plugin, not from `theme::color`, because they are a property of the colour scheme rather than of
-Unluminate. A syntax theme colours the tokens and nothing else — never the editing area's background,
-because the window letting the desktop show through is what Unluminate is, and an opaque scheme takes it
+Unluminous. A syntax theme colours the tokens and nothing else — never the editing area's background,
+because the window letting the desktop show through is what Unluminous is, and an opaque scheme takes it
 away.
 
 ## The measurements are closed too
@@ -126,7 +126,7 @@ points. `task-1658` moved those controls into the right hand end of the title ba
 changes. `color::TOOLBAR` stays: it is the fill behind the file tabs and the terminal tile.
 
 **A row is 28 points.** In the explorer, in the settings list, in the git changes tree, in the plugin
-list. A menu row is 24, and that is the only other row height in Unluminate. A third one is not added
+list. A menu row is 24, and that is the only other row height in Unluminous. A third one is not added
 without a reason written down.
 
 ## The shapes
@@ -171,7 +171,7 @@ search field has a magnifier at its left, 13 points in from the edge. **The box 
 one text row, centred, through `controls::field_text_rect`** — never the whole height of the field.
 egui lays a `TextEdit` out at the top of the rectangle it is given and `Frame::NONE` leaves no margin
 to push it down with, so a field that hands over its whole height puts its words against its top edge,
-on a different line from the magnifier. That was true of all five fields in Unluminate until `task-1657`.
+on a different line from the magnifier. That was true of all five fields in Unluminous until `task-1657`.
 
 **A menu.** `MENU` filled, one point `CONTROL_BORDER` stroke, 6 point inner margin, 340 points wide —
 wide enough that `Open Folder in New Window` and `Cmd+Option+O` do not meet in the middle, which they
@@ -272,7 +272,7 @@ in `TEXT_DIM` in a 20 point column, the name at 12.5 points with its matched let
 scroll.
 
 **It is an `egui::Area` on the foreground order rather than an `egui::Popup`**, and that is the one
-place in Unluminate where the difference matters. egui keeps at most one popup open at a time, which is
+place in Unluminous where the difference matters. egui keeps at most one popup open at a time, which is
 the rule the flyouts and the colour wheel already bend to; this list must coexist with nothing *and*
 must never take the keyboard, because the document keeps it and typing carries on underneath. It is
 positioned by the window each frame from the caret's own box: under the caret's line, flipped above
@@ -295,7 +295,7 @@ answering "how far through this am I", which is half of what it is for. Its corn
 length says how much of the page is showing, and it is never shorter than 28 points. Nothing is drawn
 at all when the page fits.
 
-It is **two calls rather than one**, which is the one place a component in Unluminate is: `grab` takes the
+It is **two calls rather than one**, which is the one place a component in Unluminous is: `grab` takes the
 pointer where the pane takes its own, so the bar wins the point over the text under it, and `paint`
 draws at the end of the frame, once the wheel and the caret have had their say — a thumb drawn from
 the scroll position the frame opened with is a frame behind the writing, which on a fast scroll can
@@ -317,7 +317,7 @@ There is one type scale, and a new number is not invented.
 
 `theme::BOLD_FAMILY` is the real bold face, installed by `theme::install_fonts`. egui's built-in
 fonts have no bold face and its `strong` styling only brightens the colour, so anything that must
-actually be bold asks for that family. It is bound in `UnluminateApp::prepare`, before the first frame,
+actually be bold asks for that family. It is bound in `UnluminousApp::prepare`, before the first frame,
 because asking egui for a family it has not been given panics.
 
 British spelling in prose, and the American spelling where a name in the code already uses it, such
@@ -331,7 +331,7 @@ renders as an empty box. That was found the hard way — the shift symbol at U+2
 which is why menu shortcuts are spelled in words.
 
 **Ten of them have two drawings and the theme says which**, from `theme::IconSet`: `classic` is what
-Unluminate shipped with, and `material` — heavier, filled, with a **chevron** where the classic set draws a
+Unluminous shipped with, and `material` — heavier, filled, with a **chevron** where the classic set draws a
 solid triangle — is what a window comes up in, because `task-1776` asked for the marks on the rail and
 the explorer's arrow to be improved rather than merely to become choosable. The two drawings of one
 mark sit next to each other in the file, because what is worth reading is how a folder differs between
@@ -350,7 +350,7 @@ An icon is drawn inside about a 10 point square around its centre, at a 1.3 to 1
 
 **A letter shaped icon is drawn too**, and `theme::icon::font` — the `F` on the title bar's text
 options button — is the one there is. It is three strokes, not the letter `F` set in a font and not
-a picture. A picture cannot be tinted, and every icon in Unluminate is tinted where it is used: `TEXT_DIM`
+a picture. A picture cannot be tinted, and every icon in Unluminous is tinted where it is used: `TEXT_DIM`
 sitting there, `TEXT_STRONG` when what it opens is open. Nor can a picture be drawn at another scale
 without resampling it. `task-1657` offered to have an image generated for this one, and this is why
 it was refused. Setting it as text is no better: the text options panel's `B` is real text, and it
@@ -368,7 +368,7 @@ used for the line round it. An icon whose whole meaning is "any colour you like"
 and the six are the corners of the ring the wheel itself draws, so the button and what it opens are
 recognisably the same thing. Nothing else may do this without a reason written down here.
 
-**A rule is drawn too**, and that is `task-1685`. Unluminate's horizontal rule, a quote's bar and the ten
+**A rule is drawn too**, and that is `task-1685`. Unluminous's horizontal rule, a quote's bar and the ten
 pieces of a table's grid are written into the preview's text as box-drawing characters — because the
 layout engine places glyphs, and a line that is not text has to be a line made of text — but they are
 **painted rather than lettered** when the frame is drawn. A box-drawing glyph cannot tile: its ink is
@@ -441,7 +441,7 @@ that could be used in a moment, such as undo with nothing yet to undo; a control
 to this file is absent.
 
 Everything a menu or a shortcut can ask for is an `app::actions::Action` with exactly one arm in
-`UnluminateApp::run_action`. There are three menus now — the macOS bar, the bar Unluminate draws in its own
+`UnluminousApp::run_action`. There are three menus now — the macOS bar, the bar Unluminous draws in its own
 title bar, and the explorer's context menu — and they are all built from the same lists, so `Commit`
 means one thing.
 

@@ -1,13 +1,13 @@
 # The Database plugin
 
 Nine captures of the Database plugin, taken from the real window the way `documentation/overview.md`'s
-own pictures were — a photograph of `unluminate.exe` running, not a render. `task-1777` built the plugin;
+own pictures were — a photograph of `unluminous.exe` running, not a render. `task-1777` built the plugin;
 this is what it looks like doing the things the reference editor's Database tool window does: showing what a
 schema holds, running a query, editing rows, and writing the edits back.
 
 `tasks/task-1777-database-plugin-tdd.md` is the design, and it is worth reading before this page:
 which third of the reference editor's database tools were worth copying, why the client for PostgreSQL is written
-inside Unluminate rather than shelled out to `psql`, and the one rule that decides whether a grid can be
+inside Unluminous rather than shelled out to `psql`, and the one rule that decides whether a grid can be
 edited at all — a row can only be changed if it can be addressed, by a primary key or a SQLite
 `rowid`, and otherwise the grid is read only and says why.
 
@@ -26,7 +26,7 @@ with nothing in it is left out rather than drawn empty. A table opens into its c
 type, whether it is `not null`, and a key icon on the one that names the row.
 
 Nothing here is a second reading of the schema: the tree, the grid and the console all ask the same
-`unluminate-db` connection the same questions, so a column typed `not null` in the tree is the column an
+`unluminous-db` connection the same questions, so a column typed `not null` in the tree is the column an
 `UPDATE` will refuse to leave blank.
 
 ![The tree, with a SQLite source connected and a table's columns open](images/db-01-tree.jpg)
@@ -89,10 +89,10 @@ statement you write, the same as everywhere else in this plugin. `Copy` puts it 
 
 ![The DDL modal, showing `album`'s own `CREATE TABLE`](images/db-06-ddl.jpg)
 
-## Adding a data source, and what Unluminate will not do with a password
+## Adding a data source, and what Unluminous will not do with a password
 
 `+` in the pane, or `Database -> New Data Source`, opens the dialog a source is added from: PostgreSQL
-or SQLite, the address, and — the part worth reading — where the password is. Unluminate never writes one
+or SQLite, the address, and — the part worth reading — where the password is. Unluminous never writes one
 down. A source names the environment variable a password is read from at the moment a connection
 opens, or a keychain entry on the platforms that have one; a password typed into this dialog is held
 in the process and gone when the window closes, which is the reference editor's `Save: Forever` answered the other
@@ -115,10 +115,10 @@ worse than no confirmation at all.
 
 ## The menu
 
-`Database` joins Unluminate's own six menus, after `Agent-Tasks`: showing the pane, opening the workspace,
+`Database` joins Unluminous's own six menus, after `Agent-Tasks`: showing the pane, opening the workspace,
 adding a source, reloading the tree, and submitting whatever is pending — the same five things the
-rail button, the toolbar and `unluminate-cli plugins run database …` all reach, because a menu entry in
-Unluminate needs nothing else to be run from the command line.
+rail button, the toolbar and `unluminous-cli plugins run database …` all reach, because a menu entry in
+Unluminous needs nothing else to be run from the command line.
 
 ![The Database menu](images/db-09-menu.jpg)
 
@@ -126,28 +126,28 @@ Unluminate needs nothing else to be run from the command line.
 
 ## The agent's half
 
-Everything on this page has a command behind it: `unluminate-cli plugins run database <command>` —
+Everything on this page has a command behind it: `unluminous-cli plugins run database <command>` —
 `sources`, `add-source`, `password`, `connect`, `schemas`, `tables`, `columns`, `ddl`, `open`,
 `console`, `query`, `state`, `result`, `page`, `filter`, `sort`, `set`, `add-row`, `delete-row`,
-`pending`, `submit`, `read-only`, `confirm` — and `unluminate-cli plugins view database` answers the whole
+`pending`, `submit`, `read-only`, `confirm` — and `unluminous-cli plugins view database` answers the whole
 pane as data. `query` does not wait, for the reason nothing that runs inside a frame does; `state`
-says when it has finished and `result` has the rows. `unluminate-cli/docs/commands.md` is the full
+says when it has finished and `result` has the rows. `unluminous-cli/docs/commands.md` is the full
 reference.
 
 ```sh
-unluminate-cli plugins run database add-source library C:\path\to\library.db
-unluminate-cli plugins run database connect library
-unluminate-cli plugins run database open album
-unluminate-cli plugins run database set 1 note "Warp Records"
-unluminate-cli plugins run database pending --json
-unluminate-cli plugins run database submit
+unluminous-cli plugins run database add-source library C:\path\to\library.db
+unluminous-cli plugins run database connect library
+unluminous-cli plugins run database open album
+unluminous-cli plugins run database set 1 note "Warp Records"
+unluminous-cli plugins run database pending --json
+unluminous-cli plugins run database submit
 ```
 
 ---
 
 ## How these were taken
 
-Real captures of `unluminate.exe`, driven the way `documentation/overview.md`'s own pictures were: the
+Real captures of `unluminous.exe`, driven the way `documentation/overview.md`'s own pictures were: the
 window put at a fixed rectangle, a settings folder of its own so the pictures carry a fixed opacity
 and font rather than whatever is set on the machine taking them, and the screen copied rather than
 rendered offscreen — which is what shows that the desktop really does show through a translucent
@@ -155,8 +155,8 @@ window with a data grid open in it. `_agent_output/task-1792-database-docs/captu
 
 What made this page different from `overview.md`'s is that most of what it shows is *state* —
 which data source is connected, what a grid's pending changes are, what a console just ran — rather
-than a fixed picture. So the state was built through `unluminate-cli`, the same command line
-`unluminate-cli/docs/commands.md` documents, against a small SQLite fixture built for this page:
+than a fixed picture. So the state was built through `unluminous-cli`, the same command line
+`unluminous-cli/docs/commands.md` documents, against a small SQLite fixture built for this page:
 
 ```sh
 sqlite3 library.db <<'SQL'

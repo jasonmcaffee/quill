@@ -48,7 +48,7 @@ it the two numbers stop being comparable at all.
 The text. The preview is produced from the source line by line, so every line of the preview came
 from some line of the source, and that correspondence is exact — it just was not written down.
 
-So `unluminate_core::markdown::Preview` gained a fourth structure beside the text, the spans and the
+So `unluminous_core::markdown::Preview` gained a fourth structure beside the text, the spans and the
 paragraph styles:
 
 ```rust
@@ -75,7 +75,7 @@ scrolling to the diagram is aiming at.
 
 ### 2.3 The crossing
 
-`unluminate_core::scroll_sync` is two pure functions and no state:
+`unluminous_core::scroll_sync` is two pure functions and no state:
 
 ```rust
 pub fn preview_y_for_source_y(source: &Layout, preview: &Layout, source_lines: &[usize], y: f32) -> f32
@@ -93,7 +93,7 @@ for it — the same pair, one taking what the other gives back.
 **The fraction is what makes it smooth rather than stepped.** Without it the other half would jump a
 paragraph at a time, which on a page of long paragraphs is a jump of most of a screen.
 
-Both functions are pure and take laid out pages, so the whole of this is tested in `unluminate-core` with
+Both functions are pure and take laid out pages, so the whole of this is tested in `unluminous-core` with
 no window: the top of one page is the top of the other, a heading scrolled to the top of the source is
 at the top of the preview — with an assertion that the two pages really are different heights above
 it, or the test would prove nothing — going across and back never lands further down the file, and a
@@ -101,7 +101,7 @@ document with nothing in it has an answer rather than a panic.
 
 ### 2.4 Which half drives
 
-`UnluminateApp::scroll_the_two_halves_together` compares where both halves are **before** the frame draws
+`UnluminousApp::scroll_the_two_halves_together` compares where both halves are **before** the frame draws
 anything against where they are after, and the one that moved drives the other.
 
 That rule is not decoration. The crossing snaps to a paragraph, so a position taken across and back is
@@ -118,7 +118,7 @@ The follower is settled after both halves are drawn, so it lands on the next fra
 continuously while a wheel is turning or a thumb is being dragged, so that frame is sixteen
 milliseconds later and cannot be seen.
 
-**The command line needed the rule split out.** `unluminate-cli editor scroll` is applied at the top of a
+**The command line needed the rule split out.** `unluminous-cli editor scroll` is applied at the top of a
 frame, before anything is drawn, so the frame's own before-and-after comparison sees nothing move.
 `follow_the_other_half` is the half of the rule that does the work, and both callers use it.
 
@@ -134,11 +134,11 @@ Three ways were weighed.
 
 | | What it costs |
 |---|---|
-| A drag payload in egui's `DragAndDrop` memory | egui's own drag-and-drop wants each drop zone to be a widget it knows about, and Unluminate's panes are painted rectangles rather than widgets. It would also put the state somewhere the window cannot see while it is deciding. |
+| A drag payload in egui's `DragAndDrop` memory | egui's own drag-and-drop wants each drop zone to be a widget it knows about, and Unluminous's panes are painted rectangles rather than widgets. It would also put the state somewhere the window cannot see while it is deciding. |
 | Every strip told about every other strip | Each pane would have to be drawn twice, or the strips laid out in a pass of their own before any of them is drawn. Both are a rearrangement of the pane loop for one gesture. |
 | **The strip reports, the window decides** | One new field on `TabsOutcome` and one new struct. The pane loop already runs left to right and already collects what each pane did. |
 
-The third is what every other component in Unluminate already does — "components take a rectangle and
+The third is what every other component in Unluminous already does — "components take a rectangle and
 return what happened" — so it is what was built.
 
 The strip reports two things: that a tab is being carried and where the pointer is, and **where it
@@ -158,7 +158,7 @@ makes a rearrangement follow the pointer instead of jumping when it crosses an e
 **Dropped outside every pane, nothing happens** — over the explorer, the terminal, the status bar — so
 a drag can be thought better of.
 
-`OpenFiles::drag_tab` does the move, and it is the same call `unluminate-cli tab move` makes, so a
+`OpenFiles::drag_tab` does the move, and it is the same call `unluminous-cli tab move` makes, so a
 rearrangement made from a script and one made with the pointer are the same rearrangement. Its one
 subtlety is written down where it is: `position` counts the target pane's tabs **as they are on the
 screen now**, including the tab being moved when it is already in that pane, because that is what a
@@ -184,7 +184,7 @@ forty three points of clear space at the right of the text, so no letter is ever
 
 ### 4.2 Why it is two calls
 
-Every other component in Unluminate is one function that interacts and draws. This one cannot be, and both
+Every other component in Unluminous is one function that interacts and draws. This one cannot be, and both
 halves of the reason are about the order a frame is settled in:
 
 - The **interaction** has to happen straight after the editing area's own, because egui hands a drag
@@ -233,7 +233,7 @@ wheel away from the page it belongs to, and a popup over the editing area still 
 ## 5. The two small ones
 
 **The plus beside the project's name is gone.** It was labelled `New file` and it called
-`UnluminateApp::save`, which is why it never made a file. Making a file is on the right click menu, which
+`UnluminousApp::save`, which is why it never made a file. Making a file is on the right click menu, which
 is now reachable from the name it sat beside.
 
 **The project's name takes a right click** and reports the tree's root as a folder, so it opens
@@ -244,11 +244,11 @@ nothing to open or close about the root, which is always shown.
 
 ## 6. Reachable from the command line
 
-`task-1661` asks that every feature be reachable from `unluminate-cli`, so both new capabilities are:
+`task-1661` asks that every feature be reachable from `unluminous-cli`, so both new capabilities are:
 
-- `unluminate-cli tab move <position> [--tab] [--pane]` — what dragging a tab does, through the same
+- `unluminous-cli tab move <position> [--tab] [--pane]` — what dragging a tab does, through the same
   `OpenFiles::drag_tab`.
-- `unluminate-cli editor scroll [--line|--to|--top|--bottom] [--preview]` — reads how far through the file
+- `unluminous-cli editor scroll [--line|--to|--top|--bottom] [--preview]` — reads how far through the file
   each half is, and moves either. In side by side the other half follows, through the same
   `follow_the_other_half` a wheel goes through.
 
@@ -266,7 +266,7 @@ feature nobody has yet asked to turn off is a preference to maintain for nothing
 scrolled like text — `OpenFile::diagram` is a different thing from `preview_scroll` for that reason —
 so there is no scroll position on that side to keep in step.
 
-**No horizontal scrollbar.** Text in Unluminate wraps, so there is nothing to scroll sideways. A picture is
+**No horizontal scrollbar.** Text in Unluminous wraps, so there is nothing to scroll sideways. A picture is
 panned and has no page to be part of the way down.
 
 **No scrollbar on the terminal.** It is not a document, and its own scrollback is a separate question

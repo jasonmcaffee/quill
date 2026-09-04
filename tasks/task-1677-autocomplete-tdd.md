@@ -8,7 +8,7 @@
 > tab to complete, similar to IntelliJ.
 
 One feature, and it is the reading half of what `task-1675`/`task-1676` built: those tickets taught
-Unluminate to answer "where is this name defined and used" after the name exists; this one offers the
+Unluminous to answer "where is this name defined and used" after the name exists; this one offers the
 name while it is still being typed. The same machinery answers both — the tokeniser's reading of
 the file, the per-tab `FileSymbols`, the project's definition index — which is what makes this
 ticket small where most editors' completion is enormous: **every source of suggestions this design
@@ -61,7 +61,7 @@ industry (they are also what `fzf` and VS Code's own filtering converge on): a b
 after a separator or a camelCase boundary (worth the most), a bonus for consecutive matched
 letters, a penalty per unmatched letter (so shorter candidates win), a small penalty for skipped
 leading letters. §4.3's scoring is this rubric, applied to identifiers instead of file names —
-and it is the second time Unluminate has chosen the shape: `services::file_search` already ranks file
+and it is the second time Unluminous has chosen the shape: `services::file_search` already ranks file
 names by subsequence with a boundary preference, for `Go to File`.
 
 ### 2.4 Helix — a word index kept on a thread, and what a trigger length is for
@@ -69,7 +69,7 @@ names by subsequence with a boundary preference, for `Go to File`.
 Helix grew word completion in 2025 (PR #13206): words from all open buffers into a database,
 updated off the main thread by examining only the changed windows of text, debounced, fuzzy-matched
 case-insensitively, with a configurable `word-completion-trigger-length` (users argued it down from
-7 toward 2–3). The design below does not need the thread or the debounce — §4.1 says why Unluminate's
+7 toward 2–3). The design below does not need the thread or the debounce — §4.1 says why Unluminous's
 sources are already maintained — but the trigger-length discussion settled §5.1's default of 2.
 
 ### 2.5 Vim — the floor
@@ -91,7 +91,7 @@ asks the person to remember to ask, and the ticket asks for suggestions that arr
 - **Ghost text** (a single grey inline suggestion, Copilot-shaped) — a different interaction
   model; the ticket asks for a dropdown.
 - **An occurrence database of other files' words** (Helix's `WordDB`, VS Code's `allDocuments`) —
-  rejected as the mirror of `task-1675` §3.4: Unluminate already indexes the cross-file names worth
+  rejected as the mirror of `task-1675` §3.4: Unluminous already indexes the cross-file names worth
   offering — the **definitions** — and they are better candidates than raw words, because they
   carry a kind and a defining file. Harvesting every word of every file would add an index that
   needs invalidation, to offer lower-quality rows. The current file's own words are included
@@ -99,13 +99,13 @@ asks the person to remember to ask, and the ticket asks for suggestions that arr
 
 ## 3. The shape of the design
 
-Three new pieces, each in the layer Unluminate already puts that kind of thing:
+Three new pieces, each in the layer Unluminous already puts that kind of thing:
 
 | Piece | What it is | Where |
 |---|---|---|
-| `unluminate_core::completion` | the pure half: the stem under a caret, the match, the score, the ordering | `unluminate-core`, tests with no window |
-| `UnluminateApp` completion state | one open popup at most, its candidate rows, which is chosen, keyed on `text_revision` | `app/completion.rs`, beside `app/symbols.rs` |
-| `components::completion` | the dropdown: draws rows, reports what the keys and clicks meant, decides nothing | `unluminate-app/components/completion.rs` |
+| `unluminous_core::completion` | the pure half: the stem under a caret, the match, the score, the ordering | `unluminous-core`, tests with no window |
+| `UnluminousApp` completion state | one open popup at most, its candidate rows, which is chosen, keyed on `text_revision` | `app/completion.rs`, beside `app/symbols.rs` |
+| `components::completion` | the dropdown: draws rows, reports what the keys and clicks meant, decides nothing | `unluminous-app/components/completion.rs` |
 
 And no new threads, no new index, no new watcher. The sources are the per-tab `FileSymbols`
 (already kept fresh, keyed on `Document::text_revision()`), the open tabs' `TabSymbols::named`
@@ -144,19 +144,19 @@ The `symbol_index::Index` needs one addition to serve this: today it answers onl
 `definitions_of(&str)`, an exact-name hash lookup. It gains a sorted list of its distinct names
 (it already counts them — `names()` — so the list exists in spirit), so that a prefix walks a
 binary-searched range and a subsequence scan walks the whole list once. At the measured scale —
-4,445 names on Unluminate's own repository — a full scan per keystroke is nothing (§7).
+4,445 names on Unluminous's own repository — a full scan per keystroke is nothing (§7).
 
 ### 4.2 One function answers, and the popup only draws
 
 Everything above is gathered by one method on the window —
-`UnluminateApp::completion_candidates(stem, …) -> Vec<Row>` — called when the stem changes and **never
+`UnluminousApp::completion_candidates(stem, …) -> Vec<Row>` — called when the stem changes and **never
 per frame**. The popup component receives rows and draws them; it does not know what an index is.
 This is the `candidates_for` pattern from `app/symbols.rs`, and it is the seam a semantic tier
 would land behind if one ever arrives.
 
 ### 4.3 The match and the score
 
-In `unluminate_core::completion`, pure over `(stem, candidate)`, no I/O, testable with no window:
+In `unluminous_core::completion`, pure over `(stem, candidate)`, no I/O, testable with no window:
 
 - **A candidate matches when the stem is a case-insensitive subsequence of it.** `lyt` matches
   `layout`; `psttx` matches `paint_text`; middle matching comes free (`draw` matches `redraw`),
@@ -194,7 +194,7 @@ rather than of the behaviour anyone can see.
 - **On demand: `Ctrl+Space`, menu entry `Complete Word`** on the Edit menu (§8.2), which works
   from one character, and works inside comments and strings — where the *automatic* popup never
   opens, but a person who asks in a doc comment deserves the file's words. With no identifier
-  character to the left of the caret at all, it does what every honest miss in Unluminate does: the
+  character to the left of the caret at all, it does what every honest miss in Unluminous does: the
   status bar says `There is nothing to complete here.`, and no popup opens.
 
 ### 5.2 What it looks like
@@ -285,7 +285,7 @@ Closing is nothing but dropping the state: no animation, no memory, nothing writ
 
 ## 6. Where the state lives
 
-One `Option<CompletionState>` on `UnluminateApp` — not per tab, because at most one popup exists and it
+One `Option<CompletionState>` on `UnluminousApp` — not per tab, because at most one popup exists and it
 belongs to the pane with the keyboard, the same reasoning as the one `hover` and the one
 `references` modal. The state: the stem's range, the rows, which is chosen, the scroll, and the
 `text_revision` the rows were computed at. **Rows are recomputed when and only when the revision
@@ -300,7 +300,7 @@ pane and never draws twice in a split view. Key routing runs before the focused 
 
 ## 7. What it costs
 
-Measured inputs, from `symbol_cost` on Unluminate's own repository: 4,445 distinct names in the index,
+Measured inputs, from `symbol_cost` on Unluminous's own repository: 4,445 distinct names in the index,
 11,497 words in the largest file (a 234 KB test file — distinct spellings are far fewer), a
 `FileSymbols` read at 1.8 ms per text revision on that file, grammar lists in the tens.
 
@@ -317,7 +317,7 @@ Measured inputs, from `symbol_cost` on Unluminate's own repository: 4,445 distin
   rows from cached strings. No allocation, no scoring, no reads.
 - **Per text revision**: the distinct-word list, one pass over `FileSymbols::words` already being
   rebuilt at that moment anyway, into a sorted `Vec<String>` cached on the tab.
-- **The measuring instrument**: `crates/unluminate-app/examples/completion_cost.rs`, the
+- **The measuring instrument**: `crates/unluminous-app/examples/completion_cost.rs`, the
   `frame_cost`/`symbol_cost` pattern — open a real project, type a stem against the largest file,
   print gather/score/sort costs and the candidate counts. The *counts* are the tests; the
   milliseconds are the report.
@@ -339,7 +339,7 @@ One new `Action::CompleteWord` — menu entry `Complete Word` on the Edit menu b
 entries, key `Ctrl+Space` on both platforms (IntelliJ's binding; on macOS the system may have
 claimed it for input sources, and the menu entry works regardless — the note belongs in the menu
 test, not in a different binding). Absent when `completion_applies` says no. Through
-`unluminate-cli action list` it is scriptable the day it exists.
+`unluminous-cli action list` it is scriptable the day it exists.
 
 ### 8.3 The setting
 
@@ -351,7 +351,7 @@ that `manual` already is. Settings precedent: `Settings::shell()`, one function 
 
 ### 8.4 The command line
 
-Two catalogue rows, arms in `app/cli.rs`, sections in `unluminate-cli/docs/commands.md` under the
+Two catalogue rows, arms in `app/cli.rs`, sections in `unluminous-cli/docs/commands.md` under the
 doc-or-fail test:
 
 | Command | What it does |
@@ -359,13 +359,13 @@ doc-or-fail test:
 | `editor complete [--offset N] [--limit N]` | print the candidate rows for the caret (or offset) as JSON — name, kind, source, score order — without opening the popup |
 | `editor complete --choose <name>` | apply the named candidate to the stem at the caret, exactly as `Enter` would |
 
-Both go through `UnluminateApp::run_cli` into the same functions the popup uses, so a thing done from
+Both go through `UnluminousApp::run_cli` into the same functions the popup uses, so a thing done from
 the command line and the same thing done by hand are the same thing — and the agent assessment
-(`unluminate-cli/agent-assessment`) gets a completion surface it can drive and grade.
+(`unluminous-cli/agent-assessment`) gets a completion surface it can drive and grade.
 
 ## 9. The scenario battery
 
-Layer numbers as in `task-1675` §9: 1 = unluminate-core unit test, 2 = unluminate-app unit test,
+Layer numbers as in `task-1675` §9: 1 = unluminous-core unit test, 2 = unluminous-app unit test,
 3 = screenshot test, 4 = real window / CLI.
 
 ### 9.1 Matching and ranking
@@ -426,7 +426,7 @@ Four invariants, one test each, the `mermaid::check::properties` spirit:
   exactly the row's name — reconstructed independently in the test; every range handled lies on
   char boundaries inside the text it came from.
 - **Determinism**: same text, same grammar, same stem → the same rows in the same order.
-- **Isolation**: nothing in `unluminate_core::completion` performs I/O; the window's gathering touches
+- **Isolation**: nothing in `unluminous_core::completion` performs I/O; the window's gathering touches
   only what is already in memory (documents, `TabSymbols`, the index, grammars) — a keystroke
   never reads a disk.
 - **Non-interference**: with the popup closed, every key means what it meant before this ticket;
@@ -436,16 +436,16 @@ Four invariants, one test each, the `mermaid::check::properties` spirit:
 
 | Piece | Crate / place |
 |---|---|
-| `completion` module: stem, match, score, order, dedup | `unluminate-core/src/completion.rs` (unit tests, no window) |
-| distinct word list on `FileSymbols` / cached on `TabSymbols` | `unluminate-core/src/symbols.rs`, `app/symbols.rs` |
+| `completion` module: stem, match, score, order, dedup | `unluminous-core/src/completion.rs` (unit tests, no window) |
+| distinct word list on `FileSymbols` / cached on `TabSymbols` | `unluminous-core/src/symbols.rs`, `app/symbols.rs` |
 | sorted name list on the index | `services/symbol_index.rs` |
 | `CompletionState`, gathering, trigger, key routing, accept | `app/completion.rs` (new, beside `app/symbols.rs`) |
 | the dropdown | `components/completion.rs` |
 | `completion_applies` gate | `services/file_kind.rs` |
 | `Action::CompleteWord`, menu entry, key | `app/actions.rs` |
 | `editor.suggestions` setting + tick box | `services/store.rs` settings, `components/settings_dialog.rs` |
-| CLI rows + arms + docs | `unluminate-cli/src/catalogue.rs`, `app/cli.rs`, `unluminate-cli/docs/commands.md` |
-| `completion_cost` example | `crates/unluminate-app/examples/completion_cost.rs` |
+| CLI rows + arms + docs | `unluminous-cli/src/catalogue.rs`, `app/cli.rs`, `unluminous-cli/docs/commands.md` |
+| `completion_cost` example | `crates/unluminous-app/examples/completion_cost.rs` |
 
 Build order that keeps every layer green as it goes: the core module and its tests; the word
 list and index addition; the state and gathering with unit tests; the component and its

@@ -76,7 +76,7 @@ Add-Result (Test-Case 'a chord actually presses its key' {
     $arrived = $false
     Invoke-WithKeysHeld @($VkLShift) {
         # Read while it is held: `GetAsyncKeyState`'s high bit is "down now".
-        $script:pressed = ([Unluminate.Input]::GetAsyncKeyState($VkLShift) -band 0x8000) -ne 0
+        $script:pressed = ([Unluminous.Input]::GetAsyncKeyState($VkLShift) -band 0x8000) -ne 0
     }
     $arrived = $script:pressed
     if (-not $arrived) { throw 'the key never went down' }
@@ -100,7 +100,7 @@ Write-Host 'unstick-keyboard.ps1'
 # matching up anywhere, which is exactly what was measured on the machine in `task-1762`. Left Ctrl
 # rather than the Windows key, because on a machine running the macOS Command-key hook an injected
 # Windows key is swallowed by that hook, so the fault would not reproduce with it.
-[Unluminate.Input]::keybd_event(0xA2, 0, 0x0000, [UIntPtr]::Zero)
+[Unluminous.Input]::keybd_event(0xA2, 0, 0x0000, [UIntPtr]::Zero)
 Start-Sleep -Milliseconds 80
 $before = Get-HeldInput
 if ($before -contains 'Left Ctrl') {
@@ -121,7 +121,7 @@ if ($after.Count -eq 0) {
 }
 
 # `-Check` has to answer without changing anything, so it is asked while a key is genuinely down.
-[Unluminate.Input]::keybd_event(0xA2, 0, 0x0000, [UIntPtr]::Zero)
+[Unluminous.Input]::keybd_event(0xA2, 0, 0x0000, [UIntPtr]::Zero)
 Start-Sleep -Milliseconds 80
 & pwsh -NoProfile -File "$root\unstick-keyboard.ps1" -Check | Out-Null
 $checkExit = $LASTEXITCODE

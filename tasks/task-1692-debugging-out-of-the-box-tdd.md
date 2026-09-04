@@ -9,7 +9,7 @@
 > intuitive to utilize.
 
 `task-1687`/`1688`/`1689` built a complete DAP client: breakpoints that move with the text, a
-variables tree, inline values, thirteen `unluminate-cli debug` verbs. None of that is what failed. What
+variables tree, inline values, thirteen `unluminous-cli debug` verbs. None of that is what failed. What
 failed is everything **before** the first `stopped` event, and this ticket is about that half.
 
 Four things stand between a person or an agent and a paused program today, and each of them is a
@@ -18,10 +18,10 @@ place the feature simply does nothing:
 1. **There is no Debug button.** Debug is `Shift+F9` and a Run-menu entry. The play button is in the
    title bar with nothing beside it, so the feature is invisible to somebody who has not read the
    documentation — which is exactly how an agent ends up "looking through source code".
-2. **`cargo run` is refused.** It is the configuration Unluminate's own project suggests, and pressing
+2. **`cargo run` is refused.** It is the configuration Unluminous's own project suggests, and pressing
    Debug on it says *"cargo builds the program rather than being it"*. The most common Rust project
    in the world cannot be debugged without hand-writing a configuration that names
-   `target\debug\unluminate.exe`.
+   `target\debug\unluminous.exe`.
 3. **The adapter is looked for on `PATH` only.** On Windows almost nothing that ships an LLDB is on
    `PATH`: LLVM's own installer offers not to add itself, and CodeLLDB lives inside a VS Code
    extension folder. A machine that *has* a debugger is told it has none.
@@ -38,7 +38,7 @@ place the feature simply does nothing:
 - An adapter that is installed anywhere a normal machine puts one is found without a settings key.
 - An adapter that is genuinely absent is one press away from being installed, and the press runs a
   visible command in the run tile rather than the editor reaching out.
-- One command — `unluminate-cli debug adapters` — tells an agent the whole state of the world: which
+- One command — `unluminous-cli debug adapters` — tells an agent the whole state of the world: which
   debuggers exist, where each one was found, what is missing, and the command that installs it.
 - Which debugger to use is decided by the **configuration**, so Debug works with a README focused.
 
@@ -73,15 +73,15 @@ flowchart TD
     end
 ```
 
-Nothing in the protocol layer changes. `unluminate-dap` is untouched; every change is in
+Nothing in the protocol layer changes. `unluminous-dap` is untouched; every change is in
 `services::debuggers`, one new `services::locators`, the title-bar widget, and the catalogue.
 
 ## 4. The two buttons
 
 `components::run_widget` becomes `[ Name ▾ ] [▶] [🐞] [⏹]` — IntelliJ's own order and its own two
-icons, the bug drawn by `theme::icon` like every other icon in Unluminate rather than lettered.
+icons, the bug drawn by `theme::icon` like every other icon in Unluminous rather than lettered.
 
-**When the Debug button is there.** Unluminate's rule is that a control is absent when it cannot apply,
+**When the Debug button is there.** Unluminous's rule is that a control is absent when it cannot apply,
 not dimmed — and a button that appeared and disappeared as tabs were switched would be worse than
 either. So the rule is asked of the thing the button would act on: **the Debug button is present when
 the configuration the play button would start resolves to a debugger** (§5), falling back to the open
@@ -90,8 +90,8 @@ buttons; a vault of Markdown and CSS has one, because there is nothing there to 
 never will be.
 
 `WidgetState` gains one field, `debuggable: bool`, computed by the window in
-`UnluminateApp::run_widget_state` — the widget itself still knows nothing and still returns an `Action`,
-so the button, the menu, `Shift+F9` and `unluminate-cli debug start` remain one path.
+`UnluminousApp::run_widget_state` — the widget itself still knows nothing and still returns an `Action`,
+so the button, the menu, `Shift+F9` and `unluminous-cli debug start` remain one path.
 
 Widths: `run_widget::width` adds `2.0 + BUTTON` when `debuggable`, the arithmetic the stop button
 already does, so the title bar reserves the right rectangle before anything is drawn.
@@ -99,7 +99,7 @@ already does, so the title bar reserves the right rectangle before anything is d
 ## 5. Which debugger, decided by the configuration
 
 Today `start_debugging` asks `plugins.debugger_for(the open file)`. That is wrong in a way that is
-easy to hit: debug a Node server while reading `README.md` and Unluminate says the file's language has not
+easy to hit: debug a Node server while reading `README.md` and Unluminous says the file's language has not
 named a debugger. The configuration is what is being debugged, so the configuration is what is asked.
 
 `debuggers::adapter_for(program, plugins, open_file)` answers in this order:
@@ -135,15 +135,15 @@ keeping every flag that selects what is built and dropping the ones that only ap
 |---|---|---|
 | `cargo run` | `cargo build --message-format=json-render-diagnostics` | no arguments |
 | `cargo run --release -- --fast` | `cargo build --release --message-format=…` | `--fast` |
-| `cargo run -p unluminate-app --bin unluminate` | `cargo build -p unluminate-app --bin unluminate --message-format=…` | |
+| `cargo run -p unluminous-app --bin unluminous` | `cargo build -p unluminous-app --bin unluminous --message-format=…` | |
 | `cargo test the_name` | `cargo test --no-run --message-format=…` | `the_name` |
 
 Everything after `--` is the program's own arguments and never reaches cargo. `--bin NAME`, when
 given, also picks which artifact to take when a workspace built several.
 
-**Where it runs.** On a thread, the way `unluminate-git` runs `git` on a thread, with the window woken
-when it finishes — never on the UI thread, because a cold `cargo build` of Unluminate is minutes. While it
-runs the debug tile says `Building unluminate…` and the status bar says the same; the button does not
+**Where it runs.** On a thread, the way `unluminous-git` runs `git` on a thread, with the window woken
+when it finishes — never on the UI thread, because a cold `cargo build` of Unluminous is minutes. While it
+runs the debug tile says `Building unluminous…` and the status bar says the same; the button does not
 lock, because pressing Debug twice should replace the build, which is what starting a second session
 already does.
 
@@ -200,8 +200,8 @@ Where it appears:
 - **As a button in the debug tile**, which opens instead of staying empty:
   the adapter's name, what was looked for, where it comes from, `Install with winget`, and
   `Copy command`.
-- **In `unluminate-cli debug adapters`**, as a field, so an agent does not parse prose.
-- **As `unluminate-cli debug install lldb`**, which is the button's own path.
+- **In `unluminous-cli debug adapters`**, as a field, so an agent does not parse prose.
+- **As `unluminous-cli debug install lldb`**, which is the button's own path.
 
 **Pressing it runs the command in the run tile** — a temporary run configuration named
 `Install lldb`, so it is a visible terminal with a program in it that can be watched, read with
@@ -211,12 +211,12 @@ they can see, does.* It is the same move `tools/release.ps1` makes when it insta
 
 ## 8. The command line, and the agent
 
-Two verbs, because Unluminate enforces that everything reachable by hand is reachable from the command
+Two verbs, because Unluminous enforces that everything reachable by hand is reachable from the command
 line — the Install button cannot exist without `debug install`.
 
 ```
-unluminate-cli debug adapters [--json]
-unluminate-cli debug install <adapter>
+unluminous-cli debug adapters [--json]
+unluminous-cli debug install <adapter>
 ```
 
 `debug adapters` is the doctor, and it is the one command an agent should run first:
@@ -260,7 +260,7 @@ Four layers, as always, and the interesting tests are the middle two.
   repository) picks the executable and not the library.
 - A transcript with no executable is the "cargo built no binary" refusal rather than a panic.
 
-**`unluminate-app`**
+**`unluminous-app`**
 
 - `run_widget::width` grows by exactly one button when `debuggable`, and the widget with nothing at
   all is still the play button alone.
@@ -277,9 +277,9 @@ Four layers, as always, and the interesting tests are the middle two.
 **By hand — and this is the acceptance test the whole ticket is about.** On this machine, which has
 no LLDB at all:
 
-1. Open Unluminate's own project, press Debug on `cargo run`. Expect the install offer.
+1. Open Unluminous's own project, press Debug on `cargo run`. Expect the install offer.
 2. Press Install. Expect winget in the run tile and `lldb-dap.exe` on the machine.
-3. Press Debug again. Expect a build, then a session, then a stop on a breakpoint in Unluminate's own
+3. Press Debug again. Expect a build, then a session, then a stop on a breakpoint in Unluminous's own
    source, with the call stack and locals in the tile.
 4. Do the whole of it a second time from the command line only — `debug adapters`,
    `debug breakpoint add`, `debug start --wait-for-pause`, `debug variables`, `debug step-over` —
@@ -293,8 +293,8 @@ convenience without the editor being the thing that reaches out, and the person 
 ran.
 
 **Bundle an adapter in the installer.** LLVM's lldb-dap is tens of megabytes and is licensed and
-versioned separately; Unluminate's installer is a folder of its own with the binary and its plugins in it.
-Rejected on size and on what it would commit Unluminate to shipping.
+versioned separately; Unluminous's installer is a folder of its own with the binary and its plugins in it.
+Rejected on size and on what it would commit Unluminous to shipping.
 
 **Make Debug always present and dim it when it cannot apply.** Against the house rule that a control
 is absent when it cannot apply. §4's rule gives Jason the two buttons on every project that has
@@ -308,7 +308,7 @@ has. Asking cargo costs one process and is always right.
 **Run the cargo build in the run tile instead of on a thread.** The run tile is a ConPTY, and reading
 structured JSON back out of a terminal screen is exactly the kind of cleverness that breaks the first
 time a diagnostic wraps. The build is a program whose output is data, so it is a thread with a pipe,
-which is what `unluminate-git` already does with `git`.
+which is what `unluminous-git` already does with `git`.
 
 ## 11. What the implementation measured, and what it changed about §1–§10
 
@@ -319,11 +319,11 @@ measured rather than reasoned about.
 machine that built `task-1687`, so the entry refused before it could be wrong. Running it found three
 separate faults, in order:
 
-1. **js-debug binds `::1`.** Its own banner says `Debug server listening at ::1:8123`, and Unluminate
+1. **js-debug binds `::1`.** Its own banner says `Debug server listening at ::1:8123`, and Unluminous
    dialled `127.0.0.1` only — so a healthy adapter was "actively refused". Both spellings of
    localhost are tried now, in that order.
 2. **The program runs in a child session.** js-debug answers `launch` on the parent and then sends a
-   `startDebugging` reverse request whose `configuration` carries a `__pendingTargetId`. Unluminate
+   `startDebugging` reverse request whose `configuration` carries a `__pendingTargetId`. Unluminous
    dropped it, and what was left was a parent with no threads, no stops, and a breakpoint answered
    `provisionalBreakpoint` for ever. `Client::adopt_child` dials the same server again and the
    handshake runs there; the window re-sends the breakpoints. Both connections read onto one channel
@@ -341,7 +341,7 @@ release asset, and that is what is fetched.
 **The install command for `lldb` on Windows changed too**, for a better reason: `winget install --id
 LLVM.LLVM -e` needs elevation and is two and a half gigabytes, where CodeLLDB's `.vsix` is fifty
 megabytes, needs no elevation, and is the adapter the registry prefers anyway. It unpacks into
-`%LOCALAPPDATA%\Unluminate\adapters`, which `well_known` now looks in — so `tools/get-debug-adapter.ps1`'s
+`%LOCALAPPDATA%\Unluminous\adapters`, which `well_known` now looks in — so `tools/get-debug-adapter.ps1`'s
 output is found without the `debug.lldb` line it prints, which was the second half of a two-step
 install nobody should have had to know about.
 
@@ -355,13 +355,13 @@ It is measured and elided now.
 On this machine, with no adapter on `PATH` and the settings key cleared:
 
 ```
-unluminate-cli debug adapters                     lldb found …\Unluminate\adapters\codelldb…, node missing + the command
-unluminate-cli debug install node                 fetched and unpacked; adapters then reports node found
-unluminate-cli debug breakpoint add unluminate-cli/src/main.rs 58
-unluminate-cli debug start "cli status" --wait-for-pause     cli status is paused at main.rs:58
-unluminate-cli debug frames                       20 frames
-unluminate-cli debug variables                    the frame's locals
-unluminate-cli debug step-over --wait-for-pause   cli status is paused at main.rs:59
+unluminous-cli debug adapters                     lldb found …\Unluminous\adapters\codelldb…, node missing + the command
+unluminous-cli debug install node                 fetched and unpacked; adapters then reports node found
+unluminous-cli debug breakpoint add unluminous-cli/src/main.rs 58
+unluminous-cli debug start "cli status" --wait-for-pause     cli status is paused at main.rs:58
+unluminous-cli debug frames                       20 frames
+unluminous-cli debug variables                    the frame's locals
+unluminous-cli debug step-over --wait-for-pause   cli status is paused at main.rs:59
 ```
 
 and the same for node, on a `.js` file: `paused at loop.js:3`, variables, `step-over` → `loop.js:4`,

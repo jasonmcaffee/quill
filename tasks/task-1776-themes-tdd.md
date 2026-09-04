@@ -6,15 +6,15 @@ What was asked for:
 >
 > We want to use our ai service ideogram and/or krea 2 to help generate icons, etc.
 >
-> All icons in Unluminate should be themeable. Our default icons on the left bar for file folders, chat,
+> All icons in Unluminous should be themeable. Our default icons on the left bar for file folders, chat,
 > etc, need to be improved.
 >
 > Folder panel arrow/expand icon needs improved and to be themeable.
 >
-> Create a theme architecture in Unluminate. Then create a themes bundle 1 plugin that has a few themes
+> Create a theme architecture in Unluminous. Then create a themes bundle 1 plugin that has a few themes
 > that are similar to my IntelliJ ones I have installed.
 >
-> Have appropriate settings in unluminate that mirror IntelliJ, font, colors, etc.
+> Have appropriate settings in unluminous that mirror IntelliJ, font, colors, etc.
 
 ## 1. The themes that are actually installed, read rather than guessed at
 
@@ -51,13 +51,13 @@ UI's own theme files carry an `icons.ColorPalette` block for exactly that:
 
 An icon there is not a picture the theme replaces; it is a **shape** plus a **role**, and the theme
 says what colour a role is. That is the model this ticket copies, because it is also the model
-Unluminate's `theme::icon` already half has: every icon is drawn from numbers and tinted where it is used.
+Unluminous's `theme::icon` already half has: every icon is drawn from numbers and tinted where it is used.
 
 ## 2. What is in the way
 
 Three things, and only the first is hard.
 
-**The palette is forty `const`s.** `theme::color` is the whole list of colours Unluminate draws
+**The palette is forty `const`s.** `theme::color` is the whole list of colours Unluminous draws
 with, the style guide says so, and every one of them is a compile-time constant read at 725 places in
 56 files. A constant cannot be themed. Nothing else about the change matters until that is dealt
 with, and §3 is entirely about it.
@@ -80,7 +80,7 @@ flowchart LR
   subgraph Data["Data — nothing is executed"]
     M["plugin.conf<br/>kind = theme"]
   end
-  subgraph App["unluminate-app"]
+  subgraph App["unluminous-app"]
     P["services::plugins<br/>parse -> Vec&lt;Theme&gt;"]
     T["theme::Theme<br/>palette + syntax + icons"]
     A["theme::activate()<br/>thread-local Active"]
@@ -103,7 +103,7 @@ flowchart LR
 `theme::Palette` gains one field per name the style guide's table already lists, and
 `theme::color::EDITOR` becomes `theme::color::editor()`. The names, the order and every doc comment
 stay exactly as they are — the style guide's sentence *"`theme::color` is the whole list of colours
-Unluminate draws with"* is still true, and the list is still closed. What changes is that a name is now a
+Unluminous draws with"* is still true, and the list is still closed. What changes is that a name is now a
 question rather than a number.
 
 ```rust
@@ -128,7 +128,7 @@ as it is and is filled from the active theme, so a provider keeps the seam it ha
 
 ```rust
 thread_local! {
-    static ACTIVE: RefCell<Theme> = RefCell::new(Theme::unluminate_dark());
+    static ACTIVE: RefCell<Theme> = RefCell::new(Theme::unluminous_dark());
 }
 ```
 
@@ -136,7 +136,7 @@ A window is one thread. A second window is a **second process** — `services::l
 runs `current_exe` — so there is no case in the shipped binary where two themes are wanted in one
 process, and a process-global would have been correct for the product.
 
-It would have been wrong for the tests. `crates/unluminate-app/tests/screenshots.rs` holds 448 accepted
+It would have been wrong for the tests. `crates/unluminous-app/tests/screenshots.rs` holds 448 accepted
 pictures and cargo runs them in parallel on one process; a test that switched a global theme would
 change the colours of whatever other tests were mid-frame, and the failure would move around between
 runs. Thread-local, a theme chosen in one test cannot reach another's picture, and the four theme
@@ -147,7 +147,7 @@ It is also the fastest of the three shapes. A colour is read thousands of times 
 `RwLock` costs an atomic pair and a `Cell<Palette>` copies all 40 colours to read one.
 
 The one thing it demands is that nothing paints off the UI thread, and nothing does: the four
-background workers (`unluminate_git::Worker`, `text_search`, `symbol_index`, the DAP thread) hold no
+background workers (`unluminous_git::Worker`, `text_search`, `symbol_index`, the DAP thread) hold no
 `egui::Painter` and name no colour, and `run_cli` — the other place a colour is read, for
 `mermaid_scene::theme` — runs inside `pump_control` at the top of a frame. A debug assertion in
 `activate` records the thread it was called on so a later worker that starts painting says so.
@@ -156,7 +156,7 @@ background workers (`unluminate_git::Worker`, `text_search`, `symbol_index`, the
 
 ```rust
 pub struct Theme {
-    /// `unluminate/dark`, `themes-bundle-1/dracula` — the plugin and the theme, as a pane is named.
+    /// `unluminous/dark`, `themes-bundle-1/dracula` — the plugin and the theme, as a pane is named.
     pub key: String,
     pub name: String,
     /// False is refused for now. See §5.3.
@@ -169,7 +169,7 @@ pub struct Theme {
 }
 ```
 
-`Theme::unluminate_dark()` holds today's forty-three numbers and **names no syntax colours at all**, which
+`Theme::unluminous_dark()` holds today's forty-three numbers and **names no syntax colours at all**, which
 is what makes the default build pixel-identical: every language plugin keeps colouring its own files
 exactly as it does now, and the five copies of Dracula in §2 stay where they are until a theme is
 chosen. A theme that names the nine wins over all of them at once, which is what a colour scheme is
@@ -198,8 +198,8 @@ pixel moves until a theme says otherwise:
 | `folder_open` | `ACCENT` | an expanded folder — Atom Material Icons' one loud move |
 | `file` | `FILE_TEXT` | the square in front of a file with no plugin icon |
 
-They are Material Theme UI's `Actions.Grey`, `Objects.*` and `Checkbox.Focus.Wide` under Unluminate's own
-names. With them the answer to *"is every icon in Unluminate themeable"* is yes for **every icon there
+They are Material Theme UI's `Actions.Grey`, `Objects.*` and `Checkbox.Focus.Wide` under Unluminous's own
+names. With them the answer to *"is every icon in Unluminous themeable"* is yes for **every icon there
 is**, including the fifty in `theme::icon` this ticket does not redraw, because all fifty are already
 tinted at the point of use and the point of use now reads the theme.
 
@@ -259,7 +259,7 @@ sheets.
 **Two things the sheets taught, and one they got wrong**, which is the whole argument for using them:
 
 - the **editing area** came back as *two slabs side by side* rather than the panel-with-a-tab that
-  had been drawn first, and it is better — Unluminate's editing area *is* a row of panes, where a panel
+  had been drawn first, and it is better — Unluminous's editing area *is* a row of panes, where a panel
   with a tab could as easily have meant the explorer;
 - the **board** came back with a header bar over its columns, without which it is a bar chart;
 - and the **git branch** came back as an X with four dots, which says nothing about git, so the mark
@@ -298,7 +298,7 @@ theme.dracula.ui.editor       = #282A36
 theme.dracula.ui.accent       = #FF79C6
 theme.dracula.ui.selected_row = #44475A
 theme.dracula.ui.folder_open  = #FF79C6
-# …every name in theme::color, in snake case. Any that is left out keeps Unluminate Dark's.
+# …every name in theme::color, in snake case. Any that is left out keeps Unluminous Dark's.
 
 theme.dracula.syntax.keyword = #FF79C6
 theme.dracula.syntax.comment = #98AFFF
@@ -312,7 +312,7 @@ Four properties of that shape are deliberate:
   `accent`, and a second prefix writing the same fields would be two answers to one question.
 - **A name that is left out inherits.** That is IntelliJ's `parentTheme` in one line, and it is what
   keeps a manifest to the thirty colours that matter instead of forty.
-- **A name Unluminate does not have is refused**, with the list, like every other checked key. A theme
+- **A name Unluminous does not have is refused**, with the list, like every other checked key. A theme
   quietly missing a colour it thought it set is the failure this avoids.
 - **The manifest still names no code.** `icons = material` names a drawing that shipped in the
   binary, checked against `ICON_SETS`; it is `language.renders` again. Nothing is loaded and nothing
@@ -337,7 +337,7 @@ looked at every screen in would not be.
 
 `Plugins::themes()` is worked out from the manifests each time, the way `Surfaces` is. If the active
 theme's plugin is switched off, uninstalled or fails to parse, the window falls back to
-`unluminate/dark` on that frame and says so in the status bar. This is `Plugins::renders`' rule applied to
+`unluminous/dark` on that frame and says so in the status bar. This is `Plugins::renders`' rule applied to
 colour, and it is what stops a half-disabled plugin leaving the window in a palette nothing can
 name.
 
@@ -354,7 +354,7 @@ flowchart TB
   end
 ```
 
-| Unluminate | IntelliJ it mirrors | Key |
+| Unluminous | IntelliJ it mirrors | Key |
 |---|---|---|
 | `Theme` page → Theme | Appearance & Behavior → Appearance → **Theme** | `appearance.theme` |
 | `Theme` page → Accent | Material Theme UI → **Accent Color** | `appearance.accent` |
@@ -380,7 +380,7 @@ there is no way to have a large editor and a compact window. It gains a family o
 meaning "the editor's", which is `terminal.shell`'s sentence again — and a size that scales egui's
 text styles in `theme::apply`.
 
-**Editor line height is deliberately not added**, though IntelliJ has one on the same page. Unluminate
+**Editor line height is deliberately not added**, though IntelliJ has one on the same page. Unluminous
 already has line spacing, as a **paragraph** property, with its own three buttons in the text options
 flyout and its own place in the document model. A second, window-wide number that meant nearly the
 same thing would be two answers to one question, which is what `## One action, one place` exists to
@@ -401,7 +401,7 @@ Five, each the numbers of a plugin that is installed on this machine.
 Two decisions inside those numbers are worth stating.
 
 **The editor ground is the scheme's, not the Islands chrome's.** Islands Dracula draws the editor on
-`#3A3D4C` because IntelliJ's editor is an island floating on a darker frame, and Unluminate has no such
+`#3A3D4C` because IntelliJ's editor is an island floating on a darker frame, and Unluminous has no such
 frame. The canonical `#282A36` is used, with `#414450` and `#3A3D4C` becoming the title bar and the
 tab strip — which is where those colours are in the picture anyway.
 
@@ -424,14 +424,14 @@ an agent that cannot discover a thing uses `bash` instead.
 
 `settings set appearance.theme` reaches the same code, because `run_cli` is the one place a command
 becomes a change. The MCP tools are generated from the catalogue, so all three are tools the day they
-are added, and `unluminate-cli/docs/commands.md` gains a section for each — which is a test, not a
+are added, and `unluminous-cli/docs/commands.md` gains a section for each — which is a test, not a
 courtesy.
 
 ## 9. Alternatives considered
 
 | Option | Why not |
 |---|---|
-| **A theme is a `.theme.json` read at the IntelliJ schema** | It would let his real theme files be dropped straight in, which is genuinely attractive. It costs a JSON dependency in `unluminate-app`, and the schema is 400 lines of Swing component keys — `ComboBox.ArrowButton.nonEditableBackground` — of which Unluminate has an analogue for about twenty. Unluminate would be pretending to read a format it mostly ignores. The numbers are copied instead, once, with the file each came from named. |
+| **A theme is a `.theme.json` read at the IntelliJ schema** | It would let his real theme files be dropped straight in, which is genuinely attractive. It costs a JSON dependency in `unluminous-app`, and the schema is 400 lines of Swing component keys — `ComboBox.ArrowButton.nonEditableBackground` — of which Unluminous has an analogue for about twenty. Unluminous would be pretending to read a format it mostly ignores. The numbers are copied instead, once, with the file each came from named. |
 | **Thread the `Palette` through every component** | The same 725 edits plus a parameter on several hundred signatures, and a component that draws a divider would need to be handed the window's state to do it. |
 | **A process-global palette behind a `RwLock`** | Correct for the product, wrong for the tests: 448 screenshot tests run in parallel in one process and a theme test would recolour whatever else was mid-frame. |
 | **Bitmap icons generated by Krea 2, shipped per theme** | Refused by the style guide with its reasons already written: an icon is drawn in three colours depending on state and at any zoom, and a picture is one colour at one size. `task-1657` refused the same offer for the `F` button. The generated sheet becomes the design instead. |
@@ -450,10 +450,10 @@ does.
    manifest's order, each with a key, a name and a palette; and `Dracula Colorful`'s **blue** comment
    is asserted by number, because that is the one thing a theme called Dracula is likely to be wrong
    about.
-2. `a_theme_inherits_every_colour_it_does_not_name` — a two-line theme differs from Unluminate Dark in
+2. `a_theme_inherits_every_colour_it_does_not_name` — a two-line theme differs from Unluminous Dark in
    exactly the one role it set.
 3. `a_theme_manifest_is_refused_rather_than_half_loaded` — seven refusals in one test, each asserted
-   on what the message *says*: a role Unluminate has not got (and the list), `dark = false`, an icon set
+   on what the message *says*: a role Unluminous has not got (and the list), `dark = false`, an icon set
    this version has not got (and the list), eight of the nine token colours (and which are missing), a
    value that is not a colour, a `theme.<id>.` group nothing lists, and an empty `themes` line.
 4. `every_role_the_palette_has_can_be_named_in_a_manifest` — built from `Palette::NAMES`, so a role
@@ -465,14 +465,14 @@ does.
 
 **Activating one** — `theme::tests`
 
-8. `unluminate_dark_is_exactly_what_shipped` — the accessors against the old constants, including the five
+8. `unluminous_dark_is_exactly_what_shipped` — the accessors against the old constants, including the five
    icon roles against the colours the rail was already passing. This is the test that makes the
    725-site rewrite safe.
 9. `a_derived_colour_follows_the_one_it_is_defined_as` — a breakpoint is the close button's red, and
    changing that red moves it.
 10. `a_theme_reaches_every_accessor` — activate a theme, read its numbers back, reset, read the
     originals back.
-11. `every_role_is_readable_and_writable_by_name` — the whole of `Palette::NAMES`, and a name Unluminate
+11. `every_role_is_readable_and_writable_by_name` — the whole of `Palette::NAMES`, and a name Unluminous
     has not got answers with nothing rather than with a wrong role.
 12. `an_accent_reaches_everything_that_means_the_accent` — including the wash behind a stopped line,
     which keeps its own alpha.
@@ -505,9 +505,9 @@ accepted, which is what `UPDATE_SNAPSHOTS=1` means here.
 - **Editor line height** — §6.
 - **A theme editor in the window.** Themes are files; `plugins install` already writes a bundled
   plugin out so it can be edited by hand, and `plugins reload` reads it back with no restart. A
-  colour picker per role is forty colour wheels and a file format Unluminate would then own. The accent is
+  colour picker per role is forty colour wheels and a file format Unluminous would then own. The accent is
   the exception, and it is one setting rather than an editor.
-- **The four highlight colours.** They stay Unluminate's own under every theme. A mark carries the colour
+- **The four highlight colours.** They stay Unluminous's own under every theme. A mark carries the colour
   it was made in, in a file beside the project, so if the four defaults moved with the theme a
   document marked under one theme and read under another would show four colours the menu no longer
   offers. The style guide already calls a highlight somebody's own mark rather than part of the
@@ -517,8 +517,8 @@ accepted, which is what `UPDATE_SNAPSHOTS=1` means here.
   **opaque** band over the line the debugger stopped on and hidden the code under it, so it is derived
   from the accent instead — which is also what somebody choosing a pink theme means.
 - **Per-language colour scheme overrides.** IntelliJ has them; nothing here needs them, and the nine
-  tokens are already the whole of what Unluminate's tokeniser distinguishes.
-- **Theming the terminal's sixteen ANSI colours.** `unluminate_terminal::Palette` is a different palette
+  tokens are already the whole of what Unluminous's tokeniser distinguishes.
+- **Theming the terminal's sixteen ANSI colours.** `unluminous_terminal::Palette` is a different palette
   with a standard behind it, and a program printing red expects red. It is named here so the next
   person does not think it was forgotten.
-- **Downloading a theme.** Nothing in Unluminate fetches anything, and this does not start.
+- **Downloading a theme.** Nothing in Unluminous fetches anything, and this does not start.

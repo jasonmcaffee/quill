@@ -3,7 +3,7 @@
 # `task-1804` §2.2: *"the deepest tests in the repository have no scheduled run at all, and a release
 # is exactly the moment they should have one."*
 #
-# `crates/unluminate-app/tests/agent_board.rs` holds the tests that start a real agent, walk the
+# `crates/unluminous-app/tests/agent_board.rs` holds the tests that start a real agent, walk the
 # watchdog against a board on disk, and prove a ticket's conversation survives its terminal being
 # closed — including, by its own comment, *"the test that would have caught the fault `task-28`
 # reported"*. Every one is `#[ignore]`d and the reasons given there are sound: they take minutes, and
@@ -65,8 +65,8 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           # Empty unless the repository sets it, which is what a gateway needs and a direct key does not.
           ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
-          UNLUMINATE_TEST_MODEL: ${{ vars.UNLUMINATE_TEST_MODEL }}
-        run: cargo test -p unluminate-app --test agent_board -- --ignored --test-threads=1
+          UNLUMINOUS_TEST_MODEL: ${{ vars.UNLUMINOUS_TEST_MODEL }}
+        run: cargo test -p unluminous-app --test agent_board -- --ignored --test-threads=1
 
       - name: Say what happened
         if: always()
@@ -80,5 +80,5 @@ jobs:
           else
             echo "### The six end-to-end agent tests ran" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "\`cargo test -p unluminate-app --test agent_board -- --ignored --test-threads=1\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "\`cargo test -p unluminous-app --test agent_board -- --ignored --test-threads=1\`" >> "$GITHUB_STEP_SUMMARY"
           fi

@@ -1,33 +1,33 @@
-# Building an installer for Unluminate
+# Building an installer for Unluminous
 
 Everything that turns the built binary into something a person can install. One folder, two
-platforms, one drawing of the icon. `tasks/unluminate-installer-tdd.md` says why each of these is what it
+platforms, one drawing of the icon. `tasks/unluminous-installer-tdd.md` says why each of these is what it
 is; this says how to run them.
 
 ```
 installer/
-  icon/       the Unluminate mark: a program that draws it, and the drawn files
+  icon/       the Unluminous mark: a program that draws it, and the drawn files
   windows/    the Inno Setup script, and the script that builds and installs it
-  macos/      the bundle's manifest, and the script that builds Unluminate.app and the disk image
+  macos/      the bundle's manifest, and the script that builds Unluminous.app and the disk image
   dist/       what the two build scripts write. Not committed.
 ```
 
-Both installers ship **two** programs: `unluminate`, the editor, and `unluminate-cli`, which drives a running
-one from a terminal. They go into one folder on purpose — `unluminate-cli` looks for `unluminate` beside itself
+Both installers ship **two** programs: `unluminous`, the editor, and `unluminous-cli`, which drives a running
+one from a terminal. They go into one folder on purpose — `unluminous-cli` looks for `unluminous` beside itself
 — so on Windows the PATH task puts both on the path together, and on macOS they are both inside
-`Unluminate.app/Contents/MacOS`, which is one symlink away from the path:
+`Unluminous.app/Contents/MacOS`, which is one symlink away from the path:
 
 ```sh
-ln -sf /Applications/Unluminate.app/Contents/MacOS/unluminate-cli /usr/local/bin/unluminate-cli
-ln -sf /Applications/Unluminate.app/Contents/MacOS/unluminate     /usr/local/bin/unluminate
+ln -sf /Applications/Unluminous.app/Contents/MacOS/unluminous-cli /usr/local/bin/unluminous-cli
+ln -sf /Applications/Unluminous.app/Contents/MacOS/unluminous     /usr/local/bin/unluminous
 ```
 
-`unluminate-cli/README.md` says what it does. On macOS `unluminate-cli` is signed on its own before the bundle
+`unluminous-cli/README.md` says what it does. On macOS `unluminous-cli` is signed on its own before the bundle
 is signed round it, because codesign treats a second binary inside `Contents/MacOS` as something that
 must carry its own signature.
 
-The version comes from `Cargo.toml` and nowhere else. It reaches `unluminate.exe`'s version block, the
-installer's file name, the Add or Remove Programs entry and `Unluminate.app`'s `Info.plist` from there, so
+The version comes from `Cargo.toml` and nowhere else. It reaches `unluminous.exe`'s version block, the
+installer's file name, the Add or Remove Programs entry and `Unluminous.app`'s `Info.plist` from there, so
 releasing a new version is changing one number.
 
 **Releasing is one command, and it is not this one.** `pwsh tools/release.ps1` bumps that number,
@@ -43,35 +43,35 @@ installer without a release. `CLAUDE.md` records the rule that a finished task e
 powershell -File installer\windows\build.ps1              # build the installer
 powershell -File installer\windows\build.ps1 -Install     # build it and install it on this machine
 powershell -File installer\windows\build.ps1 -Install -AllUsers   # into Program Files, needs admin
-powershell -File installer\windows\build.ps1 -SkipBuild   # use target\release\unluminate.exe as it is
+powershell -File installer\windows\build.ps1 -SkipBuild   # use target\release\unluminous.exe as it is
 powershell -File installer\windows\build.ps1 -Icon        # redraw the icon first
 ```
 
-It writes `installer\dist\UnluminateSetup-<version>-x64.exe`, about 6.5 MB.
+It writes `installer\dist\UnluminousSetup-<version>-x64.exe`, about 6.5 MB.
 
 The script installs the Inno Setup compiler with `winget` the first time, if it is not already there.
-Nothing else is needed beyond what building Unluminate already needs: `rc.exe`, which puts the icon inside
-`unluminate.exe`, comes with the Windows SDK that the MSVC toolchain already depends on.
+Nothing else is needed beyond what building Unluminous already needs: `rc.exe`, which puts the icon inside
+`unluminous.exe`, comes with the Windows SDK that the MSVC toolchain already depends on.
 
-**What the installer does.** A plain double click installs into `%LOCALAPPDATA%\Programs\Unluminate` with
+**What the installer does.** A plain double click installs into `%LOCALAPPDATA%\Programs\Unluminous` with
 no elevation prompt; the first page offers all users, which puts it in `Program Files` instead. Five
 optional things, all on one page and all remembered by the uninstaller:
 
 | | |
 |---|---|
-| Desktop icon | an **Unluminate** shortcut on the desktop |
-| PATH | `unluminate` opens a folder from any terminal |
-| Right click a file | *Open with Unluminate* |
-| Right click a folder | *Open with Unluminate*, on the folder and on the empty space inside it |
-| Open with | Unluminate is offered for `.md .markdown .txt .rs .js .ts .json .toml .yml .yaml` — offered, never taken as the default |
+| Desktop icon | an **Unluminous** shortcut on the desktop |
+| PATH | `unluminous` opens a folder from any terminal |
+| Right click a file | *Open with Unluminous* |
+| Right click a folder | *Open with Unluminous*, on the folder and on the empty space inside it |
+| Open with | Unluminous is offered for `.md .markdown .txt .rs .js .ts .json .toml .yml .yaml` — offered, never taken as the default |
 
 **Uninstalling** removes the files, the shortcuts, the `PATH` entry and every registry key, and leaves
-every other `PATH` entry exactly as it was. It deliberately does **not** touch `%APPDATA%\Unluminate` —
+every other `PATH` entry exactly as it was. It deliberately does **not** touch `%APPDATA%\Unluminous` —
 the settings, the pane sizes, the recent projects and any installed plugins — because uninstalling to
 install a newer version must not throw those away.
 
-**Installing over a running Unluminate.** Unluminate does not answer the Restart Manager's request to shut down,
-so setup cannot close it by itself: a person is shown the list and closes Unluminate, and `build.ps1
+**Installing over a running Unluminous.** Unluminous does not answer the Restart Manager's request to shut down,
+so setup cannot close it by itself: a person is shown the list and closes Unluminous, and `build.ps1
 -Install` closes it for you, with the window's own close rather than a kill. See section 4 of the TDD.
 
 ---
@@ -79,7 +79,7 @@ so setup cannot close it by itself: a person is shown the list and closes Unlumi
 ## macOS
 
 ```bash
-installer/macos/build.sh              # Unluminate.app in installer/dist, unluminate-<version>.dmg in releases
+installer/macos/build.sh              # Unluminous.app in installer/dist, unluminous-<version>.dmg in releases
 installer/macos/build.sh --install    # and copy the bundle into /Applications
 installer/macos/build.sh --no-dmg     # just the bundle
 installer/macos/build.sh --icon       # redraw the icon first
@@ -96,7 +96,7 @@ rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
 With only one installed it builds that one and says so.
 
-The image goes to `releases/unluminate-<version>.dmg`. `installer/dist/` is the working area and is
+The image goes to `releases/unluminous-<version>.dmg`. `installer/dist/` is the working area and is
 rewritten on every run.
 
 ### Signing, in three levels
@@ -112,7 +112,7 @@ guessed at.
 
 The bundle is signed with the **hardened runtime** at every level, including ad-hoc. Notarising requires
 it, and an application that breaks under it breaks whether the signature is real or not, so the ad-hoc
-build is where that shows up rather than the first signed one. Unluminate runs under it: no entitlements are
+build is where that shows up rather than the first signed one. Unluminous runs under it: no entitlements are
 needed, because it loads only system frameworks and the processes it starts — `git`, a shell — are not
 restricted by the runtime.
 
@@ -133,7 +133,7 @@ override a value. Nothing is printed or written by the script either way.
 **Two submissions, and the order is the point.** A notarisation ticket has to be stapled to the thing it
 covers, and what a person ends up running is the application they dragged out of the image. So the
 application is notarised and stapled *first*, and only then is the image built round it and notarised in
-its turn. Doing the image alone leaves `Unluminate.app does not have a ticket stapled to it`, which works only
+its turn. Doing the image alone leaves `Unluminous.app does not have a ticket stapled to it`, which works only
 while the machine can reach Apple; a stapled ticket is checked locally, so both work with no network.
 
 Each submission takes a minute or two. Afterwards the script asks `stapler validate` and `spctl` whether
@@ -167,7 +167,7 @@ something that looks signed and is not.
 
 **What has been run.** Both sides now. The Windows side was built, installed, run, uninstalled and
 reinstalled on a real machine. The macOS side was run on an Apple silicon Mac on 2026-08-25 and needed
-no correction: `build.sh` went from a clean checkout to `Unluminate.app` and `Unluminate-0.1.0.dmg` on the first
+no correction: `build.sh` went from a clean checkout to `Unluminous.app` and `Unluminous-0.1.0.dmg` on the first
 run, the icon was built by `iconutil`, and the two places the design document expected to want a fix,
 the `rustup target list` check and the ad-hoc `codesign --deep` call, both behaved as written.
 
@@ -175,12 +175,12 @@ What was checked afterwards:
 
 | | |
 |---|---|
-| The bundle | `Contents/MacOS/unluminate`, `Contents/Resources/Unluminate.icns`, `Contents/Info.plist`, `Contents/PkgInfo` and `_CodeSignature`, 15 MB |
-| The manifest | `plutil -lint` passes, and the version, `CFBundleName` and `com.jasonmcaffee.unluminate` are all substituted in |
-| What the system calls it | `mdls` reports the display name `Unluminate` and the version `0.1.0`, which is what the Dock and the menu bar read |
+| The bundle | `Contents/MacOS/unluminous`, `Contents/Resources/Unluminous.icns`, `Contents/Info.plist`, `Contents/PkgInfo` and `_CodeSignature`, 15 MB |
+| The manifest | `plutil -lint` passes, and the version, `CFBundleName` and `com.jasonmcaffee.unluminous` are all substituted in |
+| What the system calls it | `mdls` reports the display name `Unluminous` and the version `0.1.0`, which is what the Dock and the menu bar read |
 | The icon | a real 1024 point `icns`, by `sips` |
 | The signature | `codesign --verify --deep --strict` passes on the bundle, on the copy in `/Applications` and on the copy inside the mounted image |
-| The disk image | 6.7 MB, mounts, holds `Unluminate.app` beside an alias to `/Applications` |
+| The disk image | 6.7 MB, mounts, holds `Unluminous.app` beside an alias to `/Applications` |
 | Installing | `--install` puts it in `/Applications`, `open -a` launches it, and the folder passed after `--args` reaches the window: it turns up at the top of `recent.txt` |
 | Installing over a running copy | works, because a Mac replaces the bundle and leaves the running process on its old inode. There is nothing here like the Restart Manager problem the Windows side has |
 
@@ -192,7 +192,7 @@ receiving the image is: the quarantine flag was set on a copy of the `.dmg` by h
 spctl --assess --type open --context context:primary-signature  →  accepted, source=Notarized Developer ID
 ```
 
-for the image, the same for `Unluminate.app` inside it, and `stapler validate` passes on the image, on the
+for the image, the same for `Unluminous.app` inside it, and `stapler validate` passes on the image, on the
 application in the image, and on the copy installed in `/Applications`. So a downloaded copy opens with
 no warning and with no network.
 
@@ -210,9 +210,9 @@ which is a permission prompt and a fragile step for something that is decoration
 cargo run --release --manifest-path installer/icon/Cargo.toml
 ```
 
-Draws the mark once at 1024 points and writes `unluminate.ico`, `unluminate.icns` and `Unluminate.iconset/` beside
-itself. It is a workspace of its own, so `cargo build` on Unluminate does not build it, and its output is
-committed — `unluminate.ico` is a build input for `unluminate.exe`, so a fresh checkout has to have it already.
+Draws the mark once at 1024 points and writes `unluminous.ico`, `unluminous.icns` and `Unluminous.iconset/` beside
+itself. It is a workspace of its own, so `cargo build` on Unluminous does not build it, and its output is
+committed — `unluminous.ico` is a build input for `unluminous.exe`, so a fresh checkout has to have it already.
 
 Change the drawing in `installer/icon/src/main.rs`, run it, and **look at the pictures** before
 committing them, the same rule the screenshot tests are held to. The colours are the ones in

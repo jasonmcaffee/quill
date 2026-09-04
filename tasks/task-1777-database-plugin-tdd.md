@@ -16,7 +16,7 @@
 > There is another agent working on a themes plugin, so find a way to do your changes in parallel
 > without affecting their work.
 
-A pane, a tab, a settings page and a crate. `crates/unluminate-db` speaks to a database and knows nothing
+A pane, a tab, a settings page and a crate. `crates/unluminous-db` speaks to a database and knows nothing
 about a window; `services::database` is the provider named by `plugins/database/plugin.conf`; and
 `components::database` draws it in the dark neumorphic chrome `task-1765` built for the Agent-Tasks
 board. The research this is measured against is in
@@ -25,9 +25,9 @@ board. The research this is measured against is in
 ## 1. What IntelliJ actually is, and which third of it is worth copying
 
 Three surfaces that refer to each other, not one window. Getting that split right is most of the
-design, and it maps onto contributions Unluminate's plugin manifest already offers.
+design, and it maps onto contributions Unluminous's plugin manifest already offers.
 
-| IntelliJ | What it is | Unluminate |
+| IntelliJ | What it is | Unluminous |
 |---|---|---|
 | **Database tool window**, docked right | The tree: data sources → databases → schemas → tables → columns, with counts on the folders and a `2 of 5` badge that opens a schema chooser | the plugin's **pane** |
 | **Query console**, a tab | A SQL editor attached to one data source and one default schema; Execute runs *the statement under the caret*; `Output` and `Result 1` tabs under it | the plugin's **tab** |
@@ -44,22 +44,22 @@ builder — it is the thing everybody who uses that grid actually types in. Pagi
 201+`, because a count that claims to be exact when the server was never asked for one is a lie.
 Pending changes previewed as the statements they will become, before anything is written. NULL and
 DEFAULT as explicit values a cell can be set to rather than words somebody types. And a Test
-Connection that answers with the **server's own version string**, which is `unluminate-git`'s rule that a
+Connection that answers with the **server's own version string**, which is `unluminous-git`'s rule that a
 server's own words are what a report quotes.
 
 **What is deliberately not copied** is §11, and it is a much longer list, because most of the
 Database Tools plugin is breadth across fifteen engines rather than depth in two.
 
-## 2. What was weighed: how Unluminate talks to PostgreSQL
+## 2. What was weighed: how Unluminous talks to PostgreSQL
 
 This is the decision the whole feature rests on, and the obvious answer is the wrong one.
 
 | | What it is | Verdict |
 |---|---|---|
-| **`postgres` 0.19** | The blocking wrapper over `tokio-postgres` | **Refused.** It is a blocking *façade* over an async client: it builds a Tokio runtime and runs the connection on it. Unluminate has no runtime, on purpose — `unluminate_git::Worker`, the terminal's reader, `text_search`, `symbol_index`, `unluminate-dap` and `unluminate-chat` are all plain threads with channels, and the `ureq` decision in the workspace `Cargo.toml` says in as many words that "a runtime added for one pane would be a second concurrency model in a program that has one". It also costs on the order of fifty crates. |
-| **Shell out to `psql`** | `unluminate-git`'s answer, applied to a database | **Refused, and it is worth saying why**, because the precedent looks strong. `git` is on this machine because the person uses git; `psql` is not necessarily on a machine that has a Postgres *server* somewhere else, and the whole point of a data source is that the server is elsewhere. And `psql`'s output is a report meant for a person: a value containing a newline, a NULL against an empty string, and a column whose name contains the separator are all ambiguous in it. `git`'s porcelain formats were designed to be parsed; `psql`'s were not. |
-| **A JDBC-shaped driver layer** | What IntelliJ has: one interface, a driver per engine, downloaded on demand | **Refused.** Nothing in Unluminate is ever fetched, which is a rule with no exceptions, and a driver interface with two implementations is an abstraction invented before the second case has been seen. Two engines get two modules and one `enum`. |
-| **The wire protocol, written here** | `crates/unluminate-db`, speaking PostgreSQL v3 over a `TcpStream` | **Chosen.** It is exactly what `unluminate-dap` does for the Debug Adapter Protocol and what `unluminate-chat` does for server-sent events, down to the test strategy: a **scripted server** replaying fixed bytes on a `TcpListener` bound to `127.0.0.1:0`. The protocol is small, stable since 2003, and the parts a database explorer needs are a fifth of it. |
+| **`postgres` 0.19** | The blocking wrapper over `tokio-postgres` | **Refused.** It is a blocking *façade* over an async client: it builds a Tokio runtime and runs the connection on it. Unluminous has no runtime, on purpose — `unluminous_git::Worker`, the terminal's reader, `text_search`, `symbol_index`, `unluminous-dap` and `unluminous-chat` are all plain threads with channels, and the `ureq` decision in the workspace `Cargo.toml` says in as many words that "a runtime added for one pane would be a second concurrency model in a program that has one". It also costs on the order of fifty crates. |
+| **Shell out to `psql`** | `unluminous-git`'s answer, applied to a database | **Refused, and it is worth saying why**, because the precedent looks strong. `git` is on this machine because the person uses git; `psql` is not necessarily on a machine that has a Postgres *server* somewhere else, and the whole point of a data source is that the server is elsewhere. And `psql`'s output is a report meant for a person: a value containing a newline, a NULL against an empty string, and a column whose name contains the separator are all ambiguous in it. `git`'s porcelain formats were designed to be parsed; `psql`'s were not. |
+| **A JDBC-shaped driver layer** | What IntelliJ has: one interface, a driver per engine, downloaded on demand | **Refused.** Nothing in Unluminous is ever fetched, which is a rule with no exceptions, and a driver interface with two implementations is an abstraction invented before the second case has been seen. Two engines get two modules and one `enum`. |
+| **The wire protocol, written here** | `crates/unluminous-db`, speaking PostgreSQL v3 over a `TcpStream` | **Chosen.** It is exactly what `unluminous-dap` does for the Debug Adapter Protocol and what `unluminous-chat` does for server-sent events, down to the test strategy: a **scripted server** replaying fixed bytes on a `TcpListener` bound to `127.0.0.1:0`. The protocol is small, stable since 2003, and the parts a database explorer needs are a fifth of it. |
 
 ### 2.1 What that costs in crates, counted rather than guessed
 
@@ -87,14 +87,14 @@ being up on the machine running it, so every test that needs a real database bui
 temporary folder. The PostgreSQL half is tested against the scripted server and, separately, by hand
 against the real 17.2 on this machine — §10 says which is which.
 
-## 3. `crates/unluminate-db` — the half with no window in it
+## 3. `crates/unluminous-db` — the half with no window in it
 
-The sixth crate, arranged as `unluminate-dap` and `unluminate-chat` are: the wire, the values, the session, and
+The sixth crate, arranged as `unluminous-dap` and `unluminous-chat` are: the wire, the values, the session, and
 the thread. It depends on `rusqlite`, `sha2`, `hmac`, `md-5`, `base64`, `getrandom` and `native-tls`,
 and on nothing that draws.
 
 ```
-unluminate-db
+unluminous-db
   source.rs      what a data source is, and reading one out of a URL
   value.rs       a cell: null, an integer, a float, text, bytes — and what a column's type is called
   rows.rs        a result: the columns, the rows, how long it took, how many were affected
@@ -117,7 +117,7 @@ Every value comes back **as the text the server printed**, plus the column's typ
 saying whether it is a number. PostgreSQL's `RowDescription` names a type by OID and the protocol will
 send either text or binary; asking for text means one decoder rather than one per OID, and it means
 the grid shows exactly what `psql` would show for a `numeric`, a `timestamptz`, a `jsonb` or an array
-without Unluminate deciding how to render any of them.
+without Unluminous deciding how to render any of them.
 
 What the type is still used for, because the text alone is not enough:
 
@@ -144,7 +144,7 @@ Anything else is skipped by its length rather than treated as a fault, which is 
 of a client and what keeps a future server version from breaking this one.
 
 **The framing is tested by being fed the same stream split at every byte boundary**, which is the test
-`unluminate-chat`'s server-sent-event reader already has. A frame that arrives in three `read` calls has to
+`unluminous-chat`'s server-sent-event reader already has. A frame that arrives in three `read` calls has to
 produce the same message as one that arrives in one.
 
 ### 3.3 Authentication, and why SCRAM is not optional
@@ -203,7 +203,7 @@ in the machine's store, which is where every other program on it would look too.
 ### 3.5 A query runs on a thread, and stopping it sends a second connection
 
 One worker thread per connected data source, holding the connection, reading a channel of jobs and
-answering down another — `unluminate_git::Worker` with a different payload. The window never blocks; it is
+answering down another — `unluminous_git::Worker` with a different payload. The window never blocks; it is
 handed a `Ticket` and asks whether it has finished, and `Context::wake` is what brings the frame back
 when it has.
 
@@ -216,7 +216,7 @@ another thread. Both are wired to the same stop button, which is what the toolba
 
 ## 4. The plugin, as data
 
-`crates/unluminate-app/plugins/database/plugin.conf`:
+`crates/unluminous-app/plugins/database/plugin.conf`:
 
 ```
 plugin.id          = database
@@ -261,8 +261,8 @@ them — `design/style-guide.md`'s rule.
 
 ### 4.1 A `sql` language plugin ships with it
 
-A console with uncoloured SQL in it would be the one text field in Unluminate that looks like Notepad, and
-Unluminate already has the machinery: a `language` plugin with keywords, a comment, a string and a hex
+A console with uncoloured SQL in it would be the one text field in Unluminous that looks like Notepad, and
+Unluminous already has the machinery: a `language` plugin with keywords, a comment, a string and a hex
 rule. `plugins/sql/plugin.conf` is that, and it is worth having on its own — a `.sql` file in a
 project is coloured whether or not anybody opens the database pane.
 
@@ -279,7 +279,7 @@ The toolbar, which is IntelliJ's eight cut to the five that apply here: **New da
 absent, so `Disconnect` is not there while nothing is connected and `Edit data` is not there unless a
 table is chosen.
 
-A row is 28 points, which is `size::ROW` and what every list in Unluminate uses. The tree is:
+A row is 28 points, which is `size::ROW` and what every list in Unluminous uses. The tree is:
 
 ```
 ▾ ai                       PostgreSQL · localhost:5432
@@ -290,7 +290,7 @@ A row is 28 points, which is `size::ROW` and what every list in Unluminate uses.
     ▸ views  8
     ▸ routines 3
   ▸ information_schema
-▸ tasks.db                 SQLite · C:\jason\dev\unluminate\tasks.db
+▸ tasks.db                 SQLite · C:\jason\dev\unluminous\tasks.db
 ```
 
 Counts on the folders are IntelliJ's and they earn their place: they are how you tell an empty schema
@@ -304,8 +304,8 @@ answer without a setting. Each level is one catalogue query, run on the worker t
 so a slow server makes a row show a spinner rather than making the window stop.
 
 The filter field narrows the loaded rows by substring, which is IntelliJ's speed search with a field
-instead of type-ahead, because Unluminate's panes do not have type-ahead anywhere and inventing it in a
-plugin would be the plugin deciding what an Unluminate pane is.
+instead of type-ahead, because Unluminous's panes do not have type-ahead anywhere and inventing it in a
+plugin would be the plugin deciding what an Unluminous pane is.
 
 ## 6. The tab: consoles and row editors
 
@@ -323,12 +323,12 @@ A toolbar — **Execute** (`Ctrl+Enter`), **Stop**, **History**, the row limit, 
 **Execute runs the statement under the caret**, which is IntelliJ's behaviour and the only one that
 makes a console holding six statements usable. The statement boundaries come from a small splitter
 that knows about `;`, string literals, dollar-quoted bodies and `--`/`/* */` comments — the same
-awkward cases `unluminate_core::syntax` already has to know for colouring, but written once here because
+awkward cases `unluminous_core::syntax` already has to know for colouring, but written once here because
 the boundary question is not the colouring question. `Ctrl+Shift+Enter` runs everything, in order,
 stopping at the first failure and saying which statement failed.
 
 The editor is an `egui::TextEdit` with a layouter that colours through the highlighter — **not** a
-second copy of Unluminate's editor**.** It has selection, undo and the clipboard, and it does not have
+second copy of Unluminous's editor**.** It has selection, undo and the clipboard, and it does not have
 folding, multiple carets, the gutter or find-in-file. That is written in `plugin.limitations` rather
 than left to be discovered, and the reason is the one `tasks/ui-plugin-architecture.md` gives: a
 provider draws inside the rectangle it is handed and cannot reach `components::editor_view`.
@@ -342,7 +342,7 @@ candidates are the ones something already keeps.
 Results appear underneath as tabs: `Result 1` for a statement that returned rows, `Output` for one
 that did not, carrying the affected count and the elapsed milliseconds. A statement that fails puts
 the server's own message in `Output`, verbatim, with its `SQLSTATE`, its detail and its hint — the
-rule `unluminate-git` keeps about quoting a program's own words.
+rule `unluminous-git` keeps about quoting a program's own words.
 
 ### 6.2 A row editor
 
@@ -369,7 +369,7 @@ there is no way to change one without changing others."* That is the absent-cont
 work: the alternative is an `UPDATE` matching on every column, which silently updates two identical
 rows.
 
-A console result is never editable. IntelliJ tries to resolve one back to a table; Unluminate does not
+A console result is never editable. IntelliJ tries to resolve one back to a table; Unluminous does not
 promise what it cannot enforce, and the console has a `WHERE`-and-`ORDER BY` grid one click away in
 the row editor.
 
@@ -380,7 +380,7 @@ is not is visible without pressing anything.
 
 **Preview shows the statements.** Not a summary of them — the actual `UPDATE … WHERE <pk> = $1`,
 `INSERT INTO … VALUES ($1, $2)` and `DELETE FROM … WHERE <pk> = $1`, with the parameters listed
-beside them. It is a modal built from `components::modal`, like every other modal in Unluminate.
+beside them. It is a modal built from `components::modal`, like every other modal in Unluminous.
 
 **Submit is one transaction.** `BEGIN`, the statements in order with their values bound as
 **parameters** — nothing is quoted by hand anywhere, which is what makes a value containing a quote, a
@@ -408,15 +408,15 @@ source.0.port     = 5432
 source.0.database = ai
 source.0.user     = postgres
 source.0.sslmode  = prefer
-source.0.password.env = UNLUMINATE_DB_AI
+source.0.password.env = UNLUMINOUS_DB_AI
 source.0.read_only    = false
 
 source.1.name   = tasks
 source.1.engine = sqlite
-source.1.file   = C:\jason\dev\unluminate\tasks.db
+source.1.file   = C:\jason\dev\unluminous\tasks.db
 ```
 
-**No password is ever written by Unluminate**, which is `services::agent_tasks::keychain`'s rule and
+**No password is ever written by Unluminous**, which is `services::agent_tasks::keychain`'s rule and
 Agent-Chat's. Three ways a data source gets one, and the settings page says `set` or `not set` and
 never the value:
 
@@ -426,15 +426,15 @@ never the value:
   `keychain` module — macOS and Linux only, and the page says so there rather than offering a control
   that cannot apply.
 - Typed into the connect dialog, in which case it lives **in this process and nowhere else** and is
-  gone when the window closes. Where IntelliJ's dialog offers `Save: Forever`, Unluminate's says
+  gone when the window closes. Where IntelliJ's dialog offers `Save: Forever`, Unluminous's says
   `until this window closes`, and that is the whole of the choice.
 
 A refusal names the variable or the entry — never the value, and a server's message is scrubbed of it
-before being quoted, which is the redaction rule `unluminate-chat` already keeps for an API key.
+before being quoted, which is the redaction rule `unluminous-chat` already keeps for an API key.
 
 **`read_only` is enforced by the server, not by a parser.** On connect, a read-only PostgreSQL data
 source runs `SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY` and SQLite is opened with
-`SQLITE_OPEN_READONLY`. Unluminate also refuses to *offer* the editing controls, but the guarantee is the
+`SQLITE_OPEN_READONLY`. Unluminous also refuses to *offer* the editing controls, but the guarantee is the
 server's — the same distinction Agent-Chat's settings page draws between Codex's sandbox and Claude's
 permission mode, and for the same reason: a promise the window cannot keep should not be made.
 
@@ -475,7 +475,7 @@ ask for the result too early exactly once.
 
 **A destructive statement from an agent is still just a statement**, and the read-only switch is what
 stands in front of it. It is written down in `plugin.limitations`: a data source that is not read-only
-can be changed by anything that can reach the plugin, which includes a model given Unluminate's tools.
+can be changed by anything that can reach the plugin, which includes a model given Unluminous's tools.
 
 ## 9. Drawing it: the same chrome as the board
 
@@ -484,7 +484,7 @@ can be changed by anything that can reach the plugin, which includes a model giv
 there and no component holds a shadow offset:
 
 - The pane's ground is `board_page`; the toolbar and the filter field are `sunken` wells; a chosen
-  tree row is the `selected_row` pill every list in Unluminate draws.
+  tree row is the `selected_row` pill every list in Unluminous draws.
 - A console and a row editor sit on a `raised` card of `board_card` over the tab's `board_page`, with
   the results grid in a `sunken` well — which is the lane-and-card ladder the board already uses, one
   level shallower.
@@ -500,7 +500,7 @@ Two costs are watched, and both have a measured precedent:
   own bounding box rather than the pane's. That is `task-1666`'s rule and `task-1765`'s, and it is
   what keeps a two-hundred-row page costing what twenty visible rows cost.
 
-`cargo run --release -p unluminate-app --example vello_cost` gains a database arm, so the number is
+`cargo run --release -p unluminous-app --example vello_cost` gains a database arm, so the number is
 measured again rather than asserted.
 
 ## 10. Tests
@@ -508,9 +508,9 @@ measured again rather than asserted.
 The bar is the repository's own: the control a person uses, the way an agent asks for the same thing
 through the same code, and tests over both.
 
-**`unluminate-db`, with no window and no server.**
+**`unluminous-db`, with no window and no server.**
 
-- The framing fed the same bytes split at every boundary produces the same frames — `unluminate-chat`'s
+- The framing fed the same bytes split at every boundary produces the same frames — `unluminous-chat`'s
   test, applied to a different protocol.
 - A scripted server on `127.0.0.1:0` replays a real startup: `AuthenticationSASL`, the SCRAM exchange,
   `ParameterStatus`, `BackendKeyData`, `ReadyForQuery`. A second one replays a `SELECT`, a third an
@@ -557,7 +557,7 @@ Each of these is a refusal with a reason, not a gap.
 the two and an arm in one `enum`; nothing about this design has to change for it, which is what makes
 leaving it out cheap.
 
-**A driver downloaded on demand.** Nothing in Unluminate is ever fetched.
+**A driver downloaded on demand.** Nothing in Unluminous is ever fetched.
 
 **Manual transaction mode.** §6.3: an editor that can leave a transaction open holds locks while
 nobody is watching.
@@ -588,7 +588,7 @@ here one data source is one connection and one worker.
 The themes plugin is being built in the same checkout at the same time, and the two tasks touch some
 of the same files — `services/plugins.rs`, `theme/`, the settings dialog, the screenshot baselines.
 
-So this work happens in a **git worktree of its own**, `C:\jason\dev\unluminate-1777`, on branch
+So this work happens in a **git worktree of its own**, `C:\jason\dev\unluminous-1777`, on branch
 `task-1777-database-plugin`, with its own `target/`. Nothing here writes into their working tree; the
 branch merges when it is done, and the worktree and its build directory are deleted then.
 
@@ -615,7 +615,7 @@ only as a tick box, which is the rule that a control a person has an agent has t
 a modal, so raising one for `plugins run database query update …` would leave a command that could
 never finish. `DatabaseExplorer::execute` keeps the confirmation for the button and `execute_now` is
 what the command line calls; the guard that applies to **both** is the read-only switch, which is on by
-default and enforced by the server rather than by Unluminate.
+default and enforced by the server rather than by Unluminous.
 
 **Three faults in code that had already shipped**, all found by looking at the screenshots rather than
 by a test failing:
@@ -640,21 +640,21 @@ Settings page, which is two lines a source now.
 
 | Layer | What it proves | Where |
 |---|---|---|
-| 78 tests in `unluminate-db` | The framing, split at every byte boundary; SCRAM against RFC 7677's own vector; the statement splitter over the four things a `;` hides inside; the pending-change statements, including a value with a quote, a newline and a backslash | `crates/unluminate-db/src/**`, `tests/scripted_server.rs` |
+| 78 tests in `unluminous-db` | The framing, split at every byte boundary; SCRAM against RFC 7677's own vector; the statement splitter over the four things a `;` hides inside; the pending-change statements, including a value with a quote, a newline and a backslash | `crates/unluminous-db/src/**`, `tests/scripted_server.rs` |
 | A scripted PostgreSQL | Connect, authenticate, read a result, an `ErrorResponse` with its `SQLSTATE`, a `NOTICE` mid-result, `sslmode=require` refused, an extended query, a row limit | `tests/scripted_server.rs` |
 | 24 tests in the plugin | Laziness, one level at a time, the editing rule, the read-only refusal, the confirmation, the secret never written or answered back, every command answering or refusing with a sentence | `services/database/tests.rs` |
 | 9 tests through the real window | The contributions, the tree pressed row by row, a grid, a console, `Output`, a failing statement, a pending edit written to a file, a read-only refusal, the dialog and the Settings page | `tests/screenshots.rs` |
 | **A real PostgreSQL 17.2** | Everything above, against a server | by hand — below |
 
 The by-hand run is the one the ticket asks for, and it was done twice: against Jason's own `ai`
-database read-only, and against a `unluminate_db_test` database created and dropped for it.
+database read-only, and against a `unluminous_db_test` database created and dropped for it.
 
 Against `ai`: connected over SCRAM-SHA-256 in 53 ms; 213 items in `public`; `member`'s fourteen
 columns with their real types and its `member_id` key; the composed `CREATE TABLE`; 37 rows;
 `conversation_message`, which has **no primary key**, drawn read-only with the sentence that says so;
 and a write refused with *"`ai` is read only, so `UPDATE` is not sent"*.
 
-Against `unluminate_db_test`: two cell edits and a delete submitted as one transaction, then read back
+Against `unluminous_db_test`: two cell edits and a delete submitted as one transaction, then read back
 **with `psql`** — a different program on a different connection — showing `Kind of Green`, `remastered`
 and the third row gone. A value containing a quote, a newline and two backslashes round-tripped
 exactly. A table with no key refused the edit in the same words the grid draws. A view reported itself

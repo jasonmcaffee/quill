@@ -2,18 +2,18 @@
 
 ## Introduction
 
-The ask is one sentence: on Windows, with the Unluminate project open, a few tabs open and the background
+The ask is one sentence: on Windows, with the Unluminous project open, a few tabs open and the background
 translucent, *selecting text, scrolling and dragging the window are slow and jagged*.
 
 That is a report of a feeling, and a feeling cannot be fixed. So the first thing built for this task
-was not a fix but a measurement: `crates/unluminate-app/examples/frame_cost.rs`, which opens a real file
+was not a fix but a measurement: `crates/unluminous-app/examples/frame_cost.rs`, which opens a real file
 with the real fonts of the machine it is run on, colours it exactly as the window colours it, and
 prints how long each part of one frame of the editing area takes.
 
 The first run of it said something worse than "a bit slow":
 
 ```
-crates/unluminate-app/src/app/mod.rs: 168990 bytes, 3556 lines, laid out at 900 points wide
+crates/unluminous-app/src/app/mod.rs: 168990 bytes, 3556 lines, laid out at 900 points wide
   syntax highlight:            1.14 ms  (14143 coloured spans)
   set_syntax:                561.22 ms  (20822 style spans after)
   layout, whole document:     82.24 ms
@@ -23,11 +23,11 @@ crates/unluminate-app/src/app/mod.rs: 168990 bytes, 3556 lines, laid out at 900 
   one glyph lookup:            53.0 ns
 ```
 
-`Document::apply(Command::PlaceCaret)` bumps the document's revision. `UnluminateApp::colour_the_file`
-and `UnluminateApp::refresh_layout` are both keyed on that revision. So **every frame in which the caret
+`Document::apply(Command::PlaceCaret)` bumps the document's revision. `UnluminousApp::colour_the_file`
+and `UnluminousApp::refresh_layout` are both keyed on that revision. So **every frame in which the caret
 moves — which is every frame of dragging a selection — re-tokenised the file, rebuilt every style
 span and laid the whole document out again**: about 650 ms of work to paint one frame, or one and a
-half frames a second. Unluminate was not a bit slow. It was doing, sixty times a second, work that should
+half frames a second. Unluminous was not a bit slow. It was doing, sixty times a second, work that should
 happen when a file is opened.
 
 This document records the eight faults that were found, what was done about each, what was measured
@@ -42,15 +42,15 @@ afterwards, and the designs that were weighed and rejected.
 | 1 | Dragging a selection through a large source file is smooth: the frame it costs is measured in tenths of a millisecond, not hundreds. |
 | 2 | Scrolling costs what is on the screen, not what is in the file. |
 | 3 | Typing a character costs the paragraph that changed, not the document. |
-| 4 | Dragging the window is not made jagged by anything Unluminate does inside a frame. |
+| 4 | Dragging the window is not made jagged by anything Unluminous does inside a frame. |
 | 5 | Every one of those is a **test that fails before the fix**, not a number in a document. |
 | 6 | The pictures do not change: every screenshot test still matches its accepted image. |
 | 7 | `frame_cost` stays in the repository, so the next change to layout or painting can be measured the same way. |
 
 **Non-goals**
 
-- **A different text engine.** Unluminate's layout is its own, deliberately
-  (`unluminate-technical-design-document.md` §3). Nothing here replaces it; everything here makes it stop
+- **A different text engine.** Unluminous's layout is its own, deliberately
+  (`unluminous-technical-design-document.md` §3). Nothing here replaces it; everything here makes it stop
   doing work twice.
 - **Threading layout.** §9 says why a background thread would have been the wrong answer to a problem
   that was almost entirely repeated work.
@@ -66,12 +66,12 @@ none of them is the "real" one.
 
 | # | Where | What it was | What it cost |
 |---|---|---|---|
-| 1 | `UnluminateApp::colour_the_file` | Keyed on `Document::revision()`, which a caret move bumps. | The whole file re-tokenised and re-coloured on every frame of a drag. |
+| 1 | `UnluminousApp::colour_the_file` | Keyed on `Document::revision()`, which a caret move bumps. | The whole file re-tokenised and re-coloured on every frame of a drag. |
 | 2 | `StyleSpans::set` / `Document::set_syntax` | `set` is a pass over every span, and `set_syntax` called it once per token. | O(tokens × spans): **561 ms** for 14k tokens. |
-| 3 | `UnluminateApp::refresh_layout` | The same `revision()` fault. | The whole document laid out again on every frame of a drag: **82 ms**. |
+| 3 | `UnluminousApp::refresh_layout` | The same `revision()` fault. | The whole document laid out again on every frame of a drag: **82 ms**. |
 | 4 | `StyleSpans::runs_in` | Walked the span list from byte zero, and layout called it once a paragraph. | O(paragraphs × spans): about 37 million iterations on this file. |
 | 5 | `editor_view::paint_text` | Built a mesh for every glyph in the document, every frame. | **7.13 ms** against **0.07 ms** for the screenful actually visible. |
-| 6 | `unluminate_core::layout` | Three heap allocations for every grapheme cluster: the cluster's text twice, and a `CharStyle` cloned only to be compared. | Roughly 350k allocations per layout of this file. |
+| 6 | `unluminous_core::layout` | Three heap allocations for every grapheme cluster: the cluster's text twice, and a `CharStyle` cloned only to be compared. | Roughly 350k allocations per layout of this file. |
 | 7 | `TextRenderer::advance` / `::glyph` | Built the font key by cloning the family name, so every measurement and every glyph allocated a `String`. | **167 ns** and **53 ns** a call, times 116k. |
 | 8 | `Layout::line_of_offset` / `::line_at_y` | Linear scans over every line, called while painting and on every mouse move. | Small on this file, unbounded on a larger one. |
 
@@ -85,7 +85,7 @@ This is the fault behind three of the eight, and the fix is one idea: **the docu
 revisions, not one.**
 
 `Document::revision()` still counts every change of any kind, and everything that means "did anything
-at all happen" still reads it — whether a file's marked passages need writing to `.unluminate`, whether
+at all happen" still reads it — whether a file's marked passages need writing to `.unluminous`, whether
 the window needs painting again.
 
 `Document::text_revision()` is new and counts only the changes that alter **what the text is or how
@@ -182,7 +182,7 @@ at the family name rather than by copying it. Painting and layout both walk run 
 character of a run hits that memo.
 
 **Rejected: interning the family name in `CharStyle`.** It would remove the string from the style
-altogether, which is tempting, but `CharStyle` is a public value in `unluminate-core` that tests build by
+altogether, which is tempting, but `CharStyle` is a public value in `unluminous-core` that tests build by
 hand and the settings file writes by name, and an interner is shared mutable state in a crate whose
 whole point is that it has none.
 
@@ -196,7 +196,7 @@ Layout is already paragraph by paragraph, and a paragraph's lines depend on four
 character formatting over it, its own paragraph style, and the width. Nothing else. So a paragraph
 whose four inputs have not changed does not need laying out again.
 
-`unluminate_core::relayout` takes the previous layout and the document as it is now, and:
+`unluminous_core::relayout` takes the previous layout and the document as it is now, and:
 
 1. Computes a **fingerprint** for every paragraph — a hash of its text, of the styles over it, and of
    its paragraph style. Hashing the whole of this file costs about a tenth of a millisecond.
@@ -216,7 +216,7 @@ editor ever asks.
 have been made to say which paragraphs it had touched, and that would be cheaper still — but it would
 be a list of eleven places to keep up to date, and the twelfth, added next month, would be the one
 that forgot and left a stale line on the screen. Hashing cannot go stale. It is the same argument
-`UnluminateApp::follow_the_open_file` records for deriving the reveal from the state rather than firing it
+`UnluminousApp::follow_the_open_file` records for deriving the reveal from the state rather than firing it
 from each of the places a tab can change.
 
 `relayout` is checked against `layout` rather than trusted: `relayout_agrees_with_layout_after_every_shape_of_edit`
@@ -234,13 +234,13 @@ thousand path comparisons a frame. It is a `HashMap` now.
 
 ## 9. What was rejected
 
-**Laying out on a thread.** `unluminate-git` and the text search both run on one, and the same shape would
+**Laying out on a thread.** `unluminous-git` and the text search both run on one, and the same shape would
 have worked here: hand the document to a thread, draw the previous layout until the new one arrives.
 It was rejected because it answers the wrong question. Almost all of the 650 ms was work that did not
 need doing at all, and moving work that does not need doing onto a thread leaves a machine warmer and
 a battery flatter for no gain. It also brings a real cost: the caret, hit testing and scrolling all
 read the layout, so a frame drawn against last frame's layout has to decide what to do when a click
-lands on a line that has since moved. If a future Unluminate opens files where a *first* layout is slow — a
+lands on a line that has since moved. If a future Unluminous opens files where a *first* layout is slow — a
 fifty megabyte log — this is the answer, and nothing here stands in its way.
 
 **Turning the syntax colours into a `StyleSpans` of their own.** Colour is the only thing the
@@ -260,7 +260,7 @@ unchanged.
 
 ### The harness, on the same file
 
-`cargo run --release -p unluminate-app --example frame_cost -- crates/unluminate-app/src/app/mod.rs 900`, on the
+`cargo run --release -p unluminous-app --example frame_cost -- crates/unluminous-app/src/app/mod.rs 900`, on the
 machine the report came from:
 
 | | before | after |
@@ -313,16 +313,16 @@ that it is worth changing.
 
 ## 11. How it is tested
 
-Four layers, as everything in Unluminate is:
+Four layers, as everything in Unluminous is:
 
-- **`unluminate-core`**, with no window: the two-revision invariant, `set_many` against a loop of `set`,
+- **`unluminous-core`**, with no window: the two-revision invariant, `set_many` against a loop of `set`,
   `spans()` against `runs_in`, the culled queries against the unculled ones, `ClusterText` against
   `String`, and `relayout` against `layout` for every shape of edit.
-- **`unluminate-app`**, with no window: `paint_text` reporting how many glyphs it placed, the font memo
+- **`unluminous-app`**, with no window: `paint_text` reporting how many glyphs it placed, the font memo
   answering the same as the uncached path, and the explorer's decorations.
 - **The screenshot tests**: unchanged, and that is the point. Every accepted image still matches,
   which is what says the culling and the incremental layout draw the same picture as before.
-- **The real window**: `cargo run --release`, with the Unluminate project open and several tabs, dragging a
+- **The real window**: `cargo run --release`, with the Unluminous project open and several tabs, dragging a
   selection through `app/mod.rs` — and the before-and-after table in §10, taken through the control
   channel against both binaries.
 
@@ -331,11 +331,11 @@ back and running them:
 
 | Test | Where | What it catches |
 |---|---|---|
-| `moving_the_caret_is_not_a_change_to_the_text` | `unluminate-core`, `document.rs` | a caret move counting as a change to the text |
-| `a_layout_that_changed_means_the_text_revision_moved` | `unluminate-core`, `document.rs` | a command that changes the layout and forgets to say so |
-| `an_edit_measures_the_paragraph_it_touched_and_not_the_document` | `unluminate-core`, `layout.rs` | `relayout` quietly laying the whole document out |
-| `painting_a_long_document_costs_a_screenful` | `unluminate-app`, `editor_view.rs` | the painter collecting every glyph in the file |
-| `dragging_a_selection_lays_nothing_out_again_and_colours_nothing_again` | `unluminate-app`, `screenshots.rs` | the whole fault, end to end, through a real pointer drag |
+| `moving_the_caret_is_not_a_change_to_the_text` | `unluminous-core`, `document.rs` | a caret move counting as a change to the text |
+| `a_layout_that_changed_means_the_text_revision_moved` | `unluminous-core`, `document.rs` | a command that changes the layout and forgets to say so |
+| `an_edit_measures_the_paragraph_it_touched_and_not_the_document` | `unluminous-core`, `layout.rs` | `relayout` quietly laying the whole document out |
+| `painting_a_long_document_costs_a_screenful` | `unluminous-app`, `editor_view.rs` | the painter collecting every glyph in the file |
+| `dragging_a_selection_lays_nothing_out_again_and_colours_nothing_again` | `unluminous-app`, `screenshots.rs` | the whole fault, end to end, through a real pointer drag |
 
 The third of those is worth a note. Comparing the answers cannot tell a document that was *kept* from
 one that was laid out again and came out the same, and that is exactly the difference the incremental

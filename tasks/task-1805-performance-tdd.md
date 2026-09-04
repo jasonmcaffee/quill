@@ -1,11 +1,11 @@
-# task-1805 — making Unluminate cheaper to run
+# task-1805 — making Unluminous cheaper to run
 
-> *"How can we make Unluminate more performant without affecting features? Eg use less ram, less cpu,
+> *"How can we make Unluminous more performant without affecting features? Eg use less ram, less cpu,
 > load faster. Deeply analyze and experiment. Research online. Write a TDD, then fully implement."*
 
 Everything here was measured on the machine it was written on, before and after, with scripts kept in
 `_agent_output/task-1805-performance/` so that any of it can be measured again. Nothing in it changes
-what Unluminate does; every one of the 483 screenshot images is byte for byte what it was.
+what Unluminous does; every one of the 483 screenshot images is byte for byte what it was.
 
 ## 1. Where it started
 
@@ -18,13 +18,13 @@ Five runs, median, of the released 0.35.0 binary opening this repository and the
 | working set | 222.6 MB |
 | private bytes | 438 MB |
 | **processor time while completely idle** | **43.4 ms/s** |
-| `unluminate.exe` | 29.9 MB |
+| `unluminous.exe` | 29.9 MB |
 | threads | 41 |
 
 The idle number is the one that stopped the room. **A window with nobody touching it was using a
 twenty-third of a processor core, for ever, to show a picture that was not changing.** egui's own
 README says the opposite is the design — *"egui only repaints when there is interaction… so if your
-app is idle, no CPU is wasted"* — and Unluminate deliberately draws twice a second anyway, for a
+app is idle, no CPU is wasted"* — and Unluminous deliberately draws twice a second anyway, for a
 reason `app::HEARTBEAT` records. Two frames a second at 43 ms/s is **21 ms a frame**, and egui's own
 estimate for a whole application is 1–2.
 
@@ -38,13 +38,13 @@ about the whole.
 
 So two instruments were built, and both are meant to be kept.
 
-**`services::frame_trace`** — `UNLUMINATE_FRAME_TRACE=<file> unluminate` writes one line per frame:
+**`services::frame_trace`** — `UNLUMINOUS_FRAME_TRACE=<file> unluminous` writes one line per frame:
 
 ```text
 frame 21.482 outside 458.926 | control 0.006 git 0.001 colour 0.001 menus 0.726 chrome 0.541 explorer 22.024 …
 ```
 
-`frame` is `UnluminateApp::ui` end to end, `outside` is everything between two frames (egui's
+`frame` is `UnluminousApp::ui` end to end, `outside` is everything between two frames (egui's
 tessellation, the graphics card, the wait), and each name after the bar is one phase. It also writes
 `mark` lines during startup saying when the program had got to each step of `main`. **It costs one
 relaxed atomic load when it is off**, which is the only way an instrument may live in a hot path.
@@ -100,11 +100,11 @@ own documentation already said.
 
 ### 3.2 A window that was killed cost 414 ms of the next one's startup — and of every CLI command
 
-`main` called `unluminate_cli::client::running()` on every start, and that dials every listed
+`main` called `unluminous_cli::client::running()` on every start, and that dials every listed
 instance's port with a 400 ms timeout. Two things were wrong with it.
 
 **It asked the port when the question was about the process.** A window that is killed rather than
-closed leaves its instance file behind, and Unluminate is killed rather than closed all the time — a
+closed leaves its instance file behind, and Unluminous is killed rather than closed all the time — a
 task manager, a crash, a script. Measured on this machine, a dead loopback port **does not answer
 with a refusal**; it answers with nothing, so a single stale file spent the entire timeout.
 `instances::is_running` asks the operating system first, which takes microseconds, and the port is
@@ -113,7 +113,7 @@ something else entirely and only the port can settle that.
 
 **And it asked at all when there was nothing to filter.** The answer is used for one thing: skipping
 projects that already have a window while a desktop launch restores a session. Every other start —
-`unluminate .` in a terminal, `unluminate-cli launch`, `File → New Window`, a file opened from the
+`unluminous .` in a terminal, `unluminous-cli launch`, `File → New Window`, a file opened from the
 shell — names its folder, so the list is empty and the answer is thrown away. It is now asked only
 when there is something to filter.
 
@@ -127,11 +127,11 @@ later one in **1399**. `running_process` asks `GetExitCodeProcess` now, and a pr
 this replaced, so the ambiguity costs a little time in a rare case and can never give a wrong answer.
 
 The same question was being answered twice in the tree: `services::agent_tasks` had its own copy of
-`kill(pid, 0)` / `OpenProcess`. There is one now, in `unluminate-cli::instances`, beside the files
+`kill(pid, 0)` / `OpenProcess`. There is one now, in `unluminous-cli::instances`, beside the files
 that ask it.
 
-**`unluminate-cli status` with a stale instance file present: 431 ms → 75 ms.** That is the number
-that matters most for an agent, because every `unluminate-cli` command pays it.
+**`unluminous-cli status` with a stale instance file present: 431 ms → 75 ms.** That is the number
+that matters most for an agent, because every `unluminous-cli` command pays it.
 
 ### 3.3 `Plugins::grammars()` deep-cloned every plugin's word lists, three times a frame
 
@@ -140,7 +140,7 @@ builtins, its types, its definers and its import words, several hundred `String`
 TypeScript — **once per extension that plugin claims**. Eleven plugins claiming two dozen extensions
 between them made two dozen full copies a call.
 
-`UnluminateApp::menu_state` calls it three times a frame, to answer three yes/no questions:
+`UnluminousApp::menu_state` calls it three times a frame, to answer three yes/no questions:
 `definitions_apply_here`, `symbols_apply_here`, `completion_applies_here`. **0.43 ms of a 1.4 ms
 frame** — the largest single thing left in an idle one, and a tax on every interactive frame too.
 
@@ -185,15 +185,15 @@ the window has drawn a frame, and after one frame it has the real rectangle.
 |---|---|---|
 | fonts + plugins + a walk of 917 files (`--no-graphics`) | **12.3 MB** | **6.4 MB** |
 | the same, plus a DX12 device and egui's shader | **135.7 MB** | **315.8 MB** |
-| the whole Unluminate window | 223 MB | 438 MB |
+| the whole Unluminous window | 223 MB | 438 MB |
 
 **The DX12 device alone is 123 MB of working set and 309 MB of private bytes** — 55% of the working
-set and 70% of the private bytes of a running Unluminate, and none of it is Unluminate's to give
+set and 70% of the private bytes of a running Unluminous, and none of it is Unluminous's to give
 back. What is left, about 87 MB of working set, is the window, its swapchain, the glyph atlas, two
 shells, the file tree, the plugins, the settings, the tabs and every piece of state the editor holds.
 
 For scale: Zed, the fastest native editor there is, benchmarks at about **222 MB** and VS Code
-between 1 and 3.5 GB. Unluminate is already where the good end of that range is, and the reason is
+between 1 and 3.5 GB. Unluminous is already where the good end of that range is, and the reason is
 that it is a native window rather than a browser.
 
 **So there is no memory work in this ticket, and that is a finding rather than an omission.** The
@@ -233,14 +233,14 @@ mark restore-project  481.382
 mark ready            483.064
 ```
 
-**Everything Unluminate does before the graphics device is 1.5 ms, and everything after it is 55 ms.**
+**Everything Unluminous does before the graphics device is 1.5 ms, and everything after it is 55 ms.**
 The remaining 428 is winit and a DX12 driver enumerating adapters and building a device, and it is the
 floor for any window drawn on the graphics card. It was 1104 ms to `ready` when this ticket opened.
 
 ## 6. Weighed and rejected, with the numbers
 
-**`lto = "fat"` with `codegen-units = 1`.** Takes `unluminate.exe` from 29.9 MB to **26.8** and
-`unluminate-cli.exe` from 1.29 to 1.0 — and moves nothing anybody can feel: startup 738 ms against
+**`lto = "fat"` with `codegen-units = 1`.** Takes `unluminous.exe` from 29.9 MB to **26.8** and
+`unluminous-cli.exe` from 1.29 to 1.0 — and moves nothing anybody can feel: startup 738 ms against
 734, a keystroke on a 380 KB file 2.498 ms against 2.508, working set 220.4 MB against 220.9. What it
 costs is the build, **52 seconds to 4 minutes 25**, five times over, on a repository whose rule is
 that finishing a task means running a release build. A tenth off the installer is worth having and it
@@ -248,7 +248,7 @@ is not worth that. The measurement is in `Cargo.toml` beside the setting so the 
 again rather than argued.
 
 **`strip = true`.** Refused. `services::crash_log` sets `RUST_BACKTRACE=1` itself, precisely because
-*"the person whose Unluminate just disappeared did not set an environment variable before it
+*"the person whose Unluminous just disappeared did not set an environment variable before it
 happened"*, and a stripped binary writes a crash log of hexadecimal addresses. The release profile
 already carries no debug info, so there is little to strip anyway.
 
@@ -263,7 +263,7 @@ recover by itself* — and weakening a stated guarantee to save a millisecond a 
 
 **Copying the file into a `String` on every keystroke.** `colour_the_file` does
 `document.text().to_string()`, which on a 380 KB file is **0.23 ms** of the 1.27 ms a keystroke costs.
-It could be avoided, but only by teaching `unluminate_core::incremental` to read a rope rather than a
+It could be avoided, but only by teaching `unluminous_core::incremental` to read a rope rather than a
 `&str`, which is a change to the tokeniser's whole interface for a fifth of a millisecond. Written
 down rather than done.
 
@@ -275,7 +275,7 @@ and `task-1804` already did this work and it holds; there is no cheap win left i
 ## 7. What is left, in the order it would be done
 
 1. **Ask for a graphics device on a thread, or later.** 428 ms of a 584 ms startup is eframe building
-   a DX12 device before anything is drawn. Nothing in Unluminate controls that ordering today —
+   a DX12 device before anything is drawn. Nothing in Unluminous controls that ordering today —
    `eframe::run_native` owns it — so this is a change to eframe or a move off it, and it is by far
    the largest number left.
 2. **The rope copy per keystroke**, §6. 0.23 ms, and an interface change.
@@ -299,10 +299,10 @@ seconds:
 | **processor time while idle** | 43.4 ms/s | **5.6 ms/s** | **7.8x** |
 | **one idle frame** | ~24 ms | **0.65 ms** | **37x** |
 | one keystroke, 380 KB file | 2.5 ms | 2.7 ms | unchanged |
-| `unluminate-cli` with a stale instance file | 431 ms | **75 ms** | **5.7x** |
+| `unluminous-cli` with a stale instance file | 431 ms | **75 ms** | **5.7x** |
 | working set | 222.6 MB | 223.1 MB | unchanged, and §4 says why |
 | private bytes | 438 MB | 439.6 MB | unchanged, and §4 says why |
-| `unluminate.exe` | 29.9 MB | 30.0 MB | unchanged |
+| `unluminous.exe` | 29.9 MB | 30.0 MB | unchanged |
 
 957 unit tests, 483 screenshot tests and every other crate's suite pass, and not one accepted image
 changed.
@@ -310,8 +310,8 @@ changed.
 ## 9. How to measure it again
 
 ```text
-UNLUMINATE_FRAME_TRACE=trace.txt unluminate <folder>
-cargo run --release -p unluminate-app --example startup_cost -- <folder> [--no-graphics]
+UNLUMINOUS_FRAME_TRACE=trace.txt unluminous <folder>
+cargo run --release -p unluminous-app --example startup_cost -- <folder> [--no-graphics]
 
 pwsh _agent_output/task-1805-performance/measure.ps1     -Label after     # startup, memory, idle cpu
 pwsh _agent_output/task-1805-performance/trace.ps1       -Label after     # the phases of an idle frame

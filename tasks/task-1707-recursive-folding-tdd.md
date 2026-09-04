@@ -98,7 +98,7 @@ Sources:
 jumps past each fold it makes, so it is not recursive) and `unfoldAll` (every level). There is no
 `unfoldRecursively`.
 
-The data model is the interesting part, because it is the same shape Unluminate's is. `foldState` is a
+The data model is the interesting part, because it is the same shape Unluminous's is. `foldState` is a
 `StateField<DecorationSet>` — a set of folded ranges. `unfoldEffect` removes **only the
 exactly-matching range**; a child's fold is a separate entry and is untouched. So in CodeMirror,
 unfolding a parent **preserves** the children's own fold state: a child that was independently folded
@@ -117,12 +117,12 @@ and a recursive collapse closes the whole subtree.** A child that was independen
 a recursive expand; a child that was open is closed by a recursive collapse. There is no "keep the
 children as they were" mode.
 
-That is the one place Unluminate's data model has to be *deliberate* rather than *lazy*. Unluminate's fold state
+That is the one place Unluminous's data model has to be *deliberate* rather than *lazy*. Unluminous's fold state
 is a set of collapsed head offsets inside the `Document` — the CodeMirror shape. Removing only the
 parent's offset would *preserve* the children (CodeMirror's behaviour), which is the wrong answer for
 this feature. So a recursive expand must remove every offset inside the target, and a recursive
 collapse must add every head inside the target, and that is written as two small functions in
-`unluminate_core::folding` rather than left to the set's natural behaviour.
+`unluminous_core::folding` rather than left to the set's natural behaviour.
 
 ### 3.1 The recursive set
 
@@ -155,8 +155,8 @@ block. The keyboard asks the same question of the caret: the innermost region th
 `--recursive` is a switch on the two commands that already take `--line`:
 
 ```
-unluminate-cli fold collapse [--line <number>] [--all] [--recursive] [--regions]
-unluminate-cli fold expand   [--line <number>] [--all] [--recursive] [--regions]
+unluminous-cli fold collapse [--line <number>] [--all] [--recursive] [--regions]
+unluminous-cli fold expand   [--line <number>] [--all] [--recursive] [--regions]
 ```
 
 `--recursive` needs `--line`: it is "this block and everything in it", and a block is named by its
@@ -193,7 +193,7 @@ block, `Expand Recursively` when nothing is collapsed.
 
 ## 5. Tests
 
-**`unluminate-core`, with no window.** A nested file — a function holding a `for` holding an `if`, the
+**`unluminous-core`, with no window.** A nested file — a function holding a `for` holding an `if`, the
 study's own shape — and:
 
 - `region_tree` at the function's head returns all three, in order.
@@ -201,7 +201,7 @@ study's own shape — and:
 - `region_tree` at a line that heads nothing returns `None`.
 - `contains_region` for a grandchild, a sibling (false) and the region itself (false).
 
-**`unluminate-app`, with no window.** Over a nested document:
+**`unluminous-app`, with no window.** Over a nested document:
 
 - Collapse recursively at the function's head: the function, the `for` and the `if` are all collapsed;
   a block outside the function keeps whatever state it had.

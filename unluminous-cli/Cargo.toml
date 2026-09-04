@@ -1,0 +1,35 @@
+[package]
+name = "unluminous-cli"
+description = "Drive a running Unluminous window from the command line."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+default-run = "unluminous-cli"
+
+# Two targets from one crate, and that is the point. The library is the catalogue of commands, the
+# wire format and where a running Unluminous advertises itself; `unluminous-app` depends on it so that the
+# window and the client cannot come to disagree about what `tab.open` is called or what it takes.
+# The binary is the client a person or an agent types at. Nothing here depends on `unluminous-app`, so
+# the client stays a small, fast program with no window, no graphics card and no fonts behind it.
+[lib]
+name = "unluminous_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "unluminous-cli"
+path = "src/main.rs"
+
+[dependencies]
+serde_json.workspace = true
+
+# Asking the operating system whether a process is still running, which is how a window that was
+# killed rather than closed is told from one that is there. It is one call — `kill(pid, 0)` on Unix
+# and `OpenProcess` on Windows — and it replaces dialling a dead window's port and waiting for the
+# connection to time out. See `instances::is_running`. Both crates are already in the tree by
+# another route, so this adds nothing to a build.
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true

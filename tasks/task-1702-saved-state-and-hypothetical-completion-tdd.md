@@ -31,7 +31,7 @@ edit in the first place.
 
 ### Non-goals
 
-- Persisting undo history across Unluminate restarts.
+- Persisting undo history across Unluminous restarts.
 - Comparing the whole buffer with disk after every edit; dirty tracking stays O(1).
 - A second completion engine or a second candidate pool.
 - Applying `--choose` to hypothetical text. Choosing edits the real document and therefore continues
@@ -61,8 +61,8 @@ Three editor APIs use the same saved-point idea:
 - [CodeMirror 5](https://codemirror.net/5/doc/manual.html) returns a change-generation token which
   `isClean` can compare later; requesting a generation can also close the current grouped event.
 
-Unluminate restores whole snapshots, so a monotonic history revision carried by each snapshot is the
-smallest version of this pattern. It is safer than a raw vector index because Unluminate caps history and
+Unluminous restores whole snapshots, so a monotonic history revision carried by each snapshot is the
+smallest version of this pattern. It is safer than a raw vector index because Unluminous caps history and
 clears redo when a new branch is made.
 
 ## 5. Architectural overview
@@ -89,7 +89,7 @@ flowchart LR
 
 ## 6. Components and interfaces
 
-### 6.1 `unluminate_core::Document`
+### 6.1 `unluminous_core::Document`
 
 Add three counters:
 
@@ -124,7 +124,7 @@ combination `--stem` plus `--choose` are usage errors. Listing still leaves the 
 ### 6.3 Catalogue and documentation
 
 Add `stem` to the `editor complete` catalogue flags and make the summary explicit: use this flag for
-a hypothetical word instead of inserting it. Regenerate `unluminate-cli/docs/commands.md` from the
+a hypothetical word instead of inserting it. Regenerate `unluminous-cli/docs/commands.md` from the
 catalogue so MCP, CLI help, and the reference cannot drift.
 
 ## 7. Data flows and safety
@@ -161,7 +161,7 @@ that mutates a document.
 |---|---|---|
 | Compare current text with disk in `is_modified` | Simple truth source | File I/O and O(n) comparison on a property read throughout the UI; disk can also change independently. |
 | Store a hash of the saved text | O(1) comparison after hashing | Every edit still needs an O(n) rehash or an incremental hash with more invariants than the undo stack already provides. |
-| Store only an undo vector index | Familiar `savedIndex` shape | Unluminate caps the vector and branches by clearing redo; a reused numeric index can name different content. |
+| Store only an undo vector index | Familiar `savedIndex` shape | Unluminous caps the vector and branches by clearing redo; a reused numeric index can name different content. |
 | Put `modified` inside each snapshot | Minimal change to undo | It preserves a derivative boolean rather than the saved point and does not by itself handle grouped typing across save. |
 | Implement `--stem` by inserting and rolling back internally | Reuses current offer code literally | Repeats the defect's mutation pattern, risks revisions/caches/observers, and makes a read-only query depend on perfect rollback. |
 | Rank `--stem` without looking at position | Smallest CLI change | Gives the wrong candidate family inside imports, where position selects module paths or exports. |
@@ -181,4 +181,4 @@ that mutates a document.
     modified state, undo availability, revisions, and popup state remain unchanged.
   - reject empty `--stem` and `--stem` combined with `--choose` as usage errors.
 - Run the focused Rust tests for the changed crates and command path, build release artefacts, then
-  drive the installed Unluminate through the real CLI round trip before publishing the patch release.
+  drive the installed Unluminous through the real CLI round trip before publishing the patch release.

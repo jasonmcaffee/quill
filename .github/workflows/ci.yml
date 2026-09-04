@@ -8,7 +8,7 @@
 # ## Why the split, and what each job is really for
 #
 # The platform split is what makes this more than a formality. **The screenshot baselines are
-# per-platform** — macOS reads `crates/unluminate-app/tests/snapshots`, Windows
+# per-platform** — macOS reads `crates/unluminous-app/tests/snapshots`, Windows
 # `tests/snapshots/windows` — so before this each set was only ever verified on whichever machine
 # happened to be running, and a change that broke the other platform's rendering was found by whoever
 # next opened the other platform.
@@ -17,7 +17,7 @@
 #
 # - **`checks`** is the cheap one and runs first: does it build, is it formatted, does clippy pass,
 #   is the reference documentation in step with the catalogue, and does `CHANGELOG.md` still say what
-#   the history says. It is the whole `unluminate-cli` contract and it needs no graphics card.
+#   the history says. It is the whole `unluminous-cli` contract and it needs no graphics card.
 # - **`suite`** runs everything that does not need a window, on both platforms. 1,295 of the tests
 #   are here and they are the editor's text buffer, the terminal's emulation, git, the debug adapter
 #   protocol, the database wire protocols and the chat client.
@@ -31,12 +31,12 @@
 # fail is a job nobody reads. The baselines in `tests/snapshots` were last accepted on a Mac before
 # `task-1804`, which changed the status bar, the menu bar and the Find in Files modal — so they are
 # stale in exactly the way this workflow exists to make visible. The repair is one run of
-# `UPDATE_SNAPSHOTS=1 cargo test -p unluminate-app --test screenshots` on a Mac, with somebody opening
+# `UPDATE_SNAPSHOTS=1 cargo test -p unluminous-app --test screenshots` on a Mac, with somebody opening
 # the images, which is the rule `CLAUDE.md` sets and which a CI runner cannot keep.
 #
 # ## What is not here
 #
-# `crates/unluminate-app/tests/agent_board.rs` — the six end-to-end tests that start a real agent.
+# `crates/unluminous-app/tests/agent_board.rs` — the six end-to-end tests that start a real agent.
 # They cost money and minutes and are `#[ignore]`d; `nightly.yml` is where they run.
 
 name: CI
@@ -71,12 +71,12 @@ jobs:
       - name: cargo fmt
         run: cargo fmt --all -- --check
       - name: cargo clippy
-        run: cargo clippy -p unluminate-core -p unluminate-cli -p unluminate-terminal -p unluminate-git -p unluminate-dap -p unluminate-db -p unluminate-chat -- -D warnings
-      # `unluminate-cli/src/documentation.rs` fails while a command has no section in commands.md,
+        run: cargo clippy -p unluminous-core -p unluminous-cli -p unluminous-terminal -p unluminous-git -p unluminous-dap -p unluminous-db -p unluminous-chat -- -D warnings
+      # `unluminous-cli/src/documentation.rs` fails while a command has no section in commands.md,
       # while a usage line is stale, or while a section describes a command that has gone. It is the
       # one test that keeps the document handed to an agent from drifting from the catalogue.
       - name: The written reference is in step with the catalogue
-        run: cargo test -p unluminate-cli
+        run: cargo test -p unluminous-cli
       - name: CHANGELOG.md says what the history says
         run: node tools/changelog.mjs --check
 
@@ -91,12 +91,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: cargo test --workspace --exclude unluminate-app
-        run: cargo test --workspace --exclude unluminate-app
+      - name: cargo test --workspace --exclude unluminous-app
+        run: cargo test --workspace --exclude unluminous-app
       # The window's own unit tests: the file tree, the fonts, the settings file, the menus and the
       # key encoding. No graphics card, so they run wherever the crate builds.
-      - name: cargo test -p unluminate-app --lib --bins
-        run: cargo test -p unluminate-app --lib --bins
+      - name: cargo test -p unluminous-app --lib --bins
+        run: cargo test -p unluminous-app --lib --bins
 
   screenshots:
     name: The window through wgpu (${{ matrix.os }})
@@ -109,8 +109,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: cargo test -p unluminate-app --test screenshots
-        run: cargo test -p unluminate-app --test screenshots
+      - name: cargo test -p unluminous-app --test screenshots
+        run: cargo test -p unluminous-app --test screenshots
       # What was rendered, so a failure can be looked at rather than guessed at. `.new.png` is what
       # the run produced and `.diff.png` is where it differs, which is how a person decides whether a
       # change was meant.
@@ -120,6 +120,6 @@ jobs:
         with:
           name: screenshots-${{ matrix.os }}
           path: |
-            crates/unluminate-app/tests/snapshots/**/*.new.png
-            crates/unluminate-app/tests/snapshots/**/*.diff.png
+            crates/unluminous-app/tests/snapshots/**/*.new.png
+            crates/unluminous-app/tests/snapshots/**/*.diff.png
           if-no-files-found: ignore

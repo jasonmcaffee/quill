@@ -29,7 +29,7 @@ entitled to keep for itself.
 
 **Non-Goals**
 
-- No change to how Unluminate's own two-way focus works — `Focus::Editor` and `Focus::Terminal` stay as
+- No change to how Unluminous's own two-way focus works — `Focus::Editor` and `Focus::Terminal` stay as
   they are. This is the other half of the question, not a replacement for it.
 - No new text boxes, no change to what any box does, and no change to the rendering. The accepted
   screenshots must not move.
@@ -38,13 +38,13 @@ entitled to keep for itself.
 ## Problem statement
 
 `components::editor_view::handle_input` takes the frame's events and turns each one into a
-`unluminate_core::Command`:
+`unluminous_core::Command`:
 
 ```rust
 let events = ui.input(|input| input.events.clone());
 ```
 
-Its only guard is `has_focus`, which `app::UnluminateApp::show_editor` computes as
+Its only guard is `has_focus`, which `app::UnluminousApp::show_editor` computes as
 `self.focus == Focus::Editor`. That enum has two values, `Editor` and `Terminal`, and answers the
 question *editing area or terminal*. It cannot answer *has some other widget taken the keyboard*,
 and nothing else asks.
@@ -54,7 +54,7 @@ frame's input and every reader sees all of it. So while the explorer's filter bo
 keyboard focus and is taking `Event::Text("n")` for itself, the editing area reads the same event a
 moment later and inserts `n` into the file.
 
-The same is true of the menu shortcut watcher in `UnluminateApp::show`, which walks `input.events` looking
+The same is true of the menu shortcut watcher in `UnluminousApp::show`, which walks `input.events` looking
 for a shortcut. `Ctrl+Z` in the filter box reaches egui's text box undo **and** `Action::Undo`, which
 is why one press does both.
 
@@ -73,7 +73,7 @@ a commit message is a paragraph inserted into the source file behind it.
 flowchart TD
     OS[Key press] --> RAW[egui input events for the frame]
     RAW --> TE[TextEdit that has egui keyboard focus]
-    RAW --> SC[Menu shortcut watcher in UnluminateApp show]
+    RAW --> SC[Menu shortcut watcher in UnluminousApp show]
     RAW --> ED[editor_view handle_input]
     RAW --> TERM[terminal_panel handle_input]
 
@@ -86,7 +86,7 @@ flowchart TD
     Q1 -->|yes| DROP1[Drop only Undo, Redo, Select All]
     Q1 -->|no| ACT[Every action, as now]
     Q2 -->|yes| DROP2[Take nothing]
-    Q2 -->|no| DOC[unluminate_core Command on the document]
+    Q2 -->|no| DOC[unluminous_core Command on the document]
     Q3 -->|yes| DROP3[Take nothing]
     Q3 -->|no| PTY[Bytes to the program]
 ```
@@ -109,11 +109,11 @@ pub fn text_box_has_the_keyboard(ctx: &egui::Context) -> bool {
 ```
 
 `Context::text_edit_focused` is asked rather than `Context::egui_wants_keyboard_input`. The second is
-`memory.focused().is_some()`, which is true of **any** focusable widget, and every control Unluminate
+`memory.focused().is_some()`, which is true of **any** focusable widget, and every control Unluminous
 draws with `Sense::click` is focusable — so a control reached with Tab would stop the document being
 typed into. `text_edit_focused` is true only when the widget holding focus is one that takes text,
 which is exactly the case being guarded against. In egui 0.36 only `TextEdit` and `DragValue` ask
-for focus when clicked, and Unluminate has no `DragValue`.
+for focus when clicked, and Unluminous has no `DragValue`.
 
 ### The editing area
 
@@ -125,7 +125,7 @@ The mouse is untouched. `handle_pointer` still places the caret, because clickin
 how the document is meant to take the keyboard back, and egui surrenders the box's focus on that same
 click.
 
-**Ordering is already right and does not need arranging.** `UnluminateApp::show` draws the explorer before
+**Ordering is already right and does not need arranging.** `UnluminousApp::show` draws the explorer before
 the editing area, so on the frame the filter box is clicked it has already asked for focus by the
 time the editing area asks the question. The dialogs are drawn *after* the editing area, but focus
 persists in `egui::Memory` between frames, so on every frame that carries a typed character the
@@ -151,7 +151,7 @@ platform delivers them as clipboard events, so they never reach this watcher. Ev
 every menu keeps working while a box has the keyboard, which is what a person expects: `Ctrl+S` in a
 search box saves the file in every editor there is.
 
-The watcher in `UnluminateApp::show` asks the question once per frame and skips those three when the
+The watcher in `UnluminousApp::show` asks the question once per frame and skips those three when the
 answer is yes.
 
 ### What each box gets, and why nothing is per-box
@@ -186,16 +186,16 @@ test that types a whole word rather than a single letter.
 
 | Option | Pros | Cons |
 |---|---|---|
-| **Ask `text_edit_focused` in one shared place** (chosen) | One question, three readers; covers every text box now and later; the terminal moves on to the same answer | Depends on an egui predicate rather than something Unluminate owns |
-| Ask `egui_wants_keyboard_input`, which is `focused().is_some()` | What the terminal used; slightly cheaper | True for any focusable widget, and every Unluminate control is focusable, so tabbing to a button would stop the document taking typing |
+| **Ask `text_edit_focused` in one shared place** (chosen) | One question, three readers; covers every text box now and later; the terminal moves on to the same answer | Depends on an egui predicate rather than something Unluminous owns |
+| Ask `egui_wants_keyboard_input`, which is `focused().is_some()` | What the terminal used; slightly cheaper | True for any focusable widget, and every Unluminous control is focusable, so tabbing to a button would stop the document taking typing |
 | Give each box a flag the app reads, such as `filter_has_focus` | Explicit; no egui internals | One flag per box, five today, and a sixth box means a sixth flag and a sixth chance to forget one |
-| Add a `Focus::TextBox` variant to Unluminate's own enum | Fits the existing idea of focus | Unluminate would have to be told which box, and by whom, and would then be tracking what egui already tracks correctly |
+| Add a `Focus::TextBox` variant to Unluminous's own enum | Fits the existing idea of focus | Unluminous would have to be told which box, and by whom, and would then be tracking what egui already tracks correctly |
 | Consume the events in the box so later readers cannot see them | No guard needed anywhere | egui's `TextEdit` does not offer it, so it would mean draining `input.events` behind egui's back and breaking anything downstream that legitimately wants them |
 | Stop drawing the editing area while a box has focus | Trivially correct | The document would vanish from the window while a filter is typed |
 
 ## Testing strategy
 
-Functional, through the real window, in `crates/unluminate-app/tests/screenshots.rs`, driving the same
+Functional, through the real window, in `crates/unluminous-app/tests/screenshots.rs`, driving the same
 controls a person drives. No new accepted image is needed — nothing about the rendering changes.
 
 | Test | What it does | What it asserts |
@@ -236,7 +236,7 @@ which takes the path of the binary so the same steps can be run against a build 
 the fix. Two attempts at it proved nothing before it worked, and both are worth writing down:
 
 - **`SendKeys` and a real mouse click go to whatever window is in front.** The first attempt typed
-  `note` into a terminal that happened to be over Unluminate, and reported the document unchanged, which
+  `note` into a terminal that happened to be over Unluminous, and reported the document unchanged, which
   was true and meaningless.
 - **Messages posted to the window handle never arrive.** `WM_LBUTTONDOWN` and `WM_CHAR` posted to the
   window left both the filter box and the document untouched on a build from *before* the fix — the
@@ -245,11 +245,11 @@ the fix. Two attempts at it proved nothing before it worked, and both are worth 
 
 What works is raising the window, taking the foreground with the synthetic Alt press in front of
 `SetForegroundWindow`, and then **refusing to type at all** unless `GetForegroundWindow` agrees the
-window is Unluminate's. `MainWindowHandle` is no good either — it comes back with a zero sized client
+window is Unluminous's. `MainWindowHandle` is no good either — it comes back with a zero sized client
 area, because the window has no decorations and is composed through a DirectComposition visual, so
 the window is found by walking the process's top level windows.
 
-Before the fix: the filter box reads `note`, line one reads `note# Unluminate`, the tab, the title bar and
+Before the fix: the filter box reads `note`, line one reads `note# Unluminous`, the tab, the title bar and
 the status bar all carry the unsaved mark and the caret is at `Ln 1, Col 5`. After it: the filter box
-reads `note`, line one reads `# Unluminate`, there is no unsaved mark anywhere and the caret is at
+reads `note`, line one reads `# Unluminous`, there is no unsaved mark anywhere and the caret is at
 `Ln 1, Col 1`. The two pictures are beside the script.

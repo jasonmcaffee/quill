@@ -28,7 +28,7 @@ menu. And `settings list` prints `name`, value and help as three columns where t
 16 characters wide and the value may be a path:
 
 ```
-debug.lldb   C:\Users\jason\AppData\Local\Unluminate\adapters\codelldb\extension\adapter\codelldb.exeWhere the LLDB adapter lives, for Rust and native code.
+debug.lldb   C:\Users\jason\AppData\Local\Unluminous\adapters\codelldb\extension\adapter\codelldb.exeWhere the LLDB adapter lives, for Rust and native code.
 ```
 
 There is no separator between the value and the help, so a reader — human or model — cannot tell
@@ -45,7 +45,7 @@ The pattern is the same everywhere a CLI is built to be read by a program:
 - **`kubectl get -o jsonpath` / `--jq`** — projection is the caller's right, not the server's
   guess.
 
-Unluminate's catalogue is already shaped for this: every command is one row with named arguments and
+Unluminous's catalogue is already shaped for this: every command is one row with named arguments and
 flags, the client parses against it, and the MCP tools are generated from it. So the fix is not a
 new mechanism, it is **four flags in the catalogue and the window honouring them**, and the MCP
 tools pick them up the day they are added, with no tool written by hand.
@@ -144,7 +144,7 @@ already one object per setting with the three fields named, so this is the text 
    `status --section editor,git` carries exactly those two; a section that is not a section is
    refused; `action list --menu view` returns only View rows and a menu that is not a menu is
    refused; `settings list` keeps a long value and its help apart.
-3. `unluminate-cli mcp tools --count` before and after: the tool count is unchanged and the byte
+3. `unluminous-cli mcp tools --count` before and after: the tool count is unchanged and the byte
    figures say what the new flags cost in the agent's context.
 4. The study harness, `tools/agent-study/`, re-run on the four scenarios this is about — s04, s05,
    s19 and s20 — against the rebuilt window, with the reply sizes read out of the session files and
@@ -152,7 +152,7 @@ already one object per setting with the three fields named, so this is the text 
 
 ## 6. Live verification, with the numbers
 
-Driven against a rebuilt window (`target/release/unluminate-cli.exe` → the window on
+Driven against a rebuilt window (`target/release/unluminous-cli.exe` → the window on
 `_agent_output/agent-study/scratch-project`), the four replies answer proportionately when asked to,
 and answer exactly as before when not:
 
@@ -165,10 +165,10 @@ and answer exactly as before when not:
 
 The refusals answer the way the rule says: `status --section purple` → "`purple` is not a section of
 `status`. It is one of: editor, tabs, panes, …"; `action list --menu purple` → "There is no menu
-called `purple`. The menus are: Unluminate, File, …". Several sections and case are honoured:
+called `purple`. The menus are: Unluminous, File, …". Several sections and case are honoured:
 `--section editor,git` carries exactly those two.
 
-`unluminate-cli mcp tools --count`: the tool count is unchanged (22 grouped / 148 every); the new flags
+`unluminous-cli mcp tools --count`: the tool count is unchanged (22 grouped / 148 every); the new flags
 cost 61,516 → 62,090 B grouped and 145,735 → 147,416 B every — the flags are on the tools, and the
 default of each is the old full reply.
 
@@ -176,7 +176,7 @@ default of each is the old full reply.
 
 The harness was re-run on s04, s05, s19 and s20 against the rebuilt window, and every scenario came
 back with **zero tool calls**: the local model answered every turn with a 500 —
-`the current context does not logits computation. skipping`. That is the model server, not Unluminate:
+`the current context does not logits computation. skipping`. That is the model server, not Unluminous:
 port 8087 (the port `qwen38-study/qwen38-27b` is configured for) is serving the **nomic embeddings**
 model, which cannot do logits, and the chat model on 8080 is not answering new requests. Re-running
 the four scenarios needs the study model (`Qwen3.8-27B-IQ4_XS.gguf`, 15.7 GB) loaded on 8087, which

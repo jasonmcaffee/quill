@@ -14,7 +14,7 @@ The three that change the window:
    every file opened afterwards are set in it.
 3. There is no way to change the size without opening Settings. **Pinch** on a trackpad and
    **Ctrl/Cmd with plus, minus and zero** change it in place, and what they change is the same global
-   setting, so it is still there next time Unluminate starts.
+   setting, so it is still there next time Unluminous starts.
 
 The three that are faults:
 
@@ -39,10 +39,10 @@ The three that are faults:
 
 ## Non-goals
 
-- **Not** a per-file font. IntelliJ has one editor font; so does Unluminate.
+- **Not** a per-file font. IntelliJ has one editor font; so does Unluminous.
 - **Not** egui's own zoom. `Ctrl+=` in egui scales the whole interface, menus and all. That is not
   what IntelliJ's `Ctrl+Mouse Wheel` does and not what is being asked for, so egui's keyboard zoom is
-  switched off and the key presses become Unluminate's own actions.
+  switched off and the key presses become Unluminous's own actions.
 - **Not** a change to what formatting *does*. Bold is still bold; it is only reached differently.
 - **Not** a new row height, colour or type size. Everything here is drawn out of `theme::color`,
   `theme::size` and the type scale already in `design/style-guide.md`.
@@ -51,11 +51,11 @@ The three that are faults:
 
 ## Problem statement
 
-Unluminate draws a 44-point strip under the title bar holding bold, italic, underline, strikethrough, five
+Unluminous draws a 44-point strip under the title bar holding bold, italic, underline, strikethrough, five
 colour circles, four alignments, a line-spacing dropdown and the three Markdown view modes. It is
 drawn identically for `welcome.md` and for `main.rs`.
 
-For a code file every one of those controls is meaningless. Unluminate saves plain text and carries no
+For a code file every one of those controls is meaningless. Unluminous saves plain text and carries no
 formatting to disk, so bold on a `.rs` file is a decoration that lasts until the file is reopened,
 and the three view-mode buttons switch between a Markdown source and a Markdown preview of a file
 that is not Markdown. Fourteen controls that do nothing, above the code, on every code file.
@@ -64,9 +64,9 @@ Even for prose the strip is a lot of window given permanently to nine settings t
 
 The font is worse than useless — it is inconsistent. `Settings -> Appearance -> Font` writes
 `appearance.font.family` and `appearance.font.size` to the settings file, but
-`UnluminateApp::apply_settings` applies the change to `self.document_mut()`, which is the **active tab
+`UnluminousApp::apply_settings` applies the change to `self.document_mut()`, which is the **active tab
 only**. Open three files, change the font, and the two tabs that were not showing keep the old one
-until Unluminate is restarted. The Markdown preview keeps it too, because `self.preview` is rebuilt from
+until Unluminous is restarted. The Markdown preview keeps it too, because `self.preview` is rebuilt from
 the source and the source's base style was never changed.
 
 And there is no way to change the size without the modal. Every editor has had a keyboard zoom for
@@ -89,25 +89,25 @@ The two drawing faults are one line each and both are visible in any screenshot:
 
 ```mermaid
 flowchart TD
-  subgraph app["unluminate-app :: app"]
-    A["UnluminateApp::ui"]
-    R["UnluminateApp::run_action"]
+  subgraph app["unluminous-app :: app"]
+    A["UnluminousApp::ui"]
+    R["UnluminousApp::run_action"]
     S["apply_settings"]
     Z["zoom_from_the_pointer"]
   end
 
-  subgraph comp["unluminate-app :: components"]
+  subgraph comp["unluminous-app :: components"]
     T["toolbar::show"]
     F["toolbar::flyout (F button)"]
     E["explorer::show"]
     V["editor_view::paint"]
   end
 
-  subgraph svc["unluminate-app :: services"]
+  subgraph svc["unluminous-app :: services"]
     K["file_kind::formatting_applies"]
   end
 
-  subgraph core["unluminate-core"]
+  subgraph core["unluminous-core"]
     L["layout::PlacedLine.ascent/.descent"]
     C["Layout::caret_at"]
   end
@@ -149,7 +149,7 @@ is:
 ```rust
 /// True for the files the character and paragraph formatting means something for.
 ///
-/// Unluminate saves plain text and carries no formatting to disk, so formatting is how a document is
+/// Unluminous saves plain text and carries no formatting to disk, so formatting is how a document is
 /// *shown*. That is worth having for prose — Markdown, a text file, a document that has not been
 /// saved yet — and is noise above a source file, where the reader wants the code and the plugin's
 /// colouring decides what it looks like.
@@ -161,7 +161,7 @@ written against `kind_name`'s own table so a file gains prose or loses it in one
 
 The view modes are a second question, `file_kind::preview_applies`, and not the same one: Markdown,
 and a document that has not been saved anywhere yet. An unsaved document has no extension to go on,
-is very often the beginning of a Markdown file, and is the one Unluminate starts with. The `View` menu's
+is very often the beginning of a Markdown file, and is the one Unluminous starts with. The `View` menu's
 three mode entries are dimmed by the same function, so the menu and the buttons cannot come to
 different answers about the same file.
 
@@ -201,14 +201,14 @@ built from three lines needs no font at all, matches the stroke weight of `plus`
 `branch`, and stays sharp at any scale.
 
 The ticket offers to have one generated with Ideogram. That is refused, and the reason is written
-here so it is not re-proposed: every other icon in Unluminate is vector strokes tinted at the point of
+here so it is not re-proposed: every other icon in Unluminous is vector strokes tinted at the point of
 use — `color::TEXT_DIM` when idle, `color::TEXT_STRONG` when the flyout is open — and a raster PNG
 can be neither tinted nor drawn at the window's scale without resampling. One image among fourteen
 drawings would be the one that looks wrong.
 
 ### Where the height is decided
 
-`UnluminateApp::ui` currently reserves `size::TOOLBAR` unconditionally. It becomes:
+`UnluminousApp::ui` currently reserves `size::TOOLBAR` unconditionally. It becomes:
 
 ```rust
 let toolbar_height = if toolbar::applies(self.document().path()) { size::TOOLBAR } else { 0.0 };
@@ -229,7 +229,7 @@ One method, and every path that sets a base style goes through it:
 ///
 /// The editor's font is one setting, the way IntelliJ has one editor font, so a change reaches
 /// every tab rather than the one that happens to be showing. This is not an edit: it pushes
-/// nothing onto any document's undo history and marks no file as changed, because what Unluminate
+/// nothing onto any document's undo history and marks no file as changed, because what Unluminous
 /// saves is plain text and carries no formatting.
 fn set_the_font_everywhere(&mut self)
 ```
@@ -253,7 +253,7 @@ Three actions, three entries at the foot of the `View` menu, one arm each in `ru
 |---|---|---|
 | `Increase Font Size` | `Cmd/Ctrl` `+` | the next size up in `settings::FONT_SIZES` |
 | `Decrease Font Size` | `Cmd/Ctrl` `-` | the next size down |
-| `Reset Font Size` | none | back to 16, the size a new Unluminate has |
+| `Reset Font Size` | none | back to 16, the size a new Unluminous has |
 
 They are menu entries rather than keys read in the editing area because of the rule already in
 `CLAUDE.md`: on macOS a shortcut on a menu item is a key equivalent and AppKit takes it before egui
@@ -377,7 +377,7 @@ so a caret brought into view brings its line with it.
 | **Keep the strip and dim the controls on a code file.** | Fourteen dimmed controls still take the room and still have to be read past. The ask is that it not be shown. |
 | **Hide only the controls and keep the empty 44-point strip.** | An empty bar is worse than either answer: it looks like something failed to draw. |
 | **Put the formatting on the `Edit` menu instead of a flyout.** | The ask names an icon and a flyout. A menu also loses the state — the flyout shows which colour and which alignment are on, and a menu row cannot show a colour circle. |
-| **A generated `F` image from Ideogram.** | A raster cannot be tinted for hover or drawn at the window's scale without resampling, and would be the one icon in Unluminate that is not vector strokes. Recorded above so it is not proposed again. |
+| **A generated `F` image from Ideogram.** | A raster cannot be tinted for hover or drawn at the window's scale without resampling, and would be the one icon in Unluminous that is not vector strokes. Recorded above so it is not proposed again. |
 | **A per-file font.** | Not what IntelliJ does and not what was asked. It would also need a place to store a font per path. |
 | **Let egui's `zoom_factor` do the zooming.** | It scales the whole interface — the menus, the explorer, the status bar — not the editor's text. IntelliJ zooms the editor. |
 | **Read `Ctrl` `+`/`-` in `editor_view::handle_input`.** | Dead on macOS if the same shortcut is ever on a menu, and it would not work in preview mode where there is no editing area taking keys. |
@@ -389,7 +389,7 @@ so a caret brought into view brings its line with it.
 
 Four layers, as `CLAUDE.md` requires, and every new control has a name so a test can find it.
 
-**`unluminate-core`, no window:**
+**`unluminous-core`, no window:**
 
 - `a_caret_is_the_height_of_the_text_and_not_of_the_line_box` — with `ScaledMetrics` at double
   spacing, `caret_at(0).height` is `ascent + descent` and strictly less than `lines[0].height`.
@@ -397,7 +397,7 @@ Four layers, as `CLAUDE.md` requires, and every new control has a name so a test
   a caret as tall as the 32-point box.
 - `a_caret_on_an_empty_line_sits_where_the_text_would` — the empty-paragraph branch.
 
-**`unluminate-app` units:**
+**`unluminous-app` units:**
 
 - `formatting_applies_to_prose_and_not_to_code` — `.md`, `.txt` and `None` are true; `.rs`, `.json`,
   `.toml`, `Makefile` are false.
@@ -405,7 +405,7 @@ Four layers, as `CLAUDE.md` requires, and every new control has a name so a test
   through `Cmd+4` and the three zoom entries.
 - `stepping_up_and_down_walks_the_sizes_the_settings_offer`, including from a size not in the list.
 
-**`unluminate-app` screenshots, through the real window:**
+**`unluminous-app` screenshots, through the real window:**
 
 - `the_toolbar_is_one_font_button_and_the_controls_are_behind_it` — `Text options` exists,
   `Bold` does not until it is clicked, and does after.
@@ -442,9 +442,9 @@ had to produce.
   the documentation had two amber dots in it. The same shape of fault as `task-1656`, and the guard
   is the same shape too: a bare Tab inserts, a Tab with control does not.
 - **The tick on a menu row was an empty box.** `controls::menu_row` drew the character at U+2713, and
-  no font in the stack Unluminate hands egui has a shape for it. It is the exact fault the style guide
+  no font in the stack Unluminous hands egui has a shape for it. It is the exact fault the style guide
   already records for the shift symbol at U+21E7, and it was on `Raw Markdown` on the `View` menu in
-  every capture of it. It uses `icon::tick` now, which is the tick every tick box in Unluminate draws.
+  every capture of it. It uses `icon::tick` now, which is the tick every tick box in Unluminous draws.
 - **Four keys were missing from the macOS menu bar's key code table.** `D`, `K`, `Tab` and `F4`, so
   `Show Diff`, `Commit...`, `Next Tab` and `Close Tab` would have been drawn in the bar along the top
   of the screen with no shortcut beside them — and `every_shortcut_in_the_menus_has_a_key_code`, which

@@ -1,3 +1,3 @@
 fn main() {
-    println!("A file Unluminate cannot open, listed but dimmed.");
+    println!("A file Unluminous cannot open, listed but dimmed.");
 }

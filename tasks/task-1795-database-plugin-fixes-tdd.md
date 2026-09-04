@@ -30,11 +30,11 @@
 > Create a tdd for these features, then fully implement.
 
 Twelve items. Two of them turn out to be the same defect, and that defect is not in the Database
-plugin at all — it is in every field in Unluminate — so it is the first section here.
+plugin at all — it is in every field in Unluminous — so it is the first section here.
 
 ## 1. A field only takes a click in the middle of it, and that is two of the reported faults
 
-`controls::field_text_rect` is the function every field in Unluminate hands its rectangle to, and it was
+`controls::field_text_rect` is the function every field in Unluminous hands its rectangle to, and it was
 written to solve a real problem: egui lays a `TextEdit` out at the **top** of the rectangle it is
 given and `Frame::NONE` leaves no margin to push it down, so a field that handed over its whole
 height put its words against its top edge. The answer was to hand over a strip one line tall, centred
@@ -101,7 +101,7 @@ anyway for this to name the right box, and which removes a second latent fault: 
 egui's auto counter shifts when the number of widgets above it changes, and the source dialog draws a
 different number of fields for PostgreSQL and for SQLite.
 
-Applied to every input in Unluminate: `modal::field`, `controls::search_field_over`, the console's SQL
+Applied to every input in Unluminous: `modal::field`, `controls::search_field_over`, the console's SQL
 editor, the grid's `WHERE` and `ORDER BY`, the password field, and the new inline cell editor.
 
 **A test per half.** `a_click_anywhere_in_a_field_hands_it_the_keyboard` and
@@ -147,9 +147,9 @@ ticket asks for none of it to be visible.
 
 - **Every user-visible string**: `plugins/database/plugin.conf`'s `description` and `limitations`,
   the notes on the source dialog, the settings page, the preview modal, the tree's tooltips, and
-  `unluminate-cli`'s own documentation for the database commands.
-- **Every source comment** in `crates/unluminate-db`, `crates/unluminate-app/src/services/database`,
-  `crates/unluminate-app/src/components/database` and `unluminate-cli`. A comment that names it is a comment
+  `unluminous-cli`'s own documentation for the database commands.
+- **Every source comment** in `crates/unluminous-db`, `crates/unluminous-app/src/services/database`,
+  `crates/unluminous-app/src/components/database` and `unluminous-cli`. A comment that names it is a comment
   that puts it back the next time somebody reads the file.
 - **`README.md` and `documentation/`.**
 
@@ -179,7 +179,7 @@ list and their own page draw nothing where every other plugin has a mark.
 
 Each is generated the way the other five were — the recipe is in `plugins/mermaid/icon.md`: a prompt
 through the AI service's `POST /image-creation/generateImageToProjectFile`, then
-`cargo run --example plugin_icon -- <source> crates/unluminate-app/plugins/<id>`, which keys the flat
+`cargo run --example plugin_icon -- <source> crates/unluminous-app/plugins/<id>`, which keys the flat
 background out, crops, squares and scales to 128 and to 32. Each plugin gets an `icon.md` recording
 its prompt, so it can be made again without guessing.
 
@@ -214,16 +214,16 @@ The `Password` section becomes one field, `Password`, immediately under `User` �
 asks for it. `In the variable` goes: `Secret::Environment` is no longer offered by the dialog.
 
 **Where a password goes.** Typed once, written to the machine's own credential store under the entry
-`unluminate-database-<source name>`, and the settings file records `password.keychain = <entry>` — the
+`unluminous-database-<source name>`, and the settings file records `password.keychain = <entry>` — the
 name of the entry and never the value, which is the rule the file already keeps. Reading is at the
 moment a connection is opened and the value is never held.
 
-**Windows has a credential store, and Unluminate can now write to it.** `services::agent_tasks::keychain`
+**Windows has a credential store, and Unluminous can now write to it.** `services::agent_tasks::keychain`
 says in as many words that there is none — *"no such code was ever written, and a comment claiming a
 secret is in a keychain when it is not is worse than no comment"* — and that was true, but the reason
-given, that it *"cannot be tested from this machine"*, has not been true since Unluminate grew a Windows
+given, that it *"cannot be tested from this machine"*, has not been true since Unluminous grew a Windows
 build. It is `CredWriteW`, `CredReadW` and `CredDeleteW` in `Win32::Security::Credentials`, which is
-one feature flag on the `windows-sys` dependency Unluminate already has — the precedent `services::recycle`
+one feature flag on the `windows-sys` dependency Unluminous already has — the precedent `services::recycle`
 set for `SHFileOperationW`. The credential is `CRED_TYPE_GENERIC` persisted with
 `CRED_PERSIST_LOCAL_MACHINE`, which Windows itself protects with DPAPI under the signed-in user. The
 blob is copied out and `CredFree` is called on every path.
@@ -259,7 +259,7 @@ unchanged, so an `sslmode` already written down still means what it did.
   is the arrangement the grid already has and the reason Preview can show what will happen.
 - **`NULL`** is what an empty box means only when the cell was NULL before; otherwise an empty box is
   the empty string. A cell is set to NULL from the toolbar, because the two cannot both be what an
-  empty box means, and `unluminate_db::Value` keeps them apart all the way from the wire.
+  empty box means, and `unluminous_db::Value` keeps them apart all the way from the wire.
 - **The button says `Save`.** `Submit 3` becomes `Save 3`, the menu entry `Submit Changes` becomes
   `Save Changes`, and the command keeps the name `submit` with `save` beside it, so nothing an agent
   already writes breaks.
@@ -309,7 +309,7 @@ here asks.
 ```
 
 The SQL on the right is **the statement that will be sent**, composed by
-`unluminate_db::sql::create_table` and redrawn as the form is typed into — the rule Preview already keeps,
+`unluminous_db::sql::create_table` and redrawn as the form is typed into — the rule Preview already keeps,
 that what is shown comes from the same call that acts.
 
 **The type dropdown is the engine's own list.** `Engine::column_types()` answers `INTEGER, TEXT,
@@ -348,7 +348,7 @@ as empty rather than as `NULL`. `Grid::row_of` already answers `Row::Added(n)` f
 ## 13. What is tested
 
 Everything below drives the real window through `egui_kittest` in
-`crates/unluminate-app/tests/screenshots.rs`, except where it says otherwise.
+`crates/unluminous-app/tests/screenshots.rs`, except where it says otherwise.
 
 | Test | What would break without it |
 |---|---|

@@ -2,7 +2,7 @@
 //
 // `task-1804` §3.4: *"there is no mention of contrast, colour-blindness or WCAG in the 458-line style
 // guide."* This is the missing measurement rather than an opinion about it — the palette is a closed
-// list in `crates/unluminate-app/src/theme/mod.rs`, so the ratios can be computed from the source of
+// list in `crates/unluminous-app/src/theme/mod.rs`, so the ratios can be computed from the source of
 // truth rather than sampled off a screenshot, and they can be computed again the day a colour moves.
 //
 // ## What the numbers mean
@@ -12,7 +12,7 @@
 // every pair below names the ground it was measured against: `text_dim` on `editor` and `text_dim`
 // on `status_bar` are different numbers and the palette has to pass both.
 //
-// **It is measured at full opacity**, and that is a limit worth stating: Unluminate's background is
+// **It is measured at full opacity**, and that is a limit worth stating: Unluminous's background is
 // translucent, so what is really behind the text is the desktop at `1 - opacity`. A ratio that
 // passes here can fail on a pale wallpaper at 40 per cent. Text is painted at full alpha and the
 // grounds are not, which is why the honest measurement is of the palette and the honest statement is
@@ -26,7 +26,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), '..')
-const source = readFileSync(join(repo, 'crates/unluminate-app/src/theme/mod.rs'), 'utf8')
+const source = readFileSync(join(repo, 'crates/unluminous-app/src/theme/mod.rs'), 'utf8')
 
 /** Every `name = Color32::from_rgb(r, g, b);` in the palette macro's own list. */
 function palette() {

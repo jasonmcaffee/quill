@@ -1,0 +1,10 @@
+[package]
+name = "unluminous-core"
+description = "The Unluminous editor: text buffer, formatting, caret, layout. No user interface dependencies."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+unicode-segmentation.workspace = true

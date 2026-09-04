@@ -30,7 +30,7 @@ not.
 and nothing else. A ticket needs a priority, an assignee, a model, an effort, a project and an epic
 before it can be started, and none of the six had a control. The command line could set two of them.
 
-**The board could not be put away or moved.** Every other panel in Unluminate has a header, and the header is
+**The board could not be put away or moved.** Every other panel in Unluminous has a header, and the header is
 what closes it, drags it to another edge and opens its menu. The board pane had no header at all: once
 shown it could only be hidden from the rail button, and it could not be moved.
 
@@ -114,7 +114,7 @@ description. The footer says `Starts saving as you type` and holds `Discard` and
 
 ## 3. Where each of the three views lives
 
-The browser has one window and one modal. Unluminate has a pane, a tab and a modal, and the same board has to
+The browser has one window and one modal. Unluminous has a pane, a tab and a modal, and the same board has to
 be right in all three. **The same board, drawn at three sizes**, which is one decision rather than three
 implementations:
 
@@ -125,7 +125,7 @@ implementations:
 | The modal, 1000 by 700 | Everything | The ticket in full, as §2.4 describes it. Opened from either of the other two. |
 
 `components::modal` is what the modal is made of, which is the frame, the header, the body, the footer,
-the rows, the fields and the tick boxes every other dialog in Unluminate is made of — and the dragging and
+the rows, the fields and the tick boxes every other dialog in Unluminous is made of — and the dragging and
 resizing that `modal::show` already owns. A tenth modal that drew its own header would be a tenth modal
 that almost agreed with the other nine.
 
@@ -155,8 +155,8 @@ a row of view buttons above the name would read as the window's rather than the 
 rule about each half.
 
 **The description is a plain multiline field, and that is less than this document first claimed.** The
-claim was that `unluminate_core::Document` would hold it and `components::editor_view` would draw it, giving
-it Unluminate's own editor: the same font, the same syntax colouring inside a code fence, the same undo, the
+claim was that `unluminous_core::Document` would hold it and `components::editor_view` would draw it, giving
+it Unluminous's own editor: the same font, the same syntax colouring inside a code fence, the same undo, the
 same caret. What is built is an `egui::TextEdit` in the window's own font, saving on every keystroke.
 
 The difference is worth writing down rather than leaving as a claim nobody checked. `editor_view` draws
@@ -171,7 +171,7 @@ typed with no debounce, because writing one column of a local row is a hundred m
 
 **Every field writes through one function.** `AgentTasks::edit_field` takes what changed and writes it,
 so seven dropdowns are seven calls to one place rather than seven paths that agree today. `Model` and
-`Effort` are **absent** for a ticket assigned to a person rather than disabled, which is Unluminate's rule and
+`Effort` are **absent** for a ticket assigned to a person rather than disabled, which is Unluminous's rule and
 is the one place this deliberately differs from the browser.
 
 ### 5.2 The editor for a new ticket
@@ -192,7 +192,7 @@ are kept: `plugins run agent-tasks todo-add` and a box in the modal, through one
 
 One session per ticket, drawn by `components::terminal_panel::grid`, which is what the terminal tile and
 the run tile are both made of. So the ticket's terminal has the keyboard, the selection, the mouse
-reports, the resize and the clipboard rules Unluminate's own terminal has. In the pane it is the bottom third;
+reports, the resize and the clipboard rules Unluminous's own terminal has. In the pane it is the bottom third;
 in the modal it is a section that collapses; in the tab it is the bottom third of the ticket's half.
 
 ### 5.5 The JIRA panel on the ticket
@@ -239,13 +239,13 @@ What the key ends up in is the agent process's environment, which any program ru
 read. That is the same reach such a program would have to run `security find-generic-password` itself, so the
 keychain is not being undermined: it protects the key from a copied settings file and from other users, and it
 does both. Both agents read their key from the environment and neither reads it from a file, so there is
-nothing else to hand them. Nothing Unluminate writes carries the value — the settings file holds the **name** of
+nothing else to hand them. Nothing Unluminous writes carries the value — the settings file holds the **name** of
 the entry, and `SessionSettings` has a hand written `Debug` that prints its variable names and not their
 values, so a log line or a stray `dbg!` cannot leak one.
 
 ## 6. Why the painting was slow, measured
 
-`cargo run --release -p unluminate-app --example board_cost` reports the frame, and the numbers are what this
+`cargo run --release -p unluminous-app --example board_cost` reports the frame, and the numbers are what this
 section is for rather than a guess.
 
 Three things were being done once a frame that did not need to be done at all:
@@ -311,9 +311,9 @@ the comparison is written down rather than asserted.
 - **Remote control.** A phone attaching to a terminal needs a server.
 - **Deep research.** One command typed into an agent, which `plugins run agent-tasks send` already does.
 - **Sync JIRA, and the origin filter.** No sync, so no origins to filter and no button. Both come back together.
-- **Dictate.** Unluminate has no audio.
-- **Image paste into a description.** Unluminate draws pictures and resolves them in a markdown preview; where a pasted image is written is a decision this does not need to make.
-- **`Model` and `Effort` disabled rather than absent.** Unluminate's rule is absent, and this follows Unluminate.
+- **Dictate.** Unluminous has no audio.
+- **Image paste into a description.** Unluminous draws pictures and resolves them in a markdown preview; where a pasted image is written is a decision this does not need to make.
+- **`Model` and `Effort` disabled rather than absent.** Unluminous's rule is absent, and this follows Unluminous.
 - **The JIRA panel only on a JIRA ticket.** Drawn on every ticket instead, §5.5, because with no sync a panel that appeared only once a key was set could never set one.
 - **A Windows keychain.** §5.8. Driving `[Windows.Security.Credentials.PasswordVault]` through PowerShell cannot be tested from this machine, and untested code that handles a secret is not worth having. The page says so on Windows rather than offering a field that does nothing.
-- **The description in Unluminate's own editor.** §5.1 says what it would take: `components::editor_view` draws a `Document` a **tab** owns, reading its scroll, its zoom anchor, its folds, its marked passages, its blame column and its caret history, all of which live on `OpenFile`. The description is a multiline field until that state has somewhere to live that is not a tab.
+- **The description in Unluminous's own editor.** §5.1 says what it would take: `components::editor_view` draws a `Document` a **tab** owns, reading its scroll, its zoom anchor, its folds, its marked passages, its blame column and its caret history, all of which live on `OpenFile`. The description is a multiline field until that state has somewhere to live that is not a tab.

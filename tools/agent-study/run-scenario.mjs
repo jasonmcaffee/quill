@@ -1,8 +1,8 @@
-// Drives an agent through one scenario of user-phrased instructions against a real Unluminate
+// Drives an agent through one scenario of user-phrased instructions against a real Unluminous
 // window, capturing every tool call, argument and refusal so the session can be graded.
 //
 // The point is that nothing here believes what the agent said it did: each scenario names
-// `unluminate-cli` commands to run before and after, and those answers are what the grading reads.
+// `unluminous-cli` commands to run before and after, and those answers are what the grading reads.
 //
 // See README.md in this folder for how to run it and what has to be standing up first.
 import { spawn } from 'node:child_process';
@@ -14,7 +14,7 @@ const OUT = process.env.STUDY_OUT ?? path.join(REPO, '_agent_output', 'agent-stu
 const PROJECT = process.env.STUDY_PROJECT ?? path.join(OUT, 'scratch-project');
 const MODEL = process.env.STUDY_MODEL ?? 'qwen38-study/qwen38-27b';
 const CONFIG = process.env.OPENCODE_CONFIG ?? path.join(OUT, 'study-opencode.json');
-const CLI = process.env.UNLUMINATE_CLI ?? path.join(REPO, 'target', 'release', 'unluminate-cli.exe');
+const CLI = process.env.UNLUMINOUS_CLI ?? path.join(REPO, 'target', 'release', 'unluminous-cli.exe');
 const TURN_LIMIT_MS = Number(process.env.STUDY_TURN_LIMIT ?? 900000);
 
 /** Runs one turn of the conversation and returns the raw event stream. */
@@ -69,8 +69,8 @@ export function distil(raw) {
   };
 }
 
-/** Asks Unluminate what is really true, so a scenario is checked against the window rather than the agent. */
-function unluminate(cmd) {
+/** Asks Unluminous what is really true, so a scenario is checked against the window rather than the agent. */
+function unluminous(cmd) {
   return new Promise((resolve) => {
     const p = spawn(CLI, [...cmd, '--json'], { shell: false });
     let out = '';
@@ -107,7 +107,7 @@ if (process.argv[2]) {
   fs.mkdirSync(dir, { recursive: true });
 
   const rec = { id: scenario.id, area: scenario.area, name: scenario.name, expect: scenario.expect, turns: [], before: {}, after: {} };
-  for (const [k, c] of Object.entries(scenario.before ?? {})) rec.before[k] = await unluminate(c);
+  for (const [k, c] of Object.entries(scenario.before ?? {})) rec.before[k] = await unluminous(c);
 
   let sid = null;
   for (const message of scenario.prompts) {
@@ -118,7 +118,7 @@ if (process.argv[2]) {
     rec.turns.push({ user: message, seconds: Math.round((Date.now() - started) / 1000), ...d, stderr: err.slice(-2000) });
     fs.writeFileSync(path.join(dir, `${scenario.id}.raw.jsonl`), out);
   }
-  for (const [k, c] of Object.entries(scenario.after ?? {})) rec.after[k] = await unluminate(c);
+  for (const [k, c] of Object.entries(scenario.after ?? {})) rec.after[k] = await unluminous(c);
 
   fs.writeFileSync(path.join(dir, `${scenario.id}.json`), JSON.stringify(rec, null, 1));
   fs.writeFileSync(path.join(dir, `${scenario.id}.md`), transcript(rec));

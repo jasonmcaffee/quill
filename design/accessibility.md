@@ -69,7 +69,7 @@ product says plainly that its chrome is low-contrast by design.
 
 ## 3. And the thing the contrast table cannot say
 
-**Unluminate's background is translucent.** Every ratio above is measured at full opacity, and what
+**Unluminous's background is translucent.** Every ratio above is measured at full opacity, and what
 is really behind the text is the desktop at `1 - opacity`. A pair that passes at 100 per cent can
 fail on a pale wallpaper at 40. Text is painted at full alpha and the grounds are not, which is what
 keeps it readable at all — but a person choosing a low opacity is choosing lower contrast, and
@@ -85,8 +85,8 @@ transparency is the character of the product and `README.md` says so.
    way to reach the rail, the tabs, the status bar or a plugin's pane from the keyboard, and no
    visible focus ring that is not the caret. Everything after this depends on it: a tree a screen
    reader can read is no use if there is no way to move through it.
-2. **A focus model the accessibility tree agrees with.** egui's focus and Unluminate's `Focus` are two
-   ideas about the same thing — `controls::wants_the_keyboard` exists because a widget of Unluminate's
+2. **A focus model the accessibility tree agrees with.** egui's focus and Unluminous's `Focus` are two
+   ideas about the same thing — `controls::wants_the_keyboard` exists because a widget of Unluminous's
    own has to hold egui's focus while the window decides what has the keyboard. A screen reader reads
    egui's, so the two have to be one.
 3. **Roles rather than labels.** Most `widget_info` calls announce `WidgetType::Button` or `Label`,

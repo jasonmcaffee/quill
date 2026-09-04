@@ -1,9 +1,0 @@
-[package]
-name = "unluminate-git"
-description = "Reading and changing a git repository, with no user interface dependency."
-version.workspace = true
-edition.workspace = true
-rust-version.workspace = true
-license.workspace = true
-
-[dependencies]

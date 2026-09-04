@@ -14,7 +14,7 @@ const OUT = process.env.STUDY_OUT ?? path.join(REPO, '_agent_output', 'agent-stu
 const P = process.env.STUDY_PROJECT ?? path.join(OUT, 'scratch-project');
 
 const files = {
-  // `[workspace]` keeps it out of Unluminate's own workspace when it is written under the repo,
+  // `[workspace]` keeps it out of Unluminous's own workspace when it is written under the repo,
   // which otherwise makes every cargo command in it fail before it starts.
   'Cargo.toml': `[workspace]\n\n[package]\nname = "scratch"\nversion = "0.1.0"\nedition = "2021"\n\n[[bin]]\nname = "scratch"\npath = "src/main.rs"\n`,
   '.gitignore': `target/\n`,
@@ -144,7 +144,7 @@ flowchart LR
   main --> largest --> area_of
 \`\`\`
 `,
-  // A page for `s24-browser`. A browser tab renders HTML over the `unluminate://` project origin,
+  // A page for `s24-browser`. A browser tab renders HTML over the `unluminous://` project origin,
   // so the scenario needs one: the first run of that scenario asked for README.md and was refused,
   // correctly, with "is not an HTML file". `task-1804`.
   'web/index.html': `<!doctype html>
@@ -196,4 +196,4 @@ fs.appendFileSync(path.join(P, 'src/shapes.rs'), '// a change nobody has committ
 fs.writeFileSync(path.join(P, 'NOTES.txt'), 'untracked\n');
 
 console.log(`sample project written to ${P}`);
-console.log(`open it with:  unluminate-cli launch "${P}" --no-wait`);
+console.log(`open it with:  unluminous-cli launch "${P}" --no-wait`);
