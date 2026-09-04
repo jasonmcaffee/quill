@@ -4658,7 +4658,7 @@ checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
 
 [[package]]
 name = "unluminate-app"
-version = "0.33.0"
+version = "0.34.0"
 dependencies = [
  "ab_glyph",
  "arboard",
@@ -4693,7 +4693,7 @@ dependencies = [
 
 [[package]]
 name = "unluminate-chat"
-version = "0.33.0"
+version = "0.34.0"
 dependencies = [
  "serde_json",
  "ureq",
@@ -4701,28 +4701,28 @@ dependencies = [
 
 [[package]]
 name = "unluminate-cli"
-version = "0.33.0"
+version = "0.34.0"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "unluminate-core"
-version = "0.33.0"
+version = "0.34.0"
 dependencies = [
  "unicode-segmentation",
 ]
 
 [[package]]
 name = "unluminate-dap"
-version = "0.33.0"
+version = "0.34.0"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "unluminate-db"
-version = "0.33.0"
+version = "0.34.0"
 dependencies = [
  "base64 0.22.1",
  "getrandom 0.3.4",
@@ -4735,11 +4735,11 @@ dependencies = [
 
 [[package]]
 name = "unluminate-git"
-version = "0.33.0"
+version = "0.34.0"
 
 [[package]]
 name = "unluminate-terminal"
-version = "0.33.0"
+version = "0.34.0"
 dependencies = [
  "alacritty_terminal",
  "unicode-width",
