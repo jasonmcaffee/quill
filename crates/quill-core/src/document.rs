@@ -196,6 +196,30 @@ impl Default for Document {
     }
 }
 
+/// The text of a file as a [`Document`] holds it: Windows line breaks turned into line feeds.
+///
+/// **The one reading of a file, so an offset means the same byte everywhere.** A `Document` has
+/// always normalised `\r\n` on the way in, so that "offsets and line counts have one meaning" — but
+/// the window also reads files it has *not* opened, to turn a breakpoint's byte offset into the line
+/// number the debugger is told about, and those readings were raw.
+///
+/// `task-1794`: on a file with Windows line breaks the two disagree by **one byte per line before
+/// the offset**, so a breakpoint set on line 50 of a file that was open, and then sent to the adapter
+/// while that file was shut, named a line about fifty bytes early — a different line, very often one
+/// with no code on it, which an adapter declines to bind. Nothing reports that: the program runs to
+/// completion and the debug tile stays empty. A `git checkout` on a machine with `core.autocrlf`
+/// set — which is this one — is enough to put every file in that state.
+///
+/// So this is public and every reading of a file's own bytes goes through it.
+pub fn read_to_normalised_string(path: &Path) -> std::io::Result<String> {
+    Ok(normalise_line_breaks(&std::fs::read_to_string(path)?))
+}
+
+/// The same rule applied to text that has already been read.
+pub fn normalise_line_breaks(text: &str) -> String {
+    text.replace("\r\n", "\n")
+}
+
 impl Document {
     pub fn new() -> Self {
         Self {
@@ -243,10 +267,7 @@ impl Document {
     }
 
     pub fn open(path: &Path) -> std::io::Result<Self> {
-        let text = std::fs::read_to_string(path)?;
-        // Files written on Windows use a carriage return and a line feed for each line break. The
-        // buffer stores line feeds only, so that offsets and line counts have one meaning.
-        let text = text.replace("\r\n", "\n");
+        let text = read_to_normalised_string(path)?;
         let mut document = Self::from_text(&text);
         document.path = Some(path.to_owned());
         Ok(document)

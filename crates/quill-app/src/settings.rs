@@ -109,7 +109,7 @@ pub const TERMINAL_FONT_SIZES: &[f32] = &[10.0, 11.0, 12.0, 13.0, 14.0, 16.0, 18
 /// The default of `appearance.ui.font.size`, so a Quill that names no size in its settings file is drawn
 /// exactly as it was before `task-1776` — `theme::apply_scaled` does nothing at all at a scale of one.
 pub const DEFAULT_UI_FONT_SIZE: f32 = 12.5;
-/// The sizes the interface font size control offers, which is IntelliJ's own list around its default.
+/// The sizes the interface font size control offers, which is the reference editor's own list around its default.
 pub const UI_FONT_SIZES: &[f32] = &[10.0, 11.0, 12.5, 14.0, 16.0, 18.0, 20.0];
 /// The smallest and largest the interface may be set to, whether from the dialog or a hand edited file.
 ///
@@ -188,7 +188,7 @@ pub fn step_zoom(from: f32, up: bool) -> f32 {
 /// would take away a key that never interrupts anybody.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Suggestions {
-    /// The popup opens while you type, at a two character stem. IntelliJ's own default.
+    /// The popup opens while you type, at a two character stem. The reference editor's own default.
     #[default]
     Automatic,
     /// Nothing opens unless it is asked for.
@@ -222,12 +222,12 @@ impl Suggestions {
 
 /// Whether the debugger's value tooltip appears without being asked for.
 ///
-/// IntelliJ's `Show value tooltip`, in `Suggestions`' shape and for its reason: `manual` is already
+/// The reference editor's `Show value tooltip`, in `Suggestions`' shape and for its reason: `manual` is already
 /// the off switch, because `Debug -> Show Value` and `quill-cli debug hover` work either way, so a
 /// third value meaning "off altogether" would take away a control that never interrupts anybody.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ValueTooltip {
-    /// The popup arrives when the pointer has rested on a name for `HOVER_DELAY`. IntelliJ's default.
+    /// The popup arrives when the pointer has rested on a name for `HOVER_DELAY`. The reference editor's default.
     #[default]
     Automatic,
     /// Nothing appears unless it is asked for.
@@ -270,7 +270,7 @@ pub enum Page {
     /// The theme, the accent and the icon set: what every colour in the window means.
     ///
     /// A page of its own rather than a section on Appearance, because the Settings window is one size for
-    /// every page, no page scrolls, and Appearance already fills its 640 points. IntelliJ separates them
+    /// every page, no page scrolls, and Appearance already fills its 640 points. The reference editor separates them
     /// too — Appearance holds the theme and Editor holds the colour scheme — and here the two are one
     /// question, because a Quill theme carries both.
     Theme,
@@ -334,10 +334,10 @@ impl Page {
     pub fn group(self) -> &'static str {
         match self {
             Page::Appearance => "Appearance & Behavior",
-            // Beside Appearance, which is where IntelliJ keeps the theme picker.
+            // Beside Appearance, which is where the reference editor keeps the theme picker.
             Page::Theme => "Appearance & Behavior",
             Page::Editor => "Editor",
-            // No heading of its own, the way IntelliJ lists Plugins: it is one page rather than a
+            // No heading of its own, the way the reference editor lists Plugins: it is one page rather than a
             // group with pages under it.
             Page::Plugins => "",
             Page::Terminal => "Tools",
@@ -427,7 +427,7 @@ pub struct Settings {
     /// The family the window's own text is set in — menus, the explorer, the status bar.
     ///
     /// Empty means the editor's family, which is what the interface was always set in and is why this can
-    /// be added without anything moving. IntelliJ's `Appearance -> Use custom font`.
+    /// be added without anything moving. The reference editor's `Appearance -> Use custom font`.
     pub ui_font_family: String,
     /// The point size the window's own text is set in. [`DEFAULT_UI_FONT_SIZE`] leaves egui exactly as it
     /// was.
@@ -455,11 +455,11 @@ impl Settings {
             // On, because a line number is useful in prose as well as in code and a person who does
             // not want one can put it away from the gutter's own menu.
             line_numbers: true,
-            // On, which is what IntelliJ's own "Show suggestions as you type" is, and what the
+            // On, which is what the reference editor's own "Show suggestions as you type" is, and what the
             // ticket asked for: suggestions that arrive rather than ones you have to remember to
             // ask for.
             suggestions: Suggestions::Automatic,
-            // On, which is what IntelliJ's own `Show value tooltip` is: the whole point of the
+            // On, which is what the reference editor's own `Show value tooltip` is: the whole point of the
             // feature is that the value is there when you look at the name, rather than being
             // something to remember to ask for.
             value_tooltip: ValueTooltip::Automatic,
@@ -1303,7 +1303,7 @@ mod tests {
             assert!(!page.sections().is_empty(), "{} should have sections", page.title());
         }
         // Every page but one is listed under a heading. `Plugins` has none, because it is one page
-        // rather than a group with pages under it, which is how IntelliJ lists it too, and the list
+        // rather than a group with pages under it, which is how the reference editor lists it too, and the list
         // draws a page with no heading at the left margin instead of indented under one.
         let ungrouped: Vec<&str> =
             Page::ALL.into_iter().filter(|page| page.group().is_empty()).map(Page::title).collect();

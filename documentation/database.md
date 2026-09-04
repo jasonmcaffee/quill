@@ -2,11 +2,11 @@
 
 Nine captures of the Database plugin, taken from the real window the way `documentation/overview.md`'s
 own pictures were — a photograph of `quill.exe` running, not a render. `task-1777` built the plugin;
-this is what it looks like doing the things IntelliJ's Database tool window does: showing what a
+this is what it looks like doing the things the reference editor's Database tool window does: showing what a
 schema holds, running a query, editing rows, and writing the edits back.
 
 `tasks/task-1777-database-plugin-tdd.md` is the design, and it is worth reading before this page:
-which third of IntelliJ's database tools were worth copying, why the client for PostgreSQL is written
+which third of the reference editor's database tools were worth copying, why the client for PostgreSQL is written
 inside Quill rather than shelled out to `psql`, and the one rule that decides whether a grid can be
 edited at all — a row can only be changed if it can be addressed, by a primary key or a SQLite
 `rowid`, and otherwise the grid is read only and says why.
@@ -19,9 +19,9 @@ real. `library.db` is not part of the repository; how it was made is at the bott
 
 ## The tree, and what is in a table
 
-`Database` on the rail opens the pane docked to the right, the way IntelliJ docks its own Database
+`Database` on the rail opens the pane docked to the right, the way the reference editor docks its own Database
 tool window. A data source is a row; opened, it asks the server for its schemas, and a schema opens
-into `tables`, `views`, `routines` and `sequences` — the order IntelliJ's own tree uses, and a folder
+into `tables`, `views`, `routines` and `sequences` — the order the reference editor's own tree uses, and a folder
 with nothing in it is left out rather than drawn empty. A table opens into its columns, each with its
 type, whether it is `not null`, and a key icon on the one that names the row.
 
@@ -46,7 +46,7 @@ many rows are showing and pages through more, one more than the setting's row li
 `Database -> Open Workspace`, or a console button in the pane, opens a query console: a plain text
 field with SQL colouring — selection, undo, the clipboard, no folding, no gutter, because it is a
 place to type a statement rather than a second copy of the editor. `Execute` runs whatever the caret
-is in, and what comes back is a result panel below it, exactly as IntelliJ's own console shows one
+is in, and what comes back is a result panel below it, exactly as the reference editor's own console shows one
 result a run.
 
 ![A console running a joined `SELECT`, with its result underneath it](images/db-03-console-select.jpg)
@@ -55,7 +55,7 @@ result a run.
 
 Typing into a cell does not send anything. It is recorded as a pending change — the cell is
 highlighted, a deleted row is struck through — and the toolbar's `Submit` button carries the count.
-Nothing is sent until it is pressed, which is IntelliJ's own arrangement and the right one: a grid is
+Nothing is sent until it is pressed, which is the reference editor's own arrangement and the right one: a grid is
 somewhere people type continuously, and a statement per keystroke would be both slow and impossible to
 back out of.
 
@@ -95,8 +95,8 @@ statement you write, the same as everywhere else in this plugin. `Copy` puts it 
 or SQLite, the address, and — the part worth reading — where the password is. Quill never writes one
 down. A source names the environment variable a password is read from at the moment a connection
 opens, or a keychain entry on the platforms that have one; a password typed into this dialog is held
-in the process and gone when the window closes, which is IntelliJ's `Save: Forever` answered the other
-way. **A new source is read only by default**, the opposite of IntelliJ's own default and deliberate:
+in the process and gone when the window closes, which is the reference editor's `Save: Forever` answered the other
+way. **A new source is read only by default**, the opposite of the reference editor's own default and deliberate:
 one added in a hurry points at something real, and clearing the tick box is far cheaper than the first
 `UPDATE` nobody meant.
 

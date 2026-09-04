@@ -18,7 +18,7 @@
 //!
 //! **The strips are taken first, across the whole width; the columns come out of what is left.** That
 //! is what Quill did before any of this: the terminal spans the whole width of the panes, including
-//! under the explorer, which is also what IntelliJ's bottom tool window does.
+//! under the explorer, which is also what the reference editor's bottom tool window does.
 //!
 //! **A panel carries two measurements and the side decides which is read.** A width for when it is a
 //! column at the side, a height for when it is in a strip. One number cannot be both: the terminal is

@@ -220,6 +220,10 @@ fn an_edit_is_pending_until_it_is_submitted_and_then_the_file_really_changes() {
 #[test]
 fn a_read_only_data_source_refuses_a_write_and_the_refusal_names_the_switch() {
     let (mut explorer, _) = opened("read-only");
+    // Asked for deliberately, because a data source is writable now: the tick box went with
+    // `task-1795` and the flag stayed, as the one way to ask a *server* for a session that cannot
+    // write.
+    run(&mut explorer, "read-only", &["test", "on"]);
     run(&mut explorer, "connect", &["test"]);
     settle(&mut explorer);
     let page = value(&mut explorer, "console", &["test"]);
@@ -234,30 +238,22 @@ fn a_read_only_data_source_refuses_a_write_and_the_refusal_names_the_switch() {
 }
 
 #[test]
-fn a_statement_that_changes_rows_is_confirmed_once_before_it_is_sent() {
-    // A console is where somebody types `delete from member` meaning to type a `where` clause after
-    // it. One dialog is cheaper than the row that is not there any more.
-    let (mut explorer, _) = opened("confirm");
-    run(&mut explorer, "read-only", &["test", "off"]);
+fn a_statement_that_changes_rows_is_sent_without_being_asked_about() {
+    // `task-1795`: no safety check at all. A dialog used to stand in front of a statement that
+    // changes rows; it was never a guard an agent met anyway, because `execute_now` went straight
+    // past it, so what it protected was one of the two ways in and not the other.
+    let (mut explorer, _) = opened("no-confirm");
     run(&mut explorer, "connect", &["test"]);
     settle(&mut explorer);
     let page = value(&mut explorer, "console", &["test"]);
     let id = page["page"].as_u64().expect("a page");
     if let Some(Page { sheet: Sheet::Console(console), .. }) = explorer.pages.iter_mut().find(|page| page.id == id) {
-        console.text = "delete from member".to_owned();
+        console.text = "delete from member where id = -1".to_owned();
         console.caret = 0;
     }
-    let said = explorer.execute(id).expect("asked");
-    assert!(said.contains("confirm"), "{said}");
-    assert!(matches!(explorer.modal, Some(Modal::Confirm { .. })), "{:?}", explorer.modal);
-    // A `select` is not asked about, because asking about every statement is how a confirmation stops
-    // being read.
-    if let Some(Page { sheet: Sheet::Console(console), .. }) = explorer.pages.iter_mut().find(|page| page.id == id) {
-        console.text = "select 1".to_owned();
-    }
-    explorer.modal = None;
-    explorer.execute(id).expect("sent");
-    assert!(explorer.modal.is_none());
+    let said = explorer.execute(id).expect("sent");
+    assert!(said.contains("delete"), "the statement itself is what comes back: {said}");
+    assert!(explorer.modal.is_none(), "and nothing was put in front of it: {:?}", explorer.modal);
 }
 
 #[test]
@@ -361,7 +357,8 @@ fn every_command_answers_or_refuses_with_a_sentence_naming_what_it_takes() {
         ("open", vec![], "schema.table"),
         ("password", vec!["test", "somewhere"], "not somewhere a password lives"),
         ("read-only", vec!["test"], "`on` or `off`"),
-        ("confirm", vec!["maybe"], "`on` or `off`"),
+        ("new-table", vec!["x", "id"], "has no type"),
+        ("drop-table", vec![], "takes"),
     ] {
         let arguments: Vec<String> = arguments.iter().map(|word| (*word).to_owned()).collect();
         let refused = explorer.command(command, &arguments).expect_err(command);

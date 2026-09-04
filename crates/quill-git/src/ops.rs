@@ -8,7 +8,7 @@
 //! Two are worth naming here because they are the ones people are surprised by:
 //!
 //! - **Rollback** discards uncommitted changes. It is `git restore --source=HEAD --staged
-//!   --worktree`, which is what IntelliJ's Rollback does, and there is no undo for it. The window
+//!   --worktree`, which is what the reference editor's Rollback does, and there is no undo for it. The window
 //!   asks first.
 //! - **Push with force** is `--force-with-lease`, never a bare `--force`. The difference is that
 //!   `--force-with-lease` refuses when the remote has moved since you last fetched, which is exactly
@@ -120,7 +120,7 @@ pub fn fetch(folder: &Path) -> Outcome {
     run(folder, &["fetch", "--all", "--prune"])
 }
 
-/// The four ways of moving the branch, which are the four IntelliJ's Reset dialog offers.
+/// The four ways of moving the branch, which are the four the reference editor's Reset dialog offers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResetMode {
     /// The commits go, the changes stay staged.

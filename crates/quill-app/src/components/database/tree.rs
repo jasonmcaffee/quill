@@ -1,6 +1,6 @@
-//! The data source tree: IntelliJ's Database tool window, cut to what applies.
+//! The data source tree: The reference editor's Database tool window, cut to what applies.
 //!
-//! `_agent_output/task-1777-database-plugin/intellij/db_database_tool_window.png` is the picture. Its
+//! `_agent_output/task-1777-database-plugin/reference/db_database_tool_window.png` is the picture. Its
 //! toolbar has eight buttons; five of them are things Quill can do, and the other three — bookmarks,
 //! diagrams and the diagnostic menu — are §11 of the TDD. A control that cannot apply is absent, so
 //! `Disconnect` is not drawn while nothing is connected and `Edit data` is not drawn unless a table is
@@ -18,7 +18,7 @@ use egui::{Pos2, Rect, Sense, Vec2};
 use quill_db::catalog::Kind;
 
 use crate::components::database::{along, card, text, waiting, well, Act, PAD, RADIUS, TOOLBAR};
-use crate::services::database::DatabaseExplorer;
+use crate::services::database::{Aimed, DatabaseExplorer};
 use crate::services::plugin_ui::Look;
 use crate::theme::{color, icon};
 
@@ -100,7 +100,7 @@ fn folders(
     out: &mut Vec<Line>,
 ) {
     let Some(loaded) = explorer.loaded.get(source) else { return };
-    // The order the folders appear in, which is IntelliJ's: what somebody looks for most, first.
+    // The order the folders appear in, which is the reference editor's: what somebody looks for most, first.
     for folder in ["tables", "views", "routines", "sequences", "indexes"] {
         let inside: Vec<&quill_db::Item> = items
             .iter()
@@ -108,7 +108,7 @@ fn folders(
             .filter(|item| filter.is_empty() || item.name.to_lowercase().contains(filter))
             .collect();
         // A folder with nothing in it is absent rather than drawn empty, which is the same rule the
-        // toolbar's buttons keep — and is IntelliJ's own `Show Elements | Empty Groups` set to off.
+        // toolbar's buttons keep — and is the reference editor's own `Show Elements | Empty Groups` set to off.
         if inside.is_empty() {
             continue;
         }
@@ -202,7 +202,7 @@ pub fn show(explorer: &mut DatabaseExplorer, ui: &mut egui::Ui, look: &Look<'_>,
     acts
 }
 
-/// The five buttons that apply, of IntelliJ's eight.
+/// The five buttons that apply, of the reference editor's eight.
 fn toolbar(explorer: &DatabaseExplorer, ui: &mut egui::Ui, look: &Look<'_>, bar: Rect) -> Vec<Act> {
     let scale = look.scale();
     let mut acts = Vec::new();
@@ -324,7 +324,118 @@ fn one(
             }
         }
     }
+    // A right click opens the row’s own menu, which is where New Table is — `task-1795`. It also
+    // chooses the row, because a menu acting on something other than the row under the pointer is
+    // the one thing a context menu must never do.
+    if response.secondary_clicked() {
+        if let Some(aimed) = aimed_at(line) {
+            acts.extend(clicked(line).into_iter().filter(|act| matches!(act, Act::Choose(..))));
+            let at = response.interact_pointer_pos().unwrap_or_else(|| rect.center());
+            acts.push(Act::OpenMenu(at, aimed));
+        }
+    }
     acts
+}
+
+/// What a row is, for the menu.
+fn aimed_at(line: &Line) -> Option<Aimed> {
+    match &line.what {
+        What::Source { name, .. } => Some(Aimed::Source(name.clone())),
+        What::Schema { source, name, .. } => Some(Aimed::Schema(source.clone(), name.clone())),
+        What::Item { source, schema, name, .. } => {
+            Some(Aimed::Item(source.clone(), schema.clone(), name.clone()))
+        }
+        What::Column { name, .. } => Some(Aimed::Column(name.clone())),
+        // A folder, a problem and a `reading…` row have nothing to offer, and a menu with one
+        // dimmed row in it is worse than no menu.
+        _ => None,
+    }
+}
+
+/// The tree’s own menu, drawn where the pointer was.
+///
+/// `components::context_menu` is the window’s: it takes an `actions::Entry` and answers an
+/// `actions::Action`, which is the window’s vocabulary and not a plugin’s. So this draws its own
+/// rows and answers its own [`Act`], which is the split every other part of this plugin keeps — and
+/// it uses the same `egui::Popup` and the same frame, so it looks like the explorer’s.
+pub fn menu(explorer: &mut DatabaseExplorer, ui: &mut egui::Ui, look: &Look<'_>) -> Vec<Act> {
+    let Some((at, aimed)) = explorer.menu.clone() else { return Vec::new() };
+    let _ = look;
+    let mut acts = Vec::new();
+    let mut close = false;
+    let rows: Vec<(&str, Act)> = match &aimed {
+        Aimed::Source(source) => vec![
+            ("New Table…", Act::NewTable(source.clone(), first_schema_of(explorer, source))),
+            ("Open Query Console", Act::OpenConsole(source.clone())),
+            ("Refresh", Act::Refresh(source.clone())),
+            ("Edit Data Source…", Act::EditSource(source.clone())),
+            ("Remove Data Source", Act::RemoveSource(source.clone())),
+        ],
+        Aimed::Schema(source, schema) => vec![
+            ("New Table…", Act::NewTable(source.clone(), schema.clone())),
+            ("Refresh", Act::Refresh(source.clone())),
+            ("Copy Name", Act::Copy(schema.clone())),
+        ],
+        Aimed::Item(source, schema, name) => vec![
+            ("Open Data", Act::OpenTable(source.clone(), schema.clone(), name.clone())),
+            ("New Table…", Act::NewTable(source.clone(), schema.clone())),
+            ("Show DDL", Act::Ddl(source.clone(), schema.clone(), name.clone())),
+            ("Copy Name", Act::Copy(name.clone())),
+            ("Drop Table", Act::DropTable(source.clone(), schema.clone(), name.clone())),
+        ],
+        Aimed::Column(name) => vec![("Copy Name", Act::Copy(name.clone()))],
+    };
+    let popup = egui::Popup::new(
+        egui::Id::new("quill-database-tree-menu"),
+        ui.ctx().clone(),
+        at,
+        ui.layer_id(),
+    )
+    .kind(egui::PopupKind::Menu)
+    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+    .layout(egui::Layout::top_down_justified(egui::Align::Min))
+    .frame(
+        egui::Frame::popup(ui.style())
+            .fill(color::menu())
+            .stroke(egui::Stroke::new(1.0, color::control_border()))
+            .inner_margin(6),
+    )
+    .width(220.0);
+    if let Some(shown) = popup.show(|ui| {
+        let mut chosen: Option<Act> = None;
+        for (name, act) in rows {
+            if crate::components::controls::menu_row(ui, name, "", true, false, 0.0) {
+                chosen = Some(act);
+            }
+        }
+        chosen
+    }) {
+        if let Some(act) = shown.inner {
+            acts.push(act);
+            close = true;
+        }
+        if shown.response.should_close() {
+            close = true;
+        }
+    } else {
+        close = true;
+    }
+    if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+        close = true;
+    }
+    if close {
+        explorer.menu = None;
+    }
+    acts
+}
+
+/// The schema a new table goes in when the menu was opened on the data source itself.
+fn first_schema_of(explorer: &DatabaseExplorer, source: &str) -> String {
+    explorer
+        .loaded
+        .get(source)
+        .and_then(|loaded| loaded.schemas.first().cloned())
+        .unwrap_or_default()
 }
 
 /// What one press of a row does.
@@ -380,7 +491,7 @@ fn after(painter: &egui::Painter, line: &Line, at: Pos2, look: &Look<'_>, right:
             };
             text(painter, at, &said, color::text_faint(), size, room);
         }
-        // The count IntelliJ puts on a folder, which is how an empty schema is told from one that has
+        // The count the reference editor puts on a folder, which is how an empty schema is told from one that has
         // not been read yet.
         What::Folder { count, .. } => {
             text(painter, at, &count.to_string(), color::text_faint(), size, room);

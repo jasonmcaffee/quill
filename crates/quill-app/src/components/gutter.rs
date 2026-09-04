@@ -15,7 +15,7 @@
 //! Right clicking anywhere in the gutter still opens its menu.
 //!
 //! `task-1687` then wanted a breakpoint column, and the gap was gone. So the dot is drawn **over the
-//! line number** — which is what IntelliJ itself does, and which costs the gutter nothing: the text
+//! line number** — which is what the reference editor itself does, and which costs the gutter nothing: the text
 //! does not move, no accepted screenshot shifts sideways, and only a line that really has a
 //! breakpoint looks any different. The number gives way rather than being drawn round the dot,
 //! because a red circle with a numeral showing through it reads as neither. With the numbers
@@ -85,7 +85,7 @@ const LARGEST_TYPE: f32 = 28.0;
 const ARROW: f32 = GAP;
 /// How wide the column the breakpoint dot is drawn in is, **when the line numbers are switched off**.
 ///
-/// With them on the dot is drawn **over the number**, which is what IntelliJ does and what costs the
+/// With them on the dot is drawn **over the number**, which is what the reference editor does and what costs the
 /// gutter nothing: the text does not move a point, no accepted screenshot shifts sideways, and only
 /// a line that really has a breakpoint looks any different. The 12 points `GAP` reserves — which
 /// §6.2 of the design names — were spent by `task-1686` on the folding arrows, and a second control
@@ -159,7 +159,7 @@ pub struct Gutter<'a> {
     /// all rather than making a dot no debugger would ever honour.
     pub can_debug: bool,
     /// The paragraph the program is stopped on, when it is stopped in this file. Drawn as an arrow
-    /// over the breakpoint column, which is IntelliJ's own mark.
+    /// over the breakpoint column, which is the reference editor's own mark.
     pub execution_point: Option<usize>,
     /// The size the editor sets its text at, which is what the gutter's own type follows.
     ///
@@ -423,7 +423,7 @@ pub fn show(
         }
         let mark = gutter.breakpoint_at(line.paragraph);
         let stopped = gutter.execution_point == Some(line.paragraph);
-        // The dot is drawn **instead of** the number rather than over it, which is what IntelliJ
+        // The dot is drawn **instead of** the number rather than over it, which is what the reference editor
         // does: a red circle with a numeral showing round its edge reads as neither. The number is
         // the thing that gives way, because a line with a breakpoint on it is being pointed at by
         // its dot and can be counted from the lines above.
@@ -523,7 +523,7 @@ fn draw_breakpoint(
     );
     if stopped {
         // The execution point's own mark, drawn behind the dot so a breakpoint that is also where
-        // the program stopped still reads as a breakpoint. IntelliJ's arrow, drawn.
+        // the program stopped still reads as a breakpoint. The reference editor's arrow, drawn.
         execution_arrow(ui.painter(), centre, color::accent());
     }
     if let Some(mark) = mark {
@@ -566,7 +566,7 @@ fn draw_breakpoint(
 
 /// The mark on the line the program is stopped on: a filled arrow pointing at the code.
 ///
-/// Drawn rather than lettered, in the manner of every other mark in the gutter, and it is IntelliJ's
+/// Drawn rather than lettered, in the manner of every other mark in the gutter, and it is the reference editor's
 /// own shape.
 fn execution_arrow(painter: &egui::Painter, centre: Pos2, color: Color32) {
     painter.add(egui::Shape::convex_polygon(

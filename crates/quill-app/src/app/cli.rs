@@ -666,6 +666,11 @@ impl QuillApp {
     fn cli_panel(&mut self, request: &Request, verb: &str) -> Outcome {
         match verb {
             "list" => {
+                // Quill's own four. A contributed pane is listed by `plugins list` and moved by
+                // `plugins pane`, which is the split `the_board_contributes_a_tab_and_no_pane`
+                // states — `task-1794` widened what a pane can be *asked to do* rather than what
+                // this listing is of, and the refusal from `cli_no_such_panel` is what makes a
+                // pane's name discoverable from here.
                 let rows: Vec<String> = dock::Panel::ALL
                     .into_iter()
                     .map(|panel| {
@@ -696,7 +701,10 @@ impl QuillApp {
                     .map(|panel| {
                         let rect = self.panel_rects.of(panel);
                         json!({
-                            "panel": panel.name(),
+                            // The name a caller can ask this panel by. For a contributed pane that
+                            // is its `<plugin id>/<pane id>`, not `plugin-2`, which would make an
+                            // agent count slots to use what it had just been told — `task-1794`.
+                            "panel": self.panel_wire_name(panel),
                             "label": panel.label(),
                             "side": self.panes.dock.side_of(panel).name(),
                             "position": self.panes.dock.order_of(panel),
@@ -733,6 +741,11 @@ impl QuillApp {
                 )
             }
             "dock" => {
+                // A contributed pane is named here the way `panel zoom` already names one, and the
+                // way `plugins pane --side` does. `task-1794`: every built-in panel's size and side
+                // were settable and a plugin's pane's were not, which is the pane rule with a gap in
+                // it — and the gap was found by a person having to edit `settings.conf` between
+                // restarts to widen the chat pane for a video.
                 let Some(panel) = self.cli_panel_named(request) else {
                     return self.cli_no_such_panel(request);
                 };
@@ -749,7 +762,7 @@ impl QuillApp {
                     request,
                     format!("{} is on the {}", panel.label(), side.name()),
                     json!({
-                        "panel": panel.name(),
+                        "panel": self.panel_wire_name(panel),
                         "side": side.name(),
                         "position": self.panes.dock.order_of(panel),
                         "showing": self.panel_is_showing(panel),
@@ -780,7 +793,7 @@ impl QuillApp {
                         self.panes.height_of(panel)
                     ),
                     json!({
-                        "panel": panel.name(),
+                        "panel": self.panel_wire_name(panel),
                         "width": self.panes.width_of(panel),
                         "height": self.panes.height_of(panel),
                         "side": self.panes.dock.side_of(panel).name(),
@@ -793,7 +806,7 @@ impl QuillApp {
             // everything else with its multiplier, and both are the number that really decides how big the
             // pane is drawn.
             "zoom" => {
-                let Some(panel) = self.cli_panel_named_or_a_pane(request) else {
+                let Some(panel) = self.cli_panel_named(request) else {
                     return self.cli_no_such_panel(request);
                 };
                 let asked = request.text("factor").map(|said| said.trim().to_owned());
@@ -839,7 +852,7 @@ impl QuillApp {
                     request,
                     said,
                     json!({
-                        "panel": panel.name(),
+                        "panel": self.panel_wire_name(panel),
                         // A tile has no multiplier of its own, so it answers with the one thing that
                         // decides its size, and says which of the two this is.
                         "kind": if tile { "font size" } else { "zoom" },
@@ -872,17 +885,18 @@ impl QuillApp {
         }
     }
 
-    /// The panel a `panel` command names, if it names one Quill has.
-    fn cli_panel_named(&self, request: &Request) -> Option<dock::Panel> {
-        request.text("panel").and_then(|name| dock::Panel::from_name(name.trim()))
-    }
-
-    /// The same, and a contributed pane named the way the rest of the command line names one.
+    /// The panel a `panel` command names: one of Quill's own four, or a contributed pane.
     ///
     /// `plugins pane agent-chat/chat --side right` is how a plugin's pane is spoken about everywhere else,
     /// and `panel zoom plugin-2` would make somebody count slots. Both are accepted; the slot names are
     /// what a window with no plugins in it still answers to.
-    fn cli_panel_named_or_a_pane(&self, request: &Request) -> Option<dock::Panel> {
+    ///
+    /// **One resolver rather than two.** `task-1771` gave `panel zoom` a resolver that took a pane and
+    /// left `dock` and `size` with one that did not, and `task-1794` is what that cost: `panel size
+    /// agent-chat/chat --width 1150` answered "There is no panel by that name" while the same pane
+    /// zoomed happily, so the chat pane in the product video had to be widened by editing
+    /// `settings.conf` between restarts. Two answers to "which panel is this" were one too many.
+    fn cli_panel_named(&self, request: &Request) -> Option<dock::Panel> {
         let name = request.text("panel")?.trim().to_owned();
         if let Some(panel) = dock::Panel::from_name(&name) {
             return Some(panel);
@@ -920,12 +934,65 @@ impl QuillApp {
 
     /// The refusal that names them all, which is what a caller who guessed wrong needs.
     fn cli_no_such_panel(&self, request: &Request) -> Outcome {
-        let names: Vec<&str> = dock::Panel::ALL.iter().map(|panel| panel.name()).collect();
+        // The contributed panes are named too, because a refusal that lists only the built-in four
+        // is what told the `task-1794` shoot that a plugin's pane could not be sized at all.
+        let mut names: Vec<String> =
+            dock::Panel::ALL.iter().map(|panel| panel.name().to_owned()).collect();
+        names.extend(self.plugin_ui.pane_keys());
         no(
             request,
             code::NOT_FOUND,
             format!("There is no panel by that name. Quill has {}.", names.join(", ")),
         )
+    }
+
+    /// The name a contributed pane answers to, which is its `<plugin id>/<pane id>`.
+    fn panel_wire_name(&self, panel: dock::Panel) -> String {
+        match panel.plugin_slot() {
+            Some(slot) => self
+                .plugin_ui
+                .pane_keys()
+                .get(slot)
+                .cloned()
+                .unwrap_or_else(|| panel.name().to_owned()),
+            None => panel.name().to_owned(),
+        }
+    }
+
+    /// A contributed pane's three settings keys, resolved to the slot and the measurement they name.
+    ///
+    /// They cannot be rows in `SETTINGS`, because a pane's key is `<plugin id>/<pane id>` and which
+    /// plugins are installed is not known until the manifests are read. `task-1794`: Quill wrote
+    /// `panes.agent-chat/chat.width` into its own settings file and then refused it back with "there
+    /// is no setting called that", which is the one shape of dishonesty the settings file should
+    /// never have — a value it writes is a value it reads.
+    fn pane_setting(&self, name: &str) -> Option<(usize, PaneMeasure)> {
+        let rest = name.strip_prefix("panes.")?;
+        let (key, last) = rest.rsplit_once('.')?;
+        let measure = match last {
+            "width" => PaneMeasure::Width,
+            "height" => PaneMeasure::Height,
+            "zoom" => PaneMeasure::Zoom,
+            _ => return None,
+        };
+        let slot = self.plugin_ui.slot_of(key)?;
+        Some((slot, measure))
+    }
+
+    /// Every one of those keys, in slot order, for `settings list`.
+    fn pane_settings(&self) -> Vec<(String, &'static str, String)> {
+        let mut out = Vec::new();
+        for (slot, key) in self.plugin_ui.pane_keys().into_iter().enumerate() {
+            let label = self.plugin_ui.pane(slot).map(|pane| pane.label.clone()).unwrap_or_default();
+            for measure in PaneMeasure::ALL {
+                out.push((
+                    format!("panes.{key}.{}", measure.name()),
+                    measure.accepts(),
+                    measure.help(&label),
+                ));
+            }
+        }
+        out
     }
 
     /// `fold` — the blocks collapsed in the tab that is showing.
@@ -1114,11 +1181,15 @@ impl QuillApp {
     /// A relative path is relative to the project. See the note at the top of this file.
     fn cli_path(&self, text: &str) -> PathBuf {
         let path = PathBuf::from(text);
-        if path.is_absolute() {
+        // `project_state::absolute`'s reason, at the other door a relative path comes in by: a
+        // caller writes `src/report.rs`, and on Windows joining that gives a path with both
+        // separators in it that some other program will later be handed. Normalised here so that a
+        // path from the command line and a path from the explorer are the same path.
+        quill_terminal::paths::native(&if path.is_absolute() {
             path
         } else {
             self.tree.root().join(path)
-        }
+        })
     }
 
     /// The path argument called `name`, resolved.
@@ -3374,6 +3445,11 @@ impl QuillApp {
                 "to": rename.to,
                 "changed": report.changed,
                 "files": listed,
+                // The two halves said apart, because they are undone in different ways: a file that
+                // was **written** is on the disk now, and a tab that was **edited** still has
+                // unsaved changes that closing it without saving would throw away. `task-1794`.
+                "wrote": report.files.len(),
+                "written": report.files.iter().map(|path| path.to_string_lossy()).collect::<Vec<_>>(),
                 "openTabs": report.open.iter().map(|path| path.to_string_lossy()).collect::<Vec<_>>(),
                 "skipped": report
                     .skipped
@@ -5022,7 +5098,9 @@ impl QuillApp {
         if let Some(index) = self.files.index_of(path) {
             return self.files.at(index).document.offset_of_line_number(line);
         }
-        let Ok(text) = std::fs::read_to_string(path) else {
+        // The file as a `Document` would hold it, so an offset means the same byte whether or not
+        // the file happens to be open — `task-1794`, where it did not.
+        let Ok(text) = quill_core::document::read_to_normalised_string(path) else {
             return 0;
         };
         text.split_inclusive('\n')
@@ -5037,7 +5115,7 @@ impl QuillApp {
         if let Some(index) = self.files.index_of(path) {
             return self.files.at(index).document.line_number_of(offset);
         }
-        let Ok(text) = std::fs::read_to_string(path) else {
+        let Ok(text) = quill_core::document::read_to_normalised_string(path) else {
             return 1;
         };
         text.as_bytes()[..offset.min(text.len())].iter().filter(|byte| **byte == b'\n').count() + 1
@@ -6007,17 +6085,28 @@ impl QuillApp {
                 // The value column is as wide as the widest value there is, so a path in
                 // `debug.lldb` does not run into the help beside it: `task-1704` measured a reply
                 // where the two columns had no seam at all.
-                let values: Vec<String> = SETTINGS.iter().map(|key| self.setting_text(key.name)).collect();
+                // The static ones, then the contributed panes' — which Quill writes into its own
+                // settings file and, before `task-1794`, would not name back.
+                let mut named: Vec<(String, String)> = SETTINGS
+                    .iter()
+                    .map(|key| (key.name.to_owned(), key.help.to_owned()))
+                    .collect();
+                named.extend(
+                    self.pane_settings().into_iter().map(|(name, _, help)| (name, help)),
+                );
+                let values: Vec<String> =
+                    named.iter().map(|(name, _)| self.setting_text(name)).collect();
                 let widest = values.iter().map(|value| value.len()).max().unwrap_or(0).max(16);
-                let rows: Vec<String> = SETTINGS
+                let rows: Vec<String> = named
                     .iter()
                     .zip(values)
-                    .map(|(key, value)| {
+                    .map(|((name, help), value)| {
                         let padded = format!("{value:<width$}  ", width = widest);
-                        format!("{:<34}{}{}", key.name, padded, key.help)
+                        format!("{name:<34}{padded}{help}")
                     })
                     .collect();
-                lines(request, format!("{} settings", SETTINGS.len()), rows, self.settings_value())
+                let count = named.len();
+                lines(request, format!("{count} settings"), rows, self.settings_value())
             }
             "get" => {
                 let Some(name) = request.text("key") else {
@@ -6029,7 +6118,18 @@ impl QuillApp {
                         self.setting_text(key.name),
                         json!({ "key": key.name, "value": self.setting_text(key.name), "accepts": key.accepts }),
                     ),
-                    None => no(request, code::NOT_FOUND, unknown_setting(&name)),
+                    None => match self.pane_setting(&name) {
+                        Some((_, measure)) => ok(
+                            request,
+                            self.setting_text(&name),
+                            json!({
+                                "key": name,
+                                "value": self.setting_text(&name),
+                                "accepts": measure.accepts(),
+                            }),
+                        ),
+                        None => no(request, code::NOT_FOUND, unknown_setting(&name)),
+                    },
                 }
             }
             "set" => self.cli_settings_set(request),
@@ -6093,7 +6193,7 @@ impl QuillApp {
         let (Some(name), Some(value)) = (request.text("key"), request.text("value")) else {
             return no(request, code::USAGE, "Say a setting and a value.");
         };
-        if !SETTINGS.iter().any(|key| key.name == name) {
+        if !SETTINGS.iter().any(|key| key.name == name) && self.pane_setting(&name).is_none() {
             return no(request, code::NOT_FOUND, unknown_setting(&name));
         }
         let before = self.setting_text(&name);
@@ -6117,6 +6217,29 @@ impl QuillApp {
         };
         match request.text("key") {
             Some(name) => {
+                // A contributed pane goes back to what its **manifest** asked for rather than to a
+                // number in Quill, which is what "what a new Quill has" means for a pane Quill did
+                // not write. Reset has to know these keys because `settings list` names them and
+                // `set` takes them: one of the three refusing would be the fault `task-1794`
+                // reported, moved one level down.
+                if let Some((slot, measure)) = self.pane_setting(&name) {
+                    let value = match self.plugin_ui.pane(slot) {
+                        Some(pane) => match measure {
+                            PaneMeasure::Width => format!("{:.0}", pane.width),
+                            PaneMeasure::Height => format!("{:.0}", pane.height),
+                            PaneMeasure::Zoom => format!("{:.2}", settings::DEFAULT_ZOOM),
+                        },
+                        None => return no(request, code::NOT_FOUND, unknown_setting(&name)),
+                    };
+                    if let Err(problem) = self.apply_setting(&name, &value) {
+                        return no(request, code::FAILED, problem);
+                    }
+                    return ok(
+                        request,
+                        format!("{name} is back to {value}"),
+                        json!({ "key": name, "value": value }),
+                    );
+                }
                 if !SETTINGS.iter().any(|key| key.name == name) {
                     return no(request, code::NOT_FOUND, unknown_setting(&name));
                 }
@@ -6133,6 +6256,11 @@ impl QuillApp {
             None => {
                 self.set_settings(fresh);
                 self.panes = crate::settings::Panes::new();
+                // A fresh `Panes` carries a fresh `Layout`, which has no contributed panes in it —
+                // so without this the panes the plugins contribute are not reset, they are lost, and
+                // every command goes on saying they are showing while nothing is drawn. `task-1794`,
+                // the same fault `reset_the_panel_layout` had.
+                self.place_the_plugin_panes(false);
                 self.unsaved_settings = true;
                 ok(request, "Every setting is back to what a new Quill has.", self.settings_value())
             }
@@ -6166,7 +6294,10 @@ impl QuillApp {
             "panes.terminal.height" => format!("{:.0}", self.panes.terminal_height),
             "panes.preview.fraction" => format!("{:.3}", self.panes.preview_fraction),
             "panes.find.split" => format!("{:.3}", self.panes.find_split),
-            _ => String::new(),
+            other => match self.pane_setting(other) {
+                Some((slot, measure)) => measure.read(&self.panes, slot),
+                None => String::new(),
+            },
         }
     }
 
@@ -6330,7 +6461,16 @@ impl QuillApp {
                 self.unsaved_settings = true;
                 return Ok(());
             }
-            _ => return Err(unknown_setting(name)),
+            other => {
+                let Some((slot, measure)) = self.pane_setting(other) else {
+                    return Err(unknown_setting(name));
+                };
+                // The same clamps `Panes::read_from_with` puts on a hand edited file, so a value
+                // typed here and a value written into `settings.conf` are read the same way.
+                measure.write(&mut self.panes, slot, number()?);
+                self.unsaved_settings = true;
+                return Ok(());
+            }
         }
         self.set_settings(settings);
         Ok(())
@@ -6728,7 +6868,24 @@ impl QuillApp {
                 ) {
                     return no(request, code::FAILED, problem.to_owned());
                 }
-                let showing = self.plugin_ui.is_visible(slot);
+                // **Switched on is not the same as on the screen**, and answering with the first
+                // while meaning the second is what `task-1794` reports: the pane painted nothing at
+                // all — no ground, no divider, no composer, no rail highlight — while this said it
+                // was showing on the right, and no question an agent could ask reported the
+                // difference. So the reply is the two together, and asking for a pane that cannot be
+                // drawn is a **refusal** rather than a success about nothing. The cause that was
+                // found is fixed; this is what makes the next one say so instead of being silent.
+                if !self.plugin_pane_is_reachable(slot) {
+                    return no(
+                        request,
+                        code::FAILED,
+                        format!(
+                            "{pane} is switched on but the window has no room laid out for it, so it \
+                             would draw nothing. `panel reset` puts the panels back."
+                        ),
+                    );
+                }
+                let showing = self.plugin_pane_is_showing(slot);
                 ok(
                     request,
                     format!(
@@ -7260,6 +7417,78 @@ struct SettingKey {
     name: &'static str,
     accepts: &'static str,
     help: &'static str,
+}
+
+/// One of the three measurements a contributed pane keeps in the settings file.
+///
+/// `task-1794`: Quill wrote `panes.agent-chat/chat.width` itself and then refused it back, because
+/// `SETTINGS` is a `const` and a pane's key is not known until the manifests are read. This is the
+/// one place the three are described, so `settings list`, `get`, `set` and `reset` cannot come to
+/// different conclusions about what a pane's width is or what it will accept — the rule
+/// `Panes::width_of` already keeps about which of a pair a side reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PaneMeasure {
+    Width,
+    Height,
+    Zoom,
+}
+
+impl PaneMeasure {
+    const ALL: [PaneMeasure; 3] = [PaneMeasure::Width, PaneMeasure::Height, PaneMeasure::Zoom];
+
+    fn name(self) -> &'static str {
+        match self {
+            PaneMeasure::Width => "width",
+            PaneMeasure::Height => "height",
+            PaneMeasure::Zoom => "zoom",
+        }
+    }
+
+    fn accepts(self) -> &'static str {
+        match self {
+            PaneMeasure::Width => "points, brought inside the range a column may have",
+            PaneMeasure::Height => "points, brought inside the range a strip may have",
+            PaneMeasure::Zoom => "0.5 to 3.0",
+        }
+    }
+
+    fn help(self, label: &str) -> String {
+        match self {
+            PaneMeasure::Width => format!("How wide {label} is when it is a column at the left or the right."),
+            PaneMeasure::Height => format!("How tall {label} is when it is in a strip along the top or the bottom."),
+            PaneMeasure::Zoom => format!("How much bigger than usual {label} draws everything in it."),
+        }
+    }
+
+    /// A pane's own panel, which is what `Panes` is keyed by.
+    fn panel(slot: usize) -> dock::Panel {
+        dock::Panel::Plugin(slot as u8)
+    }
+
+    fn read(self, panes: &settings::Panes, slot: usize) -> String {
+        let panel = Self::panel(slot);
+        match self {
+            PaneMeasure::Width => format!("{:.0}", panes.width_of(panel)),
+            PaneMeasure::Height => format!("{:.0}", panes.height_of(panel)),
+            PaneMeasure::Zoom => format!("{:.2}", panes.zoom_of(panel)),
+        }
+    }
+
+    /// Brought inside its limits rather than refused, which is `apply_setting`'s own rule and what
+    /// `Panes::read_from_with` does with the same value read from a hand edited file.
+    fn write(self, panes: &mut settings::Panes, slot: usize, value: f32) {
+        let panel = Self::panel(slot);
+        match self {
+            PaneMeasure::Width => {
+                let width = value.clamp(panes.min_width_of(panel), panes.max_width_of(panel));
+                panes.set_width_of(panel, width);
+            }
+            PaneMeasure::Height => {
+                panes.set_height_of(panel, value.max(panes.min_height_of(panel)));
+            }
+            PaneMeasure::Zoom => panes.set_zoom_of(panel, value),
+        }
+    }
 }
 
 /// Every setting, by the name it has in Quill's own settings file.

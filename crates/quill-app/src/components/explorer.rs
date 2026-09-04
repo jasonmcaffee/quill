@@ -42,7 +42,7 @@
 //!
 //! ## Dragging
 //!
-//! A row can be carried onto a folder, which is IntelliJ's Move refactoring under the gesture a
+//! A row can be carried onto a folder, which is the reference editor's Move refactoring under the gesture a
 //! person reaches for. The component **reports and decides nothing**, which is the rule every
 //! component here follows and is the shape `task-1673` gave the tab drag: it collects the rectangle
 //! of every row it draws, works out which one the pointer is over once the list is drawn, and says
@@ -299,7 +299,9 @@ pub fn show(
         color::text_faint(),
         view.zoom,
     );
-    let text_rect = crate::components::controls::field_text_rect(ui, filter_rect, view.at(26.0));
+    let filter_id = ui.id().with("explorer-filter");
+    let text_rect =
+        crate::components::controls::field_takes_the_whole_rectangle(ui, filter_rect, view.at(26.0), filter_id);
     // The size the box would set text in, zoomed. Asked of the style rather than written down, so at a
     // zoom of one the filter box is exactly the box it was before `task-1771` — which is a promise a
     // screenshot test keeps and which a number chosen here would have quietly broken.
@@ -313,6 +315,7 @@ pub fn show(
     let mut field = ui.new_child(egui::UiBuilder::new().max_rect(text_rect));
     let response = field.add(
         egui::TextEdit::singleline(filter)
+            .id(filter_id)
             .hint_text(egui::RichText::new("Filter files").color(color::text_faint()).size(typed))
             .font(egui::FontId::proportional(typed))
             .frame(egui::Frame::NONE)
@@ -524,7 +527,7 @@ pub fn show(
 
 /// The folder a drop at `at` would land in, or nothing when the drop is refused.
 ///
-/// A folder row is that folder and a file row is the folder the file is in, which is what IntelliJ
+/// A folder row is that folder and a file row is the folder the file is in, which is what the reference editor
 /// does and is what somebody aiming at a crowded folder means. Three things answer with nothing: a
 /// folder dropped into itself or into anything under it, a path dropped into the folder it is
 /// already in, and a pointer over no row at all.
@@ -815,7 +818,7 @@ fn file_row(
             );
         }
     }
-    // A file git has something to say about is drawn in git's colour for it, which is what IntelliJ
+    // A file git has something to say about is drawn in git's colour for it, which is what the reference editor
     // does and is the cheapest way to see at a glance what a commit would hold.
     let tint = if open {
         color::text_strong()

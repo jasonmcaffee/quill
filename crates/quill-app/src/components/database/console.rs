@@ -1,10 +1,10 @@
 //! A query console: the toolbar, the SQL editor, and what the last statement answered.
 //!
-//! `intellij/db_query_console_overview.png` is the picture. Its toolbar is Execute, history, an
+//! The reference screenshots’ `db_query_console_overview.png` is the picture. Its toolbar is Execute, history, an
 //! in-editor-results toggle, settings, `Tx: Auto`, stop, the session chooser and — pinned right — the
 //! schema switcher; what applies here is Execute, Stop, the row limit and the schema switcher.
 //!
-//! **Execute runs the statement under the caret**, which is IntelliJ's behaviour and the only one that
+//! **Execute runs the statement under the caret**, which is the reference editor's behaviour and the only one that
 //! makes a console holding six statements usable. `quill_db::sql::at` is what decides which, and it
 //! knows about the four things a `;` hides inside — a string, a quoted identifier, a comment and a
 //! dollar-quoted body.
@@ -92,7 +92,7 @@ fn toolbar(
         true => source.clone(),
         false => format!("{source}.{schema}"),
     };
-    // Pinned to the right, which is where IntelliJ's schema switcher is.
+    // Pinned to the right, which is where the reference editor's schema switcher is.
     let painter = ui.painter();
     let mark = Pos2::new(bar.right() - 8.0 * scale, bar.center().y);
     let drawn = painter
@@ -132,6 +132,11 @@ fn sql_editor(
     let inner = area.shrink(8.0 * scale);
     let Some(page) = explorer.pages.iter_mut().find(|page| page.id == id) else { return acts };
     let Sheet::Console(console) = &mut page.sheet else { return acts };
+    // The whole well takes a click, not only the box inset eight points inside it. A press in that
+    // margin used to leave the console without the keyboard, which is why `Ctrl/Cmd+Enter` below did
+    // nothing and why a paste went into the file behind the tab — `task-1795`.
+    let sql_id = egui::Id::new(("database-console-sql", id));
+    crate::components::controls::claim_the_field(ui, area, sql_id);
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).id_salt(("database-console", id)));
     // **The colouring comes from the window's own plugins**, through the same `CodeHighlighter` the
     // Markdown preview colours a fenced block with — so the console and a `.sql` file agree by
@@ -146,6 +151,7 @@ fn sql_editor(
     };
     let response = child.add(
         egui::TextEdit::multiline(&mut console.text)
+            .id(sql_id)
             .frame(egui::Frame::NONE)
             .code_editor()
             .font(egui::FontId::monospace(size))

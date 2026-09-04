@@ -3,7 +3,7 @@
 //! `services::store` already remembers what belongs to the person: the font, the opacity, the recent
 //! projects. This remembers what belongs to the *project*: which files were open, which of them was
 //! showing, which folders in the explorer were opened out, whether the terminal was up and how many
-//! tabs it had. `task-1658` asks for it, and IntelliJ's `.idea` and Visual Studio Code's `.vscode` are
+//! tabs it had. `task-1658` asks for it, and the reference editor's `.idea` and Visual Studio Code's `.vscode` are
 //! both the same idea — a folder beside the code rather than a file in the user's settings, so that
 //! copying the project copies its state and two people working on the same folder do not fight over one
 //! file.
@@ -456,14 +456,47 @@ fn read_paths(root: &Path, file: &Path) -> Vec<PathBuf> {
 pub fn relative(root: &Path, path: &Path) -> PathBuf {
     path.strip_prefix(root).map(Path::to_path_buf).unwrap_or_else(|_| path.to_path_buf())
 }
+/// Enough of a file's metadata to tell that it has changed, without reading it.
+///
+/// The modified time and the length together. The time alone is not enough on a file system whose
+/// stamps have a coarse resolution, and the length alone misses an edit that kept it — neither is a
+/// hash, which would mean reading every byte of every open file to answer a question that is usually
+/// no.
+///
+/// It lives here rather than on the tab that first needed it because it is a fact about a **file**
+/// rather than about a window: `task-1794` gave it a second reader in `services::breakpoint_store`,
+/// which has to notice that `.quill/breakpoints.conf` was put back underneath a running window, and
+/// a service reaching up into `app` for it would be the dependency pointing the wrong way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiskStamp {
+    pub modified: Option<std::time::SystemTime>,
+    pub len: u64,
+}
+
+impl DiskStamp {
+    /// What is on disk now, or nothing when there is nothing there to measure.
+    pub fn of(path: &Path) -> Option<Self> {
+        let data = std::fs::metadata(path).ok()?;
+        Some(Self { modified: data.modified().ok(), len: data.len() })
+    }
+}
+
+
 
 /// The other way round: what a written path means now.
 pub fn absolute(root: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() {
+    // Through `paths::native`, because `join` does not normalise: on Windows a relative path written
+    // with `/` — which is how every one of these files is written, and how an agent types one on the
+    // command line — makes `C:\project\src/report.rs`. Quill itself cannot tell the difference, since
+    // `Path` compares components, but another program can, and `task-1794` measured a debug adapter
+    // silently binding no breakpoint because of it. A path is normalised where it is built, so that a
+    // mixed one is never written down in the first place — `plain`'s rule about the verbatim prefix,
+    // kept about the separator.
+    quill_terminal::paths::native(&if path.is_absolute() {
         path.to_path_buf()
     } else {
         root.join(path)
-    }
+    })
 }
 
 #[cfg(test)]

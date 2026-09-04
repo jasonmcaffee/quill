@@ -233,9 +233,11 @@ fn left_column(
     if new {
         let title_at = Rect::from_min_size(Pos2::new(area.min.x, pen), Vec2::new(area.width(), 30.0));
         let mut title = board.detail().title_draft.clone();
+        let title_id = ui.id().with("agent-tasks-ticket-title");
         let response = ui.put(
-            crate::components::controls::field_text_rect(ui, title_at, 2.0),
+            crate::components::controls::field_takes_the_whole_rectangle(ui, title_at, 2.0, title_id),
             egui::TextEdit::singleline(&mut title)
+                .id(title_id)
                 .frame(egui::Frame::NONE)
                 .hint_text(egui::RichText::new("What needs doing?").color(look.palette.text_faint))
                 .desired_width(area.width())
@@ -925,11 +927,14 @@ fn field_row(
     let mut typed = value.to_owned();
     // Its own id scope for the reason a row of choices has one: two fields whose hint happens to match would be
     // two text boxes sharing an id.
+    let typed_id = ui.id().with(("agent-tasks-ticket-field", name));
+    let inner = crate::components::controls::field_takes_the_whole_rectangle(ui, at, 6.0, typed_id);
     let changed = ui
         .push_id(name, |ui| {
             let response = ui.put(
-                crate::components::controls::field_text_rect(ui, at, 6.0),
+                inner,
                 egui::TextEdit::singleline(&mut typed)
+                    .id(typed_id)
                     .frame(egui::Frame::NONE)
                     .hint_text(egui::RichText::new(hint).color(look.palette.text_faint))
                     .font(egui::FontId::proportional(look.font_size - 1.0))

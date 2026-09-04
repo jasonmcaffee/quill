@@ -1,7 +1,7 @@
 //! What text a point in a file is a question about, when the question is *what does this hold*.
 //!
 //! `task-1696`: resting the pointer on a name while a program is paused shows its value, and what
-//! IntelliJ shows the value of is not the bare word — pointing at `count` in `self.items.count` asks
+//! The reference editor shows the value of is not the bare word — pointing at `count` in `self.items.count` asks
 //! about `self.items.count`. This module is that reading, and nothing else: it takes the identifier
 //! [`FileSymbols::identifier_at`] already answers with and extends it **backwards** over field
 //! access.
@@ -9,7 +9,7 @@
 //! ## Backwards only
 //!
 //! The sub-expression that *ends* at the pointer is the thing being pointed at. Pointing at `items`
-//! in `self.items.count` asks about `self.items`, which is what a person means and what IntelliJ
+//! in `self.items.count` asks about `self.items`, which is what a person means and what the reference editor
 //! does. Walking forwards as well would answer a different question from the one the pointer asked.
 //!
 //! ## Three things it will not cross, each for the same reason

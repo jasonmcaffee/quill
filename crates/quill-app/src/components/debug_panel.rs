@@ -255,7 +255,7 @@ fn show_header(
     }
     right -= 30.0;
 
-    // The five that act on the program, in IntelliJ's own order. **Dimmed rather than absent** while
+    // The five that act on the program, in the reference editor's own order. **Dimmed rather than absent** while
     // they cannot apply this instant, which is exactly what dimming means: a program that is running
     // will be stopped in a moment and these will all work again.
     let paused = debug.is_some_and(DebugState::is_paused);
@@ -626,10 +626,12 @@ pub fn show_row(
                 Stroke::new(1.0, color::accent()),
                 egui::StrokeKind::Inside,
             );
-            let inner = controls::field_text_rect(ui, field, 8.0);
+            let value_id = ui.id().with(("debug-set-value", row.key.clone()));
+            let inner = controls::field_takes_the_whole_rectangle(ui, field, 8.0, value_id);
             let editor = ui.put(
                 inner,
                 egui::TextEdit::singleline(typed)
+                    .id(value_id)
                     .frame(egui::Frame::NONE)
                     .desired_width(inner.width())
                     .text_color(color::text_control())
@@ -651,7 +653,7 @@ pub fn show_row(
     }
 
     if !row.is_scope {
-        // A row whose value changed at this stop is tinted, which is IntelliJ's change-marking and
+        // A row whose value changed at this stop is tinted, which is the reference editor's change-marking and
         // is what stepping is for.
         let tint = match row.changed {
             true => color::value_changed(),

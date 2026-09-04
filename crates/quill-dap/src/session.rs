@@ -93,7 +93,7 @@ impl State {
 /// cannot disagree about which is which.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Step {
-    /// `continue` — run to the next breakpoint. IntelliJ's `F9`.
+    /// `continue` — run to the next breakpoint. The reference editor's `F9`.
     Resume,
     /// `next` — run this line and stop on the next. `F8`.
     Over,
@@ -470,7 +470,7 @@ impl Session {
     /// Read one frame's scopes, which is what clicking a frame means.
     ///
     /// The execution point and the variables both move to that frame, and the program stays exactly
-    /// where it is — IntelliJ's behaviour, and the protocol's: reading a frame is not resuming.
+    /// where it is — the reference editor's behaviour, and the protocol's: reading a frame is not resuming.
     pub fn show_frame(&mut self, frame: i64) -> Outcome {
         if !self.state.is_paused() {
             return Outcome::default();
@@ -1263,7 +1263,7 @@ mod tests {
     }
 
     /// Clicking a frame moves the variables and the execution point without resuming, which is
-    /// IntelliJ's behaviour.
+    /// The reference editor's behaviour.
     #[test]
     fn showing_another_frame_reads_its_scopes_and_does_not_resume() {
         let mut session = paused_session();

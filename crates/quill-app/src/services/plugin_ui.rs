@@ -491,7 +491,7 @@ pub trait UiProvider: std::fmt::Debug {
 
     /// Called the first time this plugin's pane, tab or settings page is shown, and never before.
     ///
-    /// This is what makes a plugin lazy, and it is IntelliJ's own arrangement: its documented reason
+    /// This is what makes a plugin lazy, and it is the reference editor's own arrangement: its documented reason
     /// for calling `createToolWindowContent` on the first click is that "if a user does not interact
     /// with the tool window, no plugin code will be loaded or executed". For Agent-Tasks it is the
     /// difference between opening a database file at startup and opening it when the board is first

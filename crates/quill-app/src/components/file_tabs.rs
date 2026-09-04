@@ -1,7 +1,7 @@
 //! The strip of tabs along the top of the editing area, one for each open file.
 //!
 //! It sits over the editing area rather than over the whole window, because the explorer is to the
-//! left of it and a tab belongs to the editor. That is where IntelliJ puts it and where
+//! left of it and a tab belongs to the editor. That is where the reference editor puts it and where
 //! `tasks/quill-ide-tdd.md` says it goes.
 //!
 //! The tab that is showing is a filled row with a two point accent line along its bottom edge, which

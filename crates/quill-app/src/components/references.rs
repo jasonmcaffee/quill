@@ -25,7 +25,7 @@
 //! hit.
 //!
 //! **In rename, the list *is* the change set.** A tick box on every row, and what is applied is
-//! exactly the ticked rows. IntelliJ reaches its preview through a dialog and VS Code hides it
+//! exactly the ticked rows. The reference editor reaches its preview through a dialog and VS Code hides it
 //! behind `Shift+Enter`; here the preview is the interface, because on a syntactic tier the
 //! person's confirmation is the correctness mechanism, and a preview that can be skipped is a
 //! preview that will be.

@@ -12,13 +12,18 @@
 //! machine's own unlock rules, its own prompts and its own audit, and a crate that reimplemented any of that
 //! would be a second answer to a question the operating system has already answered.
 //!
-//! **There is no Windows keychain here.** Quill runs on Windows and has a Windows screenshot baseline, so this
-//! is a gap rather than a platform Quill does not care about. An earlier version of this comment said
-//! PowerShell's credential store was used on Windows; no such code was ever written, and a comment claiming a
-//! secret is in a keychain when it is not is worse than no comment. On Windows, and on any other platform,
-//! `read` answers `None` and `write` refuses with a sentence saying so, and the Settings page repeats it.
-//! Writing it would mean driving `[Windows.Security.Credentials.PasswordVault]` through PowerShell, which
-//! cannot be tested from this machine, and untested code that handles a secret is not worth having.
+//! **Windows has one too, and it is not a program.** For a long time this file said there was no Windows
+//! keychain, and that Writing one would mean driving `[Windows.Security.Credentials.PasswordVault]` through
+//! PowerShell, which "cannot be tested from this machine". Both halves stopped being true: Quill has a
+//! Windows build with a screenshot baseline of its own, and the store on Windows is reached through three
+//! documented calls rather than through a program — `CredWriteW`, `CredReadW` and `CredDeleteW`, in
+//! `Win32::Security::Credentials`. That is one feature flag on the `windows-sys` dependency Quill already
+//! has, which is the precedent `services::recycle` set for `SHFileOperationW`. The credential is a generic
+//! one persisted with `CRED_PERSIST_LOCAL_MACHINE`, which Windows itself protects with DPAPI under the
+//! signed-in user, so nothing here does any cryptography of its own. `task-1795`.
+//!
+//! On a platform with none of the three, `read` answers `None` and `write` refuses with a sentence saying
+//! so, and the Settings page repeats it.
 //!
 //! **Nothing here prints or logs a secret.** A read that fails answers `None` and says nothing about why, and
 //! a write reports success or a sentence naming the tool rather than the value. The value is handed to the
@@ -27,7 +32,9 @@
 //! On a platform with no tool, both functions answer as though there were no entry. That is the honest
 //! answer: the board then launches its agents with their own credentials, which is what they do anyway.
 
+#[cfg(not(windows))]
 use std::io::Write;
+#[cfg(not(windows))]
 use std::process::{Command, Stdio};
 
 /// What the entries are filed under, so Agent-Tasks' own are told apart from everything else on the machine.
@@ -41,6 +48,15 @@ pub fn read(name: &str) -> Option<String> {
     if !is_a_safe_name(name) {
         return None;
     }
+    #[cfg(windows)]
+    return windows_store::read(name);
+    #[cfg(not(windows))]
+    read_through_the_tool(name)
+}
+
+/// The tool-driven half, which is macOS and Linux.
+#[cfg(not(windows))]
+fn read_through_the_tool(name: &str) -> Option<String> {
     let output = tool_for_reading(name)?.output().ok()?;
     if !output.status.success() {
         return None;
@@ -67,6 +83,15 @@ pub fn write(name: &str, secret: &str) -> Result<(), String> {
     if secret.is_empty() {
         return remove(name);
     }
+    #[cfg(windows)]
+    return windows_store::write(name, secret);
+    #[cfg(not(windows))]
+    write_through_the_tool(name, secret)
+}
+
+/// The tool-driven half, which is macOS and Linux.
+#[cfg(not(windows))]
+fn write_through_the_tool(name: &str, secret: &str) -> Result<(), String> {
     let Some(mut command) = tool_for_writing(name) else {
         // Named, so somebody reading it knows whether to expect this to change. On Windows it is a gap; on a
         // platform with neither `security` nor `secret-tool` it is the honest answer.
@@ -105,6 +130,15 @@ pub fn remove(name: &str) -> Result<(), String> {
     if !is_a_safe_name(name) {
         return Ok(());
     }
+    #[cfg(windows)]
+    return windows_store::remove(name);
+    #[cfg(not(windows))]
+    remove_through_the_tool(name)
+}
+
+/// The tool-driven half, which is macOS and Linux.
+#[cfg(not(windows))]
+fn remove_through_the_tool(name: &str) -> Result<(), String> {
     let Some(mut command) = tool_for_removing(name) else {
         return Ok(());
     };
@@ -181,19 +215,117 @@ fn tool_for_removing(name: &str) -> Option<Command> {
     Some(command)
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+// A platform with neither `security` nor `secret-tool` nor the Windows store: every one of these
+// answers as though there were no entry, which is what `read` and `write` promise.
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 fn tool_for_reading(_name: &str) -> Option<Command> {
     None
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 fn tool_for_writing(_name: &str) -> Option<Command> {
     None
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 fn tool_for_removing(_name: &str) -> Option<Command> {
     None
+}
+
+/// Windows Credential Manager, through the three calls that are it.
+///
+/// A generic credential filed under `quill-agent-tasks/<name>`, so Quill's own entries are told apart from
+/// everything else on the machine exactly as `SERVICE` does on the other two platforms. `CRED_PERSIST_LOCAL_MACHINE`
+/// is what makes it survive a sign-out; Windows protects the blob with DPAPI under the signed-in user, so
+/// nothing here does any cryptography of its own and nothing here writes a file.
+///
+/// The secret goes in and comes out as UTF-8 bytes, which is what every other tool that writes a generic
+/// credential does, and `CredFree` is called on every path out of `read` — including the one where the bytes
+/// were not valid UTF-8.
+#[cfg(windows)]
+mod windows_store {
+    use windows_sys::Win32::Security::Credentials::{
+        CredDeleteW, CredFree, CredReadW, CredWriteW, CREDENTIALW, CRED_PERSIST_LOCAL_MACHINE,
+        CRED_TYPE_GENERIC,
+    };
+
+    /// What an entry is called in the store. The service is part of the name rather than a separate field,
+    /// because a generic credential has one key and it is the target name.
+    fn target(name: &str) -> Vec<u16> {
+        wide(&format!("{}/{name}", super::SERVICE))
+    }
+
+    /// A null-terminated UTF-16 string, which is what every `…W` call wants.
+    fn wide(text: &str) -> Vec<u16> {
+        text.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    pub fn read(name: &str) -> Option<String> {
+        let target = target(name);
+        let mut found: *mut CREDENTIALW = std::ptr::null_mut();
+        // SAFETY: `target` is null-terminated and outlives the call, and `found` is only read when the call
+        // reported success, which is the contract `CredReadW` documents.
+        let ok = unsafe { CredReadW(target.as_ptr(), CRED_TYPE_GENERIC, 0, &mut found) };
+        if ok == 0 || found.is_null() {
+            return None;
+        }
+        // SAFETY: `found` points at one credential the call allocated, and it is freed below on every path.
+        let secret = unsafe {
+            let credential = &*found;
+            match credential.CredentialBlob.is_null() || credential.CredentialBlobSize == 0 {
+                true => None,
+                false => {
+                    let bytes = std::slice::from_raw_parts(
+                        credential.CredentialBlob,
+                        credential.CredentialBlobSize as usize,
+                    );
+                    String::from_utf8(bytes.to_vec()).ok()
+                }
+            }
+        };
+        // SAFETY: `found` came from `CredReadW` and is freed exactly once.
+        unsafe { CredFree(found.cast()) };
+        secret.filter(|secret| !secret.is_empty())
+    }
+
+    pub fn write(name: &str, secret: &str) -> Result<(), String> {
+        let mut target = target(name);
+        let mut user = wide(name);
+        let mut blob = secret.as_bytes().to_vec();
+        let credential = CREDENTIALW {
+            Flags: 0,
+            Type: CRED_TYPE_GENERIC,
+            TargetName: target.as_mut_ptr(),
+            Comment: std::ptr::null_mut(),
+            LastWritten: unsafe { std::mem::zeroed() },
+            CredentialBlobSize: blob.len() as u32,
+            CredentialBlob: blob.as_mut_ptr(),
+            Persist: CRED_PERSIST_LOCAL_MACHINE,
+            AttributeCount: 0,
+            Attributes: std::ptr::null_mut(),
+            TargetAlias: std::ptr::null_mut(),
+            UserName: user.as_mut_ptr(),
+        };
+        // SAFETY: every pointer in the structure points into a buffer that outlives the call, and the call
+        // copies what it needs before it returns.
+        let ok = unsafe { CredWriteW(&credential, 0) };
+        match ok {
+            0 => Err(format!(
+                "the Windows credential store refused it: error {}",
+                std::io::Error::last_os_error()
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    pub fn remove(name: &str) -> Result<(), String> {
+        let target = target(name);
+        // An entry that was not there is not an error, which is the rule the other two platforms keep:
+        // clearing a field that was already empty asked for nothing.
+        // SAFETY: `target` is null-terminated and outlives the call.
+        unsafe { CredDeleteW(target.as_ptr(), CRED_TYPE_GENERIC, 0) };
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -227,6 +359,28 @@ mod tests {
         // launches its agents with their own credentials, which is what they do anyway.
         assert_eq!(read("quill-agent-tasks-no-such-entry-ever"), None);
         assert!(!is_set("quill-agent-tasks-no-such-entry-ever"));
+    }
+
+    /// A secret written to the machine's own store comes back, and then is gone.
+    ///
+    /// Skipped where there is no store at all, which is the honest answer rather than a failure: what it
+    /// would be asserting there is that `read` says `None`, and the test above already does.
+    #[test]
+    fn a_secret_round_trips_through_the_machines_own_store() {
+        let name = format!("quill-round-trip-{}", std::process::id());
+        if write(&name, "hunter2").is_err() {
+            assert!(!cfg!(any(windows, target_os = "macos")), "these two have a store");
+            return;
+        }
+        assert_eq!(read(&name).as_deref(), Some("hunter2"), "what was written comes back");
+        assert!(is_set(&name));
+        // Replacing it is a write, not a second entry.
+        write(&name, "hunter3").expect("replaced");
+        assert_eq!(read(&name).as_deref(), Some("hunter3"));
+        // An empty value removes it, because clearing a field has to be able to mean "there is no key".
+        write(&name, "").expect("cleared");
+        assert_eq!(read(&name), None, "and it is gone");
+        assert!(remove(&name).is_ok(), "removing one that is not there is not an error");
     }
 
     #[test]

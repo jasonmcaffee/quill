@@ -19,7 +19,7 @@ pub enum Action {
     NewWindow,
     /// Choose a folder and open it in a window of its own, leaving this one as it is.
     ///
-    /// A project is a window, the way IntelliJ has it, so there is one entry rather than the two there
+    /// A project is a window, the way the reference editor has it, so there is one entry rather than the two there
     /// used to be. `Open Folder` used to replace the project in this window and `Open Folder in New
     /// Window` sat under it doing what this does now; `task-1658` asks for the second behaviour and
     /// two entries that do the same thing are worse than one.
@@ -34,7 +34,7 @@ pub enum Action {
     ///
     /// A different thing from [`Action::OpenFile`], which asks the platform for a file anywhere on
     /// the disk. This searches the project that is open, which is what a person means nine times out
-    /// of ten and is what IntelliJ's `Go to File` is.
+    /// of ten and is what the reference editor's `Go to File` is.
     GoToFile,
     /// Open the `Find in Files` modal: search every file in the project for some text.
     FindInFiles,
@@ -43,7 +43,7 @@ pub enum Action {
     /// One candidate is a jump; several open the modal listing them, ranked; none says so in the
     /// status bar. Asked from the caret on the menu and the keyboard, and from the pointer by
     /// `Ctrl/Cmd+Click`, which is the same thing with a different offset. On the definition itself
-    /// it pivots to the references — IntelliJ calls the whole command "Go to Declaration or
+    /// it pivots to the references — the reference editor calls the whole command "Go to Declaration or
     /// Usages", and going to a definition from the definition has no other meaning.
     GoToDefinition,
     /// Open the references modal on the word at the caret: every place that name is used.
@@ -104,7 +104,7 @@ pub enum Action {
     ///
     /// The bottom of the window shows **one** of the two, so showing this one puts the terminal
     /// away and the other way round — two grids stacked take the editing area below the fold of
-    /// anything, which is the choice IntelliJ's bottom tool windows make too.
+    /// anything, which is the choice the reference editor's bottom tool windows make too.
     ToggleRunTile,
     /// Show or hide the debug tile along the bottom.
     ///
@@ -132,8 +132,8 @@ pub enum Action {
     PreviousTab,
     /// Put a pane to the right of the one with the keyboard and move the tab that is showing into it.
     ///
-    /// IntelliJ's `Split Right` shows the same file in **both** splits and Quill cannot, because two
-    /// tabs on one file would be two documents over one path. This is IntelliJ's `Split and Move
+    /// The reference editor's `Split Right` shows the same file in **both** splits and Quill cannot, because two
+    /// tabs on one file would be two documents over one path. This is the reference editor's `Split and Move
     /// Right` under the name a person looks for; `tasks/task-1664-split-view-tdd.md` §3 records what
     /// was weighed. Splitting a pane that holds one tab opens the new pane empty instead, because
     /// taking its only tab away would leave the window looking exactly as it did.
@@ -151,7 +151,7 @@ pub enum Action {
     /// Scroll the explorer to the file that is showing, opening out the folders above it.
     ///
     /// It happens on its own when the file that is showing changes; this is the same thing asked for
-    /// by hand, which is IntelliJ's button of the same name.
+    /// by hand, which is the reference editor's button of the same name.
     SelectOpenFile,
     /// Another terminal tab.
     NewTerminalTab,
@@ -281,7 +281,7 @@ impl FoldAction {
 
     /// The key it is on.
     ///
-    /// IntelliJ puts folding on the numeric keypad, which half the keyboards in this house have not
+    /// The reference editor puts folding on the numeric keypad, which half the keyboards in this house have not
     /// got, so its `Ctrl+.` — the key it folds a selection with — is the one taken here and the
     /// rest are built round it. The full stop is next to the comma that already opens Settings,
     /// which is what makes a set of six worth remembering: the more modifiers, the wider the reach,
@@ -397,7 +397,7 @@ impl Action {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunAction {
     /// Start a configuration. Starting one that is already running stops it and starts it again —
-    /// a rerun, not a second copy, which is `task-1683` §5.2 and IntelliJ's own default.
+    /// a rerun, not a second copy, which is `task-1683` §5.2 and the reference editor's own default.
     Start(Option<String>),
     /// Stop it: politely the first time, and for good the second.
     Stop(Option<String>),
@@ -464,14 +464,14 @@ impl RunAction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DebugAction {
     /// Start a configuration under its debugger. **Debug is Run, under a debugger**: the same
-    /// configuration the play button starts, which is IntelliJ's own model.
+    /// configuration the play button starts, which is the reference editor's own model.
     Start(Option<String>),
     /// Debug the file that is showing, through its language's `run.file`. Offered only where
     /// `Run Current File` is offered **and** the language names an adapter.
     CurrentFile,
     /// End the session: politely the first time, and for good the second.
     Stop,
-    /// Run to the next breakpoint. IntelliJ's `F9`.
+    /// Run to the next breakpoint. The reference editor's `F9`.
     Resume,
     /// Run this line and stop on the next. `F8`.
     StepOver,
@@ -489,11 +489,11 @@ pub enum DebugAction {
     /// Open the modal that edits a breakpoint's condition, its log message and whether it is on.
     EditBreakpoint,
     /// Switch the breakpoint on the line in question off without taking it away, or back on again.
-    /// IntelliJ's `Disable Breakpoint`, which is a different thing from removing one: a disabled
+    /// The reference editor's `Disable Breakpoint`, which is a different thing from removing one: a disabled
     /// breakpoint keeps its condition and is drawn hollow.
     ToggleBreakpointEnabled,
     /// Show the value of the name at the caret in a popup, which is the value tooltip asked for by
-    /// hand. `Ctrl/Cmd+Alt+F8`, which is IntelliJ's own Quick Evaluate chord. `task-1696`.
+    /// hand. `Ctrl/Cmd+Alt+F8`, which is the reference editor's own Quick Evaluate chord. `task-1696`.
     ShowValue,
     /// Open the expression box. `Alt+F8`.
     EvaluateExpression,
@@ -1011,7 +1011,7 @@ pub struct PluginMenu {
 
 /// What runs a configuration from the keyboard, per platform.
 ///
-/// IntelliJ's own, which is what somebody who has used one will try: `Shift+F10` on Windows and
+/// The reference editor's own, which is what somebody who has used one will try: `Shift+F10` on Windows and
 /// `Ctrl+R` on macOS. They differ because the platforms do, not because Quill has an opinion.
 pub fn run_shortcut() -> Shortcut {
     if cfg!(target_os = "macos") {
@@ -1021,7 +1021,7 @@ pub fn run_shortcut() -> Shortcut {
     }
 }
 
-/// And what stops one: `Ctrl+F2` on Windows, `Cmd+F2` on macOS. IntelliJ's again.
+/// And what stops one: `Ctrl+F2` on Windows, `Cmd+F2` on macOS. The reference editor's again.
 pub fn stop_shortcut() -> Shortcut {
     if cfg!(target_os = "macos") {
         Shortcut::command(egui::Key::F2)
@@ -1032,7 +1032,7 @@ pub fn stop_shortcut() -> Shortcut {
 
 /// What starts a configuration under its debugger: `Shift+F9` on Windows, `Ctrl+D` on macOS.
 ///
-/// IntelliJ's own, and the ticket says mimic IntelliJ. As with [`run_shortcut`] the two platforms
+/// The reference editor's own, and the ticket says to mimic it. As with [`run_shortcut`] the two platforms
 /// differ because the platforms do, not because Quill has an opinion.
 pub fn debug_shortcut() -> Shortcut {
     if cfg!(target_os = "macos") {
@@ -1044,8 +1044,8 @@ pub fn debug_shortcut() -> Shortcut {
 
 /// A bare function key, which is what the four stepping shortcuts are.
 ///
-/// They are IntelliJ's exactly — `F9`, `F8`, `F7`, `Shift+F8` — because the ticket says mimic
-/// IntelliJ and because these are the keys a person's hands already know. A bare key is safe here
+/// They are the reference editor's exactly — `F9`, `F8`, `F7`, `Shift+F8` — because the ticket says mimic
+/// The reference editor and because these are the keys a person's hands already know. A bare key is safe here
 /// where it would not be for `Delete`: a function key types nothing, and every one of these entries
 /// is **dimmed** unless a session is stopped, so `F8` in an editor with no debugger running matches
 /// no entry and costs nothing.
@@ -1053,7 +1053,7 @@ const fn function_key(key: egui::Key) -> Shortcut {
     Shortcut::plain(key)
 }
 
-/// The `Run` menu, between `View` and `Git`, because that is where IntelliJ has one and where
+/// The `Run` menu, between `View` and `Git`, because that is where the reference editor has one and where
 /// people will look for it.
 ///
 /// The name of the chosen configuration is **live in the entry**, exactly as the Git menu's entries
@@ -1316,7 +1316,7 @@ fn file_menu(state: &MenuState) -> Menu {
         Entry::with_shortcut("Open File", Action::OpenFile, Shortcut::command(egui::Key::O)),
         Entry::item("Open Web Address...", Action::OpenWebAddress),
         // Searching the project rather than the disk, which is what `task-1659` asks for and what
-        // IntelliJ puts on this key. It took the shortcut `Open Folder` used to have, because two
+        // The reference editor puts on this key. It took the shortcut `Open Folder` used to have, because two
         // menu items claiming one key equivalent is a fault on macOS and there is a test for it;
         // `Open Folder` moved one modifier along, to the key nothing else was using.
         Entry::with_shortcut(
@@ -1384,7 +1384,7 @@ fn recent_entries(state: &MenuState) -> Vec<Entry> {
 pub fn symbol_entries(state: &MenuState) -> Vec<Entry> {
     let mut entries = Vec::new();
     if state.definitions_apply {
-        // IntelliJ's key. The command key and B is bold everywhere else in Quill, and the two can
+        // The reference editor's key. The command key and B is bold everywhere else in Quill, and the two can
         // never collide: `services::file_kind` says formatting is for prose and a definition needs
         // a language that has said what one looks like, and no file is both.
         entries.push(Entry::with_shortcut(
@@ -1406,7 +1406,7 @@ pub fn symbol_entries(state: &MenuState) -> Vec<Entry> {
         ));
     }
     if state.completion_applies {
-        // IntelliJ's own binding, and the real control key on both platforms rather than the Apple
+        // The reference editor's own binding, and the real control key on both platforms rather than the Apple
         // key on one of them: `Cmd+Space` is Spotlight. macOS may have claimed `Ctrl+Space` for
         // switching input sources, in which case the menu entry is how a person reaches it there —
         // which is a note for the menu test rather than a reason to bind something else here.
@@ -1459,7 +1459,7 @@ fn edit_menu(state: &MenuState) -> Menu {
         Entry::Separator,
         Entry::Submenu { name: "Highlight".to_owned(), entries: highlight_menu(state) },
         Entry::Separator,
-        // IntelliJ keeps this under `Edit -> Find`, one level further down. Quill's Edit menu is
+        // The reference editor keeps this under `Edit -> Find`, one level further down. Quill's Edit menu is
         // eight entries long and a submenu holding one thing is a step for nothing.
         Entry::with_shortcut(
             "Find in Files...",
@@ -2222,10 +2222,10 @@ mod tests {
         assert!(enabled(&paused, "Evaluate Expression..."));
     }
 
-    /// IntelliJ's keys, kept exactly, because the ticket says mimic IntelliJ and these are the keys
+    /// The reference editor's keys, kept exactly, because the ticket says to mimic it and these are the keys
     /// a person's hands already know.
     #[test]
-    fn the_stepping_keys_are_intellijs_own() {
+    fn the_stepping_keys_are_the_reference_editors_own() {
         let state = MenuState {
             run_selected: Some("Dev server".to_owned()),
             debug_applies: true,
@@ -2337,7 +2337,7 @@ mod tests {
 
     #[test]
     fn the_run_and_stop_shortcuts_are_the_ones_the_platform_uses() {
-        // IntelliJ's own, which is what somebody who has used one will try.
+        // The reference editor's own, which is what somebody who has used one will try.
         let state = MenuState { run_selected: Some("Dev server".to_owned()), run_active: true, ..MenuState::default() };
         let run = if cfg!(target_os = "macos") {
             action_for_key(&state, egui::Key::R, &pressing_control())

@@ -55,6 +55,27 @@ pub fn plain(path: &Path) -> PathBuf {
     }
 }
 
+/// `path` written with this platform's own separator throughout, and with `.` segments dropped.
+///
+/// `Path::join` does not normalise, so on Windows `root.join("src/report.rs")` is
+/// `C:\project\src/report.rs` — a path with both separators in it. Nothing inside Quill notices,
+/// because `Path`'s own `Eq` and `Hash` compare *components* and read `/` and `\` alike; and nothing
+/// on the disk notices either, because Windows accepts both. It is only noticed by **another
+/// program**, which is `plain`'s situation exactly: `task-1794` measured a breakpoint in a file that
+/// was not open being sent to a debug adapter as `C:\project\src/report.rs` — accepted without
+/// complaint, matched against no compile unit, and so never bound, with the program running to
+/// completion and the debug tile simply staying empty.
+///
+/// It is `Path`'s own normalisation rather than a text substitution, so the path Quill hands over is
+/// the path Quill compares. On a platform where `\` is an ordinary character in a filename nothing
+/// is replaced, because there `components()` never splits on one.
+///
+/// A `..` segment is **kept**: removing one without touching the disk changes which file is named
+/// whenever the segment before it is a symbolic link. This tidies the spelling and resolves nothing.
+pub fn native(path: &Path) -> PathBuf {
+    path.components().collect()
+}
+
 /// Whether `rest` starts with a drive letter and a colon, which is what a verbatim path has to hold
 /// before the prefix can be taken off it.
 fn is_drive_path(rest: &str) -> bool {
@@ -72,6 +93,44 @@ mod tests {
     fn a_verbatim_path_loses_its_prefix() {
         assert_eq!(plain(Path::new(r"\\?\C:\jason\dev\quill")), PathBuf::from(r"C:\jason\dev\quill"));
         assert_eq!(plain(Path::new(r"\\?\c:\")), PathBuf::from(r"c:\"));
+    }
+
+    /// `task-1794`: the mixed-separator path a `join` makes is what a debug adapter was handed.
+    #[test]
+    fn a_path_written_with_both_separators_comes_back_with_one() {
+        let joined = Path::new(if cfg!(windows) { r"C:\project" } else { "/project" })
+            .join("src/report.rs");
+        let wanted = if cfg!(windows) { r"C:\project\src\report.rs" } else { "/project/src/report.rs" };
+        assert_eq!(native(&joined), PathBuf::from(wanted));
+    }
+
+    #[test]
+    fn a_path_that_is_already_native_is_unchanged() {
+        for path in [
+            if cfg!(windows) { r"C:\project\src\report.rs" } else { "/project/src/report.rs" },
+            "relative/bit",
+        ] {
+            assert_eq!(native(Path::new(path)), PathBuf::from(path), "{path}");
+        }
+    }
+
+    /// A `.` says nothing and goes; a `..` decides which file is named and stays, because resolving
+    /// one without reading the disk is wrong wherever the segment before it is a symbolic link.
+    #[test]
+    fn a_here_segment_is_dropped_and_an_up_segment_is_kept() {
+        let root = Path::new(if cfg!(windows) { r"C:\project" } else { "/project" });
+        assert_eq!(native(&root.join("./src/report.rs")), native(&root.join("src/report.rs")));
+        assert!(native(&root.join("../other/report.rs")).to_string_lossy().contains(".."));
+    }
+
+    /// The whole point of it: what is normalised is what `Path` itself already compares, so a path
+    /// handed to another program and a path compared inside Quill cannot come apart.
+    #[test]
+    fn normalising_never_changes_which_file_a_path_names() {
+        let root = Path::new(if cfg!(windows) { r"C:\project" } else { "/project" });
+        for path in [root.join("src/report.rs"), root.join("./a/b"), PathBuf::from("rel/x.rs")] {
+            assert_eq!(native(&path), path, "{}", path.display());
+        }
     }
 
     #[test]

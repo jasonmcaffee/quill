@@ -182,7 +182,14 @@ function Invoke-WithKeysHeld {
 #>
 function Send-Chord {
     param([int[]]$Modifiers = @(), [Parameter(Mandatory)][int]$Key, [int]$SettleMs = 400)
-    Invoke-WithKeysHeld $Modifiers { Send-Key -Vk $Key }.GetNewClosure()
+    # **No `.GetNewClosure()` here**, though capturing `$Key` is what it looks like it is for. A closure
+    # is bound to a *new module scope*, and the functions this file defines are not in one — so the
+    # block threw `Send-Key is not recognized` the moment `Send-Chord` was called from a script that
+    # had dot-sourced this file, which is every caller there is. The keys were released, because that
+    # is what `Invoke-WithKeysHeld`'s `finally` is for, but the chord was never sent. `$Key` needs no
+    # capturing: PowerShell looks a variable up the call stack, and this frame is still on it while
+    # `Invoke-WithKeysHeld` runs the block. `task-1795`.
+    Invoke-WithKeysHeld $Modifiers { Send-Key -Vk $Key }
     Start-Sleep -Milliseconds $SettleMs
 }
 
@@ -209,7 +216,7 @@ function Send-Wheel {
             [Quill.Input]::mouse_event(0x0800, 0, 0, $step, [UIntPtr]::Zero)
             Start-Sleep -Milliseconds $StepMs
         }
-    }.GetNewClosure()
+    }
 }
 
 <#

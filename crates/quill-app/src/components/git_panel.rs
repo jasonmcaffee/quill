@@ -1,9 +1,9 @@
-//! The commit panel, laid out like IntelliJ's Commit tool window.
+//! The commit panel, laid out like the reference editor's Commit tool window.
 //!
 //! What the reference capture in `tasks/quill-ide-tdd.md` holds, and what this draws:
 //!
-//! - a `Commit` / `Stashes` tab strip. IntelliJ calls the second one `Shelf`; Quill has stashes, so
-//!   the tab is named for what it actually is rather than for what JetBrains call theirs.
+//! - a `Commit` / `Stashes` tab strip. The reference editor calls the second one `Shelf`; Quill has stashes, so
+//!   the tab is named for what it actually is rather than for what its makers call theirs.
 //! - a changes tree: a repository row carrying the branch in a chip, then one row a file with a tick
 //!   box, a marker, its name, and its folder dimmed after it.
 //! - a second group, `Unversioned Files`, holding what git is not tracking yet.
@@ -198,10 +198,15 @@ fn commit_tab(
         egui::Stroke::new(1.0, color::accent().gamma_multiply(0.5)),
         egui::StrokeKind::Inside,
     );
+    let message_id = ui.id().with("git-commit-message");
     let text_rect = message.shrink(8.0);
+    // The eight points of margin round the box are part of the control, so a press in them hands it
+    // the keyboard rather than leaving the pane behind holding the keys — `task-1795`.
+    crate::components::controls::claim_the_field(ui, message, message_id);
     let mut edit = ui.new_child(egui::UiBuilder::new().max_rect(text_rect));
     let response = edit.add(
         egui::TextEdit::multiline(&mut panel.message)
+            .id(message_id)
             .frame(egui::Frame::NONE)
             .desired_width(text_rect.width())
             .desired_rows(5)
@@ -216,7 +221,7 @@ fn commit_tab(
     let has_message = !panel.message.trim().is_empty();
     let can_commit = staged && has_message;
     // Command and Enter rather than Enter: the message above is a multiline field, where Enter is a
-    // new line and has to stay one. IntelliJ's commit dialog says the same thing.
+    // new line and has to stay one. The reference editor's commit dialog says the same thing.
     match modal::footer_confirmed_by(
         ui,
         area,

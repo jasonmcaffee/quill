@@ -515,7 +515,7 @@ fn paint_highlights(
 
 /// Draw the badge that stands for a collapsed block, and say whether one was pressed.
 ///
-/// IntelliJ's `{...}`, Sublime's `⋯`: a small rounded rectangle after the end of the head line with
+/// The reference editor's `{...}`, Sublime's `⋯`: a small rounded rectangle after the end of the head line with
 /// three dots in it, and pressing it expands the block. It is the affordance a person reaches for
 /// before they think about the gutter.
 ///

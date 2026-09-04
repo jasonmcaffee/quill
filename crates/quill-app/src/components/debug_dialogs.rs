@@ -93,7 +93,7 @@ pub fn breakpoint(ctx: &egui::Context, dialog: &mut BreakpointDialog) -> DialogO
 
         // Offered only when the adapter said it can, which is the rule every optional control here
         // follows. The condition and the log message are **data in the request**: the adapter does
-        // the evaluating and the logging, so Quill's whole cost for two of IntelliJ's features is
+        // the evaluating and the logging, so Quill's whole cost for two of the reference editor's features is
         // these two fields.
         if dialog.conditions {
             top = modal::section(ui, body, top, "Condition");
@@ -140,7 +140,7 @@ pub fn breakpoint(ctx: &egui::Context, dialog: &mut BreakpointDialog) -> DialogO
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EvaluateDialog {
     /// What is in the field. Seeded with the editor's selection when there was one, which is
-    /// IntelliJ's own behaviour.
+    /// The reference editor's own behaviour.
     pub expression: String,
     /// The last answer, once one has arrived: the value, or the debugger's own refusal.
     pub result: Option<Result<String, String>>,

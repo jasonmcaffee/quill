@@ -1,7 +1,7 @@
 //! The workspace tab: a strip of pages, and whichever one is showing.
 //!
 //! **The plugin contributes one tab**, so that tab holds a strip of its own — which is the shape the
-//! Services tool window has in `intellij/db_ui_query_console_result_tab.png`, and the honest answer to
+//! Services tool window has in The reference screenshots’ `db_ui_query_console_result_tab.png`, and the honest answer to
 //! a manifest that offers one `tab.id`. A console and a row editor are the two kinds of page, and both
 //! are drawn on the same card.
 

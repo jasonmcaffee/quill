@@ -1,6 +1,6 @@
 //! Changes a person has made to a grid but not yet written.
 //!
-//! **A change is pending until it is submitted**, which is IntelliJ's arrangement and the right one:
+//! **A change is pending until it is submitted**, which is the reference editor's arrangement and the right one:
 //! typing in a grid should not send a statement per keystroke, and what has been written and what has
 //! not should be visible without pressing anything.
 //!

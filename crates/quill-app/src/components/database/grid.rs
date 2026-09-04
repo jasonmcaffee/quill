@@ -1,6 +1,6 @@
 //! The row editor: the toolbar, `WHERE` and `ORDER BY`, and the grid itself.
 //!
-//! `intellij/data_editor_db_object_data.png` is the picture, and almost every decision here is read
+//! The reference screenshots’ `data_editor_db_object_data.png` is the picture, and almost every decision here is read
 //! straight off it: the row-number gutter, the header with a sort chevron per column, `WHERE` and
 //! `ORDER BY` as *typed SQL* on one row under the toolbar, and the paging widget at the foot saying
 //! `1-200 of 200+`.
@@ -112,6 +112,14 @@ fn toolbar(
                 acts.push(Act::DeleteRow(id, row));
             }
         }
+        // Set NULL is here because an empty box cannot mean it: a cell is edited as its value, and a
+        // box that opened with the word `NULL` in it would write those four letters back. See
+        // `Grid::text_of`.
+        if grid.chosen.is_some()
+            && crate::components::controls::icon_button(ui, along(bar, &mut at, step), "Set NULL", icon::cross)
+        {
+            acts.push(Act::NullTheCell(id));
+        }
         if pending > 0 {
             if crate::components::controls::icon_button(ui, along(bar, &mut at, step), "Revert", icon::undo) {
                 acts.push(Act::RevertPending(id));
@@ -119,12 +127,14 @@ fn toolbar(
             if crate::components::controls::icon_button(ui, along(bar, &mut at, step), "Preview pending changes", icon::copy) {
                 acts.push(Act::Preview(id));
             }
-            let submit = Rect::from_min_size(
+            // **`Save`**, which is the word `task-1795` asks for: *"see a save button that writes to
+            // the table for that value"*. It is the same call `submit` has always been.
+            let save = Rect::from_min_size(
                 Pos2::new(at + 6.0 * scale, bar.top() + 3.0 * scale),
                 Vec2::new(78.0 * scale, bar.height() - 6.0 * scale),
             );
-            at = submit.right();
-            if crate::components::modal::button(ui, submit, &format!("Submit {pending}"), !running, true) {
+            at = save.right();
+            if crate::components::modal::button(ui, save, &format!("Save {pending}"), !running, true) {
                 acts.push(Act::Submit(id));
             }
         }
@@ -144,7 +154,7 @@ fn toolbar(
     acts
 }
 
-/// The two fields IntelliJ puts under the toolbar, each a fragment of SQL somebody types.
+/// The two fields the reference editor puts under the toolbar, each a fragment of SQL somebody types.
 fn where_and_order(
     explorer: &mut DatabaseExplorer,
     ui: &mut egui::Ui,
@@ -205,9 +215,13 @@ fn fragment_field(
         Pos2::new(area.left() + 16.0 * scale + label_width, area.top() + 2.0 * scale),
         Pos2::new(area.right() - 6.0 * scale, area.bottom() - 2.0 * scale),
     );
+    // The whole well, including the word in front of it, hands the keyboard to the box.
+    let fragment_id = egui::Id::new(("database-fragment-field", name));
+    crate::components::controls::claim_the_field(ui, area, fragment_id);
     let mut edit = ui.new_child(egui::UiBuilder::new().max_rect(text_rect).id_salt(("database-fragment", name)));
     let response = edit.add(
         egui::TextEdit::singleline(value)
+            .id(fragment_id)
             .frame(egui::Frame::NONE)
             .font(egui::FontId::monospace(look.monospace_size * 0.95))
             .desired_width(text_rect.width())
@@ -244,13 +258,20 @@ fn the_grid(
     let body = Rect::from_min_max(Pos2::new(area.left(), head.bottom()), area.max);
     let column_width = COLUMN * scale;
     let row_height = look.row_height * 0.9;
+    // The rows that were read **and** the rows that have been added here. A pending insert is not in
+    // `rows.rows`, so before `task-1795` pressing `Add row` changed a count and put nothing on the
+    // screen.
+    let drawn_rows = match explorer.page(id) {
+        Some(Page { sheet: Sheet::Grid(grid), .. }) => grid.row_count(),
+        _ => rows.rows.len(),
+    };
 
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(body).id_salt(("database-grid", id)));
     let out = egui::ScrollArea::both()
         .id_salt(("database-grid-rows", id))
         .max_height(body.height())
         .auto_shrink([false, false])
-        .show_rows(&mut child, row_height, rows.rows.len(), |ui, range| {
+        .show_rows(&mut child, row_height, drawn_rows, |ui, range| {
             let mut acts = Vec::new();
             for at in range {
                 let (rect, _) = ui.allocate_exact_size(
@@ -353,13 +374,23 @@ fn one_row(
     let mut acts = Vec::new();
     let Some(Page { sheet: Sheet::Grid(grid), .. }) = explorer.page(id) else { return acts };
     let deleted = grid.row_of(at).is_some_and(|row| grid.pending.is_deleted(&row));
-    let painter = ui.painter();
-    // The row number, in the gutter, which is what tells `set 3 name Ada` which row it means.
+    let added = at >= grid.rows.rows.len();
+    let editing = grid.editing.clone().filter(|editing| editing.at == at);
+    // Cloned rather than borrowed from the `Ui`: the cell editor below wants the `Ui` mutably, and a
+    // painter borrowed from it would still be alive at that point.
+    let painter = ui.painter().clone();
+    // The row number, in the gutter, which is what tells `set 3 name Ada` which row it means. A row
+    // that was added here is `+1`, `+2` in the accent colour, because it is not in the database yet
+    // and a number that looked like the others would say it was.
+    let (number, tint) = match added {
+        true => (format!("+{}", at - grid.rows.rows.len() + 1), color::accent()),
+        false => ((at + 1).to_string(), color::text_faint()),
+    };
     text(
-        painter,
+        &painter,
         Pos2::new(rect.left() + 6.0 * scale, rect.center().y),
-        &(at + 1).to_string(),
-        color::text_faint(),
+        &number,
+        tint,
         look.font_size * 0.75,
         GUTTER * scale - 12.0 * scale,
     );
@@ -371,6 +402,11 @@ fn one_row(
         }
         let (value, is_pending) = grid.cell(at, index);
         let chosen = grid.chosen == Some((at, index));
+        let open = editing.as_ref().is_some_and(|editing| editing.column == index);
+        if open {
+            acts.extend(cell_editor(ui, look, cell, id, at, index, &column.name, editing.as_ref()));
+            continue;
+        }
         let response = ui.interact(cell, ui.id().with(("database-cell", id, at, index)), Sense::click());
         if chosen {
             painter.rect_filled(cell.shrink(1.0), egui::CornerRadius::same(3), look.palette.selected_row);
@@ -385,6 +421,82 @@ fn one_row(
         });
         if response.clicked() {
             acts.push(Act::ChooseCell(id, at, index));
+        }
+        // **A double click opens the cell for typing**, which is `task-1795`. A single click chooses
+        // it, as it always did, so the two gestures do not fight: choosing is what Delete row and
+        // Set NULL act on.
+        if response.double_clicked() {
+            acts.push(Act::EditCell(id, at, index));
+        }
+    }
+    acts
+}
+
+/// A cell that is open for typing.
+///
+/// The box is drawn over the cell and takes the keyboard the frame it opens, with everything in it
+/// selected, so typing replaces the value and an arrow key does not. `Enter` commits, `Escape`
+/// throws the typing away, and losing the keyboard commits as well — which is what clicking another
+/// cell does, and is the one behaviour a grid has to get right or an edit is lost by looking away.
+#[allow(clippy::too_many_arguments)]
+fn cell_editor(
+    ui: &mut egui::Ui,
+    look: &Look<'_>,
+    cell: Rect,
+    id: u64,
+    at: usize,
+    column: usize,
+    name: &str,
+    editing: Option<&crate::services::database::Editing>,
+) -> Vec<Act> {
+    let mut acts = Vec::new();
+    let Some(editing) = editing else { return acts };
+    let scale = look.scale();
+    ui.painter().rect(
+        cell.shrink(1.0),
+        egui::CornerRadius::same(3),
+        look.palette.field,
+        egui::Stroke::new(1.0, look.palette.accent),
+        egui::StrokeKind::Inside,
+    );
+    let box_id = egui::Id::new(("database-cell-editor", id, at, column));
+    let mut typed = editing.text.clone();
+    let inner = Rect::from_min_max(
+        Pos2::new(cell.left() + 4.0 * scale, cell.top() + 2.0 * scale),
+        Pos2::new(cell.right() - 4.0 * scale, cell.bottom() - 2.0 * scale),
+    );
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).id_salt(box_id));
+    let response = child.add(
+        egui::TextEdit::singleline(&mut typed)
+            .id(box_id)
+            .frame(egui::Frame::NONE)
+            .font(egui::FontId::monospace(look.monospace_size * 0.95))
+            .desired_width(inner.width())
+            .text_color(color::text_control()),
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &format!("{name} row {}", at + 1))
+    });
+    if typed != editing.text {
+        acts.push(Act::TypeIntoCell(id, typed));
+    }
+    if editing.opened {
+        response.request_focus();
+        // Everything selected, so the first thing typed replaces the value rather than joining it.
+        if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), box_id) {
+            let whole = egui::text::CCursorRange::two(
+                egui::text::CCursor::new(0),
+                egui::text::CCursor::new(editing.text.chars().count()),
+            );
+            state.cursor.set_char_range(Some(whole));
+            state.store(ui.ctx(), box_id);
+        }
+        acts.push(Act::OpenedTheCell(id));
+    }
+    if response.lost_focus() {
+        match ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+            true => acts.push(Act::CancelCell(id)),
+            false => acts.push(Act::CommitCell(id)),
         }
     }
     acts
@@ -438,7 +550,7 @@ fn draw_a_value(
     }
 }
 
-/// `|< < 1-200 of 200+ > >|`, which is IntelliJ's own widget and its own honesty about the count.
+/// `|< < 1-200 of 200+ > >|`, which is the reference editor's own widget and its own honesty about the count.
 fn paging(
     explorer: &DatabaseExplorer,
     ui: &mut egui::Ui,
@@ -488,7 +600,7 @@ fn paging(
 
 /// A result with no editing on it, which is what a console shows.
 ///
-/// A console result is **never editable**: IntelliJ tries to resolve one back to a table, and Quill
+/// A console result is **never editable**: The reference editor tries to resolve one back to a table, and Quill
 /// does not promise what it cannot enforce — a join has no one table behind it and guessing at which
 /// is how the wrong row gets updated. The row editor is one click away and has the `WHERE` field.
 pub fn rows_only(ui: &mut egui::Ui, look: &Look<'_>, area: Rect, rows: &Rows, id: u64) {

@@ -6,7 +6,7 @@ through its background while the text stays solid.
 
 It is also, now, an editor you can write code in: line numbers down the left, a tab for each open
 file, a right click menu on the explorer, git in full, plugins that colour CSS, HTML, JavaScript,
-TypeScript, Rust and Mermaid, and themes — five of them, taken from the IntelliJ ones, each repainting
+TypeScript, Rust and Mermaid, and themes — five of them, taken from the reference editor ones, each repainting
 the whole window and the code in it.
 
 HTML can open as a rendered tab too. `File -> Open Web Address...` accepts HTTP and HTTPS addresses,
@@ -195,7 +195,7 @@ Both bars are built from one list, so they hold the same entries with the same s
 
 ## Settings
 
-`Edit -> Settings`, `Quill -> Settings`, or command and comma, opens a modal laid out like IntelliJ's: the
+`Edit -> Settings`, `Quill -> Settings`, or command and comma, opens a modal laid out like the reference editor's: the
 pages down the left under their headings, and the chosen page on the right.
 
 - `Appearance & Behavior -> Appearance -> Font` sets the family and the size the editor shows the document
@@ -261,7 +261,7 @@ have to ask for: the branch and how far it is from its upstream in the status ba
 explorer tinted by what git thinks of it, and a change bar in the gutter against each line that
 differs from the version git has.
 
-`Commit...` opens a panel laid out like IntelliJ's: a changes tree with a tick box a file, the
+`Commit...` opens a panel laid out like the reference editor's: a changes tree with a tick box a file, the
 repository's row carrying its branch, an `Unversioned Files` group, `Amend`, the counts, the message
 box with the last twenty messages behind a button, and `COMMIT` and `COMMIT AND PUSH...`. **Ticking a
 file stages it at once**, so Quill's idea of what is staged and git's cannot disagree while the panel
@@ -323,7 +323,7 @@ of the title bar, with the family and the size in the settings.
 Paragraph formatting: left, centre, right and justified alignment, and single, one and a half or double line
 spacing, behind the same button.
 
-The font: one family and one size for the whole window, the way IntelliJ has one editor font, set in
+The font: one family and one size for the whole window, the way the reference editor has one editor font, set in
 `Edit -> Settings -> Appearance -> Font`. Changing it changes every file that is open, not only the one
 showing. The size is also on the keyboard at command or control with plus and minus, on `View -> Reset Font
 Size` to put it back, and on a trackpad pinch or the wheel with the modifier held over the editing area.

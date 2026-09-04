@@ -324,7 +324,7 @@ pub enum IconSet {
     /// The marks Quill shipped with: a solid disclosure triangle, stroked rail buttons, no folder mark.
     ///
     /// Kept and selectable rather than deleted, which is what makes this a **set** rather than a
-    /// redrawing: One Dark names it, because One Dark's own IntelliJ icons are the IDE's rather than
+    /// redrawing: One Dark names it, because One Dark's own the reference editor icons are the IDE's rather than
     /// Material's, and anybody who preferred the triangles has them back in one line.
     Classic,
     /// Heavier, rounder and filled where the classic one is a stroke, in the manner of Atom Material
@@ -464,7 +464,7 @@ pub mod size {
     pub const TITLE_BAR: f32 = 50.0;
     /// Width of the rail of pane buttons down the far left of the window.
     ///
-    /// Narrower than IntelliJ's, which is about forty points, because `task-1658` asks for that and
+    /// Narrower than the reference editor's, which is about forty points, because `task-1658` asks for that and
     /// because Quill's holds three buttons rather than a dozen. Twenty four for the button, six either
     /// side — and the six on the left is exactly what `components::resize_edges` takes, so a button and
     /// the window's own left grip never fight over the same point.
@@ -510,7 +510,7 @@ pub fn color32(color: quill_core::Rgba) -> Color32 {
 ///
 /// Called again whenever the theme changes, because egui keeps its own copy of these colours in its style.
 /// `interface_scale` is the interface font size as a multiple of egui's own default — `appearance.ui.font.size`
-/// divided by the size egui sets a body of text in — which is IntelliJ's `Use custom font` and is 1.0 until
+/// divided by the size egui sets a body of text in — which is the reference editor's `Use custom font` and is 1.0 until
 /// somebody asks for something else.
 pub fn apply(ctx: &egui::Context) {
     apply_scaled(ctx, 1.0);
@@ -572,7 +572,7 @@ pub fn apply_scaled(ctx: &egui::Context, interface_scale: f32) {
         style.spacing.button_padding = Vec2::new(8.0, 4.0);
         style.spacing.menu_margin = egui::Margin::same(6);
 
-        // The interface's own font size, which is IntelliJ's Appearance -> Use custom font.
+        // The interface's own font size, which is the reference editor's Appearance -> Use custom font.
         //
         // **Set from egui's own defaults rather than multiplied in place**, because this function is
         // called again every time the theme changes: scaling what is already there would compound, so

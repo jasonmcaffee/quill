@@ -21,7 +21,7 @@
 //! - **Play**, running the selected configuration. With none selected it opens the dialog instead,
 //!   which is what `Add Configuration...` means without a second control meaning it.
 //! - **Debug**, the bug beside it, running the same configuration under its debugger — `task-1692`,
-//!   and IntelliJ's own pair in IntelliJ's own order. It is present when the configuration the play
+//!   and the reference editor's own pair in the reference editor's own order. It is present when the configuration the play
 //!   button would start **resolves to a debugger at all**, which `QuillApp::run_widget_state` works
 //!   out: a Rust or a Node project therefore always shows both buttons, and a vault of Markdown and
 //!   CSS shows one, because there is nothing there to step through and never will be. That is
@@ -178,7 +178,7 @@ pub fn show(ui: &mut egui::Ui, area: Rect, state: &WidgetState) -> Option<Action
     }
     pen = play.right() + 2.0;
 
-    // Debug, beside it, which is IntelliJ's pair and IntelliJ's order. Same configuration, same
+    // Debug, beside it, which is the reference editor's pair and the reference editor's order. Same configuration, same
     // command, under a debugger — so with nothing chosen it opens the dialog, exactly as play does.
     if state.debuggable {
         let debug = Rect::from_min_size(Pos2::new(pen, middle - BUTTON / 2.0), Vec2::splat(BUTTON));
@@ -210,7 +210,7 @@ pub fn show(ui: &mut egui::Ui, area: Rect, state: &WidgetState) -> Option<Action
 
 /// One of the widget's square buttons: hovered fill, a drawn icon, a plain name.
 ///
-/// `green` tints the icon with the colour that means "this starts something", which is IntelliJ's
+/// `green` tints the icon with the colour that means "this starts something", which is the reference editor's
 /// own colour for the same button and is `theme::color::git_added()` here — the palette is closed,
 /// and that is the green in it.
 fn square_button(
@@ -268,7 +268,7 @@ fn flyout(ui: &mut egui::Ui, state: &WidgetState) -> Option<Action> {
 /// One configuration in the flyout: a state dot, the name, and a play icon that runs it.
 ///
 /// Choosing the row **selects** it and its play icon **runs** it, which is the widget's whole
-/// grammar and is IntelliJ's: the list is for picking what the play button at the top will do, and
+/// grammar and is the reference editor's: the list is for picking what the play button at the top will do, and
 /// the icon beside a row is for running that one without changing the choice.
 fn configuration_row(ui: &mut egui::Ui, row: &Row, selected: bool) -> Option<Action> {
     let (rect, response) =

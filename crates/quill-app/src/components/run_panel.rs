@@ -19,12 +19,12 @@
 //! configuration mid-run changes what the next run does and never what the tab says about the one
 //! that already happened. When the program stops the tab stays, holding everything it wrote, with
 //! the exit code in the strip — `finished`, or `exit code 101` in the error colour. **The grid is
-//! never written into by Quill**: IntelliJ prints its epilogue into the console, and that line
+//! never written into by Quill**: The reference editor prints its epilogue into the console, and that line
 //! pretending to be program output is exactly the confusion a separate strip avoids.
 //!
 //! ## Stopping
 //!
-//! Soft, then hard, which is IntelliJ's rule. The first press is the interrupt byte down the pty —
+//! Soft, then hard, which is the reference editor's rule. The first press is the interrupt byte down the pty —
 //! the Ctrl+C a program can catch and tidy up after. A program still alive after [`GRACE`], or a
 //! second press, is killed through [`quill_terminal::Session::kill`]. Closing a tab and closing the
 //! window take the same path, so nothing ever orphans a child on purpose.
@@ -46,7 +46,7 @@ pub const HEADER: f32 = terminal_panel::HEADER;
 
 /// How long a program is given to answer the polite stop before the hard one follows.
 ///
-/// Two seconds, which is IntelliJ's own grace and is short on purpose: the person pressing stop has
+/// Two seconds, which is the reference editor's own grace and is short on purpose: the person pressing stop has
 /// already decided, and a second press does not wait at all.
 pub const GRACE: Duration = Duration::from_secs(2);
 
@@ -222,7 +222,7 @@ impl RunPanel {
     /// Which run belongs to a configuration of this name, if one does.
     ///
     /// There is at most one, because running a configuration that is already running is a rerun
-    /// rather than a second copy — §5.2, and IntelliJ's own default.
+    /// rather than a second copy — §5.2, and the reference editor's own default.
     pub fn index_of(&self, name: &str) -> Option<usize> {
         self.runs.iter().position(|run| run.name() == name)
     }
@@ -655,7 +655,7 @@ fn draw_tab(
         egui::FontId::proportional(12.0),
         if active { color::text_strong() } else { color::text_control() },
     );
-    // The state is written beside the name rather than in the grid: IntelliJ prints its epilogue
+    // The state is written beside the name rather than in the grid: The reference editor prints its epilogue
     // into the console, and a line pretending to be program output is the confusion this avoids.
     let note = match state {
         State::Running => None,

@@ -15,7 +15,7 @@
 //! reuses. Clicking a second file replaces its contents instead of adding a tab, so reading through
 //! a folder does not leave thirty tabs behind. Double clicking a file, or typing into the transient
 //! tab, makes it permanent — editing a file you were only glancing at plainly means you meant to
-//! open it. This is what IntelliJ does, and it is what `task-1649` describes when it says a double
+//! open it. This is what the reference editor does, and it is what `task-1649` describes when it says a double
 //! click opens a file in a new tab.
 //!
 //! ## A tab holding a picture
@@ -28,6 +28,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::services::project_state::DiskStamp;
 use quill_core::{Anchor, Document, Layout, Preview, Selection};
 
 use crate::app::{PlacedDiagram, PlacedPicture, ViewMode};
@@ -211,26 +212,6 @@ pub struct OpenFile {
     pub disk: Option<DiskStamp>,
 }
 
-/// Enough of a file's metadata to tell that it has changed, without reading it.
-///
-/// The modified time and the length together. The time alone is not enough on a file system whose
-/// stamps have a coarse resolution, and the length alone misses an edit that kept it — neither is a
-/// hash, which would mean reading every byte of every open file to answer a question that is usually
-/// no.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DiskStamp {
-    pub modified: Option<std::time::SystemTime>,
-    pub len: u64,
-}
-
-impl DiskStamp {
-    /// What is on disk now, or nothing when there is nothing there to measure.
-    pub fn of(path: &Path) -> Option<Self> {
-        let data = std::fs::metadata(path).ok()?;
-        Some(Self { modified: data.modified().ok(), len: data.len() })
-    }
-}
-
 impl OpenFile {
     pub fn new(document: Document) -> Self {
         Self {
@@ -380,7 +361,7 @@ impl OpenFile {
 ///
 /// ## Panes
 ///
-/// `task-1664` asks for IntelliJ's split view: the editing area cut into panes side by side, each
+/// `task-1664` asks for the reference editor's split view: the editing area cut into panes side by side, each
 /// with its own tabs, so several files are on the screen at once. A pane is **a set of tabs and
 /// which of them is showing**, and everything else a person would call the state of an editor —
 /// the scroll position, the view mode, the blame, the laid out text — is already on the tab.
@@ -395,7 +376,7 @@ impl OpenFile {
 /// from `clock` each time a tab is shown, and the tab showing in a pane is the one in it with the
 /// highest stamp. That is a walk of a handful of integers, and it gives the right answer for free
 /// in the case that would otherwise need thinking about: close the tab that is showing and the one
-/// that comes forward is the one you were looking at before it, which is what IntelliJ does.
+/// that comes forward is the one you were looking at before it, which is what the reference editor does.
 ///
 /// Two invariants are kept by [`Self::tidy`] after every change, and asserted in the tests:
 ///
@@ -589,10 +570,10 @@ impl OpenFiles {
     /// Put a pane to the right of the one that has the keyboard, and move the tab that is showing
     /// into it.
     ///
-    /// The tab **moves** rather than being copied, which is where Quill and IntelliJ part company:
-    /// IntelliJ's `Split Right` shows the same file in both splits, and Quill cannot, because two
+    /// The tab **moves** rather than being copied, which is where Quill and the reference editor part company:
+    /// The reference editor's `Split Right` shows the same file in both splits, and Quill cannot, because two
     /// tabs on one file would be two documents over one path and saving either would throw the
-    /// other away. This is IntelliJ's `Split and Move Right` under the name a person looks for.
+    /// other away. This is the reference editor's `Split and Move Right` under the name a person looks for.
     /// `tasks/task-1664-split-view-tdd.md` §3 records what was weighed.
     ///
     /// **When the pane holds only that tab**, taking it away would empty the pane it came from and
@@ -691,7 +672,7 @@ impl OpenFiles {
     }
 
     /// Fold the pane that has the keyboard into the one beside it: the pane on its left where there
-    /// is one, otherwise the pane on its right. IntelliJ's `Unsplit`.
+    /// is one, otherwise the pane on its right. The reference editor's `Unsplit`.
     pub fn unsplit(&mut self) -> bool {
         if self.panes < 2 {
             return false;
@@ -706,7 +687,7 @@ impl OpenFiles {
         true
     }
 
-    /// Every tab back into one pane. IntelliJ's `Unsplit All`.
+    /// Every tab back into one pane. The reference editor's `Unsplit All`.
     pub fn unsplit_all(&mut self) -> bool {
         if self.panes < 2 {
             return false;
@@ -1013,7 +994,7 @@ impl OpenFiles {
     /// Close the tab at `index`.
     ///
     /// The tab that comes forward in its place is the one that was showing in that pane before it,
-    /// which is what IntelliJ does and what falls out of the stamps for nothing.
+    /// which is what the reference editor does and what falls out of the stamps for nothing.
     ///
     /// A pane emptied by the close is removed and the panes after it move up. Closing the last tab
     /// of the last pane leaves a fresh untitled tab rather than no tabs, so there is never a window

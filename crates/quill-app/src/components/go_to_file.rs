@@ -1,6 +1,6 @@
 //! `Go to File`: type part of a name, and open the file it finds.
 //!
-//! `task-1659` asks for IntelliJ's, and this is the part of IntelliJ's that is worth having: one
+//! `task-1659` asks for the reference editor's, and this is the part of the reference editor's that is worth having: one
 //! box, a list that narrows as you type, and a file opened from it. What is deliberately left out is
 //! the rest of `Search Everywhere` — the tabs across the top for classes, symbols, actions and text.
 //! Quill has no symbol index and its actions are on two short menus, so those tabs would be three

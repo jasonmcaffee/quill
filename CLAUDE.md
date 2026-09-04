@@ -686,13 +686,13 @@ a log, which is three copies of a secret. A URL with a password in it is **refus
 saying where one goes instead, because that is the one door through which a secret could reach a
 settings file unnoticed.
 
-**A new data source is read only, which is the opposite of IntelliJ and is deliberate.** One added in
-a hurry points at something real, and clearing a tick box is much cheaper than the first `UPDATE`
-nobody meant. The guarantee is the **server's** — `SET SESSION CHARACTERISTICS AS TRANSACTION READ
-ONLY`, and `SQLITE_OPEN_READONLY` — rather than a parser in Quill, which also hides the controls. A
-console statement that changes rows is confirmed once before it is sent; a *command* is not, because
-an agent cannot press a button in a modal and a command that can never finish is worse than no
-confirmation at all.
+**A data source is writable, and `task-1795` took the safety check away entirely** — *"We don't want
+a safety check at all. Should be full access."* The read-only tick box, the whole Safety section of
+the dialog, the confirmation before a console statement that changes rows and its settings row are
+all gone, and a new source is writable. The **guarantee** stays, because it was never a parser in
+Quill: `SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY` and `SQLITE_OPEN_READONLY` are the
+server's own, and `plugins run database read-only` is the one way to ask for them, so an agent can
+still open a session that cannot write. Nothing in the window offers it.
 
 **Three faults this found in work that had already shipped**, each invisible to every passing test:
 
@@ -706,9 +706,54 @@ confirmation at all.
 
 `quill-cli plugins run database …` is the agent's half — `sources`, `add-source`, `password`,
 `connect`, `schemas`, `tables`, `columns`, `ddl`, `open`, `console`, `query`, `state`, `result`,
-`page`, `filter`, `sort`, `set`, `add-row`, `delete-row`, `pending`, `submit`, `read-only`, `confirm`
-— and `plugins view database` answers the whole plugin as data. **`query` does not wait**, for the
-reason Agent-Chat's `send` does not: `UiProvider::command` runs inside a frame.
+`page`, `filter`, `sort`, `set`, `add-row`, `delete-row`, `pending`, `submit`, `read-only`,
+`new-table`, `drop-table` — and `plugins view database` answers the whole plugin as data. **`query`
+does not wait**, for the reason Agent-Chat's `send` does not: `UiProvider::command` runs inside a
+frame.
+
+### What `task-1795` changed, and the four faults it found
+
+The ticket is twelve reports about the plugin and the plugins page. Nine are the obvious change; three
+are worth knowing before touching the code again.
+
+**One fault was two of the reports.** *"I cant paste a value in the file path for sql lite. It pastes
+to the document below"* and `Ctrl+Enter` not executing are the same thing: `controls::field_text_rect`
+lays a `TextEdit` out as a strip one line tall inside a 24 point control, so a press in a field's own
+padding hit nothing, no text box took the keyboard, `Focus::Editor` still stood, and
+`editor_view::handle_input` read the frame's `Event::Paste` into the file behind the pane. A field's
+whole rectangle claims the press now, and it hands the keyboard over **on the next frame** through
+`app::hold_the_keyboard` — handing it over inside the press does nothing, because a `TextEdit` created
+later in that same frame sees a click that was not on it and surrenders the focus it has just been
+given. All nineteen text boxes in the window go through it, and each passes its box an explicit id,
+which removes a second latent fault: an id from egui's auto counter shifts when the number of widgets
+above it changes, and the source dialog draws a different number of fields for PostgreSQL and SQLite.
+
+**A box nobody typed in records nothing.** Committing a cell happens when the keyboard moves on, and
+`Add row` lands it in the first cell — which on a table with a generated key is the key. Stepping off
+wrote that cell down as an edit, turning *not supplied* into the empty string, and SQLite refuses that
+on an `integer primary key` with `datatype mismatch`: **no added row could ever be saved.** A commit
+whose text is what the box opened with is now not a change at all.
+
+**Windows has a credential store, and Quill writes to it.** `services::agent_tasks::keychain` said in
+as many words that there was none and that one *"cannot be tested from this machine"* — the second
+half stopped being true when Quill grew a Windows build. It is `CredWriteW`/`CredReadW`/`CredDeleteW`
+with `CRED_PERSIST_LOCAL_MACHINE`, one feature flag on the `windows-sys` dependency already in the
+tree, which is the precedent `services::recycle` set for `SHFileOperationW`. Agent-Chat and
+Agent-Tasks gained a Windows keychain from the same change. The dialog's password field writes there
+and the settings file records the **name** of the entry, as it always did; `password.env` is still
+read so a source configured that way keeps working, and there is no way to make a new one.
+
+**And `Encryption` is `Connection security`.** *"No idea what encryption option means."* It was
+`sslmode`, and a person cannot be expected to know that. Off / If offered / Required, with a line
+saying it is about the connection to the server and not about how the password is kept.
+
+**Two things about reading the window from outside it.** A `modal::monospaced` block — the DDL, the
+pending statements, the New Table dialog's SQL — draws its lines as plain labels inside a scrolling
+area, and **none of it reaches the tree egui hands out**; a `widget_info` carrying the whole text does
+not either. So a dialog whose point is that text reports it through its own plugin `view` as well,
+which is what `new_table_sql` is. And when a `widget_info` *is* the answer, `WidgetType::Label` is the
+wrong type to give it: egui maps that one to `Role::Label` and puts the text in the node's **value**
+rather than its label, so the words cannot be searched for at all.
 
 `cargo run -p quill-db --example connect -- <url> <PASSWORD_VARIABLE>` is how the real server is
 checked by hand, because a scripted server is evidence about the protocol rather than about a server.
@@ -3219,6 +3264,11 @@ trade that away to be a shade nearer a screenshot.
 - `tasks/quill-mermaid-plugin-tdd.md` — Mermaid: the four ways of drawing it that were weighed and why
   Quill writes its own, what each of the twenty types becomes on the screen, which ten are named
   rather than drawn, and what `language.renders` buys.
+- `tasks/task-1795-database-plugin-fixes-tdd.md` — the twelve reports against the Database plugin and
+  the plugins page: the one field-focus fault that was two of them, taking the safety check away
+  outright, the Windows credential store `keychain.rs` said did not exist, editing a cell in place,
+  the New Table dialog, and why the Install button on a plugin that already ships says something
+  else now.
 - `tasks/task-1777-database-plugin-tdd.md` — the Database plugin: which third of IntelliJ's database
   tools is worth copying and why the other two thirds are not, the four ways of talking to PostgreSQL
   that were weighed and the crate count that decided it, SCRAM-SHA-256 and the two older

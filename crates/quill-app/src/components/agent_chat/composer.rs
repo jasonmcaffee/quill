@@ -344,9 +344,11 @@ fn prompt(parts: Parts<'_>, ui: &mut egui::Ui, look: &Look<'_>, area: Rect) -> V
     parts.state.prompt_focused = false;
     if field.width() > 30.0 {
         let rows = ((field.height() / (look.font_size * 1.45)).floor() as usize).max(1);
+        let prompt_id = ui.id().with("agent-chat-prompt");
         let response = ui.put(
-            crate::components::controls::field_text_rect(ui, field, 0.0),
+            crate::components::controls::field_takes_the_whole_rectangle(ui, field, 0.0, prompt_id),
             egui::TextEdit::multiline(parts.draft)
+                .id(prompt_id)
                 .frame(egui::Frame::NONE)
                 .hint_text(egui::RichText::new("Ask anything…").color(look.palette.text_faint))
                 .desired_width(field.width())

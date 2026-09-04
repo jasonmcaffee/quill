@@ -1,7 +1,7 @@
 //! The value under the pointer: a small tree hanging off a name in the source while the program is
 //! paused.
 //!
-//! `task-1696`, and `tasks/task-1696-value-tooltip-tdd.md` is the design. It is IntelliJ's value
+//! `task-1696`, and `tasks/task-1696-value-tooltip-tdd.md` is the design. It is the reference editor's value
 //! tooltip: rest the pointer on a name and its value appears, a structure opens into its fields, and
 //! a value can be typed over.
 //!

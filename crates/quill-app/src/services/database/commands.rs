@@ -14,7 +14,7 @@
 use quill_db::source::{Secret, Source};
 use quill_db::value::Value;
 
-use crate::services::database::{DatabaseExplorer, Page, Sheet, SourceForm};
+use crate::services::database::{ColumnForm, DatabaseExplorer, Page, Sheet, SourceForm, TableForm};
 use crate::services::plugin_ui::{Answer, UiProvider};
 
 /// Every command, with the one line `plugins show database` prints for each.
@@ -47,9 +47,10 @@ pub const LIST: &[(&'static str, &'static str)] = &[
     ("pending", "The pending changes, and the statements they will become."),
     ("revert", "Throw the pending changes away."),
     ("submit", "Write them, as one transaction."),
-    ("password", "Where a data source's password is: `<source> env <VARIABLE>`, `<source> keychain <entry>`, or `<source> none`. Never the password itself, which Quill does not store."),
-    ("read-only", "`on` or `off` for a data source. The server enforces it; Quill also hides the controls."),
-    ("confirm", "`on` or `off`: whether a console statement that changes rows is confirmed before it is sent. It asks a person; it never asks a command."),
+    ("password", "`<source> set <secret>` writes one into this machine's own credential store; `<source> keychain <entry>` points at an entry already there; `<source> none` forgets it. Nothing is ever written to a file but the *name* of the entry."),
+    ("read-only", "`on` or `off` for a data source. Off by default. It asks the *server* for a session that cannot write, and there is no control for it in the window."),
+    ("new-table", "Make a table. `<schema.name> <column>:<type>[:pk][:notnull] …`, or just a name to open the dialog."),
+    ("drop-table", "Drop a table, by `schema.name`."),
     ("view", "Everything the pane and the tab are showing, as data."),
 ];
 
@@ -130,24 +131,10 @@ pub fn run(explorer: &mut DatabaseExplorer, command: &str, arguments: &[String])
             Ok(Answer::said(format!("{count} statement(s) sent as one transaction"))
                 .with(serde_json::json!({ "statements": count })))
         }
+        "new-table" => new_table(explorer, arguments),
+        "drop-table" => drop_table(explorer, &rest),
         "password" => password(explorer, &rest),
         "read-only" => read_only(explorer, &rest),
-        "confirm" => {
-            match rest.trim() {
-                "on" | "true" => explorer.configuration.confirm_writes = true,
-                "off" | "false" => explorer.configuration.confirm_writes = false,
-                // With nothing said it toggles, because the menu entry that could run it is a toggle
-                // and a menu row cannot carry an argument — the shape Agent-Chat's `tools` already has.
-                "" => explorer.configuration.confirm_writes = !explorer.configuration.confirm_writes,
-                other => return Err(format!("confirm takes `on` or `off`, not `{other}`.")),
-            }
-            explorer.write_the_configuration()?;
-            Ok(Answer::said(match explorer.configuration.confirm_writes {
-                true => "a console statement that changes rows is confirmed first",
-                false => "nothing is confirmed",
-            })
-            .with(serde_json::json!({ "confirm_writes": explorer.configuration.confirm_writes })))
-        }
         "view" => Ok(Answer::said("the database plugin").with(explorer.view())),
         other => Err(format!(
             "`{other}` is not one of the Database plugin's commands. It has {}.",
@@ -187,9 +174,8 @@ fn add_source(explorer: &mut DatabaseExplorer, rest: &str) -> Result<Answer, Str
         _ => (rest.trim(), None),
     };
     let source = Source::parse(name.trim(), url.trim()).map_err(|why| why.to_string())?;
-    // **Read only until somebody says otherwise**, which is the same default the settings file and the
-    // New Data Source dialog use. A source added from the command line by an agent is exactly the one
-    // that should not be able to write on its first statement.
+    // Writable, which is the same default the settings file and the dialog now use — `task-1795`
+    // asks for full access and there is no tick box anywhere to clear.
     let source = Source {
         name: explorer.configuration.a_free_name(name.trim()),
         read_only: crate::services::database::config::DEFAULT_READ_ONLY,
@@ -216,7 +202,7 @@ fn add_source(explorer: &mut DatabaseExplorer, rest: &str) -> Result<Answer, Str
 /// through `state` to read one level is a tree no agent would use. So it waits, but only for as long
 /// as a person would not notice, and past that it says to ask again rather than holding the window.
 /// An earlier version waited **ten seconds**, which would have frozen the window on a slow server.
-const PATIENCE: std::time::Duration = std::time::Duration::from_millis(250);
+pub const PATIENCE: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// What a command says when the answer has not arrived inside [`PATIENCE`].
 ///
@@ -552,25 +538,44 @@ fn password(explorer: &mut DatabaseExplorer, rest: &str) -> Result<Answer, Strin
     let mut words = rest.split_whitespace();
     let name = words
         .next()
-        .ok_or_else(|| "password takes a data source and `env <VARIABLE>`, `keychain <entry>` or `none`.".to_owned())?
+        .ok_or_else(|| "password takes a data source and `set <secret>`, `keychain <entry>` or `none`.".to_owned())?
         .to_owned();
     let secret = match words.next() {
-        Some("env") | Some("environment") => {
-            let variable = words.next().ok_or_else(|| "`env` takes the name of an environment variable.".to_owned())?;
-            Secret::Environment(variable.to_owned())
+        // **The one form that carries the secret itself**, and it carries it into the machine's own
+        // credential store rather than into anything Quill writes. The value is the rest of the line,
+        // so a password with a space in it is one argument.
+        Some("set") => {
+            let value = words.collect::<Vec<&str>>().join(" ");
+            if value.is_empty() {
+                return Err("`set` takes the password.".to_owned());
+            }
+            let entry = crate::services::database::keychain_entry_for(&name);
+            crate::services::agent_tasks::keychain::write(&entry, &value)?;
+            Secret::Keychain(entry)
         }
         Some("keychain") => {
             let entry = words.next().ok_or_else(|| "`keychain` takes the name of an entry.".to_owned())?;
             Secret::Keychain(entry.to_owned())
         }
-        Some("none") => Secret::None,
+        // Still read, because a data source somebody set up this way goes on working; there is no
+        // longer a way to make a new one, and the dialog does not offer it.
+        Some("env") | Some("environment") => {
+            let variable = words.next().ok_or_else(|| "`env` takes the name of an environment variable.".to_owned())?;
+            Secret::Environment(variable.to_owned())
+        }
+        Some("none") => {
+            let _ = crate::services::agent_tasks::keychain::remove(
+                &crate::services::database::keychain_entry_for(&name),
+            );
+            Secret::None
+        }
         Some(other) => {
             return Err(format!(
-                "`{other}` is not somewhere a password lives. Quill knows `env <VARIABLE>`, \
-                 `keychain <entry>` and `none`, and it never stores the password itself."
+                "`{other}` is not somewhere a password lives. Quill knows `set <secret>`, \
+                 `keychain <entry>` and `none`."
             ))
         }
-        None => return Err("password takes `env <VARIABLE>`, `keychain <entry>` or `none`.".to_owned()),
+        None => return Err("password takes `set <secret>`, `keychain <entry>` or `none`.".to_owned()),
     };
     let described = secret.describe();
     let source = explorer
@@ -696,8 +701,142 @@ pub fn a_new_source(explorer: &DatabaseExplorer) -> SourceForm {
             ..Source::default()
         },
         typed: String::new(),
-        variable: String::new(),
         tested: None,
+    }
+}
+
+/// Build the form the New Table dialog opens with.
+///
+/// One column already there, a key called `id` of whichever integer type the engine makes count
+/// itself up, because that is the first thing anybody types and getting it wrong is the commonest
+/// fault in a table made in a hurry — see `Engine::key_column`.
+pub fn a_new_table(explorer: &DatabaseExplorer, source: &str, schema: &str) -> TableForm {
+    let engine = explorer
+        .configuration
+        .source(source)
+        .map(|source| source.engine)
+        .unwrap_or(quill_db::source::Engine::Postgres);
+    TableForm {
+        source: source.to_owned(),
+        schema: schema.to_owned(),
+        name: String::new(),
+        columns: vec![ColumnForm {
+            name: "id".to_owned(),
+            type_name: match engine {
+                quill_db::source::Engine::Sqlite => "INTEGER".to_owned(),
+                quill_db::source::Engine::Postgres => "integer".to_owned(),
+            },
+            in_key: true,
+            not_null: true,
+        }],
+        problem: None,
+    }
+}
+
+/// `new-table <schema.name> <column>:<type>[:pk][:notnull] …`, or the dialog when only a place is
+/// said.
+///
+/// **One path for the menu entry and the command**, which is the shape `add-source` already has: a
+/// menu row cannot carry an argument, so with no columns after the name this opens the dialog a
+/// person fills in, and with columns it makes the table outright.
+fn new_table(explorer: &mut DatabaseExplorer, arguments: &[String]) -> Result<Answer, String> {
+    let source = explorer.configuration.chosen.clone();
+    if source.is_empty() {
+        return Err("there is no data source to make a table in. `use <name>` first.".to_owned());
+    }
+    explorer.connect(&source)?;
+    let where_it_goes = arguments.first().map(String::as_str).unwrap_or_default();
+    // **A bare word that names a schema is the schema, not the table.** `new-table main` is what the
+    // tree's own menu means by a right click on a schema — open the dialog *there* — and reading it
+    // as `<name>` instead put `main` in the Name field and composed `CREATE TABLE "main"."main"`.
+    // A name with a dot in it is unambiguous and is still read as `schema.table`. `task-1795`.
+    let names_a_schema = !where_it_goes.is_empty()
+        && !where_it_goes.contains('.')
+        && explorer
+            .loaded
+            .get(&source)
+            .is_some_and(|loaded| loaded.schemas.iter().any(|schema| schema == where_it_goes));
+    let (schema, name) = match names_a_schema {
+        true => (where_it_goes.to_owned(), String::new()),
+        false => split_qualified(explorer, &source, where_it_goes)?,
+    };
+    if arguments.len() < 2 {
+        let mut form = a_new_table(explorer, &source, &schema);
+        form.name = name;
+        explorer.modal = Some(crate::services::database::Modal::NewTable(form));
+        return Ok(Answer::said("fill in the new table"));
+    }
+    let mut columns = Vec::new();
+    for said in &arguments[1..] {
+        columns.push(a_column(said)?);
+    }
+    let engine = explorer
+        .configuration
+        .source(&source)
+        .map(|source| source.engine)
+        .unwrap_or(quill_db::source::Engine::Postgres);
+    let sql = quill_db::sql::create_table(&schema, &name, &columns, engine)?;
+    explorer.run_the_ddl(&source, &schema, &sql)?;
+    Ok(Answer::said(format!("`{name}` made")).with(serde_json::json!({ "sql": sql, "schema": schema, "table": name })))
+}
+
+/// `<name>:<type>[:pk][:notnull]`, which is the shortest thing that says what a column is.
+fn a_column(said: &str) -> Result<ColumnForm, String> {
+    let mut parts = said.split(':');
+    let name = parts.next().unwrap_or_default().trim().to_owned();
+    if name.is_empty() {
+        return Err(format!("`{said}` names no column. A column is `name:type`, and `:pk` and `:notnull` may follow it."));
+    }
+    let type_name = parts.next().unwrap_or_default().trim().to_owned();
+    if type_name.is_empty() {
+        return Err(format!("`{name}` has no type. A column is `name:type`."));
+    }
+    let mut column = ColumnForm { name, type_name, in_key: false, not_null: false };
+    for flag in parts {
+        match flag.trim() {
+            "pk" | "key" | "primary" => column.in_key = true,
+            "notnull" | "not-null" | "nn" => column.not_null = true,
+            "" => {}
+            other => {
+                return Err(format!(
+                    "`{other}` is not something a column can be. `pk` and `notnull` are what may follow the type."
+                ))
+            }
+        }
+    }
+    Ok(column)
+}
+
+/// `drop-table <schema.name>`.
+fn drop_table(explorer: &mut DatabaseExplorer, rest: &str) -> Result<Answer, String> {
+    let source = explorer.configuration.chosen.clone();
+    if source.is_empty() {
+        return Err("there is no data source to drop a table from. `use <name>` first.".to_owned());
+    }
+    explorer.connect(&source)?;
+    let (schema, name) = split_qualified(explorer, &source, rest.trim())?;
+    if name.is_empty() {
+        return Err("drop-table takes `schema.table`, or just a table.".to_owned());
+    }
+    let sql = quill_db::sql::drop_table(&schema, &name)?;
+    explorer.run_the_ddl(&source, &schema, &sql)?;
+    Ok(Answer::said(format!("`{name}` is gone")).with(serde_json::json!({ "sql": sql })))
+}
+
+/// `schema.table` or just `table`, where a bare name means the source’s first schema.
+fn split_qualified(
+    explorer: &DatabaseExplorer,
+    source: &str,
+    said: &str,
+) -> Result<(String, String), String> {
+    let first = explorer
+        .loaded
+        .get(source)
+        .and_then(|loaded| loaded.schemas.first().cloned())
+        .unwrap_or_default();
+    match said.split_once('.') {
+        Some((schema, name)) => Ok((schema.trim().to_owned(), name.trim().to_owned())),
+        None => Ok((first, said.trim().to_owned())),
     }
 }
 
@@ -707,10 +846,6 @@ pub fn a_form_for(source: &Source) -> SourceForm {
         was: source.name.clone(),
         source: source.clone(),
         typed: String::new(),
-        variable: match &source.secret {
-            Secret::Environment(name) => name.clone(),
-            _ => String::new(),
-        },
         tested: None,
     }
 }

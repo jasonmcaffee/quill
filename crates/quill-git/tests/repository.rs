@@ -168,7 +168,7 @@ fn rollback_also_takes_back_something_that_was_staged() {
     write(&root, "readme.md", "# spoiled\n");
     assert!(ops::add(&root, &["readme.md"]).ok);
     assert!(ops::rollback(&root, &["readme.md"]).ok);
-    assert!(status(&root).is_clean(), "rollback takes both sides, which is what IntelliJ's does");
+    assert!(status(&root).is_clean(), "rollback takes both sides, which is what the reference editor's does");
 }
 
 #[test]

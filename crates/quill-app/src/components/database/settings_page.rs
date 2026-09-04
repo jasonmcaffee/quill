@@ -52,9 +52,10 @@ fn rows(explorer: &mut DatabaseExplorer, ui: &mut egui::Ui, look: &Look<'_>) -> 
         ui,
         body,
         pen,
-        "Where each one points, and where its password is. Quill never writes a password down: a \
-         source names an environment variable, or an entry in this machine's own keychain, or it \
-         holds one you typed for as long as this window is open.",
+        "Where each one points, and where its password is kept. Quill never writes a password into \
+         a file: it goes into this machine's own credential store — the keychain on macOS, the \
+         Secret Service on Linux, Credential Manager on Windows — and what is written down is the \
+         name of the entry.",
     );
     let mut removing: Option<String> = None;
     let sources: Vec<quill_db::Source> = explorer.sources().to_vec();
@@ -88,27 +89,12 @@ fn rows(explorer: &mut DatabaseExplorer, ui: &mut egui::Ui, look: &Look<'_>) -> 
         color::text_dim(),
         12.0,
     );
-    pen = modal::note(
+    modal::note(
         ui,
         body,
         size_row.bottom() + 4.0,
         "One more than this is asked for and thrown away, which is what makes `1-200 of 200+` \
          honest: nobody counted the rest.",
-    );
-
-    pen = modal::section(ui, body, pen, "Safety");
-    let confirm = Rect::from_min_size(Pos2::new(body.left(), pen), Vec2::new(body.width(), 22.0));
-    let mut asking = explorer.configuration.confirm_writes;
-    if modal::check(ui, confirm, "Ask before a console statement that changes rows", &mut asking) {
-        explorer.configuration.confirm_writes = asking;
-        let _ = explorer.write_the_configuration();
-    }
-    modal::note(
-        ui,
-        body,
-        confirm.bottom() + 4.0,
-        "A console is where somebody types `delete from member` meaning to type a `where` clause \
-         after it. One dialog is cheaper than the row that is not there any more.",
     );
 
     if let Some(name) = removing {
@@ -162,9 +148,9 @@ fn one_source(
         source.where_it_points(),
         match (explorer.is_connected(&source.name), source.read_only) {
             (true, true) => "connected, read only",
-            (true, false) => "connected, writable",
+            (true, false) => "connected",
             (false, true) => "read only",
-            (false, false) => "writable",
+            (false, false) => "not connected",
         },
         source.secret.describe(),
     );

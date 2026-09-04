@@ -44,6 +44,7 @@ use std::path::{Path, PathBuf};
 use quill_core::breakpoints::{Breakpoint, Breakpoints};
 
 use crate::services::project_state;
+use crate::services::project_state::DiskStamp;
 use crate::services::store::Values;
 
 /// The file inside `.quill` that holds them.
@@ -57,12 +58,32 @@ pub const FILE: &str = "breakpoints.conf";
 const LIMIT: usize = 1_000;
 
 /// Every breakpoint in one project.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default)]
 pub struct BreakpointStore {
     files: HashMap<PathBuf, Breakpoints>,
     /// Set when something changed since the last write, so a frame that changed nothing writes
     /// nothing. Not part of what two of these compare as, because it is about the disk.
     dirty: bool,
+    /// What `breakpoints.conf` looked like when it was last read or written.
+    ///
+    /// `task-1794`: a breakpoint is a byte offset into a file, and a `git checkout` puts **both** the
+    /// file and this store's own file back at once. With the window holding the offsets it had, the
+    /// two disagree and the adapter is asked to bind a line that is no longer the line — which fails
+    /// exactly as silently as the fault above it. So the disk-owned side is re-checked, which is the
+    /// rule `OpenFile::the_file_changed_underneath` already keeps about a tab. Not part of what two
+    /// of these compare as, for `dirty`'s reason.
+    stamp: Option<DiskStamp>,
+}
+
+/// Two stores are the same when they hold the same breakpoints.
+///
+/// By hand rather than derived, because `dirty` and `stamp` are about the disk rather than about
+/// what is set where — which is what the comment on `dirty` has said since it was written, and what
+/// a derived comparison quietly did not do.
+impl PartialEq for BreakpointStore {
+    fn eq(&self, other: &Self) -> bool {
+        self.files == other.files
+    }
 }
 
 impl BreakpointStore {
@@ -73,10 +94,36 @@ impl BreakpointStore {
     /// Read what `root` has.
     pub fn load(root: &Path) -> Self {
         let file = project_state::folder(root).join(FILE);
+        // Measured **before** the read, so a write that lands between the two is noticed next time
+        // rather than being stamped as already seen.
+        let stamp = DiskStamp::of(&file);
         let Ok(text) = std::fs::read_to_string(&file) else {
-            return Self::new();
+            return Self { stamp, ..Self::new() };
         };
-        Self::parse(root, &text)
+        Self { stamp, ..Self::parse(root, &text) }
+    }
+
+    /// True when `breakpoints.conf` has been written by something other than this window.
+    ///
+    /// The question `OpenFile::the_file_changed_underneath` asks about a tab, asked about the
+    /// project's own state — one `metadata` call, on the timer that already asks the explorer's
+    /// folders the same thing. A file that has never been written and still is not answers no.
+    pub fn changed_on_disk(&self, root: &Path) -> bool {
+        // Something this window has not written yet is its own to write; adopting a file over the
+        // top of it would throw away a breakpoint somebody has just set.
+        if self.dirty {
+            return false;
+        }
+        DiskStamp::of(&project_state::folder(root).join(FILE)) != self.stamp
+    }
+
+    /// Read `root`'s file again, replacing what is held.
+    ///
+    /// Everything is replaced rather than merged: the file on disk is the whole answer, so a
+    /// breakpoint this window had and the file does not is one that was taken away — which is what a
+    /// checkout of a branch that never had it means.
+    pub fn reload(&mut self, root: &Path) {
+        *self = Self::load(root);
     }
 
     /// Read the file's text. Split from [`Self::load`] so it can be tested without a disk.
@@ -135,6 +182,9 @@ impl BreakpointStore {
                     eprintln!("Quill could not write {}: {problem}", file.display());
                 }
             }
+            // Stamped after every write, so this window's own writing never reads as somebody else
+            // having changed the file underneath it.
+            self.stamp = DiskStamp::of(&file);
             return;
         }
         if let Err(problem) = std::fs::create_dir_all(&folder) {
@@ -144,6 +194,7 @@ impl BreakpointStore {
         if let Err(problem) = std::fs::write(&file, self.to_text(root)) {
             eprintln!("Quill could not write {}: {problem}", file.display());
         }
+        self.stamp = DiskStamp::of(&file);
     }
 
     /// What would be written, the files in a settled order so that two runs of Quill that put

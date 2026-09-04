@@ -749,6 +749,40 @@ impl Plugins {
         Ok(())
     }
 
+    /// Take an installed plugin’s folder away, and go back to the copy that shipped in the binary.
+    ///
+    /// **Uninstalling a bundled plugin does not remove the feature**, and that is the honest meaning
+    /// of the button: `install` writes a folder out so it can be edited by hand, so `uninstall`
+    /// throws that folder away and leaves the plugin as it shipped. One that has no bundled copy
+    /// behind it is simply gone.
+    ///
+    /// The folder is `store.folder()/plugins/<id>`, built from the id and never from anything typed,
+    /// and the id has to name a plugin that is actually installed — which is what keeps a recursive
+    /// delete pointed where it is meant to be.
+    pub fn uninstall(&mut self, store: &Store, id: &str) -> std::io::Result<()> {
+        if !self.installed.iter().any(|known| known.id == id) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("{id} is not installed"),
+            ));
+        }
+        let folder = Self::folder(store, id);
+        if folder.is_dir() {
+            std::fs::remove_dir_all(&folder)?;
+        }
+        self.installed.retain(|known| known.id != id);
+        // The bundled copy comes back, so the plugin goes on working — read from the manifest that
+        // shipped rather than marked as present, which is `install`’s own rule the other way round.
+        if let Some((_, manifest, icon)) = bundled::ALL.iter().find(|(known, _, _)| *known == id) {
+            if let Ok(mut plugin) = parse(&Values::parse(manifest), true) {
+                plugin.icon = icon.map(<[u8]>::to_vec);
+                self.installed.push(plugin);
+            }
+        }
+        self.installed.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        Ok(())
+    }
+
     /// Where a plugin's folder is, so the marketplace can say whether it is on disk.
     pub fn folder(store: &Store, id: &str) -> PathBuf {
         store.folder().join(FOLDER).join(id)
@@ -824,7 +858,7 @@ impl Grammars {
 /// **The active theme's if it names the nine tokens, and the plugin's own otherwise.** Until `task-1776`
 /// there was no other answer: five language plugins each carried their own copy of Dracula, so choosing a
 /// scheme meant editing five manifests and a sixth language would have arrived with a sixth copy. A theme
-/// owns the scheme now, which is what IntelliJ does and is the whole reason a scheme can be switched at
+/// owns the scheme now, which is what the reference editor does and is the whole reason a scheme can be switched at
 /// all.
 ///
 /// Quill's own theme names none, so a Quill nobody has chosen a theme in colours every file exactly as it
@@ -1054,7 +1088,7 @@ fn one_theme(values: &Values, plugin: &str, id: &str) -> Result<crate::theme::Th
         None => crate::theme::IconSet::default(),
     };
 
-    // A role that is not named keeps Quill Dark's, which is IntelliJ's `parentTheme` in one line and is
+    // A role that is not named keeps Quill Dark's, which is the reference editor's `parentTheme` in one line and is
     // what keeps a manifest to the thirty colours that matter rather than all forty.
     let mut palette = crate::theme::Palette::QUILL_DARK;
     for (role, value) in values.starting_with(&format!("theme.{id}.ui.")) {
@@ -1640,18 +1674,30 @@ pub mod bundled {
             include_str!("../../plugins/css/plugin.conf"),
             Some(include_bytes!("../../plugins/css/icon.png")),
         ),
-        // The first plugin that draws. It has no icon of its own: its rail button is `pane.icon`,
-        // which is a drawn icon rather than a picture, so it follows the pointer's opacity and the
-        // window's colours the way every other button in the rail does.
-        ("agent-tasks", include_str!("../../plugins/agent-tasks/plugin.conf"), None),
+        // The first plugin that draws. Its rail button is `pane.icon`, which `theme::icon` draws
+        // rather than a picture, so the button follows the window's colours; the icon here is the
+        // mark the marketplace and its own page show, which every other plugin already had.
+        (
+            "agent-tasks",
+            include_str!("../../plugins/agent-tasks/plugin.conf"),
+            Some(include_bytes!("../../plugins/agent-tasks/icon.png")),
+        ),
         // The second plugin that draws, and the first to ask for a pane since the machinery was
-        // built. It has no icon of its own for the same reason: its rail button is `pane.icon`,
-        // which `theme::icon` draws, so it follows the window's colours and the pointer's opacity.
-        ("agent-chat", include_str!("../../plugins/agent-chat/plugin.conf"), None),
+        // built. Its rail button is `pane.icon` for the same reason as Agent-Tasks'; the picture
+        // here is the mark the marketplace draws.
+        (
+            "agent-chat",
+            include_str!("../../plugins/agent-chat/plugin.conf"),
+            Some(include_bytes!("../../plugins/agent-chat/icon.png")),
+        ),
         // The Database plugin, and the SQL language its console is coloured through. Two plugins
         // rather than one, because a `.sql` file is coloured whether or not anybody opens the
         // database pane — see `plugins/sql/plugin.conf`.
-        ("database", include_str!("../../plugins/database/plugin.conf"), None),
+        (
+            "database",
+            include_str!("../../plugins/database/plugin.conf"),
+            Some(include_bytes!("../../plugins/database/icon.png")),
+        ),
         (
             "sql",
             include_str!("../../plugins/sql/plugin.conf"),
@@ -1667,10 +1713,15 @@ pub mod bundled {
             include_str!("../../plugins/html/plugin.conf"),
             Some(include_bytes!("../../plugins/html/icon.png")),
         ),
-        // The first plugin that is neither a language nor a pane: five palettes and nothing else. No icon,
-        // because it has no files to put one in front of — what it looks like is the six swatches the
-        // Theme page draws for each of its themes.
-        ("themes-bundle-1", include_str!("../../plugins/themes-bundle-1/plugin.conf"), None),
+        // The first plugin that is neither a language nor a pane: five palettes and nothing else. It
+        // puts its mark in front of no file — what a theme looks like is the six swatches the Theme
+        // page draws — but the marketplace lists it beside the others and a row with nothing where
+        // every other row has a mark reads as a plugin that failed to load. `task-1795`.
+        (
+            "themes-bundle-1",
+            include_str!("../../plugins/themes-bundle-1/plugin.conf"),
+            Some(include_bytes!("../../plugins/themes-bundle-1/icon.png")),
+        ),
     ];
 }
 
@@ -2061,6 +2112,59 @@ language.extensions = .aa
         assert_eq!(plugins.surfaces().panes.len(), 2);
     }
 
+    /// Every plugin that ships carries a mark, whatever kind of plugin it is.
+    ///
+    /// `task-1795` reported the four that did not — Database, Agent-Chat, Agent-Tasks and the themes
+    /// — as *"don't have an icon, and need one in the marketplace"*. The argument for leaving them
+    /// out was that a plugin which draws puts its mark in front of no file; what that missed is that
+    /// the marketplace lists every plugin in one column, so a row with nothing where every other row
+    /// has a mark reads as a plugin that failed to load rather than as one with nothing to draw.
+    #[test]
+    fn every_bundled_plugin_carries_an_icon() {
+        for (id, _, icon) in bundled::ALL {
+            let bytes = icon.unwrap_or_else(|| panic!("{id} ships no icon"));
+            assert!(bytes.len() > 100, "{id}'s icon is too small to be a picture");
+            assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n", "{id}'s icon is not a PNG");
+        }
+        let (plugins, _) = Plugins::load(None);
+        for plugin in plugins.all() {
+            assert!(plugin.icon.is_some(), "{} reached the window with no icon", plugin.id);
+        }
+    }
+
+    /// Installing writes the folder out; uninstalling takes it away and the bundled copy comes back.
+    ///
+    /// The second half is the point. `task-1795` asks for the button to say `Uninstall` once a plugin
+    /// is installed, and the honest meaning of that here is *stop keeping an editable copy on disk* —
+    /// not *remove the feature*, which a bundled plugin's button could not do anyway.
+    #[test]
+    fn installing_then_uninstalling_leaves_the_bundled_plugin() {
+        let folder = std::env::temp_dir().join(format!("quill-plugins-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        let store = Store::at(folder.clone());
+        let (mut plugins, _) = Plugins::load(None);
+
+        plugins.install(&store, "database").expect("install");
+        assert!(Plugins::folder(&store, "database").is_dir(), "install writes the folder out");
+        assert!(
+            plugins.all().iter().any(|p| p.id == "database" && !p.bundled),
+            "the copy on disk shadows the bundled one",
+        );
+
+        plugins.uninstall(&store, "database").expect("uninstall");
+        assert!(!Plugins::folder(&store, "database").exists(), "uninstall takes the folder away");
+        let back = plugins
+            .all()
+            .iter()
+            .find(|p| p.id == "database")
+            .expect("the bundled copy comes back rather than the plugin disappearing");
+        assert!(back.bundled, "and it is the bundled one again");
+        assert!(back.icon.is_some(), "with its icon, read from the manifest that shipped");
+
+        assert!(plugins.uninstall(&store, "not-a-plugin").is_err(), "and only a real id is removed");
+        let _ = std::fs::remove_dir_all(&folder);
+    }
+
     #[test]
     fn the_bundled_plugins_all_parse_and_claim_what_they_should() {
         let (plugins, problems) = Plugins::load(None);
@@ -2074,10 +2178,11 @@ language.extensions = .aa
         assert_eq!(plugins.for_path(Path::new("a.html")).map(|p| p.id.as_str()), Some("html"));
         assert_eq!(plugins.for_path(Path::new("a.htm")).map(|p| p.id.as_str()), Some("html"));
         assert_eq!(plugins.for_path(Path::new("a.md")), None, "Markdown is not a plugin's business");
-        // Every language ships a file icon and a colour scheme, which is what the ticket asked for.
-        // A plugin that draws ships neither: it has no files to put an icon in front of, and a colour
-        // scheme it chose would be the one thing a plugin is never allowed to decide. Its rail button
-        // is `pane.icon`, a drawn icon rather than a picture, so it follows the window's colours.
+        // Every plugin ships an icon — see `every_bundled_plugin_carries_an_icon` — and every language
+        // ships a colour scheme with it. A plugin that draws ships no scheme: a scheme it chose would
+        // be the one thing a plugin is never allowed to decide. Its *rail* button is still
+        // `pane.icon`, a drawn icon rather than a picture, so that button follows the window's
+        // colours; the picture is what the marketplace row and its own page show.
         for plugin in plugins.all() {
             assert!(!plugin.description.is_empty(), "{} says nothing about itself", plugin.id);
             match plugin.kind {
@@ -2269,7 +2374,7 @@ language.extensions = .aa
         assert_eq!(bundle.themes[4].icons, crate::theme::IconSet::Classic);
     }
 
-    /// A role a theme does not name keeps Quill Dark's, which is IntelliJ's `parentTheme` in one line.
+    /// A role a theme does not name keeps Quill Dark's, which is the reference editor's `parentTheme` in one line.
     #[test]
     fn a_theme_inherits_every_colour_it_does_not_name() {
         let manifest = "plugin.id = t\nplugin.kind = theme\nthemes = one\ntheme.one.name = One\ntheme.one.ui.accent = #FF0000\n";

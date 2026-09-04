@@ -2051,7 +2051,7 @@ fn choosing_a_family_in_the_settings_leaves_bold_and_colour_alone() {
 
 #[test]
 fn changing_the_font_reaches_every_open_tab_and_not_only_the_one_showing() {
-    // `task-1657`. The editor's font is one setting for the whole window, the way IntelliJ has one
+    // `task-1657`. The editor's font is one setting for the whole window, the way the reference editor has one
     // editor font. It used to reach the active document alone, so opening three files and then
     // changing the font left two of them in the old one until Quill was restarted.
     let folder = sample_folder();
@@ -3897,7 +3897,7 @@ fn enter_in_the_commit_message_is_a_new_line_and_the_command_key_commits() {
         "and the panel is still open"
     );
 
-    // The command key with it is what presses `COMMIT`, which is IntelliJ's own chord for the same
+    // The command key with it is what presses `COMMIT`, which is the reference editor's own chord for the same
     // dialog. Something has to be staged first, or the button is dimmed and there is nothing to
     // press.
     let root = harness.state().tree.root().to_path_buf();
@@ -3962,7 +3962,7 @@ fn typing_a_commit_message_leaves_the_document_alone() {
 
 #[test]
 fn the_recent_projects_menu_opens_a_project_without_closing_this_one() {
-    // Opening a recent project starts another window on it, which is what IntelliJ does, so the project that
+    // Opening a recent project starts another window on it, which is what the reference editor does, so the project that
     // is open stays open. The other window is a second process; this checks that this window is left alone
     // and that the entry is there to be chosen.
     let mut harness = harness("");
@@ -4573,6 +4573,11 @@ fn an_html_file_is_coloured_by_its_plugin() {
 #[test]
 fn the_plugins_page_lists_the_ones_that_ship_with_quill() {
     let mut harness = harness("");
+    // A store of its own, because `CUSTOMISE` writes a plugin's folder out under it and a test must
+    // not touch the settings of the person running it.
+    let store = std::env::temp_dir().join("quill-plugins-page-store");
+    let _ = std::fs::remove_dir_all(&store);
+    harness.state_mut().use_store(quill_app::services::store::Store::at(&store));
     harness.state_mut().settings_window.open();
     harness.state_mut().settings_window.page = quill_app::settings::Page::Plugins;
     harness.run();
@@ -4581,6 +4586,25 @@ fn the_plugins_page_lists_the_ones_that_ship_with_quill() {
         harness.get_by_label(name);
     }
     harness.get_by_label("Marketplace");
+
+    // **The button says what pressing it does.** `task-1795` reported `INSTALL` on a plugin that is
+    // bundled, ticked and working, which is exactly what it reads as. Writing the folder out so it
+    // can be edited is `CUSTOMISE`; `UNINSTALL` is what takes that folder away again.
+    assert_eq!(harness.query_all_by_label("INSTALL").count(), 0, "nothing here is uninstalled");
+    harness.get_by_label("CUSTOMISE").click();
+    harness.run();
+    harness.run();
+    harness.get_by_label("UNINSTALL");
+    assert_eq!(harness.query_all_by_label("CUSTOMISE").count(), 0, "it is on disk now");
+
+    harness.get_by_label("UNINSTALL").click();
+    harness.run();
+    harness.run();
+    harness.get_by_label("CUSTOMISE");
+    assert!(
+        harness.state().plugins.all().iter().any(|plugin| plugin.id == "agent-chat"),
+        "uninstalling a bundled plugin puts it back to the one Quill ships rather than removing it",
+    );
     harness.snapshot(shot("plugins_page"));
 }
 
@@ -5694,7 +5718,7 @@ fn the_run_tile_shows_a_program_running_along_the_bottom() {
 
 #[test]
 fn a_run_that_ended_keeps_its_tab_and_the_strip_says_what_it_ended_with() {
-    // IntelliJ prints its epilogue into the console; Quill puts it in the strip, because a line
+    // The reference editor prints its epilogue into the console; Quill puts it in the strip, because a line
     // pretending to be program output is exactly the confusion a separate strip avoids.
     let mut harness = with_run("cargo test", "cargo test", 10);
     feed_run(
@@ -5786,7 +5810,7 @@ fn the_run_widget_draws_its_three_states_in_the_title_bar() {
     report(results);
 }
 
-/// `task-1692`: the two buttons at the top right, in IntelliJ's order, and the rule that decides
+/// `task-1692`: the two buttons at the top right, in the reference editor's order, and the rule that decides
 /// whether the second one is there at all.
 #[test]
 fn the_title_bar_carries_a_run_button_and_a_debug_button_beside_it() {
@@ -6986,10 +7010,24 @@ fn settings_list_keeps_a_long_value_and_its_help_apart() {
     );
     // Every row has the same seam: the help starts two spaces after the value, never on top of it.
     for row in &rows {
-        let help = SETTINGS_HELP
-            .iter()
-            .find(|help| row.ends_with(*help))
-            .expect("every row ends with its help");
+        // A contributed pane's three keys are dynamic — a pane is named `<plugin id>/<pane id>` and
+        // which plugins are installed is not known until the manifests are read, so they cannot be
+        // rows in `SETTINGS` and their help cannot be in the list above. `task-1794` added them
+        // because Quill writes those keys into its own settings file and would not name them back.
+        // Matched by their shape instead, so the seam is still asserted for every row there is.
+        let help = match SETTINGS_HELP.iter().find(|help| row.ends_with(*help)) {
+            Some(help) => (*help).to_owned(),
+            None => {
+                assert!(
+                    row.starts_with("panes."),
+                    "every row ends with its help, or is a contributed pane's: {row}"
+                );
+                let at = row.find("  How ").unwrap_or_else(|| {
+                    panic!("a contributed pane's row should carry its own help: {row}")
+                });
+                row[at + 2..].to_owned()
+            }
+        };
         assert!(
             row.contains(&format!("  {help}")),
             "the help is set off from the value by two spaces: {row}"
@@ -8556,7 +8594,7 @@ fn a_modifier_click_on_a_word_goes_to_its_definition_and_an_ordinary_one_places_
 #[test]
 fn a_modifier_click_on_the_definition_itself_opens_the_references() {
     // Scenario 8 through the gesture rather than through the menu: one gesture serves both
-    // directions of the question, which is what IntelliJ calls "Go to Declaration or Usages".
+    // directions of the question, which is what the reference editor calls "Go to Declaration or Usages".
     let mut harness = code_harness("layout.rs");
     let text = harness.state().document().text().to_string();
     let definition = text.find("fn draw").expect("the definition") + 4;
@@ -10216,6 +10254,384 @@ fn the_gutter_draws_an_enabled_a_disabled_an_unverified_and_a_conditional_breakp
     harness.snapshot(shot("debug_gutter"));
 }
 
+/// A project with two long files, so scrolling really moves and line 50 really exists.
+///
+/// Two, because the shape `task-1794` reports needs both halves of the ownership rule at once: a
+/// file that is **open**, whose breakpoints belong to its `Document`, and one that is **not**, whose
+/// breakpoints belong to `services::breakpoint_store`. Only the second was broken, and with one file
+/// there is nothing to tell them apart.
+fn scrolled_folder(name: &str) -> std::path::PathBuf {
+    let root = std::env::temp_dir().join("quill-screenshot-debug").join(name);
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::create_dir_all(root.join("src")).expect("make src");
+    for file in ["main.rs", "report.rs"] {
+        let mut text = String::from("fn start() {\n");
+        for line in 2..=59 {
+            text.push_str(&format!("    let value{line} = {line};\n"));
+        }
+        text.push_str("}\n");
+        std::fs::write(root.join("src").join(file), &text).expect("write the file");
+    }
+    root
+}
+
+/// The `source.path` and lines of the `setBreakpoints` in a batch of what the session asked for.
+///
+/// The batch is passed in rather than drained here, because `setBreakpoints` and
+/// `configurationDone` go out together and a caller needs the seq of both — the same reason
+/// `seq_of` reads a batch whole rather than one request at a time.
+fn breakpoint_path_sent(batch: &[serde_json::Value]) -> (i64, String, Vec<i64>) {
+    let frame = batch
+        .iter()
+        .find(|frame| frame["command"] == "setBreakpoints")
+        .unwrap_or_else(|| panic!("the session should have asked for setBreakpoints: {batch:#?}"));
+    let lines = frame["arguments"]["breakpoints"]
+        .as_array()
+        .map(|all| all.iter().filter_map(|one| one["line"].as_i64()).collect())
+        .unwrap_or_default();
+    (
+        frame["seq"].as_i64().expect("a seq"),
+        frame["arguments"]["source"]["path"].as_str().unwrap_or_default().to_owned(),
+        lines,
+    )
+}
+
+/// The byte a **one-based** line starts at, counted the way the store counts it.
+fn offset_of_line(text: &str, line: usize) -> usize {
+    text.split_inclusive('\n').take(line - 1).map(str::len).sum()
+}
+
+/// `task-1794`: putting the project back underneath a running window leaves the breakpoints working.
+///
+/// A breakpoint is a byte offset into a file, and a `git checkout` — or a branch switch, or a revert
+/// — puts the file **and** `.quill/breakpoints.conf` back together, consistent with each other. A
+/// window that goes on holding the offsets it had is then holding them against bytes that have gone,
+/// and the adapter declines to bind: the same silent "the program just does not stop" as the mixed
+/// separator, reached from the other side.
+///
+/// Quill already re-reads a **tab** whose file changed underneath it. This is that rule applied to
+/// the project's own state, and it is asked in two places: on the timer that already asks the
+/// explorer's folders, and at the moment of use, which for a breakpoint is a session start.
+#[test]
+fn a_checkout_under_a_running_window_leaves_the_breakpoints_working() {
+    let folder = std::env::temp_dir().join("quill-breakpoints-checkout");
+    std::fs::remove_dir_all(&folder).ok();
+    std::fs::create_dir_all(&folder).expect("make the project");
+    let source = folder.join("main.rs");
+    let before = "fn main() {\n    let a = 1;\n    let b = a + 1;\n}\n";
+    std::fs::write(&source, before).expect("write main.rs");
+
+    let mut harness = harness_in(&folder);
+    // `restore_project` is what turns reading and writing `.quill` on: a test neither reads nor
+    // writes a person's files unless it says so.
+    harness.state_mut().restore_project();
+    harness.state_mut().open_path_permanently(&source);
+    harness.run();
+    did(&mut harness, &format!("debug breakpoint add {} 3", source.display()));
+    for _ in 0..8 {
+        harness.step();
+    }
+    let written = folder.join(".quill").join("breakpoints.conf");
+    assert!(written.exists(), "the window should have written its own file first");
+    assert_eq!(harness.state().document().breakpoints().len(), 1);
+
+    // The checkout: something outside Quill puts back a longer `main.rs` **and** the breakpoints file
+    // that belongs with it, where the same statement is now line 5. Both at once, which is what makes
+    // this recoverable at all — the offset and the bytes it counts into stay consistent.
+    let after = "// restored\n// by a checkout\nfn main() {\n    let a = 1;\n    let b = a + 1;\n}\n";
+    std::fs::write(&source, after).expect("check the file out again");
+    let restored = offset_of_line(after, 5);
+    std::fs::write(
+        &written,
+        format!(
+            "# The breakpoints in this project. Written by Quill, and safe to edit by hand.\n\
+             breakpoint.1.path = main.rs\nbreakpoint.1.offset = {restored}\n"
+        ),
+    )
+    .expect("check the breakpoints file out again");
+
+    // The timer is what notices with nobody doing anything, so it is given its interval and some
+    // frames. `pump` rather than `run`, which is the rule about a loop that waits.
+    std::thread::sleep(quill_app::app::WATCH_INTERVAL + std::time::Duration::from_millis(120));
+    for _ in 0..8 {
+        pump(&mut harness);
+    }
+
+    // The store took the file, and so did the open tab — the ownership rule's other half.
+    assert_eq!(
+        harness.state().breakpoints_of(&source).iter().next().expect("still one").offset,
+        restored,
+        "the window should have adopted the offsets the checkout brought back"
+    );
+    assert_eq!(
+        harness.state().document().breakpoints().iter().next().expect("still one").offset,
+        restored,
+        "a file that is open is owned by its Document, so the Document has to be told"
+    );
+
+    // And what reaches the adapter is line 5, which is where that statement now is. Before this was
+    // fixed it was line 3 — a line the restored file has a comment on, which binds nothing.
+    harness
+        .state_mut()
+        .new_detached_debug_session("lldb", configuration("app", "target/debug/app.exe"));
+    harness.run();
+    let initialize = asked_for(&mut harness, "initialize");
+    feed_debug(&mut harness, answer(initialize, "initialize", capabilities()));
+    feed_debug(&mut harness, Message::Initialized);
+    let configuring = asked(&mut harness);
+    let (_, sent, lines) = breakpoint_path_sent(&configuring);
+    assert_eq!(lines, vec![5], "the restored offset is line 5 of the restored file");
+    assert_eq!(std::path::PathBuf::from(&sent), source);
+
+    // The window must not write its stale copy back over what the checkout brought in.
+    for _ in 0..8 {
+        harness.step();
+    }
+    let now = std::fs::read_to_string(&written).expect("still there");
+    assert!(
+        now.contains(&format!("offset = {restored}")),
+        "the window wrote its own stale copy back over the checkout:\n{now}"
+    );
+}
+
+/// `task-1794`, the cause: a breakpoint's line is counted the way a `Document` counts it.
+///
+/// **This is what the shoot actually hit.** A breakpoint is a byte offset into the text a `Document`
+/// holds, and `Document::open` turns `\r\n` into `\n` on the way in so that "offsets and line counts
+/// have one meaning". But a file that is **not open** is owned by the store, and the three places
+/// that turn its offset into a line read the file's own bytes — raw. On a file with Windows line
+/// breaks the two readings disagree by one byte for every line before the offset, so the line the
+/// adapter is told about is not the line the breakpoint is on: measured against a real CodeLLDB, a
+/// breakpoint set on line 43 of a shut file went out as line 46 and came back unmatched, which the
+/// gutter draws hollow and which on a line with no code on it binds nothing at all.
+///
+/// A `git checkout` on a machine with `core.autocrlf` set — which is the machine this is developed
+/// on — puts every file in the project into exactly that state, which is why this and the checkout
+/// half of the ticket are the same bug seen from two sides.
+///
+/// The scripted adapter is used rather than a real one because what is asserted is **what Quill
+/// sends**, which is Quill's half and is the same on every machine.
+/// `a_real_debugger_binds_a_breakpoint_in_a_file_that_is_not_open` is the other half.
+#[test]
+fn a_breakpoint_in_a_shut_file_with_windows_line_breaks_names_the_line_it_is_on() {
+    let folder = std::env::temp_dir().join("quill-screenshot-debug").join("crlf");
+    std::fs::remove_dir_all(&folder).ok();
+    std::fs::create_dir_all(folder.join("src")).expect("make src");
+
+    let mut source = String::from("fn report() {\n");
+    for line in 2..=48 {
+        source.push_str(&format!("    let value{line} = {line};\n"));
+    }
+    source.push_str("    let answer = 1;\n}\n");
+    let stop_at = source.lines().position(|line| line.contains("let answer")).expect("the line") + 1;
+    // Written with Windows line breaks, which is the whole of the case.
+    std::fs::write(folder.join("src").join("report.rs"), source.replace('\n', "\r\n"))
+        .expect("write report.rs");
+    let main = folder.join("src").join("main.rs");
+    std::fs::write(&main, "fn main() {}\n").expect("write main.rs");
+
+    let mut harness = harness_in(&folder);
+    harness.state_mut().open_path_permanently(&main);
+    harness.run();
+
+    // **The breakpoint is set while `report.rs` is open, and the tab is then closed.** That is the
+    // pair that comes apart, and it is what the shoot did without noticing: the offset is made by
+    // the `Document`, which has normalised the line breaks away, and is later resolved against the
+    // file's raw bytes because by then nothing has it open. Two raw readings agree with each other
+    // and hide the fault, which is why setting it on a file that was never open does not show it.
+    let report = folder.join("src").join("report.rs");
+    harness.state_mut().open_path_permanently(&report);
+    harness.run();
+    did(&mut harness, &format!("debug breakpoint add src/report.rs {stop_at}"));
+    let tab = harness.state().files.index_of(&report).expect("report.rs is open");
+    harness.state_mut().close_tab(tab);
+    harness.run();
+    assert!(
+        harness.state().files.index_of(&report).is_none(),
+        "report.rs has to be shut for the send to go through the disk"
+    );
+
+    // What Quill believes, read back the way `debug breakpoint list` reads it.
+    let listed = did(&mut harness, "debug breakpoint list");
+    let rows: Vec<String> = listed["lines"]
+        .as_array()
+        .expect("the rows")
+        .iter()
+        .map(|row| row.as_str().unwrap_or_default().to_owned())
+        .collect();
+    assert!(
+        rows.iter().any(|row| row.contains(&format!(":{stop_at}"))),
+        "the listing should say the line it was set on: {rows:#?}"
+    );
+
+    harness
+        .state_mut()
+        .new_detached_debug_session("lldb", configuration("app", "target/debug/app.exe"));
+    harness.run();
+    let initialize = asked_for(&mut harness, "initialize");
+    feed_debug(&mut harness, answer(initialize, "initialize", capabilities()));
+    feed_debug(&mut harness, Message::Initialized);
+
+    let configuring = asked(&mut harness);
+    let (seq, _, lines) = breakpoint_path_sent(&configuring);
+    assert_eq!(
+        lines,
+        vec![stop_at as i64],
+        "the adapter is told the line the breakpoint is on, not one counted in the raw bytes"
+    );
+
+    // And the answer is matched back to it, which is what stops the gutter drawing it hollow.
+    feed_debug(
+        &mut harness,
+        answer(
+            seq,
+            "setBreakpoints",
+            serde_json::json!({ "breakpoints": [{ "id": 1, "verified": true, "line": stop_at }] }),
+        ),
+    );
+    let offset = harness.state().breakpoints_of(&report).iter().next().expect("one").offset;
+    let verified = harness
+        .state()
+        .debug
+        .as_ref()
+        .expect("a session")
+        .verified(&report, offset)
+        .expect("the adapter's answer is filed against the breakpoint that was sent");
+    assert!(verified.verified);
+}
+
+/// `task-1794`: a breakpoint binds wherever the editor happens to be scrolled.
+///
+/// The ticket bisected this to the scroll, because the scroll is what the shoot did differently. It
+/// is not the scroll: it is **whether the file the breakpoint is in is the open one**, which the
+/// scroll only correlated with. The ticket's own tell says so — during a session, `debug breakpoint
+/// list` printed the bound one as `src\main.rs` and the unbound one as `src/report.rs`, and that
+/// forward slash is the whole fault.
+///
+/// A file that is open is owned by its `Document` and every other file is owned by the store, and a
+/// store key is built by joining the project root to the relative path the file was written down
+/// with. `Path::join` does not normalise, so on Windows that key is `C:\project\src/report.rs`.
+/// Quill cannot see the difference, because `Path` compares components; the adapter can, and takes
+/// it, and matches it against no compile unit. Nothing is reported anywhere: the program runs to
+/// completion and the debug tile stays empty, which is exactly what a program that never stops looks
+/// like.
+///
+/// So this asserts the wire, and then asserts the session really pauses — both for the open file and
+/// for the shut one, scrolled first in every case.
+#[test]
+fn a_breakpoint_binds_wherever_the_editor_is_scrolled() {
+    for open in [true, false] {
+        let name = if open { "scrolled-open" } else { "scrolled-shut" };
+        let folder = scrolled_folder(name);
+        let report = folder.join("src").join("report.rs");
+        let mut harness = harness_in(&folder);
+
+        // `main.rs` is always the open tab, so that there is something to scroll in both cases and
+        // the shut case still has a document the window is drawing.
+        harness.state_mut().open_path_permanently(&folder.join("src").join("main.rs"));
+        harness.run();
+        if open {
+            harness.state_mut().open_path_permanently(&report);
+            harness.run();
+        }
+        did(&mut harness, "editor scroll --line 30");
+        assert!(
+            harness.state().files.active().scroll > 0.0,
+            "the editor really has to be scrolled for this to be the reported case"
+        );
+
+        // Written the way the ticket wrote it and the way an agent types one: relative, with the
+        // separator every one of these files uses.
+        did(&mut harness, "debug breakpoint add src/report.rs 50");
+
+        harness
+            .state_mut()
+            .new_detached_debug_session("lldb", configuration("app", "target/debug/app.exe"));
+        harness.run();
+        let initialize = asked_for(&mut harness, "initialize");
+        feed_debug(&mut harness, answer(initialize, "initialize", capabilities()));
+        feed_debug(&mut harness, Message::Initialized);
+
+        let configuring = asked(&mut harness);
+        let (seq, sent, lines) = breakpoint_path_sent(&configuring);
+        assert_eq!(lines, vec![50], "{name}: line 50 is what was asked for");
+        // It names the right file — and note that this passes **even with the fault**, because
+        // `PathBuf` compares components and reads `/` and `\` alike. That is precisely why the fault
+        // was invisible from inside Quill, so it is asserted first and is not the assertion that
+        // catches anything.
+        assert_eq!(
+            std::path::PathBuf::from(&sent),
+            report,
+            "{name}: the adapter is handed the path Quill holds"
+        );
+        // This is the one the fault fails. What crosses the wire is **text**, and the adapter has no
+        // `Path` to compare with — it matches the string against its debug information.
+        if cfg!(windows) {
+            assert!(!sent.contains('/'), "{name}: a Windows path with a forward slash in it: {sent}");
+        }
+
+        // The adapter binds it, and the program stops there.
+        feed_debug(
+            &mut harness,
+            answer(
+                seq,
+                "setBreakpoints",
+                serde_json::json!({ "breakpoints": [{ "id": 1, "verified": true, "line": 50 }] }),
+            ),
+        );
+        let done = seq_of(&configuring, "configurationDone");
+        feed_debug(&mut harness, answer(done, "configurationDone", serde_json::Value::Null));
+        feed_debug(
+            &mut harness,
+            Message::Stopped(quill_dap::Stopped {
+                reason: "breakpoint".to_owned(),
+                thread: Some(1),
+                description: None,
+                text: None,
+                all_threads: true,
+            }),
+        );
+        let batch = asked(&mut harness);
+        let threads = seq_of(&batch, "threads");
+        let stack = seq_of(&batch, "stackTrace");
+        feed_debug(
+            &mut harness,
+            answer(
+                threads,
+                "threads",
+                serde_json::json!({ "threads": [{ "id": 1, "name": "main" }] }),
+            ),
+        );
+        feed_debug(
+            &mut harness,
+            answer(
+                stack,
+                "stackTrace",
+                serde_json::json!({ "stackFrames": [
+                    { "id": 1000, "name": "app::report", "line": 50,
+                      "source": { "path": report.to_string_lossy() } }
+                ]}),
+            ),
+        );
+
+        assert!(
+            harness.state().debug.as_ref().expect("a session").is_paused(),
+            "{name}: the session should have paused at the breakpoint"
+        );
+        // And Quill knows the adapter bound it, which is what stops the gutter drawing it hollow:
+        // the answer is filed under the same key the request was sent under.
+        let offset = harness.state().breakpoints_of(&report).iter().next().expect("one").offset;
+        let verified = harness
+            .state()
+            .debug
+            .as_ref()
+            .expect("a session")
+            .verified(&report, offset)
+            .expect("the adapter answered about the breakpoint that was sent");
+        assert!(verified.verified, "{name}: the adapter said it bound");
+    }
+}
+
 #[test]
 fn the_debug_tile_shows_the_frames_the_variables_and_a_watch() {
     let mut harness = paused_harness("tile");
@@ -10273,7 +10689,7 @@ fn the_execution_point_and_the_inline_values_are_drawn_over_the_source() {
 
     // A value the debugger could not read is not painted at the end of a line. It is still in the
     // tree, in the debugger's own words — but `step = <optimized out>` beside somebody's code is the
-    // debugger declining to answer dressed as information, and IntelliJ paints nothing there either.
+    // debugger declining to answer dressed as information, and the reference editor paints nothing there either.
     let painted = harness.state_mut().inline_values_for_test();
     assert!(
         painted.iter().any(|(_, text)| text == "attempts = 3"),
@@ -10316,7 +10732,7 @@ fn the_value_tooltip_shows_a_structure_and_opens_it_into_its_fields() {
     choose(&mut harness, Action::Debug(DebugAction::ShowValue));
     harness.run();
 
-    // The expression it read is the whole field path ending at the pointer, which is what IntelliJ
+    // The expression it read is the whole field path ending at the pointer, which is what the reference editor
     // shows the value of.
     let asking = harness
         .state()
@@ -10619,6 +11035,178 @@ fn concise_debug_replies_lead_with_the_paused_frame_and_locals() {
     assert!(watches.get("frames").is_none());
     assert!(watches.get("locals").is_none());
     assert!(watches.get("variables").is_none());
+}
+
+/// `task-1794`, against a **real** debugger: a breakpoint in a file that is not open really binds.
+///
+/// The scripted test above asserts the bytes that go on the wire, which is Quill's half. This is the
+/// other half, and it is the half the ticket measured by hand: the shoot set a breakpoint on
+/// `src/report.rs:50` in a project whose open tab was `src/main.rs`, pressed Debug, and the program
+/// ran to completion with the debug tile empty — four re-takes, and nothing anywhere saying why.
+///
+/// The fault was that a file which is not open is owned by `services::breakpoint_store`, whose key is
+/// the project root joined to the relative path it was written down with. `Path::join` does not
+/// normalise, so on Windows that key is `C:\project\src/report.rs`, and `to_string_lossy` put exactly
+/// that on the wire. lldb takes it, matches it against no compile unit, and binds nothing.
+///
+/// So this is the reported shape exactly: two files, only one of them open, the editor scrolled, and
+/// the breakpoint named the way an agent names one — relative, with a forward slash.
+///
+/// **Skipped with a message on a machine with no adapter**, which is the rule the test above keeps.
+#[test]
+fn a_real_debugger_binds_a_breakpoint_in_a_file_that_is_not_open() {
+    let Some(adapter) = std::env::var_os("QUILL_LLDB_ADAPTER")
+        .map(std::path::PathBuf::from)
+        .filter(|path| path.is_file())
+        .or_else(|| quill_app::services::debuggers::on_path("codelldb"))
+        .or_else(|| quill_app::services::debuggers::on_path("lldb-dap"))
+    else {
+        eprintln!(
+            "skipped: no lldb adapter on this machine. `pwsh tools/get-debug-adapter.ps1` fetches \
+             CodeLLDB and prints the path; point QUILL_LLDB_ADAPTER at it."
+        );
+        return;
+    };
+
+    let folder = std::env::temp_dir().join("quill-real-debug-not-open");
+    std::fs::remove_dir_all(&folder).ok();
+    std::fs::create_dir_all(folder.join("src")).expect("make the project");
+
+    // A second module, long enough that the breakpoint is well down it and the editor really
+    // scrolls. The line to stop on is found rather than counted, so the fixture can change.
+    let mut report = String::from("pub fn run() -> i64 {\n    let mut total: i64 = 0;\n");
+    for step in 1..=40 {
+        report.push_str(&format!("    total += {step};\n"));
+    }
+    report.push_str("    let answer = total;\n    answer\n}\n");
+    let stop_at = report
+        .lines()
+        .position(|line| line.contains("let answer = total;"))
+        .expect("the line to stop on")
+        + 1;
+    std::fs::write(folder.join("src").join("report.rs"), &report).expect("write report.rs");
+    let main = folder.join("src").join("main.rs");
+    std::fs::write(&main, "mod report;\n\nfn main() {\n    println!(\"{}\", report::run());\n}\n")
+        .expect("write main.rs");
+
+    let binary = folder.join(if cfg!(windows) { "fleet.exe" } else { "fleet" });
+    let built = std::process::Command::new("rustc")
+        .arg("-g")
+        .arg("-C")
+        .arg("opt-level=0")
+        .arg("-o")
+        .arg(&binary)
+        .arg(&main)
+        .output()
+        .expect("run rustc");
+    assert!(
+        built.status.success(),
+        "the fixture would not build: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let mut harness = harness_in(&folder);
+    let ctx = harness.ctx.clone();
+    harness.state_mut().settings.debug_adapters =
+        vec![("lldb".to_owned(), adapter.to_string_lossy().to_string())];
+
+    // **`main.rs` is the open tab and `report.rs` is not.** That is the whole of the reported case,
+    // and it is what the ticket's own tell says: during the session `debug breakpoint list` printed
+    // the one that bound as `src\main.rs` and the one that did not as `src/report.rs`.
+    harness.state_mut().open_path_permanently(&main);
+    harness.run();
+    let scrolled = harness
+        .state_mut()
+        .run_command_line("editor scroll --bottom", &ctx)
+        .expect("answered at once");
+    assert!(scrolled.ok, "{}", scrolled.message);
+
+    // Named relatively, with the separator every settings file and every agent uses.
+    let set = harness
+        .state_mut()
+        .run_command_line(&format!("debug breakpoint add src/report.rs {stop_at}"), &ctx)
+        .expect("answered at once");
+    assert!(set.ok, "{}", set.message);
+    assert!(
+        harness.state().files.index_of(&folder.join("src").join("report.rs")).is_none(),
+        "report.rs must not be open, or this is not the case that was broken"
+    );
+
+    harness.state_mut().run_configurations.add_permanent(configuration(
+        "fleet",
+        &quill_app::services::run_configurations::quote_part(&binary.to_string_lossy()),
+    ));
+    harness.state_mut().run_selected = Some("fleet".to_owned());
+    choose(&mut harness, Action::Debug(DebugAction::Start(None)));
+    assert!(
+        harness.state().debug.is_some(),
+        "the session should have started: {:?}",
+        harness.state().message
+    );
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        harness.step();
+        let debug = harness.state().debug.as_ref().expect("the session");
+        if debug.is_ready() {
+            break;
+        }
+        // This is the failure the ticket describes, so it is worth saying in those words: with the
+        // fault, the session ends here having run the program to completion and stopped nowhere.
+        assert!(
+            debug.is_alive(),
+            "the program ran to completion without stopping \u{2014} the breakpoint never bound: {:?}",
+            harness.state().message
+        );
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the program did not stop in sixty seconds; it is {}",
+            debug.where_it_is()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+
+    let status = harness
+        .state_mut()
+        .run_command_line("debug status", &ctx)
+        .expect("answered at once");
+    assert_eq!(status.result["paused"], true, "{}", status.message);
+    assert_eq!(status.result["line"], stop_at, "{}", status.message);
+
+    // And the adapter says it bound it, which is what stops the gutter drawing it hollow.
+    let listed = harness
+        .state_mut()
+        .run_command_line("debug breakpoint list", &ctx)
+        .expect("answered at once");
+    let rows: Vec<String> = listed.result["lines"]
+        .as_array()
+        .expect("the rows")
+        .iter()
+        .map(|line| line.as_str().unwrap_or_default().to_owned())
+        .collect();
+    assert!(
+        rows.iter().any(|row| row.contains("verified")),
+        "the debugger should have bound it: {rows:#?}"
+    );
+
+    // The value the program really computed, read out of the file that was never opened: 1+..+40.
+    let variables = harness
+        .state_mut()
+        .run_command_line("debug variables", &ctx)
+        .expect("answered at once");
+    let printed: Vec<String> = variables.result["lines"]
+        .as_array()
+        .expect("the rows")
+        .iter()
+        .map(|line| line.as_str().unwrap_or_default().to_owned())
+        .collect();
+    assert!(
+        printed.iter().any(|line| line.contains("total") && line.contains("820")),
+        "the debugger should have read `total` as 820: {printed:#?}"
+    );
+
+    harness.state_mut().run_command_line("debug stop", &ctx);
+    harness.step();
 }
 
 /// The one debug test that starts a **real** adapter, and it earns it.
@@ -11976,7 +12564,7 @@ fn the_plugins_menu_is_after_quills_own_six_and_its_entries_run_through_one_path
 
 #[test]
 fn nothing_the_plugin_owns_is_built_until_its_button_is_pressed() {
-    // IntelliJ's own rule, and its documented reason: a tool window nobody clicks loads and runs no
+    // The reference editor's own rule, and its documented reason: a tool window nobody clicks loads and runs no
     // plugin code. Here it is the difference between opening a database when Quill starts and opening it
     // when somebody first looks at the board.
     let mut harness = harness("");
@@ -12140,7 +12728,7 @@ fn plugins_show_lists_every_command_the_board_answers() {
 
 #[test]
 fn a_manifest_changed_by_hand_takes_effect_on_a_reload_with_no_restart() {
-    // The property this design has that IntelliJ's dynamic plugins buy with a page of restrictions: a provider
+    // The property this design has that the reference editor's dynamic plugins buy with a page of restrictions: a provider
     // is already in the binary, so loading a plugin is reading a file. This writes a manifest, reloads, and
     // asserts the window changed — which is the claim. Disabling a plugin instead would have tested the tick
     // box.
@@ -13449,7 +14037,7 @@ fn a_ticket_in_full_as_a_modal() {
     tasks
         .save_the_description(
             "Widen the plugin system so a plugin can draw: a rail button, a pane, a tab, a menu and a \
-             Settings page.\n\nIntelliJ does this declaratively and VS Code does it with 46 contribution \
+             Settings page.\n\nthe reference editor does this declaratively and VS Code does it with 46 contribution \
              points. Zed and Lapce have no UI surface at all.",
         )
         .expect("a description");
@@ -13577,6 +14165,185 @@ fn the_chat_contributes_a_pane_on_the_right_with_a_button_in_the_rail() {
     assert_eq!(away["showing"], false);
     harness.run();
     assert_eq!(harness.state().panel_rect_for_tests(Panel::Plugin(slot as u8)).width(), 0.0);
+}
+
+/// `task-1794`: the chat pane goes on drawing after the panels are reset, and says so honestly.
+///
+/// The shoot reported the pane painting **nothing at all** — no ground, no divider, no composer, no
+/// rail highlight — while `plugins pane agent-chat/chat --show` answered "showing on the right",
+/// `plugins view agent-chat` returned the whole conversation and `send` streamed an answer nobody
+/// could see. Four takes were lost to it.
+///
+/// Two pieces of state decide whether a contributed pane is on the screen and only one was ever
+/// asked. `PluginUi::is_visible` is the provider's own flag; the **dock** separately has to know the
+/// pane exists, and `Layout::reset` is `*self = Layout::new()`, which has no contributed panes in
+/// it. So `panel reset` — and `settings reset`, which builds a fresh `Panes` — did not move the pane,
+/// it lost it: `panels_on` filters through `Panel::all(0)`, `regions` hands back `Rect::ZERO`, and
+/// `show_the_plugin_panes` skips anything under a point. Nothing anywhere reported it.
+///
+/// This drives the shoot's own baseline and then asserts all three: the layout, the picture, and
+/// what the command says.
+#[test]
+fn the_chat_pane_still_draws_after_the_panels_are_reset() {
+    use quill_app::app::dock::Panel;
+    let mut harness = harness("");
+    let slot = harness.state().plugin_ui.slot_of("agent-chat/chat").expect("a slot");
+
+    // Hiding it once was enough to be worth reporting, so the cycle is driven first.
+    did(&mut harness, "plugins pane agent-chat/chat --show");
+    did(&mut harness, "plugins pane agent-chat/chat --hide");
+    did(&mut harness, "plugins pane agent-chat/chat --show");
+    harness.run();
+    assert!(harness.state().plugin_pane_is_showing(slot), "a hide and a show is not enough to lose it");
+
+    // The video's own baseline: the panels put back, and a handful of settings written.
+    did(&mut harness, "panel reset");
+    did(&mut harness, "settings set appearance.font.size 16");
+    did(&mut harness, "settings set editor.line_numbers true");
+    did(&mut harness, "settings set terminal.font.size 14");
+    did(&mut harness, "settings set editor.suggestions automatic");
+    did(&mut harness, "settings set appearance.background.opacity 1.0");
+    harness.run();
+
+    // The dock still knows it exists, which is the half that went missing.
+    assert!(
+        harness.state().plugin_pane_is_reachable(slot),
+        "the reset lost the contributed pane rather than moving it"
+    );
+    let rect = harness.state().panel_rect_for_tests(Panel::Plugin(slot as u8));
+    assert!(rect.width() > 1.0 && rect.height() > 1.0, "the pane has no room to draw in: {rect:?}");
+
+    // It is really drawn: its own furniture is in the tree, which is what "no composer" means.
+    assert!(
+        harness.get_all_by_label_contains("Agent-Chat").count() > 0,
+        "the pane's header should be drawn"
+    );
+
+    // And the command tells the truth about it rather than reporting a flag.
+    let reply = did(&mut harness, "plugins pane agent-chat/chat --show");
+    assert_eq!(reply["showing"], true);
+    assert_eq!(reply["side"], "right");
+
+    // The pixels, which is what the ticket asks for: a pane that paints nothing looks like a window
+    // with no pane, and only a picture says which of the two this is.
+    harness.snapshot(shot("agent_chat_after_a_panel_reset").as_str());
+}
+
+/// `task-1794`: a contributed pane's width and height are settable from the command line.
+///
+/// `panel size` knew only the four built-in panels and `settings set` refused
+/// `panes.agent-chat/chat.width` — a key **Quill writes into its own settings file**. So the chat
+/// pane in the product video had to be widened to 1150 by editing `settings.conf` between restarts,
+/// because at its manifest's 420 the answer wrapped to three words a line. Every built-in panel's
+/// width was settable; this is the pane rule with a gap in it, and the gap was the whole of it.
+#[test]
+fn a_contributed_panes_size_is_settable_from_the_command_line() {
+    use quill_app::app::dock::Panel;
+    let mut harness = harness("");
+    did(&mut harness, "plugins pane agent-chat/chat --show");
+    harness.run();
+    let slot = harness.state().plugin_ui.slot_of("agent-chat/chat").expect("a slot");
+    let panel = Panel::Plugin(slot as u8);
+
+    // The command the ticket names, with the number the video needed.
+    let sized = did(&mut harness, "panel size agent-chat/chat --width 1150");
+    assert_eq!(sized["width"], 1150.0);
+    assert_eq!(sized["panel"], "agent-chat/chat", "it answers by the name it was asked by");
+    assert_eq!(harness.state().panes.width_of(panel), 1150.0);
+
+    // The height too, because a pane docked to a strip is read by that instead.
+    did(&mut harness, "panel size agent-chat/chat --height 480");
+    assert_eq!(harness.state().panes.height_of(panel), 480.0);
+
+    // And it really is drawn wider, which is the point of setting it. Asked for 1150 in a window
+    // 1180 wide it gets what is left after the editing area's own minimum, which is `regions`' rule
+    // rather than anything about plugins — so the size that fits is what the rectangle is measured
+    // against, and the number above is what is kept.
+    did(&mut harness, "panel size agent-chat/chat --width 700");
+    harness.run();
+    let rect = harness.state().panel_rect_for_tests(panel);
+    assert!(
+        (rect.width() - 700.0).abs() < 1.0,
+        "the pane should be drawn at the width it was given: {rect:?}"
+    );
+
+    // The same numbers through the settings, which is the other half of the ticket: a key Quill
+    // writes is a key Quill reads.
+    did(&mut harness, "settings set panes.agent-chat/chat.width 900");
+    assert_eq!(harness.state().panes.width_of(panel), 900.0);
+    let got = did(&mut harness, "settings get panes.agent-chat/chat.width");
+    assert_eq!(got["value"], "900");
+
+    // `settings list` names them all, which is what the refusal told people to run.
+    let listed = did(&mut harness, "settings list");
+    let rows: Vec<String> = listed["lines"]
+        .as_array()
+        .map(|all| all.iter().filter_map(|row| row.as_str().map(str::to_owned)).collect())
+        .unwrap_or_default();
+    for key in ["width", "height", "zoom"] {
+        assert!(
+            rows.iter().any(|row| row.starts_with(&format!("panes.agent-chat/chat.{key}"))),
+            "`settings list` should name panes.agent-chat/chat.{key}: {rows:#?}"
+        );
+    }
+
+    // `panel list` stays Quill's own four — a contributed pane is listed by `plugins list` and
+    // moved by `plugins pane`, which is the split `the_board_contributes_a_tab_and_no_pane` states.
+    // What makes the name reachable from here is the refusal, asserted at the end of this test.
+
+    // Docking by the same name, which `panel zoom` already accepted and `panel dock` did not.
+    let docked = did(&mut harness, "panel dock agent-chat/chat left");
+    assert_eq!(docked["side"], "left");
+    did(&mut harness, "panel dock agent-chat/chat right");
+
+    // Reset puts it back to what the **manifest** asked for rather than to a number inside Quill,
+    // because that is what "what a new Quill has" means for a pane Quill did not write.
+    let back = did(&mut harness, "settings reset panes.agent-chat/chat.width");
+    assert_eq!(back["value"], "420", "the chat manifest asks for 420");
+    assert_eq!(harness.state().panes.width_of(panel), 420.0);
+
+    // A key that names no pane is still refused, so the dynamic half has not opened the door to
+    // anything at all.
+    let refused = run(&mut harness, "settings set panes.no-such/pane.width 400");
+    assert!(!refused.ok, "a pane nothing contributes is not a setting");
+    let refused = run(&mut harness, "panel size no-such/pane --width 400");
+    assert!(!refused.ok);
+    assert!(
+        refused.message.contains("agent-chat/chat"),
+        "the refusal should name the panes there are: {}",
+        refused.message
+    );
+}
+
+/// The other half of the same ticket: a pane that cannot be drawn is **refused**, not reported as
+/// showing.
+///
+/// The cause found above is fixed, so nothing a person or an agent can type reaches this state any
+/// more — the dock is put back into it by hand here, which is exactly what a future regression would
+/// do. Without the guard the command answers `showing: true` about a pane that paints nothing, and
+/// there is no question an agent can ask that reports the difference. That is the AI-first contract
+/// with a hole in it, which is how the ticket puts it.
+#[test]
+fn a_pane_the_window_has_no_room_for_is_refused_rather_than_called_showing() {
+    let mut harness = harness("");
+    did(&mut harness, "plugins pane agent-chat/chat --show");
+    harness.run();
+    let slot = harness.state().plugin_ui.slot_of("agent-chat/chat").expect("a slot");
+    assert!(harness.state().plugin_pane_is_showing(slot));
+
+    // The state the fault left behind: the provider still says yes, the dock has never heard of it.
+    harness.state_mut().panes.dock.reset();
+    harness.run();
+    assert!(harness.state().plugin_ui.is_visible(slot), "the provider's flag is untouched");
+    assert!(!harness.state().plugin_pane_is_showing(slot), "but nothing would be drawn");
+
+    let refused = run(&mut harness, "plugins pane agent-chat/chat --show");
+    assert!(!refused.ok, "a pane that would draw nothing must not answer that it is showing");
+    assert!(
+        refused.message.contains("would draw nothing"),
+        "the refusal should say what is wrong: {}",
+        refused.message
+    );
 }
 
 /// Nothing said yet: the badge, the heading and the four starter chips.
@@ -14032,9 +14799,6 @@ fn a_database(name: &str) -> Harness<'static, QuillApp> {
     let file = a_database_file(name);
     let mut harness = harness("");
     did(&mut harness, &format!("plugins run database add-source library {}", file.display()));
-    // Made writable, because a data source is read only until somebody says otherwise and half of
-    // these tests are about changing rows.
-    did(&mut harness, "plugins run database read-only library off");
     did(&mut harness, "plugins pane database/explorer --show");
     harness.run();
     harness
@@ -14060,6 +14824,97 @@ fn until_the_database_settles(harness: &mut Harness<'static, QuillApp>) {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
     panic!("the database plugin is still busy after four hundred frames");
+}
+
+/// Press a field anywhere inside it, and the box inside it takes the keyboard.
+///
+/// `controls::field_text_rect` lays a `TextEdit` out as a strip one line tall, centred in the
+/// control — 15 points inside a 24 point field, inset eight points from the left — and that strip
+/// used to be the only part of the field a pointer could hit. `task-1795`.
+#[test]
+fn a_press_anywhere_in_a_field_hands_it_the_keyboard() {
+    let mut harness = a_database("field-focus");
+    did(&mut harness, "plugins pane database/explorer --show");
+    harness.run();
+    let box_rect = harness
+        .get_by_role_and_label(egui::accesskit::Role::TextInput, "Filter database objects")
+        .rect();
+    assert!(box_rect.height() < 20.0, "the box really is a strip: {box_rect:?}");
+    // Six points left of where the box begins, which is still inside the drawn field.
+    press_at(&mut harness, egui::Pos2::new(box_rect.left() - 6.0, box_rect.center().y));
+    assert!(
+        harness.ctx.text_edit_focused(),
+        "a press in the field's own padding should hand the box the keyboard"
+    );
+}
+
+/// A paste into one of a plugin's fields must never reach the file behind the pane.
+///
+/// With no text box holding the keyboard, `Focus::Editor` still stands and
+/// `editor_view::handle_input` reads the frame's `Event::Paste` — so `Ctrl+V` aimed at the Database
+/// pane's filter went into the open document instead. Reproduced before the fix as
+/// `document = "helloPASTED"`.
+#[test]
+fn a_paste_into_a_plugins_field_never_reaches_the_document() {
+    let mut harness = a_database("field-paste");
+    did(&mut harness, "plugins pane database/explorer --show");
+    harness.state_mut().document_mut().apply(Command::Insert("hello".to_owned()));
+    harness.run();
+    let box_rect = harness
+        .get_by_role_and_label(egui::accesskit::Role::TextInput, "Filter database objects")
+        .rect();
+    press_at(&mut harness, egui::Pos2::new(box_rect.left() - 6.0, box_rect.center().y));
+    harness.input_mut().events.push(egui::Event::Paste("PASTED".to_owned()));
+    harness.run();
+    assert_eq!(
+        harness.state().document().text().to_string(),
+        "hello",
+        "the paste belonged to the filter, not to the file behind the pane"
+    );
+}
+
+/// The same, for the field the ticket actually reported: the SQLite path on the New Data Source
+/// dialog.
+#[test]
+fn a_path_can_be_pasted_into_the_sqlite_file_field() {
+    let mut harness = a_database("field-paste-file");
+    did(&mut harness, "plugins pane database/explorer --show");
+    harness.run();
+    harness.get_by_label("New data source").click();
+    harness.run();
+    harness.get_by_label("SQLite").click();
+    harness.run();
+    let box_rect =
+        harness.get_by_role_and_label(egui::accesskit::Role::TextInput, "File").rect();
+    press_at(&mut harness, egui::Pos2::new(box_rect.left() - 4.0, box_rect.center().y));
+    harness.input_mut().events.push(egui::Event::Paste("C:/tmp/pasted.db".to_owned()));
+    harness.run();
+    assert_eq!(
+        harness.get_by_role_and_label(egui::accesskit::Role::TextInput, "File").value(),
+        Some("C:/tmp/pasted.db".to_owned())
+    );
+}
+
+/// Press and release the primary button at a point, and let the window settle.
+///
+/// `Node::click` presses the middle of a widget, and these tests are about the points that are
+/// **not** any widget's middle.
+fn press_at(harness: &mut Harness<'static, QuillApp>, at: egui::Pos2) {
+    harness.input_mut().events.push(egui::Event::PointerMoved(at));
+    harness.input_mut().events.push(egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    });
+    harness.step();
+    harness.input_mut().events.push(egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    harness.run();
 }
 
 /// The ticket's shape, as data: a tree in a pane, a workspace in a tab, a menu and a Settings page.
@@ -14090,7 +14945,7 @@ fn the_database_plugin_contributes_a_pane_a_tab_a_menu_and_a_page() {
     assert!(harness.get_all_by_label("Database").count() > 0, "the rail draws a button for it");
     let shown = did(&mut harness, "plugins pane database/explorer --show");
     assert_eq!(shown["showing"], true);
-    assert_eq!(shown["side"], "right", "where IntelliJ docks its Database tool window");
+    assert_eq!(shown["side"], "right", "where the reference editor docks its Database tool window");
     let moved = did(&mut harness, "plugins pane database/explorer --side left");
     assert_eq!(moved["side"], "left");
     assert_eq!(side_of(&harness, Panel::Plugin(slot as u8)), Side::Left);
@@ -14274,14 +15129,24 @@ fn an_edit_is_pending_until_it_is_submitted_and_the_file_changes() {
     assert_eq!(title, "Kind of Green");
 }
 
-/// A read-only data source refuses a write before anything is sent, and says which switch allows it.
+/// A data source is writable, and a read-only one refuses a write before anything is sent.
+///
+/// **A new data source can be written to.** `task-1795` asks for no safety check at all — *"We don't
+/// want a safety check at all. Should be full access."* — so the tick box, the write confirmation
+/// and the read-only default are all gone. What is left is the guarantee itself, which is the
+/// *server's* rather than a parser in Quill: `SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY`
+/// and `SQLITE_OPEN_READONLY`. Nothing in the window offers it and `read-only` is the one way in, so
+/// an agent that wants a session which cannot write can still ask for one.
 #[test]
 fn a_read_only_data_source_refuses_a_write_before_anything_is_sent() {
     let file = a_database_file("guard");
     let mut harness = harness("");
-    // Not made writable: a data source is read only until somebody says otherwise, which is the
-    // opposite of IntelliJ and is deliberate.
     did(&mut harness, &format!("plugins run database add-source library {}", file.display()));
+    assert_eq!(
+        did(&mut harness, "plugins view database")["sources"][0]["read_only"], false,
+        "a new data source is writable",
+    );
+    did(&mut harness, "plugins run database read-only library on");
     did_while_waiting(&mut harness, "plugins run database console library");
     assert_eq!(refused(&mut harness, "plugins run database query delete from album"), "failed");
     let view = did(&mut harness, "plugins view database");
@@ -14293,7 +15158,7 @@ fn a_read_only_data_source_refuses_a_write_before_anything_is_sent() {
     assert_eq!(count, 4);
 }
 
-/// The New Data Source dialog, which is IntelliJ's General tab cut to what applies.
+/// The New Data Source dialog, which is the reference editor's General tab cut to what applies.
 #[test]
 fn the_new_data_source_dialog() {
     let mut harness = harness("");
@@ -14327,4 +15192,302 @@ fn the_database_settings_page_says_where_a_password_is_and_never_what_it_is() {
     let view = did(&mut harness, "plugins view database");
     assert_eq!(view["sources"][0]["password"], "environment QUILL_DB_LIBRARY");
     harness.snapshot(shot("database_settings").as_str());
+}
+
+/// The grid the workspace is showing, as data, so a test can read what the pane has on it.
+fn the_open_page(harness: &mut Harness<'static, QuillApp>) -> serde_json::Value {
+    let view = did(harness, "plugins view database");
+    let current = view["current"].clone();
+    view["pages"]
+        .as_array()
+        .expect("the pages")
+        .iter()
+        .find(|page| page["id"] == current)
+        .cloned()
+        .unwrap_or_else(|| panic!("no page is open: {view}"))
+}
+
+/// `Ctrl/Cmd+Enter` in the console runs the statement, and `Enter` alone is still a new line.
+///
+/// The chord was written when the console was and it never once fired: it is guarded on the SQL box
+/// having the keyboard, and a press anywhere but the middle fifteen points of the box did not give
+/// it — which is `task-1795`'s root cause, the same one that sent a paste into the file behind the
+/// pane. Both halves are asserted, because a console in which `Enter` executed would be a console
+/// nobody could write two lines of SQL in.
+#[test]
+fn ctrl_enter_runs_the_statement_under_the_caret() {
+    let mut harness = a_database("ctrl-enter");
+    did_while_waiting(&mut harness, "plugins run database console library");
+    until_the_database_settles(&mut harness);
+
+    // Pressed in the box's own padding rather than its middle, which is the press that used to
+    // leave the console without the keyboard.
+    let box_rect = harness.get_by_label("SQL").rect();
+    press_at(&mut harness, egui::Pos2::new(box_rect.left() + 2.0, box_rect.top() + 2.0));
+    assert!(harness.ctx.text_edit_focused(), "the press handed the SQL box the keyboard");
+
+    harness.get_by_label("SQL").type_text("select title from album order by id");
+    harness.run();
+
+    // Enter alone is a new line. Nothing runs.
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    assert!(
+        the_open_page(&mut harness)["result"].is_null(),
+        "Enter on its own must not execute — a console has to be able to hold two lines",
+    );
+
+    harness.key_press_modifiers(Modifiers::COMMAND, egui::Key::Enter);
+    until_the_database_settles(&mut harness);
+    let result = did(&mut harness, "plugins run database result");
+    assert_eq!(result["kind"], "console");
+    assert_eq!(result["result"]["count"], 4, "the chord ran the statement: {result}");
+    assert_eq!(result["result"]["rows"][0][0], "Kind of Blue");
+}
+
+/// A double click opens a cell for typing, and Save writes what was typed to the file.
+///
+/// `task-1795`: *"I should be able to double click an entry in the table, type to update, and see a
+/// save button that writes to the table for that value."* Each of the three is asserted separately,
+/// because two of them half existed before: the model had an `editing` field that nothing ever set,
+/// and the button was there under another name.
+#[test]
+fn double_clicking_a_cell_edits_it_and_save_writes_it() {
+    let file = a_database_file("cell-edit");
+    let mut harness = harness("");
+    did(&mut harness, &format!("plugins run database add-source library {}", file.display()));
+    did(&mut harness, "plugins tab database/workspace --open");
+    did(&mut harness, "plugins run database tables main");
+    did(&mut harness, "plugins run database open main.album");
+    until_the_database_settles(&mut harness);
+
+    // A single click chooses the cell and opens nothing — the two gestures must not fight, because
+    // choosing is what `Delete row` and `Set NULL` act on.
+    harness.get_by_label("title row 1").click();
+    harness.run();
+    assert!(
+        the_open_page(&mut harness)["editing"].is_null(),
+        "one click chooses a cell rather than opening it",
+    );
+
+    let at = harness.get_by_label("title row 1").rect().center();
+    double_click_at(&mut harness, at);
+    let editing = the_open_page(&mut harness)["editing"].clone();
+    assert_eq!(editing["row"], 1, "the double click opened the cell: {editing}");
+    assert_eq!(editing["column"], "title");
+    assert_eq!(editing["text"], "Kind of Blue", "filled with what the cell shows");
+
+    // Everything in the box is selected the frame it opens, so typing replaces rather than joins.
+    harness.get_by_label("title row 1").type_text("Kind of Green");
+    harness.run();
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+
+    // Committing records a pending change rather than sending a statement, which is the arrangement
+    // that lets Preview show what is about to happen.
+    let pending = did(&mut harness, "plugins run database pending");
+    assert_eq!(pending.as_array().expect("the statements").len(), 1, "{pending}");
+    assert!(harness.get_all_by_label("Save 1").count() > 0, "the button says Save, and how many");
+
+    harness.get_by_label("Save 1").click();
+    until_the_database_settles(&mut harness);
+    let connection = rusqlite::Connection::open(&file).expect("opened");
+    let title: String = connection
+        .query_row("select title from album where id = 1", [], |row| row.get(0))
+        .expect("a row");
+    assert_eq!(title, "Kind of Green", "Save wrote the typed value to the file");
+}
+
+/// `Escape` throws the typing away and leaves the row exactly as it was.
+#[test]
+fn escape_puts_a_cell_back_the_way_it_was() {
+    let mut harness = a_database("cell-escape");
+    did(&mut harness, "plugins tab database/workspace --open");
+    did(&mut harness, "plugins run database tables main");
+    did(&mut harness, "plugins run database open main.album");
+    until_the_database_settles(&mut harness);
+
+    let at = harness.get_by_label("title row 1").rect().center();
+    double_click_at(&mut harness, at);
+    harness.get_by_label("title row 1").type_text("Thrown away");
+    harness.run();
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+    assert!(
+        did(&mut harness, "plugins run database pending").as_array().expect("none").is_empty(),
+        "Escape left nothing pending",
+    );
+    assert!(the_open_page(&mut harness)["editing"].is_null(), "and closed the box");
+}
+
+/// A right click on a table offers `New Table…`, and the rows are the ones that apply to a table.
+///
+/// `task-1795`: *"I should be able to right click the db or tables and see a popup to create a new
+/// table."* The menu is the plugin's own rather than `components::context_menu`, which speaks the
+/// window's vocabulary of `actions::Action` — so this checks the rows really are drawn.
+#[test]
+fn a_right_click_on_a_table_offers_a_new_table() {
+    let mut harness = a_database("tree-menu");
+    // Opened the way a person opens it, one level a press, because the tree draws a row only once
+    // the thing above it is open — `the_database_tree_reads_a_source_one_level_at_a_time`. Asking
+    // for the tables down the command line instead would open the source as a side effect, and the
+    // press meant to open it would then shut it again.
+    for level in ["library", "main", "tables"] {
+        harness.get_by_label(level).click();
+        until_the_database_settles(&mut harness);
+    }
+    let row = harness.get_by_label("album").rect();
+    right_click_at(&mut harness, row.center());
+    for named in ["New Table…", "Open Data", "Show DDL", "Copy Name", "Drop Table"] {
+        assert!(harness.get_all_by_label(named).count() > 0, "the menu has no {named} on it");
+    }
+    // And nothing that belongs to a data source rather than to a table.
+    assert_eq!(harness.query_all_by_label("Remove Data Source").count(), 0);
+
+    harness.get_by_label("New Table…").click();
+    harness.run();
+    assert_eq!(
+        did(&mut harness, "plugins view database")["modal"], "new-table",
+        "choosing the row opened the dialog",
+    );
+}
+
+/// The dialog draws the statement it is going to send, and redraws it as the form is typed into.
+///
+/// It comes from `quill_db::sql::create_table`, which is the same call `Create` makes — the rule the
+/// pending-changes preview already keeps, so what is read and what happens cannot drift apart.
+#[test]
+fn the_new_table_modal_shows_the_statement_it_will_send() {
+    let mut harness = a_database("new-table-modal");
+    did(&mut harness, "plugins run database tables main");
+    until_the_database_settles(&mut harness);
+    // A bare word that names a schema means *make a table there*, which is what the tree's own menu
+    // means by a right click on a schema — and is what `new-table main` used to read as a table
+    // called `main`, composing `CREATE TABLE "main"."main"`.
+    did(&mut harness, "plugins run database new-table main");
+    harness.run();
+    assert!(harness.get_all_by_label("Table name").count() > 0, "the dialog is up");
+    assert_eq!(
+        harness.get_by_label("Table name").value(), Some(String::new()),
+        "the schema is where it goes, not what it is called",
+    );
+
+    harness.get_by_label("Table name").click();
+    harness.run();
+    harness.get_by_label("Table name").type_text("shelf");
+    harness.run();
+    let sql = did(&mut harness, "plugins view database")["new_table_sql"].clone();
+    let sql = sql.as_str().unwrap_or_else(|| panic!("no statement: {sql}"));
+    assert!(sql.starts_with("CREATE TABLE \"main\".\"shelf\""), "{sql}");
+    assert!(sql.contains("PRIMARY KEY"), "the first column is a key, which a table wants: {sql}");
+
+    // Every identifier is quoted, so a name that is a keyword or holds a space is a non-event, and
+    // the statement follows the typing rather than being composed once when the dialog opened.
+    harness.get_by_label("Table name").type_text(" of order");
+    harness.run();
+    let sql = did(&mut harness, "plugins view database")["new_table_sql"].clone();
+    assert!(
+        sql.as_str().expect("a statement").contains("\"shelf of order\""),
+        "the name is quoted and the statement followed the typing: {sql}",
+    );
+
+    // Empty, it refuses rather than composing a statement with a hole in it, and says why.
+    did(&mut harness, "plugins run database new-table main");
+    harness.run();
+    assert_eq!(
+        did(&mut harness, "plugins view database")["new_table_sql"]["problem"],
+        "a table needs a name.",
+    );
+    harness.get_by_label("Table name").click();
+    harness.run();
+    harness.get_by_label("Table name").type_text("shelf");
+    harness.run();
+    harness.snapshot(shot("database_new_table").as_str());
+}
+
+/// The dialog's `Create` really makes the table, and the tree has it without anything being pressed.
+#[test]
+fn creating_a_table_makes_it_and_the_tree_shows_it() {
+    let file = a_database_file("new-table-create");
+    let mut harness = harness("");
+    did(&mut harness, &format!("plugins run database add-source library {}", file.display()));
+    did(&mut harness, "plugins pane database/explorer --show");
+    did(&mut harness, "plugins run database tables main");
+    until_the_database_settles(&mut harness);
+
+    did(&mut harness, "plugins run database new-table main");
+    harness.run();
+    harness.get_by_label("Table name").click();
+    harness.run();
+    harness.get_by_label("Table name").type_text("shelf");
+    harness.run();
+    harness.get_by_label("Create").click();
+    until_the_database_settles(&mut harness);
+
+    let connection = rusqlite::Connection::open(&file).expect("opened");
+    let made: String = connection
+        .query_row("select name from sqlite_master where name = 'shelf'", [], |row| row.get(0))
+        .expect("the table was made");
+    assert_eq!(made, "shelf");
+    let tables = did(&mut harness, "plugins run database tables main");
+    let names: Vec<&str> = tables["items"]
+        .as_array()
+        .expect("the tables")
+        .iter()
+        .filter_map(|table| table["name"].as_str())
+        .collect();
+    assert!(names.contains(&"shelf"), "the tree refreshed itself: {names:?}");
+}
+
+/// `Add row` puts a row on the screen that can be typed into.
+///
+/// The whole of the report was that it did not: `Pending::add` recorded a `Change::Add` and the grid
+/// drew `grid.rows.rows`, so the pending count went up and the screen did not change. The added rows
+/// are drawn after the read ones and every cell in one is opened by the same double click as any
+/// other.
+#[test]
+fn add_row_puts_a_row_on_the_screen_that_can_be_typed_into() {
+    let file = a_database_file("add-row");
+    let mut harness = harness("");
+    did(&mut harness, &format!("plugins run database add-source library {}", file.display()));
+    did(&mut harness, "plugins tab database/workspace --open");
+    did(&mut harness, "plugins run database tables main");
+    did(&mut harness, "plugins run database open main.album");
+    until_the_database_settles(&mut harness);
+    assert_eq!(harness.query_all_by_label("title row 5").count(), 0, "four rows were read");
+
+    harness.get_by_label("Add row").click();
+    harness.run();
+    assert!(harness.get_all_by_label("title row 5").count() > 0, "the added row is on the screen");
+
+    let at = harness.get_by_label("title row 5").rect().center();
+    double_click_at(&mut harness, at);
+    harness.get_by_label("title row 5").type_text("Sketches of Spain");
+    harness.run();
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+
+    // One statement, and it is an INSERT carrying what was typed — not an UPDATE of a row that is
+    // not there yet, which is what `Pending::set` folding a cell into its own `Change::Add` buys.
+    let pending = did(&mut harness, "plugins run database pending");
+    let statements = pending.as_array().expect("the statements");
+    assert_eq!(statements.len(), 1, "{pending}");
+    let sql = statements[0]["sql"].as_str().expect("the sql");
+    assert!(sql.starts_with("INSERT INTO \"album\""), "{sql}");
+    // And it carries only the cell that was typed in. `Add row` lands on the first cell, so the key
+    // was being committed as an empty string when the keyboard moved on — which SQLite refuses on an
+    // `integer primary key` with `datatype mismatch`, so no added row could ever be saved.
+    assert!(!sql.contains("\"id\""), "an untouched cell must not be written down: {sql}");
+
+    harness.get_by_label("Save 1").click();
+    until_the_database_settles(&mut harness);
+
+    let after = the_open_page(&mut harness);
+    assert!(after["failure"].is_null(), "the save was refused: {after}");
+    assert_eq!(after["pending"], 0, "and nothing is left pending: {after}");
+    let connection = rusqlite::Connection::open(&file).expect("opened");
+    let id: i64 = connection
+        .query_row("select id from album where title = 'Sketches of Spain'", [], |row| row.get(0))
+        .expect("the row that was typed into is the row that was inserted");
+    assert_eq!(id, 5, "and the engine gave it a key, because nothing pretended to supply one");
 }

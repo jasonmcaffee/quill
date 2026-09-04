@@ -183,7 +183,7 @@ impl QuillApp {
     /// The other half of "a caret is never inside a hidden paragraph". Collapsing something the
     /// caret is inside must not expand it again — that would make `Collapse All` do nothing
     /// whenever somebody was in the middle of a function — so the caret moves instead, which is what
-    /// IntelliJ does. The head line is where the block still is on the screen.
+    /// The reference editor does. The head line is where the block still is on the screen.
     fn keep_the_caret_visible(&mut self, index: usize) {
         let hidden = self.hidden_paragraphs(index);
         if hidden.is_empty() {
@@ -246,7 +246,7 @@ impl QuillApp {
     /// Expand the region headed by `line` and every region inside it.
     ///
     /// The children's own collapsed state is destroyed — a child that was folded on its own opens
-    /// too — which is what IntelliJ's and VS Code's recursive expand both do, and what "open that
+    /// too — which is what the reference editor's and VS Code's recursive expand both do, and what "open that
     /// function so I can read it" wants. `tasks/task-1707-recursive-folding-tdd.md` section 3.
     pub(crate) fn expand_recursively_at_line(&mut self, line: usize) -> bool {
         let index = self.files.active_index();

@@ -788,7 +788,7 @@ impl QuillApp {
         if keys.up {
             self.move_the_completion(-1);
         }
-        // `Tab` replaces the whole identifier and `Enter` replaces the stem, which is IntelliJ's own
+        // `Tab` replaces the whole identifier and `Enter` replaces the stem, which is the reference editor's own
         // distinction and is right in both directions: `Enter` when finishing a fresh word, `Tab`
         // when retyping the front of an existing one.
         if keys.tab {
@@ -1360,7 +1360,7 @@ mod tests {
 
     #[test]
     fn tab_replaces_the_whole_word_and_enter_replaces_only_the_stem() {
-        // Scenarios 26 and 27, the pair IntelliJ keeps apart and this design keeps apart with it.
+        // Scenarios 26 and 27, the pair the reference editor keeps apart and this design keeps apart with it.
         for (whole_word, expected) in [(true, "draw_frame;"), (false, "draw_framewing;")] {
             let (folder, mut app) = a_window("quill-completion-mid-word");
             typing(&mut app, "drawing;");

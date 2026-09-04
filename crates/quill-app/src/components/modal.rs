@@ -420,7 +420,7 @@ pub enum Confirm {
     Enter,
     /// The command key with Enter, for a modal whose **body** owns Enter: the commit message is a
     /// multiline field where Enter is a new line, and a new line is what a person pressing it there
-    /// means. IntelliJ's commit dialog makes the same choice for the same reason.
+    /// means. The reference editor's commit dialog makes the same choice for the same reason.
     CommandEnter,
 }
 
@@ -537,7 +537,7 @@ pub fn button(ui: &mut egui::Ui, area: Rect, name: &str, enabled: bool, primary:
     response.clicked()
 }
 
-/// A heading inside a page, with a rule running to the right edge, as IntelliJ draws one.
+/// A heading inside a page, with a rule running to the right edge, as the reference editor draws one.
 pub fn section(ui: &mut egui::Ui, area: Rect, top: f32, name: &str) -> f32 {
     let painter = ui.painter_at(area.expand(20.0));
     let galley =
@@ -563,6 +563,15 @@ pub fn note(ui: &mut egui::Ui, area: Rect, top: f32, text: &str) -> f32 {
 
 /// A tick box with its label to the right of it. Returns true when it was changed.
 pub fn check(ui: &mut egui::Ui, row: Rect, name: &str, value: &mut bool) -> bool {
+    check_named(ui, row, name, name, value)
+}
+
+/// A tick box whose drawn word and whose name are not the same thing.
+///
+/// A row that repeats — a column of the New Table dialog — draws `PK` on every one of them, and two
+/// controls in Quill must not share a name. So the word is what a person reads and the name is what a
+/// test and an agent ask for, and it is also what gives each row's box an id of its own.
+pub fn check_named(ui: &mut egui::Ui, row: Rect, drawn: &str, name: &str, value: &mut bool) -> bool {
     let box_rect = Rect::from_min_size(Pos2::new(row.left(), row.center().y - 8.0), Vec2::splat(16.0));
     let response = ui.interact(row, ui.id().with(("modal-check", name)), Sense::click());
     let painter = ui.painter();
@@ -577,7 +586,7 @@ pub fn check(ui: &mut egui::Ui, row: Rect, name: &str, value: &mut bool) -> bool
         icon::tick(painter, box_rect.center(), color::text_strong());
     }
     let galley =
-        painter.layout_no_wrap(name.to_owned(), egui::FontId::proportional(12.5), color::text_control());
+        painter.layout_no_wrap(drawn.to_owned(), egui::FontId::proportional(12.5), color::text_control());
     painter.galley(
         Pos2::new(box_rect.right() + 10.0, row.center().y - galley.size().y / 2.0),
         galley,
@@ -602,10 +611,12 @@ pub fn field(ui: &mut egui::Ui, area: Rect, name: &str, value: &mut String) -> e
         Stroke::new(1.0, color::control_border()),
         egui::StrokeKind::Inside,
     );
-    let text_rect = crate::components::controls::field_text_rect(ui, area, 8.0);
+    let id = ui.id().with(("modal-field", name));
+    let text_rect = crate::components::controls::field_takes_the_whole_rectangle(ui, area, 8.0, id);
     let mut edit = ui.new_child(egui::UiBuilder::new().max_rect(text_rect));
     let response = edit.add(
         egui::TextEdit::singleline(value)
+            .id(id)
             .frame(egui::Frame::NONE)
             .desired_width(text_rect.width())
             .text_color(color::text_control()),
@@ -649,6 +660,12 @@ pub fn label(painter: &egui::Painter, row: Rect, x: f32, text: &str, tint: Color
 }
 
 /// A monospaced block of text that scrolls, which is what a diff and a commit are shown in.
+///
+/// **What it is showing is not reachable from outside the window**, and that is worth knowing before
+/// trying: the lines are plain labels inside a scrolling area, and a `widget_info` carrying the whole
+/// text does not reach the tree egui hands out either. So a dialog whose point is the text in one of
+/// these — the DDL, the pending statements, the New Table dialog — reports that text through its own
+/// plugin `view` as well, which is where an agent reads it and what a test asserts on. `task-1795`.
 pub fn monospaced(ui: &mut egui::Ui, area: Rect, id: &str, text: &str) {
     ui.painter().rect(
         area,

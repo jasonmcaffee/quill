@@ -8,8 +8,9 @@
 //!
 //! **The catalogue is the bundled set, and there is no network call.** Fetching a plugin over the
 //! network means signature checking, a trust decision and a story about downloaded code, none of
-//! which a format that executes nothing has earned yet. The page says so plainly rather than looking
-//! like a shop that has run out of stock.
+//! which a format that executes nothing has earned yet. The page used to carry a paragraph saying
+//! so; `task-1795` took it out, because it answered a question about Quill on every plugin’s own
+//! page, nine times over, where what a reader is there for is that plugin.
 
 use egui::{CornerRadius, Pos2, Rect, Sense, Stroke, Vec2};
 
@@ -42,6 +43,8 @@ pub struct PluginsState {
 pub struct PluginsOutcome {
     /// Write this plugin out to the settings folder and load it back from there.
     pub install: Option<String>,
+    /// Take the folder away again, and go back to the copy that shipped in the binary.
+    pub uninstall: Option<String>,
     /// Switch a plugin on or off.
     pub set_enabled: Option<(String, bool)>,
 }
@@ -128,10 +131,13 @@ fn header(ui: &mut egui::Ui, area: Rect, state: &mut PluginsState, plugins: &Plu
         egui::StrokeKind::Inside,
     );
     icon::magnifier(ui.painter(), Pos2::new(search.left() + 13.0, search.center().y), color::text_faint());
-    let text_rect = crate::components::controls::field_text_rect(ui, search, 26.0);
+    let search_id = ui.id().with("plugins-search");
+    let text_rect =
+        crate::components::controls::field_takes_the_whole_rectangle(ui, search, 26.0, search_id);
     let mut field = ui.new_child(egui::UiBuilder::new().max_rect(text_rect));
     let response = field.add(
         egui::TextEdit::singleline(&mut state.search)
+            .id(search_id)
             .hint_text(egui::RichText::new("Search plugins").color(color::text_faint()))
             .frame(egui::Frame::NONE)
             .desired_width(text_rect.width())
@@ -265,22 +271,39 @@ fn detail(
     let vendor = format!("{}  \u{00B7}  version {}", plugin.vendor, plugin.version);
     pen = modal::note(ui, area, pen, &vendor);
 
-    // The button. `Install` writes the plugin out to disk and loads it back from there, which is
-    // what proves the loader works on real files rather than only on what was baked into Quill.
+    // **Two buttons, because one of them used to mean three things.** `task-1795`: *"The Install
+    // button should be Uninstall if the plugin is already installed."*
+    //
+    // And the word on the first one has to be what pressing it *does*, which is the harder half of
+    // that sentence. A bundled plugin is already installed in every sense a person means — it is in
+    // the list, it is ticked, and it is working — so a button saying `INSTALL` on it is exactly the
+    // thing the ticket is complaining about. What pressing it really does is write the folder out so
+    // it can be edited by hand, which is `CUSTOMISE`. `INSTALL` is kept for the one state where it is
+    // the true word: a plugin that is neither bundled nor on disk. Switching one on and off is a
+    // different question and has a button of its own beside them.
     let button = Rect::from_min_size(Pos2::new(area.left(), pen + 4.0), Vec2::new(120.0, 28.0));
-    if on_disk {
-        let word = if plugin.enabled { "DISABLE" } else { "ENABLE" };
-        if modal::button(ui, button, word, true, !plugin.enabled) {
-            outcome.set_enabled = Some((plugin.id.clone(), !plugin.enabled));
+    let (word, filled) = match (on_disk, plugin.bundled) {
+        (true, _) => ("UNINSTALL", false),
+        (false, true) => ("CUSTOMISE", true),
+        (false, false) => ("INSTALL", true),
+    };
+    if modal::button(ui, button, word, true, filled) {
+        match on_disk {
+            true => outcome.uninstall = Some(plugin.id.clone()),
+            false => outcome.install = Some(plugin.id.clone()),
         }
-    } else if modal::button(ui, button, "INSTALL", true, true) {
-        outcome.install = Some(plugin.id.clone());
+    }
+    let second =
+        Rect::from_min_size(Pos2::new(button.right() + 8.0, button.top()), Vec2::new(120.0, 28.0));
+    let switch = if plugin.enabled { "DISABLE" } else { "ENABLE" };
+    if modal::button(ui, second, switch, true, !plugin.enabled) {
+        outcome.set_enabled = Some((plugin.id.clone(), !plugin.enabled));
     }
     pen = button.bottom() + 10.0;
-    let where_from = if on_disk {
-        "Installed. Its folder is under the settings folder, and it can be edited by hand."
-    } else {
-        "Bundled with Quill and already working. Installing writes its folder out where it can be edited."
+    let where_from = match (on_disk, plugin.bundled) {
+        (true, true) => "Its folder is under the settings folder and can be edited by hand. Uninstalling takes that folder away and puts the plugin back to the one Quill ships.",
+        (true, false) => "Its folder is under the settings folder and can be edited by hand. Uninstalling removes it.",
+        (false, _) => "Installed with Quill and working. Customising writes its folder out where it can be edited by hand.",
     };
     pen = modal::note(ui, area, pen, where_from);
 
@@ -346,11 +369,6 @@ fn detail(
             heading(ui, "What it does not do");
             note(ui, plugin.limitations.clone());
         }
-        heading(ui, "Where plugins come from");
-        note(
-            ui,
-            "These ship with Quill. There is no network marketplace: a plugin is data rather than a program, nothing in one is executed, and fetching code over the network would need a trust decision a format like this has not earned. Writing a folder into the settings folder by hand installs one.".to_owned(),
-        );
     });
 }
 

@@ -17,7 +17,7 @@
 //!
 //! **A candidate matches when the stem is a case-insensitive subsequence of it.** `lyt` finds
 //! `layout`, `psttx` finds `paint_text`, and middle matching comes free, so `draw` finds `redraw`.
-//! That is IntelliJ's documented behaviour and Sublime Text's, and it is the shape
+//! That is the reference editor's documented behaviour and Sublime Text's, and it is the shape
 //! [`crate::symbols`]' sibling `services::file_search` already ranks file names by.
 //!
 //! ## The score, and why the tests pin orderings rather than numbers
@@ -218,7 +218,7 @@ pub fn stem_at(text: &str, offset: usize, grammar: &Grammar) -> Range<usize> {
 /// The whole identifier the caret is inside: the stem, and whatever is still to the right of it.
 ///
 /// What `Tab` replaces. `dra│wing` completed to `draw_frame` should not leave `wing` dangling
-/// behind the caret, which is IntelliJ's own reason for having two acceptance keys.
+/// behind the caret, which is the reference editor's own reason for having two acceptance keys.
 pub fn word_at(text: &str, offset: usize, grammar: &Grammar) -> Range<usize> {
     let stem = stem_at(text, offset, grammar);
     if offset > text.len() || !text.is_char_boundary(offset) {
@@ -276,7 +276,7 @@ pub fn rank(stem: &str, candidates: Vec<Candidate>) -> Vec<Row> {
 /// `task-1680`. [`rank`]'s guard is right for a word being typed — with nothing typed there is
 /// nothing being completed, and a list that opened on every space would be unusable — and wrong
 /// for an import, where `from '│'` and `use │` are positions at which the language itself says
-/// what comes next, so a list is an answer rather than an interruption. IntelliJ opens its own
+/// what comes next, so a list is an answer rather than an interruption. The reference editor opens its own
 /// popup at zero characters after a `.` and after `import` for the same reason.
 ///
 /// With nothing typed nothing can be scored, so the rows come back in the tie-break's own order:

@@ -27,7 +27,7 @@ pub fn databases(session: &mut Session) -> Answer<Vec<String>> {
 
 /// The schemas of the database this connection is on.
 ///
-/// `pg_catalog` and `information_schema` are listed last rather than hidden: IntelliJ shows them, they
+/// `pg_catalog` and `information_schema` are listed last rather than hidden: The reference editor shows them, they
 /// are where somebody goes to answer a question about the server itself, and a tree that quietly left
 /// out two schemas would be a tree that disagrees with `\dn`.
 pub fn schemas(session: &mut Session) -> Answer<Vec<String>> {

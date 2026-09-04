@@ -7,7 +7,7 @@
 //! symbol index and `quill-dap` all already use.
 //!
 //! **One thread per connected data source**, holding one connection. Two panes reading the same source
-//! therefore queue behind each other, which is what a single connection means and is what IntelliJ's
+//! therefore queue behind each other, which is what a single connection means and is what the reference editor's
 //! own single-session console does. A second connection would be a second transaction and a second
 //! `search_path`, which is a surprise nobody wants from a tree and a grid that look like one thing.
 

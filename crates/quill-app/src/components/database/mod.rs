@@ -1,7 +1,7 @@
 //! Drawing the Database plugin: the tree in the pane, and the consoles and grids in the tab.
 //!
-//! `_agent_output/task-1777-database-plugin/intellij/` is what this is measured against — the
-//! Database tool window, the query console and the data editor, downloaded from JetBrains rather than
+//! `_agent_output/task-1777-database-plugin/reference/` is what this is measured against — the
+//! Database tool window, the query console and the data editor, downloaded from its makers rather than
 //! remembered — wearing the dark neumorphic palette the Agent-Tasks board is drawn in.
 //!
 //! ## The drawing changes nothing
@@ -26,7 +26,7 @@ pub mod workspace;
 
 use egui::{Color32, CornerRadius, Pos2, Rect, Stroke, Vec2};
 
-use crate::services::database::{commands, DatabaseExplorer, Modal, Page, Sheet};
+use crate::services::database::{commands, Aimed, DatabaseExplorer, Modal, Page, Sheet};
 use crate::services::plugin_ui::{Look, Request};
 use crate::services::vello_canvas::{Fill, Lift};
 
@@ -58,6 +58,16 @@ pub enum Act {
     /// The New Data Source modal, on a new one or on an existing one.
     NewSource,
     EditSource(String),
+    RemoveSource(String),
+    /// The New Table modal, on a source and the schema the tree filed the row under.
+    NewTable(String, String),
+    /// Drop a table. Asked about first, because it is the one thing on the menu that cannot be
+    /// undone.
+    DropTable(String, String, String),
+    /// Open the tree’s own menu at a point, for whichever row was pressed.
+    OpenMenu(Pos2, Aimed),
+    /// Put something on the clipboard.
+    Copy(String),
     /// Which page of the workspace is showing.
     ShowPage(u64),
     ClosePage(u64),
@@ -74,6 +84,18 @@ pub enum Act {
     Submit(u64),
     /// A cell was chosen, or typed into.
     ChooseCell(u64, usize, usize),
+    /// Open a cell for typing, which is what a double click does.
+    EditCell(u64, usize, usize),
+    /// What has been typed into the cell that is open, so far.
+    TypeIntoCell(u64, String),
+    /// Take what has been typed and record it as a pending change.
+    CommitCell(u64),
+    /// The box has taken the keyboard, so the one shot that asked for it is spent.
+    OpenedTheCell(u64),
+    /// Close the box and keep nothing.
+    CancelCell(u64),
+    /// Put NULL in the chosen cell, which an empty box deliberately cannot mean.
+    NullTheCell(u64),
     SetCell(u64, usize, usize, quill_db::Value),
     /// Sort by a column, which sends a new `ORDER BY` rather than sorting the page.
     SortBy(u64, String),
@@ -87,6 +109,9 @@ pub fn pane(explorer: &mut DatabaseExplorer, ui: &mut egui::Ui, look: &Look<'_>)
     let mut acts = Vec::new();
     if area.width() > 40.0 && area.height() > 40.0 {
         acts = tree::show(explorer, ui, look, area);
+        // After the rows, so the popup is over them and takes the pointer first — the rule
+        // `components::resize_edges` gives for anything added last.
+        acts.extend(tree::menu(explorer, ui, look));
     }
     apply(explorer, acts)
 }
@@ -154,6 +179,29 @@ pub fn apply(explorer: &mut DatabaseExplorer, acts: Vec<Act>) -> Vec<Request> {
                     explorer.modal = Some(Modal::Source(commands::a_form_for(source)));
                 }
             }
+            Act::RemoveSource(name) => {
+                if let Err(why) = explorer.remove_source(&name) {
+                    requests.push(Request::Message(why));
+                }
+            }
+            Act::NewTable(source, schema) => {
+                explorer.modal = Some(Modal::NewTable(commands::a_new_table(explorer, &source, &schema)));
+            }
+            Act::DropTable(source, schema, name) => {
+                let sql = match quill_db::sql::drop_table(&schema, &name) {
+                    Ok(sql) => sql,
+                    Err(why) => {
+                        requests.push(Request::Message(why));
+                        continue;
+                    }
+                };
+                match explorer.run_the_ddl(&source, &schema, &sql) {
+                    Ok(_) => requests.push(Request::Message(format!("`{name}` is gone"))),
+                    Err(why) => requests.push(Request::Message(why)),
+                }
+            }
+            Act::OpenMenu(at, aimed) => explorer.menu = Some((at, aimed)),
+            Act::Copy(text) => requests.push(Request::Copy(text)),
             Act::ShowPage(id) => {
                 if let Some(at) = explorer.pages.iter().position(|page| page.id == id) {
                     explorer.current = at;
@@ -180,6 +228,16 @@ pub fn apply(explorer: &mut DatabaseExplorer, acts: Vec<Act>) -> Vec<Request> {
             }
             Act::AddRow(id) => with_grid(explorer, id, |grid| {
                 grid.pending.add();
+                // Straight into the first cell of it, because a row that appears and then has to be
+                // found and double clicked is a row that reads as having done nothing.
+                let at = grid.row_count() - 1;
+                grid.chosen = Some((at, 0));
+                grid.editing = Some(crate::services::database::Editing {
+                    at,
+                    column: 0,
+                    text: String::new(),
+                    opened: true,
+                });
             }),
             Act::DeleteRow(id, at) => with_grid(explorer, id, |grid| {
                 if let Some(row) = grid.row_of(at) {
@@ -195,6 +253,63 @@ pub fn apply(explorer: &mut DatabaseExplorer, acts: Vec<Act>) -> Vec<Request> {
             }
             Act::ChooseCell(id, at, column) => with_grid(explorer, id, |grid| {
                 grid.chosen = Some((at, column));
+                grid.editing = None;
+            }),
+            Act::EditCell(id, at, column) => with_grid(explorer, id, |grid| {
+                grid.chosen = Some((at, column));
+                grid.editing = Some(crate::services::database::Editing {
+                    at,
+                    column,
+                    text: grid.text_of(at, column),
+                    opened: true,
+                });
+            }),
+            Act::TypeIntoCell(id, text) => with_grid(explorer, id, |grid| {
+                if let Some(editing) = grid.editing.as_mut() {
+                    editing.text = text;
+                }
+            }),
+            Act::CommitCell(id) => with_grid(explorer, id, |grid| {
+                let Some(editing) = grid.editing.take() else { return };
+                let Some(name) = grid.rows.columns.get(editing.column).map(|column| column.name.clone())
+                else {
+                    return;
+                };
+                let Some(row) = grid.row_of(editing.at) else { return };
+                // **A box nobody typed in records nothing.** Committing happens when the keyboard
+                // moves on, so every cell an added row is opened at and stepped over would otherwise
+                // be written down as an edit that changes nothing — and on an added row that is
+                // worse than noise: it turns *not supplied* into the empty string, which SQLite
+                // refuses outright on an `integer primary key` with `datatype mismatch`. Pressing
+                // `Add row` lands on the first cell, so this was every added row with a generated
+                // key. `task-1795`.
+                if editing.text == grid.text_of(editing.at, editing.column) {
+                    return;
+                }
+                // An empty box on a cell that was NULL leaves it NULL, and on any other cell means
+                // the empty string. The two cannot both be what an empty box means, and this is the
+                // half a person can see: `Set NULL` on the toolbar is the other.
+                let (was, _) = grid.cell(editing.at, editing.column);
+                let value = match editing.text.is_empty() && was.is_null() {
+                    true => quill_db::Value::Null,
+                    false => quill_db::Value::Text(editing.text.clone()),
+                };
+                grid.pending.set(row, &name, value);
+            }),
+            Act::OpenedTheCell(id) => with_grid(explorer, id, |grid| {
+                if let Some(editing) = grid.editing.as_mut() {
+                    editing.opened = false;
+                }
+            }),
+            Act::CancelCell(id) => with_grid(explorer, id, |grid| grid.editing = None),
+            Act::NullTheCell(id) => with_grid(explorer, id, |grid| {
+                let Some((at, column)) = grid.chosen else { return };
+                let Some(name) = grid.rows.columns.get(column).map(|column| column.name.clone()) else {
+                    return;
+                };
+                if let Some(row) = grid.row_of(at) {
+                    grid.pending.set(row, &name, quill_db::Value::Null);
+                }
                 grid.editing = None;
             }),
             Act::SetCell(id, at, column, value) => with_grid(explorer, id, |grid| {

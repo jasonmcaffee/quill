@@ -195,7 +195,7 @@ impl Request {
 ///
 /// **The adapter does the evaluating and the logging.** A condition is a string the debugger
 /// compiles in the debuggee's own language, and a log message is a string it formats and prints —
-/// so Quill's whole cost for two features IntelliJ has is two `Option<String>`s and the modal that
+/// so Quill's whole cost for two features the reference editor has is two `Option<String>`s and the modal that
 /// edits them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SourceBreakpoint {
@@ -753,7 +753,7 @@ mod tests {
     }
 
     /// A condition and a log message are data in the request: the adapter evaluates and the adapter
-    /// logs, so Quill's whole cost for two of IntelliJ's features is two optional strings.
+    /// logs, so Quill's whole cost for two of the reference editor's features is two optional strings.
     #[test]
     fn a_condition_and_a_log_message_are_sent_as_they_were_written() {
         let breakpoint = SourceBreakpoint {

@@ -5,7 +5,7 @@
 //! is `components::debug_panel` and `components::gutter`, and this is what sits between them —
 //! exactly the place `app::git::GitState` sits between `quill_git::Worker` and `components::git_panel`.
 //!
-//! **One session per window.** IntelliJ runs several; the first version of this does not, and
+//! **One session per window.** the reference editor runs several; the first version of this does not, and
 //! everything is simpler for it: the state below is one `Option<DebugState>` on `QuillApp` rather
 //! than a collection, and no pane of the tile needs a session chooser above it.
 //!
@@ -131,7 +131,7 @@ pub struct Watch {
 ///
 /// `task-1696`. It is deliberately **not** a second watch: a watch is durable and is asked again at
 /// every stop, and this is about a moment — the pointer is resting somewhere now. So it is thrown
-/// away when the program resumes rather than re-asked, which is what IntelliJ's own tooltip does.
+/// away when the program resumes rather than re-asked, which is what the reference editor's own tooltip does.
 ///
 /// Its rows are the tile's [`Row`], built by the same walk over the same [`DebugState::fetched`]
 /// map, because a `variablesReference` is global to the stop: a structure opened in the tile and
@@ -464,7 +464,17 @@ impl DebugState {
     /// Full replacement per file, which is what the protocol's `setBreakpoints` is. The offsets are
     /// remembered in the order they were sent so the answer, which comes back as a list in that
     /// order, can be matched back to lines.
+    /// The path is made plain and native **here**, at the point it goes on the wire.
+    ///
+    /// The two doors a path comes in by normalise their own, so this is belt and braces — and it is
+    /// the third place deliberately, for the reason `quill_terminal::paths` gives about the verbatim
+    /// prefix: the window is not the only thing that hands a path to another program, and a list of
+    /// the places that have to remember is a list whose next entry will be the one that forgot.
+    /// `task-1794` is what a forgotten one costs: an adapter takes `C:\project\src/report.rs`
+    /// without complaint, matches it against no compile unit, and the program runs to completion
+    /// with the debug tile empty and nothing anywhere saying why.
     pub fn set_breakpoints(&mut self, path: &Path, lines: Vec<(usize, SourceBreakpoint)>) {
+        let path = quill_terminal::paths::native(&quill_terminal::paths::plain(path));
         let offsets: Vec<usize> = lines.iter().map(|(offset, _)| *offset).collect();
         let breakpoints: Vec<SourceBreakpoint> =
             lines.into_iter().map(|(_, breakpoint)| breakpoint).collect();
@@ -566,8 +576,8 @@ impl DebugState {
     /// specification says `repl` means "evaluated from the debug console", and CodeLLDB reads that
     /// literally: it runs the text as an **LLDB command line**, so `debug evaluate total` against a
     /// real one answers `'total' is not a valid command`. Quill's box is called `Evaluate Expression`
-    /// and IntelliJ's evaluates an expression, so `watch` is the context that means what the control
-    /// says. The distinction Quill keeps between the two is IntelliJ's — persistent against one-off —
+    /// and the reference editor's evaluates an expression, so `watch` is the context that means what the control
+    /// says. The distinction Quill keeps between the two is the reference editor's — persistent against one-off —
     /// which is Quill's own bookkeeping rather than anything on the wire.
     pub fn evaluate(&mut self, expression: &str) {
         let id = self.take_question();
@@ -872,7 +882,7 @@ impl DebugState {
                 self.frames.clear();
                 self.frame = None;
                 // The tooltip is about a moment and the moment has passed — and every reference in
-                // it died with the resume. IntelliJ dismisses its own on a step for the same reason.
+                // it died with the resume. The reference editor dismisses its own on a step for the same reason.
                 self.hover = None;
                 for watch in &mut self.watches {
                     watch.result = None;
@@ -917,7 +927,12 @@ impl DebugState {
                 self.rebuild_hover_rows();
             }
             Event::Breakpoints { path, answered } => {
-                let path = PathBuf::from(path);
+                // Normalised the way `set_breakpoints` normalises what it sends, so the two maps
+                // `verified` reads together are keyed the same way. The adapter echoes back whatever
+                // spelling its debug information holds, which is why `same_file` exists at all; this
+                // closes the half of that Quill controls, and a case difference is still the
+                // adapter's own and still answered there.
+                let path = quill_terminal::paths::native(&quill_terminal::paths::plain(Path::new(&path)));
                 // **An answer with a different number of entries than were sent is not an answer
                 // about them**, and taking it would throw away the ids the real answer carried —
                 // which is what a later `breakpoint` event uses to say one has bound.
@@ -1550,7 +1565,7 @@ mod tests {
     }
 
     /// Every `variablesReference` dies on resume, so the tooltip goes with them: a value from the
-    /// last stop drawn beside a tree that cannot be opened is worse than nothing. IntelliJ dismisses
+    /// last stop drawn beside a tree that cannot be opened is worse than nothing. The reference editor dismisses
     /// its own on a step for the same reason.
     #[test]
     fn resuming_puts_the_tooltip_away() {

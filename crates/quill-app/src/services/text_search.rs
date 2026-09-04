@@ -1,6 +1,6 @@
 //! Searching every file in the project for some text, on a thread.
 //!
-//! `task-1659` asks for IntelliJ's `Find in Files`: a box that narrows the answer as you type. What
+//! `task-1659` asks for the reference editor's `Find in Files`: a box that narrows the answer as you type. What
 //! that means in a project of any size is reading every file on every key press, and a window that
 //! did that where it draws would stop drawing while it read — which on a large folder looks exactly
 //! like a crash. So the reading happens on a thread, the same arrangement `quill_git::Worker` and

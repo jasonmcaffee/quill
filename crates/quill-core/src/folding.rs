@@ -1,6 +1,6 @@
 //! What in a file can be collapsed, and what somebody has collapsed.
 //!
-//! `task-1686` asks for IntelliJ's fold arrows: a chevron beside the line number against a function,
+//! `task-1686` asks for the reference editor's fold arrows: a chevron beside the line number against a function,
 //! an `if` or a large block, and a way of putting everything but the passages you have marked out of
 //! sight. `tasks/task-1686-folding-tdd.md` records what was weighed; this module is the half of it
 //! that has no window in it.

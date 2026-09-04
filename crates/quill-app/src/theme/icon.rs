@@ -12,7 +12,7 @@
 //! - `quill` — the marks Quill shipped with: outlines at a 1.3 to 1.6 point stroke, and a solid triangle
 //!   for a disclosure.
 //! - `material` — heavier and rounder, filled where the Quill one is a stroke, and a **chevron** for a
-//!   disclosure, which is what IntelliJ, VS Code and every Material icon set draw. A stroke meeting at a
+//!   disclosure, which is what the reference editor, VS Code and every Material icon set draw. A stroke meeting at a
 //!   point reads as something to press; a filled triangle reads as a bullet.
 //!
 //! The two drawings of one mark sit next to each other rather than in two modules, because what is worth
@@ -717,7 +717,7 @@ pub fn symbol_kind(painter: &egui::Painter, centre: Pos2, kind: quill_core::Symb
 /// `task-1683`'s widget and the run tile both use it, and so does each row of the flyout at a
 /// smaller size, which is what `scale` is for. Filled rather than outlined because it is the one
 /// control on the title bar that starts something, and green wherever it means "start this",
-/// which is IntelliJ's own colour for the same button.
+/// which is the reference editor's own colour for the same button.
 pub fn run(painter: &egui::Painter, centre: Pos2, color: Color32) {
     run_scaled(painter, centre, color, 1.0);
 }
@@ -820,7 +820,7 @@ pub fn breakpoint(painter: &egui::Painter, centre: Pos2, filled: bool, color: Co
 
 /// The mark a breakpoint carrying a condition or a log message wears: a halo round the dot.
 ///
-/// IntelliJ puts a question mark on a conditional breakpoint, and a question mark is what this was
+/// The reference editor puts a question mark on a conditional breakpoint, and a question mark is what this was
 /// first drawn as — two short strokes at the dot's lower right. Blown up four times it read as a
 /// **blob stuck to the dot** rather than as a mark, which at nine real pixels is what anybody would
 /// see: there is no room inside or beside a nine-pixel circle for a glyph.

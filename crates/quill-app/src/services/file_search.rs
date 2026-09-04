@@ -1,6 +1,6 @@
 //! Finding a file by typing part of its name, which is what the `Go to File` modal is built on.
 //!
-//! `task-1659` asks for IntelliJ's `Go to File`: a box to type in, a list that narrows as you type,
+//! `task-1659` asks for the reference editor's `Go to File`: a box to type in, a list that narrows as you type,
 //! and a file opened from it. The matching is the whole of the interesting part, and it is here
 //! rather than in the component so that it can be tested without a window — the component draws a
 //! list of [`Found`] and knows nothing about how the list was arrived at.

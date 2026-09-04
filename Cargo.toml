@@ -111,6 +111,9 @@ windows-sys = { version = "0.61", features = [
     "Win32_UI_WindowsAndMessaging",
     # Deleting a file to the Recycle Bin, which is `SHFileOperationW`. See `services/recycle.rs`.
     "Win32_UI_Shell",
+    # The Windows credential store, which is `CredWriteW`, `CredReadW` and `CredDeleteW`. See
+    # `services/agent_tasks/keychain.rs`.
+    "Win32_Security_Credentials",
     # `OpenProcess`, the Windows half of `owner_is_gone`'s `kill(pid, 0)` question. See
     # `services/agent_tasks/mod.rs`.
     "Win32_System_Threading",

@@ -18,17 +18,23 @@ use crate::services::store::Values;
 
 /// How many rows a result keeps before it says there are more.
 ///
-/// IntelliJ's own default is 500 and its own settings page calls it the page size. Two hundred is a
+/// The reference editor's own default is 500 and its own settings page calls it the page size. Two hundred is a
 /// screenful several times over on a 340 point pane and a second round trip is cheap; the number is a
 /// setting either way.
 pub const DEFAULT_PAGE_SIZE: usize = 200;
 
 /// What a `read_only` data source is by default.
 ///
-/// **On**, which is the opposite of IntelliJ and is deliberate: a data source added in a hurry points
-/// at something real, and the cost of having to clear a tick box before the first `UPDATE` is much
-/// smaller than the cost of the first `UPDATE` being one nobody meant.
-pub const DEFAULT_READ_ONLY: bool = true;
+/// **Off.** `task-1795`: *"We don’t want a safety check at all. Should be full access."* It was on,
+/// on the reasoning that a source added in a hurry points at something real; the tick box that
+/// cleared it is gone and so is the reasoning, because a data editor somebody has to unlock before
+/// it will edit is a data editor that reads as broken.
+///
+/// The flag itself stays, because it is not a check in Quill: it is what asks a **server** for a
+/// session that cannot write — `SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY`, and
+/// `SQLITE_OPEN_READONLY` — which is a thing an agent may still deliberately want, through
+/// `plugins run database read-only`. Nothing in the window offers it any more.
+pub const DEFAULT_READ_ONLY: bool = false;
 
 /// Everything this plugin remembers.
 #[derive(Debug, Clone, PartialEq)]
@@ -37,11 +43,6 @@ pub struct Configuration {
     /// Which data source the tree and a new console are pointed at.
     pub chosen: String,
     pub page_size: usize,
-    /// Whether a statement that is not a read has to be confirmed before it is sent from a console.
-    ///
-    /// On by default. A console is where somebody types `delete from member` meaning to type a
-    /// `where` clause after it, and one dialog is cheaper than the row that is not there any more.
-    pub confirm_writes: bool,
 }
 
 impl Default for Configuration {
@@ -50,7 +51,6 @@ impl Default for Configuration {
             sources: Vec::new(),
             chosen: String::new(),
             page_size: DEFAULT_PAGE_SIZE,
-            confirm_writes: true,
         }
     }
 }
@@ -74,9 +74,6 @@ impl Configuration {
         if let Some(size) = values.number("page_size") {
             out.page_size = (size as usize).clamp(1, 100_000);
         }
-        if let Some(confirm) = values.flag("confirm_writes") {
-            out.confirm_writes = confirm;
-        }
         out.chosen = values.text("chosen").unwrap_or_default().to_owned();
         let count = values.number("sources").unwrap_or_default() as usize;
         for index in 0..count.min(200) {
@@ -98,7 +95,6 @@ impl Configuration {
         values.set("sources", self.sources.len().to_string());
         values.set("chosen", &self.chosen);
         values.set("page_size", self.page_size.to_string());
-        values.set("confirm_writes", self.confirm_writes.to_string());
         for (index, source) in self.sources.iter().enumerate() {
             let at = |key: &str| format!("source.{index}.{key}");
             values.set(&at("name"), &source.name);
@@ -253,7 +249,7 @@ mod tests {
         let mut configuration = Configuration::default();
         let mut postgres = Source::parse("ai", "postgres://postgres@localhost:5432/ai").expect("read");
         postgres.secret = Secret::Environment("QUILL_DB_AI".to_owned());
-        postgres.read_only = false;
+        postgres.read_only = true;
         configuration.sources.push(postgres);
         // A typed password is deliberately **not** written: `until this window closes` is what the
         // dialog promises, and this is where that promise is kept.
@@ -307,11 +303,22 @@ mod tests {
     }
 
     #[test]
-    fn a_new_data_source_is_read_only_until_somebody_says_otherwise() {
-        // The opposite of IntelliJ, on purpose: a data source added in a hurry points at something
-        // real, and clearing a tick box is cheaper than the first `UPDATE` nobody meant.
+    fn a_new_data_source_is_writable() {
+        // `task-1795`: no safety check at all. A source with no `read_only` line, which is every one
+        // added since, can write.
         let (configuration, _) = Configuration::of(&Values::parse(
             "sources = 1\nsource.0.name = x\nsource.0.engine = sqlite\nsource.0.file = C:/x.db\n",
+        ));
+        assert!(!configuration.sources[0].read_only);
+    }
+
+    #[test]
+    fn a_source_that_was_written_down_as_read_only_still_is() {
+        // The flag is what asks a server for a session that cannot write, and an agent can still set
+        // it. Only the tick box went.
+        let (configuration, _) = Configuration::of(&Values::parse(
+            "sources = 1\nsource.0.name = x\nsource.0.engine = sqlite\nsource.0.file = C:/x.db\n\
+             source.0.read_only = true\n",
         ));
         assert!(configuration.sources[0].read_only);
     }

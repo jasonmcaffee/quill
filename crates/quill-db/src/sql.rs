@@ -1,7 +1,7 @@
 //! Where one statement ends and the next begins.
 //!
 //! A console holds several statements and Execute runs **the one under the caret**, which is
-//! IntelliJ's behaviour and the only one that makes a console of six statements usable. So something
+//! The reference editor's behaviour and the only one that makes a console of six statements usable. So something
 //! has to know where the boundaries are, and a `;` is not enough on its own: it appears inside string
 //! literals, inside quoted identifiers, inside dollar-quoted function bodies, and inside both kinds of
 //! comment.
@@ -181,6 +181,106 @@ fn closing(bytes: &[u8], index: usize, quote: u8) -> usize {
         at += 1;
     }
     bytes.len()
+}
+
+/// One column of a table that is about to be made.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NewColumn {
+    pub name: String,
+    /// A fragment of DDL. See `Engine::column_types` for why this is not a closed list.
+    pub type_name: String,
+    pub in_key: bool,
+    pub not_null: bool,
+}
+
+/// The `CREATE TABLE` statement a table description composes.
+///
+/// **This is the statement that will be sent**, and the New Table dialog shows the same call’s
+/// answer beside the form — the rule the pending-changes preview already keeps, that what is shown
+/// and what happens come from one place.
+///
+/// Every identifier is quoted, and a value cannot be a parameter in DDL in any engine, so what
+/// stands between a name and a broken statement is the quoting and the refusals below. A name with a
+/// quote in it comes out doubled, which is what `catalog::quoted` is for.
+///
+/// A key column of an integer type is written the way the engine makes one count up by itself — see
+/// `Engine::key_column` — because a primary key somebody has to fill in by hand is the commonest
+/// thing to get wrong about a table made in a hurry.
+pub fn create_table(
+    schema: &str,
+    name: &str,
+    columns: &[NewColumn],
+    engine: crate::source::Engine,
+) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("a table needs a name.".to_owned());
+    }
+    let wanted: Vec<&NewColumn> = columns.iter().filter(|column| !column.name.trim().is_empty()).collect();
+    if wanted.is_empty() {
+        return Err("a table needs at least one column.".to_owned());
+    }
+    if let Some(missing) = wanted.iter().find(|column| column.type_name.trim().is_empty()) {
+        return Err(format!("`{}` has no type.", missing.name.trim()));
+    }
+    // Two columns of one name is a statement the server refuses in words nobody reads as their own
+    // typing mistake, so it is said here instead.
+    for (at, column) in wanted.iter().enumerate() {
+        let named = column.name.trim();
+        if wanted.iter().take(at).any(|earlier| earlier.name.trim().eq_ignore_ascii_case(named)) {
+            return Err(format!("there are two columns called `{named}`."));
+        }
+    }
+    let key: Vec<&NewColumn> = wanted.iter().copied().filter(|column| column.in_key).collect();
+    let mut lines: Vec<String> = wanted
+        .iter()
+        .map(|column| {
+            let type_name = match column.in_key {
+                true => engine.key_column(&column.type_name),
+                false => column.type_name.trim().to_owned(),
+            };
+            let mut line = format!("  {} {type_name}", crate::catalog::quoted(column.name.trim(), '"'));
+            // A key column is `NOT NULL` by definition in every engine, so saying it as well would
+            // be noise on the line a person reads to check the table.
+            if column.not_null && !column.in_key {
+                line.push_str(" NOT NULL");
+            }
+            line
+        })
+        .collect();
+    if !key.is_empty() {
+        let named: Vec<String> = key
+            .iter()
+            .map(|column| crate::catalog::quoted(column.name.trim(), '"'))
+            .collect();
+        lines.push(format!("  PRIMARY KEY ({})", named.join(", ")));
+    }
+    let qualified = match schema.trim().is_empty() {
+        true => crate::catalog::quoted(name, '"'),
+        false => format!(
+            "{}.{}",
+            crate::catalog::quoted(schema.trim(), '"'),
+            crate::catalog::quoted(name, '"')
+        ),
+    };
+    Ok(format!("CREATE TABLE {qualified} (\n{}\n)", lines.join(",\n")))
+}
+
+/// `DROP TABLE`, for the one entry on the tree’s menu that asks first.
+pub fn drop_table(schema: &str, name: &str) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("say which table.".to_owned());
+    }
+    let qualified = match schema.trim().is_empty() {
+        true => crate::catalog::quoted(name, '"'),
+        false => format!(
+            "{}.{}",
+            crate::catalog::quoted(schema.trim(), '"'),
+            crate::catalog::quoted(name, '"')
+        ),
+    };
+    Ok(format!("DROP TABLE {qualified}"))
 }
 
 /// The text with its comments replaced by spaces, so a word count reads the statement rather than the

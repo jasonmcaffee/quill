@@ -53,7 +53,7 @@ need. All three are in `services/windows_transparency.rs`, and section 9.2 of
 ## The rail, and the window's own edges
 
 Down the far left is a button for each pane: the explorer, git, and the terminal at the bottom left.
-It is 36 points wide, narrower than IntelliJ's, because it holds three buttons rather than a dozen.
+It is 36 points wide, narrower than the reference editor's, because it holds three buttons rather than a dozen.
 A button whose pane is open is drawn as the same filled pill every list in Quill uses for its chosen
 row, so the rail says at a glance what is showing. Resting on one names it.
 
@@ -161,7 +161,7 @@ behind the code.
 ## The font is one setting for the whole window
 
 `Settings -> Appearance -> Font` sets the family and the size the editor shows text in, the way
-IntelliJ has one editor font. A change reaches every file that is open, not only the one showing,
+The reference editor has one editor font. A change reaches every file that is open, not only the one showing,
 and the preview with them. Setting it is not an edit: it pushes nothing onto the undo history and
 does not mark any file as changed, because what Quill saves is plain text and carries no formatting.
 
@@ -218,7 +218,7 @@ list, so they hold the same entries with the same shortcuts, and adding an entry
 
 The `File` menu opens another window, opens a file or a folder, and lists the folders that have been
 open before. **Opening a folder opens it in a window of its own**, the way `Recent Projects` does and
-the way IntelliJ works, so the project you were in stays where it was. Each window is its own
+the way the reference editor works, so the project you were in stays where it was. Each window is its own
 process, so several Quills can run at once on different projects and share nothing but the settings
 file.
 
@@ -293,7 +293,7 @@ authors' work and which part is new.
 ## Settings
 
 `Edit -> Settings`, `Quill -> Settings`, or control and comma, opens a modal laid out like
-IntelliJ's: the pages down the left under their headings, and the chosen page on the right. Changes
+The reference editor's: the pages down the left under their headings, and the chosen page on the right. Changes
 take effect as they are made, and are written to two plain text files that can be read and edited by
 hand — `%APPDATA%\Quill` on Windows and `~/Library/Application Support/Quill` on macOS. What belongs
 to a *project* rather than to a person is not kept there; it is in the project's own `.quill` folder.

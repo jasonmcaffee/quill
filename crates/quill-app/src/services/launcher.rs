@@ -1,13 +1,13 @@
 //! Starting another Quill.
 //!
 //! `tasks/improvements.md` asks for several Quill windows at once, each with its own project, the way
-//! IntelliJ does it. Each one is its own process rather than a second window inside this process.
+//! The reference editor does it. Each one is its own process rather than a second window inside this process.
 //!
 //! That is a decision worth recording. A second window in the same process would share the document, the
 //! file tree, the settings in memory and the terminal sessions, so every one of those would have to learn
 //! which window it belonged to. A second process shares nothing: it reads the same settings file, opens
 //! its own project, and if it stops it takes nothing with it. Quill already takes the folder to open as
-//! its first argument, which is all a second process needs, and IntelliJ works the same way.
+//! its first argument, which is all a second process needs, and the reference editor works the same way.
 
 use std::path::Path;
 use std::process::Command;

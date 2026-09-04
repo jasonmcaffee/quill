@@ -13,7 +13,7 @@
 //! is wasteful, and against CodeLLDB 1.12.3 is worse than wasteful, because an expression that does
 //! not resolve ends its session with a Python traceback and nothing on the protocol channel.
 //!
-//! 350 ms, and it is a constant rather than a setting: IntelliJ's own `Value tooltip delay` exists
+//! 350 ms, and it is a constant rather than a setting: The reference editor's own `Value tooltip delay` exists
 //! so somebody who finds the tooltip distracting can turn it down, and Quill's tick box already
 //! turns it off. A pointer crossing a line passes over a word in far less than 350 ms, so nothing is
 //! asked for a word merely passed over; a pointer that has come to rest is answered before anybody
@@ -115,7 +115,7 @@ impl ValueTooltipState {
 
 /// Whether a pointer resting on a name is allowed to ask the debugger anything.
 ///
-/// Two conditions and no more. `manual` is IntelliJ's `Show value tooltip` switched off, and it stops
+/// Two conditions and no more. `manual` is the reference editor's `Show value tooltip` switched off, and it stops
 /// only the *unasked* popup — `Debug -> Show Value` and `quill-cli debug hover` work either way,
 /// which is why the setting has two values rather than three. The modifier is Go to Definition's, and
 /// two affordances on one word would be two promises the one click cannot both keep.
@@ -266,7 +266,7 @@ impl QuillApp {
         }
     }
 
-    /// `Debug -> Show Value`, which is IntelliJ's Quick Evaluate chord asking about the caret's own
+    /// `Debug -> Show Value`, which is the reference editor's Quick Evaluate chord asking about the caret's own
     /// word.
     ///
     /// It hangs off the caret rather than off a pointer that may be anywhere, and it lives until

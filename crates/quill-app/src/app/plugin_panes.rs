@@ -8,7 +8,7 @@
 //! ## Nothing is built until it is asked for
 //!
 //! [`PluginUi::opened`] is the only thing that builds a provider, and it is called from the rail button,
-//! the tab and the Settings page. A plugin nobody opens costs one row in a list. That is IntelliJ's own
+//! the tab and the Settings page. A plugin nobody opens costs one row in a list. That is the reference editor's own
 //! arrangement, whose documented reason is the same: a tool window a person never clicks loads and runs
 //! no plugin code.
 //!

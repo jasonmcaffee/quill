@@ -113,9 +113,14 @@ fn raw(board: &mut AgentTasks, ui: &mut egui::Ui, area: Rect, look: &Look<'_>) -
     // ticket still holds the original to compare with. On a long description that second copy was the largest
     // thing this frame did, repeated sixty times a second while somebody typed.
     let mut text = board.description_text();
+    let description_id = ui.id().with("agent-tasks-description");
+    // The whole of the drawn box takes a click, not only the rectangle the text is laid out in — the
+    // eight points of margin round it are part of the control. See `controls::claim_the_field`.
+    crate::components::controls::claim_the_field(ui, area, description_id);
     let response = ui.put(
         inside,
         egui::TextEdit::multiline(&mut text)
+            .id(description_id)
             .frame(egui::Frame::NONE)
             .hint_text(egui::RichText::new("What needs doing, in markdown.").color(look.palette.text_faint))
             .desired_width(inside.width())

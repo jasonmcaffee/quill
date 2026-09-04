@@ -1,6 +1,6 @@
 //! The Settings window, opened from `Edit -> Settings`.
 //!
-//! It is laid out the way `tasks/img.png` shows IntelliJ's: a search box and a list of pages down the
+//! It is laid out the way `tasks/img.png` shows the reference editor's: a search box and a list of pages down the
 //! left grouped under headings, a breadcrumb across the top of the right hand side saying where you are,
 //! and the chosen page's sections under it. It is a modal, so the rest of the window is dimmed and does
 //! not take clicks while it is open, which is what `tasks/improvements.md` asks for.
@@ -161,7 +161,7 @@ fn contents(
 ) -> SettingsOutcome {
     let mut outcome = SettingsOutcome::default();
 
-    // The heading, which names the project the way IntelliJ's does.
+    // The heading, which names the project the way the reference editor's does.
     let header = Rect::from_min_size(area.min, Vec2::new(area.width(), HEADER));
     let painter = ui.painter_at(area);
     painter.rect_filled(
@@ -286,10 +286,13 @@ fn show_list(
         egui::StrokeKind::Inside,
     );
     icon::magnifier(&painter, Pos2::new(search.left() + 13.0, search.center().y), color::text_faint());
-    let text_rect = crate::components::controls::field_text_rect(ui, search, 26.0);
+    let search_id = ui.id().with("settings-search");
+    let text_rect =
+        crate::components::controls::field_takes_the_whole_rectangle(ui, search, 26.0, search_id);
     let mut field = ui.new_child(egui::UiBuilder::new().max_rect(text_rect));
     field.add(
         egui::TextEdit::singleline(&mut state.search)
+            .id(search_id)
             .hint_text(egui::RichText::new("Search settings").color(color::text_faint()))
             .frame(egui::Frame::NONE)
             .desired_width(text_rect.width())
@@ -473,7 +476,7 @@ fn appearance_page(
         "and the size is also on the keyboard at command or control with plus and minus.",
     );
 
-    // IntelliJ's `Appearance -> Use custom font`, which Quill had no equivalent of: the window's own text
+    // The reference editor's `Appearance -> Use custom font`, which Quill had no equivalent of: the window's own text
     // was the editor's family at egui's own size, so a large editor meant large menus and there was no way
     // to ask for a compact window round a big document.
     pen = section(ui, area, pen + 10.0, "Interface");
@@ -588,7 +591,7 @@ fn appearance_page(
 /// `Appearance & Behavior > Theme`: which palette the window is painted in, its accent, and its icons.
 ///
 /// A page of its own because the Settings window is one size for every page and no page scrolls — see
-/// `Page::Theme`. It is laid out the way IntelliJ's own theme list is: a row per theme, its name on the
+/// `Page::Theme`. It is laid out the way the reference editor's own theme list is: a row per theme, its name on the
 /// left and the colours it is made of on the right, so the choice can be made by looking rather than by
 /// choosing a name and then seeing what happened.
 fn theme_page(
@@ -1002,7 +1005,7 @@ pub(crate) fn breadcrumb(ui: &mut egui::Ui, area: Rect, page: Page) -> f32 {
     y + 22.0
 }
 
-/// A heading inside a page, with a rule running to the right edge, as IntelliJ draws one.
+/// A heading inside a page, with a rule running to the right edge, as the reference editor draws one.
 pub(crate) fn section(ui: &mut egui::Ui, area: Rect, top: f32, name: &str) -> f32 {
     let painter = ui.painter_at(area);
     let galley =

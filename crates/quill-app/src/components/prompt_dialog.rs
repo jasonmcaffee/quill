@@ -104,10 +104,13 @@ pub fn show(ctx: &egui::Context, prompt: &mut Prompt) -> PromptOutcome {
             Stroke::new(1.0, color::control_border()),
             egui::StrokeKind::Inside,
         );
-        let text_rect = crate::components::controls::field_text_rect(ui, field, 8.0);
+        let entry_id = ui.id().with("prompt-dialog-value");
+        let text_rect =
+            crate::components::controls::field_takes_the_whole_rectangle(ui, field, 8.0, entry_id);
         let mut edit = ui.new_child(egui::UiBuilder::new().max_rect(text_rect));
         let entry = edit.add(
             egui::TextEdit::singleline(&mut prompt.value)
+                .id(entry_id)
                 .frame(egui::Frame::NONE)
                 .desired_width(text_rect.width())
                 .text_color(color::text_control()),

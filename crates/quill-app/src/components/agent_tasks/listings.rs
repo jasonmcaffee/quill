@@ -938,12 +938,14 @@ fn plain_field(
             egui::StrokeKind::Inside,
         );
     }
-    let inner = crate::components::controls::field_text_rect(ui, area, 14.0);
+    let field_id = ui.id().with(("agent-tasks-listing-field", name));
+    let inner = crate::components::controls::field_takes_the_whole_rectangle(ui, area, 14.0, field_id);
     let response = ui
         .push_id(name, |ui| {
             ui.put(
                 inner,
                 egui::TextEdit::singleline(value)
+                    .id(field_id)
                     .frame(egui::Frame::NONE)
                     .hint_text(egui::RichText::new(hint).color(look.palette.text_faint))
                     .font(egui::FontId::proportional(look.font_size - 1.0))

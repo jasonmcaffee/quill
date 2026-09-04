@@ -298,7 +298,7 @@ pub fn area_note(area: &'static str) -> &'static str {
         "window" => "`window screenshot` is how to see what a command did. The picture is of the real window, so it is evidence rather than a description.",
         "browser" => "Rendered tabs use the operating system browser engine. Local HTML is served from a constrained project origin, so its CSS, scripts and images work without exposing the filesystem to page JavaScript. A window renders one page at a time: every rendered tab keeps its own address, title and history, and the one view follows whichever tab is showing, so these commands act on the tab that is showing and say so when it is not a rendered one.",
         "tab" => "A tab holds a file. A relative path is resolved against the project folder, and every reply says which absolute path it used.",
-        "pane" => "The editing area can be split into panes side by side, each with its own tabs, which is IntelliJ's split view. `pane split` moves the tab that is showing into a new pane on the right — it moves rather than copies, because two tabs on one file would be two documents over one path. A pane holding only that tab keeps it and the new pane opens empty, ready for the next file: opening a file always lands in the pane that has the keyboard.",
+        "pane" => "The editing area can be split into panes side by side, each with its own tabs, which is the reference editor's split view. `pane split` moves the tab that is showing into a new pane on the right — it moves rather than copies, because two tabs on one file would be two documents over one path. A pane holding only that tab keeps it and the new pane opens empty, ready for the next file: opening a file always lands in the pane that has the keyboard.",
         "editor" => "Use this tool first for project-symbol work. If asked to find every place a name is used, call `references` with `name`; if asked where a name is defined, call `definition`; if asked to rename it everywhere, call `rename` with `name`, `new-name` and `apply: true`. Do not begin those jobs with grep, file search, reads or file edits. Quill's native answers combine unsaved live open tabs with the project index, distinguish code from comments and strings, and apply a role-aware project rename as one undo step per open file while safely rewriting closed files. Lines and columns count from 1.",
         "fold" => "A block that can be collapsed is a function, an `if`, a bracket that spans lines, a run of comments, an indented section, or a Markdown heading — worked out from the file itself, so nothing has to be written into it. Collapsing one hides its lines; the line numbers of everything still showing are unchanged, so `fold list` and `editor caret --line` speak the same language whatever is folded. `fold others` is the one to notice: it collapses everything that does not hold a marked passage, which is how to leave only the four places you care about on the screen.",
         "panel" => "Quill has four panels — the explorer, the terminal, the run tile and the debug tile — and each of them can be docked to any edge of the window, which is what dragging its header does. A side holds an ordered row of panels laid out left to right, so `panel dock terminal left --position 1` puts the terminal beside the explorer rather than in place of it. The terminal, run and debug tiles all draw a character grid and two grids in one strip would be two half-sized grids, so showing one puts away the other tiles **on its own side** — move one somewhere else and they are both showing at once. `panel list` says where everything is, including the rectangle each occupies, which is what to read before working out where a click lands.",
@@ -691,8 +691,8 @@ pub const COMMANDS: &[Command] = &[
     Command {
         area: "editor",
         verb: "insert",
-        summary: "Type text at the caret, replacing the selection if there is one.",
-        arguments: &[rest("text", true, "What to type. \\n is a new line and \\t is a tab.")],
+        summary: "Type text at the caret, replacing the selection if there is one. It types exactly what it is given: there is no auto-indent, so a line of a function body has to carry its own leading spaces.",
+        arguments: &[rest("text", true, "What to type, exactly as it will appear. \\n is a new line and \\t is a tab. Nothing is indented for you.")],
         flags: NO_FLAGS,
         examples: &["quill-cli editor insert Hello", "quill-cli editor insert \"one\\ntwo\""],
         local: false,
@@ -853,14 +853,14 @@ pub const COMMANDS: &[Command] = &[
     Command {
         area: "editor",
         verb: "rename",
-        summary: "Use this instead of file edits to rename a symbol everywhere through Quill's role-aware references. Comments and strings stay untouched unless included; without --apply it previews, and applying edits each open tab as one undo step before safely rewriting closed files.",
+        summary: "Use this instead of file edits to rename a symbol everywhere through Quill's role-aware references. Comments and strings stay untouched unless included; without --apply it previews. Applying edits each open tab as one undo step, leaving it with unsaved changes, and writes every file that is not open straight to the disk — the answer counts the two apart, as `wrote` and `openTabs`.",
         arguments: &[argument("new-name", true, "What to call it. It has to be a word of this language and not one of its keywords.")],
         flags: &[
             option("name", "text", "Rename this name rather than the word at the caret."),
             option("scope", "file|project", "Which files to change. The default follows what the name resolves to: a variable or a name with no known definition is this file, and a function, type, constant or module is the project."),
             option("include", "comments,strings", "Also change the matches inside comments or strings, which are left alone by default."),
             option("timeout", "milliseconds", "How long to wait for the search that finds them. 10000 by default."),
-            switch("apply", "Make the change. Without it the change set is printed and nothing is edited."),
+            switch("apply", "Make the change. Without it the change set is printed and nothing is edited or written."),
         ],
         examples: &[
             "quill-cli editor rename open_the_result --json",
@@ -872,7 +872,7 @@ pub const COMMANDS: &[Command] = &[
     Command {
         area: "editor",
         verb: "complete",
-        summary: "The names a word could become, best first, with what each row is and where it came from. By default the word is read from the document at the caret; --stem asks hypothetically without editing the document. Inside an import the rows are what can be imported instead. --choose applies a real document row exactly as Enter would.",
+        summary: "The names a word could become, best first, with what each row is and where it came from. By default the word is read from the document at the caret; --stem asks hypothetically without editing the document. Inside an import the rows are what can be imported instead. --choose applies a real document row exactly as Enter would, and takes the row's name rather than its position.",
         arguments: NO_ARGUMENTS,
         flags: &[
             option("offset", "bytes", "Ask about this position in the file rather than about the caret."),
@@ -880,7 +880,7 @@ pub const COMMANDS: &[Command] = &[
             option("column", "number", "The column on that line. 1 when it is left out."),
             option("stem", "text", "Ask what this hypothetical word would offer at the position, without inserting it or changing the document."),
             option("limit", "number", "Print at most this many rows. All of them when it is left out."),
-            option("choose", "name", "Apply this row to the word being typed, as Enter would. It has to be one of the names offered."),
+            option("choose", "name", "Apply this row to the word being typed, as Enter would. It is the completion's **name**, never a row number: `--choose 0` is refused with the names there are."),
         ],
         examples: &[
             "quill-cli editor complete --json",
@@ -1038,7 +1038,7 @@ pub const COMMANDS: &[Command] = &[
     Command {
         area: "panel",
         verb: "list",
-        summary: "Every panel Quill has — the explorer, the terminal, the run tile and the debug tile — which edge of the window each is docked to, where in that edge, how big it is, whether it is showing, and the rectangle it occupies on screen.",
+        summary: "Every panel Quill has — the explorer, the terminal, the run tile and the debug tile — which edge of the window each is docked to, where in that edge, how big it is, whether it is showing, and the rectangle it occupies on screen. A pane a plugin contributes is listed by `plugins list` and can be sized and docked by name here.",
         arguments: NO_ARGUMENTS,
         flags: NO_FLAGS,
         examples: &["quill-cli panel list --json"],
@@ -1049,7 +1049,7 @@ pub const COMMANDS: &[Command] = &[
         verb: "dock",
         summary: "Move a panel to an edge of the window: the same change dragging its header makes. A side can hold more than one panel, side by side, so the terminal can sit beside the explorer down the left.",
         arguments: &[
-            argument("panel", true, "explorer, terminal, run or debug."),
+            argument("panel", true, "explorer, terminal, run, debug, or a contributed pane's <plugin>/<pane>."),
             argument("side", true, "left, right, top or bottom."),
         ],
         flags: &[option(
@@ -1060,19 +1060,24 @@ pub const COMMANDS: &[Command] = &[
         examples: &[
             "quill-cli panel dock terminal right",
             "quill-cli panel dock terminal left --position 0",
+            "quill-cli panel dock agent-chat/chat right",
         ],
         local: false,
     },
     Command {
         area: "panel",
         verb: "size",
-        summary: "Set how wide or how tall a panel is. A panel at the left or the right is read by its width and one along the top or the bottom by its height, so both are kept and moving a panel does not lose the size it had on the other side.",
-        arguments: &[argument("panel", true, "explorer, terminal, run or debug.")],
+        summary: "Set how wide or how tall a panel is, including a pane a plugin contributed. A panel at the left or the right is read by its width and one along the top or the bottom by its height, so both are kept and moving a panel does not lose the size it had on the other side. The same numbers are `settings set panes.<panel>.width` and `.height`.",
+        arguments: &[argument("panel", true, "explorer, terminal, run, debug, or a contributed pane's <plugin>/<pane>.")],
         flags: &[
             option("width", "points", "How wide it is when it is a column at the left or the right."),
             option("height", "points", "How tall it is when it is in a strip along the top or the bottom."),
         ],
-        examples: &["quill-cli panel size debug --width 640", "quill-cli panel size terminal --height 320"],
+        examples: &[
+            "quill-cli panel size debug --width 640",
+            "quill-cli panel size terminal --height 320",
+            "quill-cli panel size agent-chat/chat --width 1150",
+        ],
         local: false,
     },
     Command {
@@ -2032,6 +2037,9 @@ pub const COMMANDS: &[Command] = &[
             "quill-cli plugins run agent-tasks start task-27",
             "quill-cli plugins run database tables public --json",
             "quill-cli plugins run database query select count(*) from member",
+            "quill-cli plugins run database new-table public.shelf id:integer:pk title:text:notnull",
+            "quill-cli plugins run database set 1 title Kind of Green",
+            "quill-cli plugins run database submit",
         ],
         flags: NO_FLAGS,
         local: false,

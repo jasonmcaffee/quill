@@ -5,7 +5,7 @@
 //! thread of its own, so nothing here is ever called from inside a frame while a query is running.
 //!
 //! `tasks/task-1777-database-plugin-tdd.md` is the design and
-//! `_agent_output/task-1777-database-plugin/intellij-research.md` is what it was measured against.
+//! `_agent_output/task-1777-database-plugin/the reference editor-research.md` is what it was measured against.
 //!
 //! ## Three things worth knowing before changing anything here
 //!
@@ -127,13 +127,45 @@ pub struct Grid {
     pub running: Option<u64>,
     /// The cell the keyboard is on, as `(row, column)`.
     pub chosen: Option<(usize, usize)>,
-    /// What is being typed into that cell, while it is being typed.
-    pub editing: Option<String>,
+    /// The cell being typed into, and what has been typed so far.
+    pub editing: Option<Editing>,
+}
+
+/// A cell that is open for typing.
+///
+/// `task-1795`: *"I should be able to double click an entry in the table, type to update, and see a
+/// save button that writes to the table for that value."* Committing records a **pending** change
+/// rather than sending a statement, which is what lets Preview show what Save will do before
+/// anything is written.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Editing {
+    /// The row, counted the way the grid draws them: the rows that were read, then the rows that
+    /// have been added and not yet written.
+    pub at: usize,
+    pub column: usize,
+    pub text: String,
+    /// True on the frame it opened, which is when the box asks for the keyboard and selects itself.
+    pub opened: bool,
 }
 
 impl Grid {
-    /// Which row of the database this row of the grid is, by the values of the table's key.
+    /// How many rows the grid draws: the ones that were read, then the ones that were added here.
+    ///
+    /// **Pressing `Add row` used to change a number and put nothing on the screen** — the grid drew
+    /// `rows.rows` and a pending insert is not in it — which is the whole of `task-1795`’s report
+    /// that "Add row doesn’t provide a new row in the ui for me to type in".
+    pub fn row_count(&self) -> usize {
+        self.rows.rows.len() + self.pending.added().len()
+    }
+
+    /// Which row of the database this row of the grid is, by the values of the table’s key.
+    ///
+    /// A row past the ones that were read is one that was added here, and it is named by when it was
+    /// added rather than by a key it does not have yet.
     pub fn row_of(&self, at: usize) -> Option<Row> {
+        if at >= self.rows.rows.len() {
+            return self.pending.added().get(at - self.rows.rows.len()).map(|added| Row::Added(*added));
+        }
         let row = self.rows.rows.get(at)?;
         let key = self
             .table
@@ -148,14 +180,36 @@ impl Grid {
     }
 
     /// What a cell should show: whatever is pending on it, or what was read.
+    ///
+    /// A row that was added here has nothing read behind it, so a cell nobody has typed into is the
+    /// empty string rather than `NULL` — an insert that named every column as NULL would refuse on
+    /// the first `NOT NULL` column, and what a person has not filled in yet is not a value.
     pub fn cell(&self, at: usize, column: usize) -> (Value, bool) {
-        let read = self.rows.rows.get(at).and_then(|row| row.get(column)).cloned().unwrap_or_default();
+        let added = at >= self.rows.rows.len();
+        let read = match added {
+            true => Value::Text(String::new()),
+            false => self.rows.rows.get(at).and_then(|row| row.get(column)).cloned().unwrap_or_default(),
+        };
         let Some(name) = self.rows.columns.get(column).map(|column| column.name.clone()) else {
             return (read, false);
         };
         match self.row_of(at).and_then(|row| self.pending.value_of(&row, &name).cloned()) {
             Some(pending) => (pending, true),
-            None => (read, false),
+            None => (read, added),
+        }
+    }
+
+    /// What a cell is edited **as**: the value, or nothing at all for a NULL.
+    ///
+    /// A box that opened with the word `NULL` in it would write the four letters back the moment
+    /// anybody pressed Enter, so a NULL opens empty — and an empty box on a cell that was NULL is
+    /// left as NULL. `quill_db::Value` keeps the two apart all the way from the wire and this is the
+    /// one place a person could confuse them.
+    pub fn text_of(&self, at: usize, column: usize) -> String {
+        let (value, _) = self.cell(at, column);
+        match value.is_null() {
+            true => String::new(),
+            false => value.display(),
         }
     }
 }
@@ -213,35 +267,86 @@ pub struct Chosen {
     pub name: String,
 }
 
+/// What a right click in the tree landed on, which decides the rows the menu offers.
+///
+/// A value rather than a list of entries, for the reason `components::context_menu`’s own state is
+/// the window’s rather than egui’s: a menu that can only be opened by pressing the right mouse
+/// button is a menu no test can look at, and `plugins run database menu` opens this one by name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Aimed {
+    Source(String),
+    Schema(String, String),
+    /// A table or a view: the source, the schema the tree files it under, and its name.
+    Item(String, String, String),
+    Column(String),
+}
+
 /// A modal this plugin has open.
+///
+/// **There is no `Confirm`.** It used to ask before a console statement that changes rows was sent;
+/// `task-1795` asks for no safety check at all, so the statement goes.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Modal {
     /// Adding or editing a data source.
     Source(SourceForm),
-    /// The statements Submit is about to send.
+    /// The statements Save is about to send.
     Preview { page: u64 },
     /// A `CREATE` statement.
     Ddl { title: String, text: String },
-    /// A statement from a console that changes rows, waiting to be confirmed.
-    Confirm { page: u64, statement: String },
+    /// Making a table: a name, its columns, and the statement they compose.
+    NewTable(TableForm),
 }
 
 /// The fields of the New Data Source dialog.
 ///
-/// IntelliJ's own General tab, cut to what applies: name, engine, host, port, database, user, where
-/// the password is, ssl mode and read-only. Where its dialog offers `Save: Forever` for a password,
-/// this one offers `until this window closes` — see `plugin.limitations`.
+/// Name, engine, host, port, database, user, password and connection security. A password typed here
+/// goes into this machine’s own credential store when Save is pressed and what is written down is
+/// the name of the entry — see `components::database::modal::secret_of`.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SourceForm {
     /// The name it had before it was edited, or empty when it is new.
     pub was: String,
     pub source: Source,
-    /// A password typed here, held in this process and written nowhere.
+    /// A password typed here. Empty means "leave whatever this source already had".
     pub typed: String,
-    /// The name of an environment variable holding the password.
-    pub variable: String,
     /// What Test Connection said, if it has been pressed.
     pub tested: Option<Result<String, String>>,
+}
+
+/// One column on the New Table dialog.
+///
+/// `quill_db::sql::NewColumn` itself rather than a form of its own beside it: the dialog is typed
+/// straight into the shape `create_table` composes from, so what is shown beside the form and what
+/// Create sends cannot come apart. A type is a fragment of DDL — a dropdown offers the engine’s own
+/// list and it can be typed into as well, because no closed list holds every type an engine has.
+pub use quill_db::sql::NewColumn as ColumnForm;
+
+/// The fields of the New Table dialog.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct TableForm {
+    pub source: String,
+    pub schema: String,
+    pub name: String,
+    pub columns: Vec<ColumnForm>,
+    /// What the server said, if Create has been pressed and refused.
+    pub problem: Option<String>,
+}
+
+/// The name of the credential-store entry a data source’s password is kept under.
+///
+/// One place, because the dialog writes it and `config::password_for` reads it, and a name composed
+/// twice is a name that comes apart the first time either is edited. `keychain::is_a_safe_name`
+/// allows letters, digits, a dash, a dot and an underscore, so everything else in the data source’s
+/// name becomes a dash rather than being handed to a tool that would read it as an argument.
+pub fn keychain_entry_for(source: &str) -> String {
+    let kept: String = source
+        .chars()
+        .map(|character| match character.is_ascii_alphanumeric() || matches!(character, '-' | '.' | '_') {
+            true => character,
+            false => '-',
+        })
+        .collect();
+    format!("quill-database-{}", kept.trim_matches('-'))
 }
 
 /// The plugin.
@@ -261,6 +366,8 @@ pub struct DatabaseExplorer {
     /// The last thing that went wrong, drawn under the tree.
     pub problem: Option<String>,
     pub modal: Option<Modal>,
+    /// The tree’s own menu: where it is, and what it was opened on.
+    pub menu: Option<(egui::Pos2, Aimed)>,
     next_page: u64,
     /// How far down the tree is scrolled, which the provider keeps so a zoom can correct it.
     pub scrolled: f32,
@@ -311,6 +418,7 @@ impl DatabaseExplorer {
             filter: String::new(),
             problem: None,
             modal: None,
+            menu: None,
             next_page: 1,
             scrolled: 0.0,
             scroll_to: None,
@@ -569,7 +677,7 @@ impl DatabaseExplorer {
         self.current = self.current.min(self.pages.len().saturating_sub(1));
     }
 
-    /// Open a console on a data source, which is what `Jump to query console` does in IntelliJ.
+    /// Open a console on a data source, which is what `Jump to query console` does in the reference editor.
     pub fn open_console(&mut self, source: &str) -> Result<u64, String> {
         if self.configuration.source(source).is_none() {
             return Err(format!("there is no data source called `{source}`."));
@@ -648,23 +756,23 @@ impl DatabaseExplorer {
         }
     }
 
-    /// Run the statement under the caret of a console, asking first if it changes rows.
+    /// Run the statement under the caret of a console.
     ///
-    /// This is the **button's** path. `ask` is false for the command line, and that is a decision
-    /// rather than an oversight: the confirmation exists for a person who typed `delete from member`
-    /// meaning to type a `where` clause after it, and an agent cannot press a button in a modal — so
-    /// raising one there would leave a command that can never finish. The guard for both paths is the
-    /// **read-only switch**, which is on by default and enforced by the server.
+    /// **Nothing is confirmed.** A dialog used to stand in front of a statement that changes rows;
+    /// `task-1795` asks for no safety check at all, and it was never a guard an agent met anyway —
+    /// `execute_now` went straight past it, because a command cannot press a button in a modal. The
+    /// only thing that can still refuse is a data source somebody has deliberately set read only,
+    /// and that refusal is the server’s.
     pub fn execute(&mut self, id: u64) -> Result<String, String> {
-        self.execute_with(id, true)
+        self.execute_with(id)
     }
 
-    /// The same, without the confirmation. See [`Self::execute`].
+    /// The same, kept as its own name because the command line calls it. See [`Self::execute`].
     pub fn execute_now(&mut self, id: u64) -> Result<String, String> {
-        self.execute_with(id, false)
+        self.execute_with(id)
     }
 
-    fn execute_with(&mut self, id: u64, ask: bool) -> Result<String, String> {
+    fn execute_with(&mut self, id: u64) -> Result<String, String> {
         let Some(Page { sheet: Sheet::Console(console), .. }) = self.page(id) else {
             return Err("that page is not a console.".to_owned());
         };
@@ -678,17 +786,12 @@ impl DatabaseExplorer {
         let read_only = self.configuration.source(&source).is_some_and(|source| source.read_only);
         if read_only && !quill_db::sql::only_reads(&statement) {
             return Err(format!(
-                "`{}` is read only, so `{}` is not sent. Clear `Read only` on the data source to \
-                 change anything through it.",
+                "`{}` is read only, so `{}` is not sent. `plugins run database read-only {} off` \
+                 makes it writable.",
                 source,
-                statement.verb()
+                statement.verb(),
+                source
             ));
-        }
-        // A statement that changes rows is confirmed once, because a console is where somebody types
-        // `delete from member` meaning to type a `where` clause after it.
-        if ask && self.configuration.confirm_writes && !quill_db::sql::only_reads(&statement) {
-            self.modal = Some(Modal::Confirm { page: id, statement: sql });
-            return Ok("waiting for you to confirm it".to_owned());
         }
         self.send_from_console(id, &sql);
         Ok(sql)
@@ -704,6 +807,54 @@ impl DatabaseExplorer {
             console.running = ticket;
             console.failure = None;
         }
+    }
+
+    /// Send a statement that changes the shape of the database, and read the schema again.
+    ///
+    /// `CREATE TABLE` and `DROP TABLE` go down the same path a console statement does, so a server
+    /// that refuses says so in its own words rather than in a sentence of Quill’s about it. It waits
+    /// briefly for the answer, which introspection already does and for the same reason: a dialog
+    /// that closed before the server had agreed would leave a tree claiming a table that is not
+    /// there. The wait is bounded by [`commands::PATIENCE`], because this runs inside a frame.
+    ///
+    /// The schema it went into is then read again, so the new table is in the tree without anything
+    /// being pressed — which is what `Act::Refresh` does the long way round.
+    pub fn run_the_ddl(&mut self, source: &str, schema: &str, sql: &str) -> Result<String, String> {
+        self.connect(source)?;
+        let limit = self.configuration.page_size;
+        let ticket = self
+            .ask(source, Job::Query { sql: sql.to_owned(), limit }, Wanted::Nothing)
+            .ok_or_else(|| format!("`{source}` is not connected."))?;
+        let _ = ticket;
+        let until = std::time::Instant::now() + commands::PATIENCE;
+        loop {
+            self.take_the_replies();
+            if let Some(problem) = self.loaded.get(source).and_then(|loaded| loaded.problem.clone()) {
+                self.loaded.entry(source.to_owned()).or_default().problem = None;
+                return Err(problem);
+            }
+            if !self.is_busy(source) {
+                break;
+            }
+            if std::time::Instant::now() > until {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        // The schema is read again whether or not the answer arrived inside the wait: a statement
+        // that is still running will have finished by the time anybody looks, and asking twice for a
+        // list of tables costs one round trip.
+        if let Some(loaded) = self.loaded.get_mut(source) {
+            loaded.items.remove(schema);
+        }
+        if !schema.is_empty() {
+            self.ask(
+                source,
+                Job::Items { schema: schema.to_owned() },
+                Wanted::Items { schema: schema.to_owned() },
+            );
+        }
+        Ok(format!("sent to `{source}`"))
     }
 
     /// Stop whatever the page's data source is doing.
@@ -859,7 +1010,7 @@ impl DatabaseExplorer {
                     console.output.push(notice.clone());
                 }
                 match rows.columns.is_empty() {
-                    // A statement that returned no rows fills `Output`, which is IntelliJ's own
+                    // A statement that returned no rows fills `Output`, which is the reference editor's own
                     // arrangement and is what tells an `UPDATE` from a `SELECT` of nothing.
                     true => console.output.push(rows.summary()),
                     false => {
@@ -943,7 +1094,6 @@ impl DatabaseExplorer {
             })).collect::<Vec<serde_json::Value>>(),
             "chosen": self.configuration.chosen,
             "page_size": self.configuration.page_size,
-            "confirm_writes": self.configuration.confirm_writes,
             "tree": self.loaded.keys().map(|name| serde_json::json!({
                 "source": name,
                 "open": self.open_sources.contains(name),
@@ -959,6 +1109,32 @@ impl DatabaseExplorer {
             })),
             "pages": self.pages.iter().map(|page| self.page_value(page)).collect::<Vec<serde_json::Value>>(),
             "current": self.pages.get(self.current).map(|page| page.id),
+            // Which dialog is in front of somebody, by name. An agent that has just asked for one
+            // has no other way to know it arrived, and one that is about to press a button in the
+            // pane behind it needs to know there is something over it — `task-1795`.
+            "modal": self.modal.as_ref().map(|modal| match modal {
+                Modal::Source(_) => "source",
+                Modal::Preview { .. } => "preview",
+                Modal::Ddl { .. } => "ddl",
+                Modal::NewTable(_) => "new-table",
+            }),
+            // What the New Table dialog is about to send, from `quill_db::sql::create_table` — the
+            // same call `Create` makes and the same one the dialog draws beside the form, so what is
+            // read here, what is on the screen and what happens cannot come apart. It is the only way
+            // in from outside the window: see `components::modal::monospaced`.
+            "new_table_sql": match &self.modal {
+                Some(Modal::NewTable(form)) => {
+                    let engine = self
+                        .configuration
+                        .source(&form.source)
+                        .map_or(quill_db::source::Engine::Postgres, |source| source.engine);
+                    match quill_db::sql::create_table(&form.schema, &form.name, &form.columns, engine) {
+                        Ok(sql) => serde_json::json!(sql),
+                        Err(why) => serde_json::json!({ "problem": why }),
+                    }
+                }
+                _ => serde_json::Value::Null,
+            },
             "problem": self.problem,
         })
     }
@@ -992,6 +1168,12 @@ impl DatabaseExplorer {
                 "page": grid.at,
                 "running": grid.running.is_some(),
                 "pending": grid.pending.len(),
+                "added": grid.pending.added().len(),
+                "editing": grid.editing.as_ref().map(|editing| serde_json::json!({
+                    "row": editing.at + 1,
+                    "column": grid.rows.columns.get(editing.column).map(|column| column.name.clone()),
+                    "text": editing.text,
+                })),
                 "rows": rows_value(&grid.rows),
                 "failure": grid.failure.as_ref().map(std::string::ToString::to_string),
             }),
@@ -1038,7 +1220,7 @@ fn rows_value(rows: &Rows) -> serde_json::Value {
 ///
 /// `WHERE` and `ORDER BY` are fragments somebody typed, pasted in as they are: they are part of the
 /// statement's own grammar and cannot be parameters in any engine, and pretending otherwise would
-/// mean building a filter language IntelliJ's own users go round anyway. Every **value** the grid
+/// mean building a filter language the reference editor's own users go round anyway. Every **value** the grid
 /// writes back is bound — see `quill_db::edit`.
 ///
 /// ## With no `ORDER BY` typed, the key is the order, and that is a correctness fix rather than a

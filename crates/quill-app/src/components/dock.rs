@@ -12,7 +12,7 @@
 //! egui gives a pointer to the last widget that asked for the point, which is the rule
 //! `components::splitter` and `components::resize_edges` are both written around, used here the other
 //! way up. What the handle is left with is exactly the part of the header nothing else wanted — the
-//! heading word and the empty space beside it, which is IntelliJ's own handle for the same gesture.
+//! heading word and the empty space beside it, which is the reference editor's own handle for the same gesture.
 //!
 //! ## The blue rectangle is the layout, not a picture of it
 //!

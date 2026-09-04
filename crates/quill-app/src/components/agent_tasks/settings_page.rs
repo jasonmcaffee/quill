@@ -274,9 +274,11 @@ fn rows(board: &mut AgentTasks, ui: &mut egui::Ui, look: &Look<'_>) -> Vec<Reque
     }
     let mut secret = board.key_draft.clone();
     if has_a_keychain {
+        let key_id = ui.id().with("agent-tasks-key");
         let response = ui.put(
-            crate::components::controls::field_text_rect(ui, at, 8.0),
+            crate::components::controls::field_takes_the_whole_rectangle(ui, at, 8.0, key_id),
             egui::TextEdit::singleline(&mut secret)
+                .id(key_id)
                 .frame(egui::Frame::NONE)
                 .password(true)
                 .hint_text(egui::RichText::new(&key_state).color(look.palette.text_faint))
@@ -530,9 +532,11 @@ fn field(
         egui::StrokeKind::Inside,
     );
     let mut value = settings_field.value.to_owned();
+    let value_id = ui.id().with(("agent-tasks-setting", settings_field.name));
     let response = ui.put(
-        crate::components::controls::field_text_rect(ui, box_at, 8.0),
+        crate::components::controls::field_takes_the_whole_rectangle(ui, box_at, 8.0, value_id),
         egui::TextEdit::singleline(&mut value)
+            .id(value_id)
             .frame(egui::Frame::NONE)
             .hint_text(egui::RichText::new(settings_field.hint).color(look.palette.text_faint))
             .font(egui::FontId::proportional(look.font_size - 0.5))

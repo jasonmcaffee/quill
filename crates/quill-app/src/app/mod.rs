@@ -342,7 +342,7 @@ struct Maximised {
 
 /// A tab being carried by the pointer.
 ///
-/// `task-1673` asks for IntelliJ's two: rearranging the tabs in a pane, and dragging a tab from one
+/// `task-1673` asks for the reference editor's two: rearranging the tabs in a pane, and dragging a tab from one
 /// pane into another. Both are one gesture, and where it ends is not a question a strip of tabs can
 /// answer — each pane draws its own strip and has never heard of the others, while the pointer
 /// wanders freely between them. So the strip reports **that** a tab is being carried and where the
@@ -507,6 +507,24 @@ pub const WATCH_INTERVAL: std::time::Duration = std::time::Duration::from_millis
 /// A click on a text box is never stolen: on the frame it is clicked the holder already has the focus
 /// and so asks for nothing, and the box's own request is the one that takes effect.
 pub fn hold_the_keyboard(ui: &mut egui::Ui) {
+    // A field whose own padding was pressed last frame takes the keyboard now.
+    //
+    // It cannot be given the keyboard on the frame of the press, and that is egui's rule rather than
+    // a choice: egui surrenders a widget's focus when a press lands anywhere that widget is not
+    // hovered, and the box inside a field is not hovered when the press was in the margin round it —
+    // so a focus handed over at the moment of the press was taken straight back a few lines later,
+    // when the box itself was created. `controls::claim_the_field` records the id and this is where
+    // it is acted on, because this runs before anything is drawn and is already the one place the
+    // window decides who holds the keys. `task-1795`.
+    let slot = crate::components::controls::wants_the_keyboard();
+    let wanted = ui.ctx().data_mut(|data| {
+        let found = data.get_temp::<egui::Id>(slot);
+        data.remove::<egui::Id>(slot);
+        found
+    });
+    if let Some(wanted) = wanted {
+        ui.memory_mut(|memory| memory.request_focus(wanted));
+    }
     let id = egui::Id::new(KEYBOARD_HOLDER);
     if text_box_has_the_keyboard(ui.ctx()) || a_modal_has_the_keyboard(ui.ctx()) {
         ui.memory_mut(|memory| memory.surrender_focus(id));
@@ -740,7 +758,7 @@ pub struct QuillApp {
     /// terminal's: the window shows **one** of the three and never two, because two grids stacked
     /// take the editing area below the fold.
     pub debug_panel: DebugPanel,
-    /// The session that is running, when one is. **One at most**: IntelliJ runs several and the
+    /// The session that is running, when one is. **One at most**: The reference editor runs several and the
     /// first version of this does not, which is what keeps every pane of the tile free of a session
     /// chooser above it. See `app::debug`.
     pub debug: Option<DebugState>,
@@ -1755,7 +1773,7 @@ impl QuillApp {
                 self.find_in_files = Some(FindInFiles::open(self.thread_waker()));
             }
             Action::OpenRecent(folder) => {
-                // A window of its own, as IntelliJ does it, so the project that is open stays open.
+                // A window of its own, as the reference editor does it, so the project that is open stays open.
                 if !launcher::open_window(&folder) {
                     self.open_folder(&folder);
                 }
@@ -2404,7 +2422,7 @@ impl QuillApp {
     /// Start a configuration under its debugger.
     ///
     /// **Debug is Run, under a debugger** — the same `Configuration` the play button starts, same
-    /// command, same folder, same environment, which is IntelliJ's own model. A second session
+    /// command, same folder, same environment, which is the reference editor's own model. A second session
     /// replaces the first, because there is one at a time.
     ///
     /// `for_file` names the file the session was started for, which is what decides which language's
@@ -3031,10 +3049,77 @@ impl QuillApp {
     }
 
     /// Tell the adapter about every file that has one, which is what a session start does.
+    ///
+    /// The store is re-read first when something else has written it. A session start is a **moment
+    /// of use**, which is where the disk-owned side is re-checked — the rule the `editor` commands
+    /// and the symbol index already keep — and it is the moment that matters here, because a
+    /// `git checkout` a moment before `debug start` would otherwise have the window send the offsets
+    /// it was holding against the bytes the checkout brought back.
     fn send_every_breakpoint(&mut self) {
+        self.adopt_the_breakpoints_from_disk();
         for (path, _) in self.every_breakpoint() {
             self.send_the_breakpoints_of(&path);
         }
+    }
+
+    /// Read `.quill/breakpoints.conf` again when something else has written it, and take what it says.
+    ///
+    /// `task-1794`: a breakpoint is a byte offset into a file, and putting the project back — a
+    /// `git checkout`, a branch switch, a revert — puts the file **and** this file back together. A
+    /// window that goes on holding the offsets it had is then holding offsets against bytes that have
+    /// gone, and the adapter declines to bind them: the same silent "the program just does not stop"
+    /// as the mixed separator above, from the other direction.
+    ///
+    /// The ownership rule decides what happens next, unchanged: **a file that is open is owned by its
+    /// `Document`**, so a document that has been re-read has to be told, and the store's copy is
+    /// pushed into every open tab. A tab with **unsaved changes** is left exactly alone — its offsets
+    /// belong to the text the person is editing rather than to the text on the disk, which is the
+    /// same answer `the_file_changed_underneath` gives about the words themselves.
+    ///
+    /// True when anything was adopted, so a caller can say so.
+    fn adopt_the_breakpoints_from_disk(&mut self) -> bool {
+        if !self.remembers_this_project() {
+            return false;
+        }
+        let root = self.tree.root().to_path_buf();
+        if !self.breakpoints.changed_on_disk(&root) {
+            return false;
+        }
+        self.breakpoints.reload(&root);
+        // The file and the offsets into it were put back **together**, so a tab still holding the
+        // text from before is a tab the restored offsets do not describe — and pushing them into it
+        // would not merely be wrong, it would *destroy* them, because `Document::set_breakpoints`
+        // clamps to the text it has. Measured: an offset of 56 restored into a tab holding the 48
+        // bytes from before came out as 48, which the window then wrote back over the checkout.
+        //
+        // So a tab whose own file changed underneath is read again first, through the one way in
+        // that already exists. This is not Quill starting to watch files: it is reached only when
+        // `.quill/breakpoints.conf` itself has been written by something else, which does not happen
+        // while somebody is editing. A tab with unsaved changes is still never touched —
+        // `reload_from_disk` refuses one, and those belong to the person.
+        for index in 0..self.files.len() {
+            let Some(path) = self.files.at(index).path().map(Path::to_path_buf) else {
+                continue;
+            };
+            if self.files.at(index).the_file_changed_underneath() {
+                self.reload_from_disk(&path, false);
+            }
+        }
+        for index in 0..self.files.len() {
+            let Some(path) = self.files.at(index).path().map(Path::to_path_buf) else {
+                continue;
+            };
+            if self.files.at(index).document.is_modified() {
+                continue;
+            }
+            let wanted = self.breakpoints.breakpoints(&path).cloned().unwrap_or_default();
+            self.files.at_mut(index).document.set_breakpoints(wanted);
+            // Stamped as pushed, or `remember_the_breakpoints` would put what the document held a
+            // moment ago straight back over the file that has just been read.
+            let revision = self.files.at(index).document.revision();
+            self.files.at_mut(index).breakpoints_at = Some(revision);
+        }
+        true
     }
 
     /// Everything the debug tile reported this frame.
@@ -3069,7 +3154,7 @@ impl QuillApp {
                 debug.show_frame(frame);
             }
             // Clicking a frame moves the execution point to it without resuming, which is
-            // IntelliJ's own behaviour.
+            // The reference editor's own behaviour.
             self.follow_the_execution_point();
         }
         if let Some(key) = outcome.toggle_row {
@@ -3329,7 +3414,7 @@ impl QuillApp {
         // The caret is **placed** rather than the line selected, which is what `open_the_match` does
         // for a search hit. A stop already marks its line with a band across the whole width of the
         // pane, and a selection over the same line would be two decorations saying one thing — and
-        // the wrong one of the two, since nothing about a stop is selected. IntelliJ places the
+        // the wrong one of the two, since nothing about a stop is selected. The reference editor places the
         // caret here too.
         self.document_mut().apply(Command::PlaceCaret { offset, extend: false });
         self.reveal_caret = true;
@@ -3921,7 +4006,7 @@ impl QuillApp {
     ///
     /// What `Settings -> Plugins -> Reload` and `quill-cli plugins reload` both call. **No restart is
     /// needed for anything a manifest says**, because a provider is already in the binary and loading a
-    /// plugin is reading a file. That is the property this design has that IntelliJ's dynamic plugins
+    /// plugin is reading a file. That is the property this design has that the reference editor's dynamic plugins
     /// buy with a page of restrictions.
     pub fn reload_the_plugins(&mut self) -> Vec<String> {
         let (plugins, problems) = crate::services::plugins::Plugins::load(self.store.as_ref());
@@ -3956,6 +4041,24 @@ impl QuillApp {
         // The same waker `quill_git::Worker` and the terminal tile use, so a plugin's terminal that prints
         // while nobody is pointing at the window is drawn rather than waiting for the pointer to move.
         self.plugin_ui.set_waker(self.thread_waker());
+        self.place_the_plugin_panes(true);
+    }
+
+    /// Tell the dock how many panes the plugins contribute and where each one goes.
+    ///
+    /// **The one place the dock is told**, which is what `task-1794` is about. `Layout::reset` is
+    /// `*self = Layout::new()` and a fresh `Layout` has *no* contributed panes, so `panel reset` —
+    /// and `settings reset`, which builds a fresh `Panes` — left `plugin_panes` at zero. From there
+    /// `panels_on` filters through `Panel::all(0)`, the pane is on no side, `regions` gives it
+    /// `Rect::ZERO`, and `show_the_plugin_panes` skips it for being smaller than a point. Nothing
+    /// reports any of that: `PluginUi::is_visible` is a flag of the provider's own and still says
+    /// yes, so the pane is gone from the window while every command says it is showing.
+    ///
+    /// `keep_where_they_were_left` is what separates the two callers. Refreshing the plugins must not
+    /// undo a drag, so a pane the settings file has spoken about stays where it was put; resetting
+    /// the layout means exactly the opposite, because "back where they started" for a contributed
+    /// pane is where its **manifest** asked it to go.
+    fn place_the_plugin_panes(&mut self, keep_where_they_were_left: bool) {
         let count = self.plugin_ui.pane_count();
         let sides: Vec<dock::Side> =
             (0..count).map(|slot| self.plugin_ui.pane(slot).map(|pane| pane.side).unwrap_or(dock::Side::Right)).collect();
@@ -3966,10 +4069,12 @@ impl QuillApp {
         let placed: Vec<bool> = keys
             .iter()
             .map(|key| {
-                self.store
-                    .as_ref()
-                    .map(|store| store.read_values().text(&format!("panes.{key}.side")).is_some())
-                    .unwrap_or(false)
+                keep_where_they_were_left
+                    && self
+                        .store
+                        .as_ref()
+                        .map(|store| store.read_values().text(&format!("panes.{key}.side")).is_some())
+                        .unwrap_or(false)
             })
             .collect();
         self.panes.dock.set_plugin_panes(&sides, &placed);
@@ -3982,6 +4087,25 @@ impl QuillApp {
                 }
             }
         }
+    }
+
+    /// Whether a contributed pane would really be drawn if it were switched on.
+    ///
+    /// Two things have to be true and only one of them was ever asked: the provider's own flag, and
+    /// the **dock knowing the pane exists**. They are separate pieces of state, which is why they
+    /// came apart at all, so the question is asked in one place and every answer Quill gives about a
+    /// pane comes through it.
+    ///
+    /// It reads the layout rather than the rectangle the last frame drew, because a command runs at
+    /// the top of a frame before anything has been laid out — a pane switched on a moment ago has no
+    /// rectangle yet and is not broken.
+    pub fn plugin_pane_is_reachable(&self, slot: usize) -> bool {
+        slot < self.panes.dock.plugin_panes()
+    }
+
+    /// Whether a contributed pane is on the screen: switched on, and known to the dock.
+    pub fn plugin_pane_is_showing(&self, slot: usize) -> bool {
+        self.plugin_ui.is_visible(slot) && self.plugin_pane_is_reachable(slot)
     }
 
     /// Which panels are drawn at all, in [`dock::Panel::index`] order.
@@ -4546,6 +4670,23 @@ impl QuillApp {
                 }
             }
             Err(problem) => self.message = Some(format!("{id} could not be installed: {problem}")),
+        }
+    }
+
+    /// Take an installed plugin’s folder away, and go back to the copy that shipped in the binary.
+    fn uninstall_plugin(&mut self, id: &str) {
+        let Some(store) = self.store.clone() else {
+            self.message = Some("There is nowhere a plugin could have been installed to.".to_owned());
+            return;
+        };
+        match self.plugins.uninstall(&store, id) {
+            Ok(()) => {
+                self.message = Some(format!("Uninstalled {id}"));
+                for file in self.files.iter_mut() {
+                    file.coloured_revision = None;
+                }
+            }
+            Err(problem) => self.message = Some(format!("{id} could not be uninstalled: {problem}")),
         }
     }
 
@@ -5244,7 +5385,7 @@ impl QuillApp {
         })
         .or_else(|| {
             // The Mac keyboard has no `Delete`, and `Backspace` on its own is far too close to what
-            // somebody who has just clicked a file is about to type. IntelliJ's own answer on macOS
+            // somebody who has just clicked a file is about to type. The reference editor's own answer on macOS
             // is the command key with it, and that is unambiguous on every platform.
             ui.input(|input| {
                 input.key_pressed(egui::Key::Backspace) && input.modifiers.command
@@ -7113,6 +7254,9 @@ impl QuillApp {
         if let Some(id) = settings_outcome.plugins.install {
             self.install_plugin(&id);
         }
+        if let Some(id) = settings_outcome.plugins.uninstall {
+            self.uninstall_plugin(&id);
+        }
         if let Some((id, on)) = settings_outcome.plugins.set_enabled {
             self.set_plugin_enabled(&id, on);
         }
@@ -7350,7 +7494,7 @@ impl QuillApp {
 
     /// A pinch on the trackpad, or the wheel with the zoom modifier held, over the editing area.
     ///
-    /// `zoom_delta` reports both as one multiplier, which is IntelliJ's control and mouse wheel for
+    /// `zoom_delta` reports both as one multiplier, which is the reference editor's control and mouse wheel for
     /// nothing, and egui holds the scroll back while the modifier is down so the document does not
     /// slide about while it is being zoomed.
     ///
@@ -7768,7 +7912,7 @@ impl QuillApp {
 
     /// Show every open file in the font the settings name.
     ///
-    /// The editor's font is one setting for the whole window, the way IntelliJ has one editor font,
+    /// The editor's font is one setting for the whole window, the way the reference editor has one editor font,
     /// so a change reaches every tab rather than only the one that happens to be showing. It used to
     /// reach `document_mut()` alone, which meant that opening three files and then changing the font
     /// left two of them in the old one until Quill was restarted, and left the Markdown preview in
@@ -7945,7 +8089,7 @@ impl QuillApp {
     ///
     /// Called once the whole row of panes has been drawn, which is the earliest moment anything
     /// knows where every strip is. A tab may be dropped **anywhere in a pane** rather than on its
-    /// strip alone, which is what IntelliJ does and is what a person dragging a file into the pane
+    /// strip alone, which is what the reference editor does and is what a person dragging a file into the pane
     /// beside them is aiming at; where along the strip it goes is read from the pointer's x.
     ///
     /// Dropped outside every pane — over the explorer, the terminal, the status bar — nothing
@@ -8298,6 +8442,12 @@ impl QuillApp {
         self.panes.run_height = fresh.run_height;
         self.panes.debug_width = fresh.debug_width;
         self.panes.debug_height = fresh.debug_height;
+        // And the panes the plugins contribute, which a fresh `Layout` has none of. Without this the
+        // reset does not move them, it **loses** them: the dock stops believing they exist and they
+        // are drawn nowhere, while the rail, the settings file and every command go on saying they
+        // are showing. `task-1794`. They go back to their manifests' side and size, because that is
+        // what "back where they started" means for a pane nobody dragged.
+        self.place_the_plugin_panes(false);
         self.unsaved_settings = true;
         self.message = Some("The panels are back where they started".to_owned());
     }
@@ -9059,6 +9209,17 @@ impl QuillApp {
         if self.tree.changed_on_disk() {
             self.tree.reload();
         }
+        // And the project's own state, on the same timer and for the same reason. `task-1794`: a
+        // `git checkout` under a running window put `.quill/breakpoints.conf` back and the window
+        // went on holding what it had. One `metadata` call, beside the handful the tree already
+        // makes — and a session that starts before the timer next fires re-reads it itself, because
+        // `send_every_breakpoint` asks at the moment of use.
+        if self.adopt_the_breakpoints_from_disk() {
+            // A live session is holding what it was told; the file has changed, so it is told again.
+            if self.debug.is_some() {
+                self.send_every_breakpoint();
+            }
+        }
     }
 
     /// True when the file at `path` has a language that names a debugger, which is what decides
@@ -9147,7 +9308,7 @@ impl QuillApp {
             // A value the debugger could not read is **not painted**. It is still in the tree, in the
             // debugger's own words, which is where the honest full answer belongs — but at the end of
             // a line of code `step = <variable not available>` is the debugger declining to answer
-            // dressed as information, and IntelliJ paints nothing there either. Seen on the released
+            // dressed as information, and the reference editor paints nothing there either. Seen on the released
             // 0.14.0 build against a real CodeLLDB: two of three inline values on a seven-line program
             // were this.
             if is_unreadable(value) {
@@ -9698,7 +9859,10 @@ fn same_file(left: &Path, right: &Path) -> bool {
 /// into one. A file that cannot be read answers line one, which the adapter will then decline to
 /// bind and say so about.
 fn line_number_in_file(path: &Path, offset: usize) -> usize {
-    let Ok(text) = std::fs::read_to_string(path) else {
+    // Read as a `Document` reads it. An offset is a byte into the text **a document holds**, which
+    // has Windows line breaks normalised away; counting them in the raw bytes instead is off by one
+    // byte per line before the offset, which for line 50 is a different line entirely. `task-1794`.
+    let Ok(text) = quill_core::document::read_to_normalised_string(path) else {
         return 1;
     };
     text.as_bytes()[..offset.min(text.len())].iter().filter(|byte| **byte == b'\n').count() + 1

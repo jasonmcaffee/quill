@@ -185,9 +185,11 @@ pub(crate) fn todo_rows(
         egui::StrokeKind::Inside,
     );
     let mut draft = board.detail().todo_draft.clone();
+    let todo_id = ui.id().with("agent-tasks-todo-draft");
     let response = ui.put(
-        crate::components::controls::field_text_rect(ui, at, 8.0),
+        crate::components::controls::field_takes_the_whole_rectangle(ui, at, 8.0, todo_id),
         egui::TextEdit::singleline(&mut draft)
+            .id(todo_id)
             .frame(egui::Frame::NONE)
             .hint_text(egui::RichText::new("Add a todo").color(look.palette.text_faint))
             .font(egui::FontId::proportional(look.font_size - 0.5))
@@ -346,9 +348,11 @@ pub(crate) fn comment_section(
                     egui::Stroke::new(1.0, look.palette.control_border),
                     egui::StrokeKind::Inside,
                 );
+                let edit_id = ui.id().with("agent-tasks-comment-edit");
                 let response = ui.put(
-                    crate::components::controls::field_text_rect(ui, at, 6.0),
+                    crate::components::controls::field_takes_the_whole_rectangle(ui, at, 6.0, edit_id),
                     egui::TextEdit::multiline(&mut edited)
+                        .id(edit_id)
                         .frame(egui::Frame::NONE)
                         .font(egui::FontId::proportional(look.font_size - 1.0))
                         .text_color(look.palette.text),
@@ -528,9 +532,11 @@ pub(crate) fn comment_section(
         egui::StrokeKind::Inside,
     );
     let mut draft = board.detail().draft.clone();
+    let draft_id = ui.id().with("agent-tasks-comment-draft");
     let response = ui.put(
-        crate::components::controls::field_text_rect(ui, at, 8.0),
+        crate::components::controls::field_takes_the_whole_rectangle(ui, at, 8.0, draft_id),
         egui::TextEdit::singleline(&mut draft)
+            .id(draft_id)
             .frame(egui::Frame::NONE)
             .hint_text(egui::RichText::new("Add a comment").color(look.palette.text_faint))
             .font(egui::FontId::proportional(look.font_size - 0.5))

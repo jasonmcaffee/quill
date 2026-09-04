@@ -6,7 +6,7 @@
 //!
 //! **Everything is asked for one level at a time.** Opening a data source lists its schemas, opening a
 //! schema lists its tables, opening a table lists its columns. A database with four thousand tables in
-//! it is the reason: IntelliJ's own answer to that is an introspection-level setting, and asking
+//! it is the reason: The reference editor's own answer to that is an introspection-level setting, and asking
 //! lazily is the same answer with nothing to configure.
 
 use crate::value::Column;
@@ -38,7 +38,7 @@ impl Kind {
         }
     }
 
-    /// Which folder in the tree it hangs under, which is IntelliJ's grouping.
+    /// Which folder in the tree it hangs under, which is the reference editor's grouping.
     pub fn folder(self) -> &'static str {
         match self {
             Kind::Table | Kind::Foreign => "tables",

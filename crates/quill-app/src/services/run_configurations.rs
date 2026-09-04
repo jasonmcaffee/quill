@@ -9,7 +9,7 @@
 //!
 //! ## One kind, not a template per language
 //!
-//! IntelliJ has several dozen configuration *types*, each a form of its own; §2.2 of the TDD walks
+//! The reference editor has several dozen configuration *types*, each a form of its own; §2.2 of the TDD walks
 //! two of them and finds that both compose into one command line wearing six boxes. So there is no
 //! `type` field here:
 //!
@@ -57,7 +57,7 @@ pub const FILE: &str = "run-configurations.conf";
 
 /// How many temporary configurations are kept before the oldest is dropped.
 ///
-/// IntelliJ's number, and for its reason: a list of everything that has ever been run is a list
+/// The reference editor's number, and for its reason: a list of everything that has ever been run is a list
 /// nobody reads. They are the ones nobody deliberately made, so five of them is a memory rather
 /// than a collection.
 pub const TEMPORARY_LIMIT: usize = 5;
@@ -184,7 +184,7 @@ pub enum Origin {
     /// Made deliberately and kept in `.quill/run-configurations.conf` until it is removed.
     Permanent,
     /// Made by running a file or a suggestion. In memory only, capped at [`TEMPORARY_LIMIT`], and
-    /// **never written to disk**: IntelliJ writes its temporaries into `workspace.xml` and Quill
+    /// **never written to disk**: The reference editor writes its temporaries into `workspace.xml` and Quill
     /// deliberately does not, because a file the project shares should hold what somebody chose to
     /// keep. `Save` in the dialog promotes one.
     Temporary,
@@ -717,7 +717,7 @@ mod tests {
 
     #[test]
     fn a_temporary_is_never_written_down() {
-        // IntelliJ writes its temporaries into `workspace.xml`; Quill deliberately does not,
+        // The reference editor writes its temporaries into `workspace.xml`; Quill deliberately does not,
         // because a file the project shares should hold what somebody chose to keep.
         let root = project("quill-run-temporaries-not-written");
         let mut configurations = RunConfigurations::new();

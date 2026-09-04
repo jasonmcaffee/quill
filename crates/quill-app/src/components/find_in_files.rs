@@ -1,6 +1,6 @@
 //! `Find in Files`: search the whole project for some text, and read the file a result is in.
 //!
-//! `task-1659` asks for IntelliJ's, including the part of it that makes it worth opening rather than
+//! `task-1659` asks for the reference editor's, including the part of it that makes it worth opening rather than
 //! grepping: the **preview under the results**, showing the whole of the file the chosen result is
 //! in with the matching line picked out. A list of file names and line numbers tells you where a
 //! word is; the preview tells you whether it is the one you meant, without opening anything.

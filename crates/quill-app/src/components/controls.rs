@@ -34,6 +34,68 @@ pub fn field_text_rect(ui: &egui::Ui, field: Rect, left: f32) -> Rect {
     )
 }
 
+/// The same rectangle, having first given the **whole** of the field to the box that will go in it.
+///
+/// That one text row is what stops the words sitting against the top edge, and it was also the only
+/// part of the control a pointer could hit. A 24 point field has nine points of dead height and
+/// eight points of dead width down its left hand side, and a click in any of it took the keyboard
+/// nowhere at all — so the pane behind went on holding the keys, and `Ctrl+V` in the New Data Source
+/// dialog put the path into the file behind the window. Measured in `task-1795`:
+///
+/// ```text
+/// text rect = [[491.0 244.0] - [803.0 259.0]]   // 15 points tall inside a 24 point field
+/// after a click in the padding, text_edit_focused = false
+/// document = "helloPASTED"
+/// ```
+///
+/// The same miss is why `Ctrl/Cmd+Enter` in a SQL console did nothing: that chord is read only while
+/// the box has the keyboard.
+///
+/// The claim is made **before** the box is added, which is what keeps it from taking anything away:
+/// egui gives a pointer to the last widget that wanted it, so a press inside the box's own strip is
+/// still the box's, and this catches only the padding round it. `id` is the id the caller then gives
+/// its `TextEdit`, so this hands the keyboard to that box and not to whichever one egui's auto
+/// counter happened to name.
+pub fn field_takes_the_whole_rectangle(ui: &egui::Ui, field: Rect, left: f32, id: egui::Id) -> Rect {
+    claim_the_field(ui, field, id);
+    field_text_rect(ui, field, left)
+}
+
+/// The claim on its own, for a box that is laid out over the whole of its field rather than in a
+/// strip: the commit message, a ticket's description, a console's SQL.
+///
+/// Those have the same fault in a milder form — the margin between the drawn frame and the box is
+/// dead — and the same answer. See [`field_takes_the_whole_rectangle`] for what it is for.
+pub fn claim_the_field(ui: &egui::Ui, field: Rect, id: egui::Id) -> egui::Response {
+    let response = ui.interact(field, id.with("field-ground"), Sense::click());
+    if response.clicked() {
+        ui.ctx().data_mut(|data| data.insert_temp(wants_the_keyboard(), id));
+    }
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
+    }
+    response
+}
+
+/// Where a field records the box it wants the keyboard given to, for the **next** frame.
+///
+/// It has to be the next frame, and that is not a stylistic choice. egui surrenders a widget's focus
+/// when a press lands anywhere that widget is not hovered:
+///
+/// ```ignore
+/// let pointer_clicked_elsewhere = should_surrender_focus && !res.hovered();
+/// if pointer_clicked_elsewhere && memory.has_focus(id) { memory.surrender_focus(id); }
+/// ```
+///
+/// A press in a field's padding is not on the box inside it, so a focus handed over at the moment of
+/// the press was taken straight back a few lines later, when the box itself was created in the same
+/// frame. Measured: the claim reported `clicked=true` and `text_edit_focused` was still false
+/// afterwards. `app::hold_the_keyboard` is where this is acted on, because it runs before anything
+/// is drawn and is already the one place the window arranges who holds the keys.
+pub fn wants_the_keyboard() -> egui::Id {
+    egui::Id::new("quill-field-wants-the-keyboard")
+}
+
 /// A box to search in: the field, a magnifier in front of it, and the words to show while it is
 /// empty.
 ///
@@ -75,10 +137,12 @@ pub fn search_field_over(
         );
     }
     icon::magnifier(&painter, Pos2::new(area.left() + 15.0, area.center().y), color::text_faint());
-    let text_rect = field_text_rect(ui, area, 28.0);
+    let id = ui.id().with(("search-field", name));
+    let text_rect = field_takes_the_whole_rectangle(ui, area, 28.0, id);
     let mut field = ui.new_child(egui::UiBuilder::new().max_rect(text_rect));
     let response = field.add(
         egui::TextEdit::singleline(value)
+            .id(id)
             .hint_text(egui::RichText::new(hint).color(color::text_faint()))
             .frame(egui::Frame::NONE)
             .desired_width(text_rect.width())

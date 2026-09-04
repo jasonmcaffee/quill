@@ -4,7 +4,7 @@
 //! front of it. Every editor surveyed pairs that question with a **trash**, and the pairing is the
 //! point: VS Code's dialog says "You can restore this file from the Recycle Bin", and that sentence
 //! is what makes the question easy to answer. A confirmation on its own is a much weaker safety net
-//! than a Recycle Bin, and the two together are what IntelliJ, VS Code and Sublime all ship.
+//! than a Recycle Bin, and the two together are what the reference editor, VS Code and Sublime all ship.
 //!
 //! So on **Windows** a deleted file goes to the Recycle Bin, through `SHFileOperationW` with
 //! `FOF_ALLOWUNDO`. That is one feature flag on the `windows-sys` dependency Quill already has for

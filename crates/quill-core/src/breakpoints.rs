@@ -1,7 +1,7 @@
 //! Where a program is to stop: a set of lines in one file, kept as byte offsets so that they move
 //! with the text.
 //!
-//! `task-1687` asks for IntelliJ's red dot in the gutter — the thing stepping and inspection are
+//! `task-1687` asks for the reference editor's red dot in the gutter — the thing stepping and inspection are
 //! both built on. `tasks/task-1687-debugging-tdd.md` §6 records what was weighed; this module is the
 //! half of it that has no window and no debugger in it.
 //!
@@ -30,15 +30,15 @@ use std::ops::Range;
 /// work for.
 ///
 /// A **condition** is an expression the debugger compiles in the debuggee's own language and a
-/// **log message** is a string it formats and prints instead of stopping — IntelliJ's "evaluate and
+/// **log message** is a string it formats and prints instead of stopping — the reference editor's "evaluate and
 /// log", which the rest of the world calls a logpoint. Both are carried straight through to the
-/// adapter in `SourceBreakpoint`, so Quill's whole cost for two of IntelliJ's features is these two
+/// adapter in `SourceBreakpoint`, so Quill's whole cost for two of the reference editor's features is these two
 /// fields and the modal that edits them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Breakpoint {
     /// The byte offset of the **start of the line** this breakpoint is on.
     pub offset: usize,
-    /// False for one that has been switched off without being taken away, which is IntelliJ's
+    /// False for one that has been switched off without being taken away, which is the reference editor's
     /// `Disable Breakpoint`: it is drawn hollow and never sent to the adapter.
     pub enabled: bool,
     /// Stop only when this expression is true. Offered only when the adapter said it can.

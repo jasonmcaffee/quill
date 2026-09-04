@@ -96,7 +96,7 @@ pub struct Hover {
     /// makes has to be one the click can keep.
     pub candidates: Vec<Candidate>,
     /// True when the pointer is on the definition itself, where the gesture pivots to the
-    /// references instead — IntelliJ calls the whole command "Go to Declaration or Usages".
+    /// references instead — the reference editor calls the whole command "Go to Declaration or Usages".
     pub at_definition: bool,
 }
 
@@ -818,6 +818,13 @@ impl RenameReport {
         };
         let files = self.files.len() + self.open.len();
         let mut sentence = format!("Renamed {places} to '{to}' in {files} files");
+        // **Written and edited are said apart.** A rename reaches files nobody has open and writes
+        // them to the disk there and then, which is correct and is what a person does not expect —
+        // `task-1794` reports it as the surprise of the shoot. A count of "files" that silently mixes
+        // the two says nothing about which of them can still be undone by closing a tab.
+        if !self.files.is_empty() {
+            sentence.push_str(&format!(" \u{00B7} {} written to disk", self.files.len()));
+        }
         if !self.open.is_empty() {
             sentence.push_str(&format!(
                 " \u{00B7} {} open, save when ready",

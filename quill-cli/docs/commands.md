@@ -676,7 +676,7 @@ quill-cli tab reload --discard
 
 ## pane — the editing area split into panes
 
-The editing area can be split into panes side by side, each with its own tabs, which is IntelliJ's split view. `pane split` moves the tab that is showing into a new pane on the right — it moves rather than copies, because two tabs on one file would be two documents over one path. A pane holding only that tab keeps it and the new pane opens empty, ready for the next file: opening a file always lands in the pane that has the keyboard.
+The editing area can be split into panes side by side, each with its own tabs, which is the reference editor's split view. `pane split` moves the tab that is showing into a new pane on the right — it moves rather than copies, because two tabs on one file would be two documents over one path. A pane holding only that tab keeps it and the new pane opens empty, ready for the next file: opening a file always lands in the pane that has the keyboard.
 
 ### pane list
 
@@ -825,9 +825,9 @@ quill-cli editor set-text --from-file draft.md
 quill-cli editor insert <text>
 ```
 
-Type text at the caret, replacing the selection if there is one.
+Type text at the caret, replacing the selection if there is one. It types exactly what it is given: there is no auto-indent, so a line of a function body has to carry its own leading spaces.
 
-- `text` — What to type. \n is a new line and \t is a tab. Everything after it on the line belongs to it.
+- `text` — What to type, exactly as it will appear. \n is a new line and \t is a tab. Nothing is indented for you. Everything after it on the line belongs to it.
 
 ```sh
 quill-cli editor insert Hello
@@ -1036,7 +1036,7 @@ quill-cli editor references open_the_match --json
 quill-cli editor rename <new-name> [--name <text>] [--scope <file|project>] [--include <comments,strings>] [--timeout <milliseconds>] [--apply]
 ```
 
-Use this instead of file edits to rename a symbol everywhere through Quill's role-aware references. Comments and strings stay untouched unless included; without --apply it previews, and applying edits each open tab as one undo step before safely rewriting closed files.
+Use this instead of file edits to rename a symbol everywhere through Quill's role-aware references. Comments and strings stay untouched unless included; without --apply it previews. Applying edits each open tab as one undo step, leaving it with unsaved changes, and writes every file that is not open straight to the disk — the answer counts the two apart, as `wrote` and `openTabs`.
 
 - `new-name` — What to call it. It has to be a word of this language and not one of its keywords.
 
@@ -1044,7 +1044,7 @@ Use this instead of file edits to rename a symbol everywhere through Quill's rol
 - `--scope <file|project>` — Which files to change. The default follows what the name resolves to: a variable or a name with no known definition is this file, and a function, type, constant or module is the project.
 - `--include <comments,strings>` — Also change the matches inside comments or strings, which are left alone by default.
 - `--timeout <milliseconds>` — How long to wait for the search that finds them. 10000 by default.
-- `--apply` — Make the change. Without it the change set is printed and nothing is edited.
+- `--apply` — Make the change. Without it the change set is printed and nothing is edited or written.
 
 ```sh
 quill-cli editor rename open_the_result --json
@@ -1058,14 +1058,14 @@ quill-cli editor rename total --scope project --include comments --apply
 quill-cli editor complete [--offset <bytes>] [--line <number>] [--column <number>] [--stem <text>] [--limit <number>] [--choose <name>]
 ```
 
-The names a word could become, best first, with what each row is and where it came from. By default the word is read from the document at the caret; --stem asks hypothetically without editing the document. Inside an import the rows are what can be imported instead. --choose applies a real document row exactly as Enter would.
+The names a word could become, best first, with what each row is and where it came from. By default the word is read from the document at the caret; --stem asks hypothetically without editing the document. Inside an import the rows are what can be imported instead. --choose applies a real document row exactly as Enter would, and takes the row's name rather than its position.
 
 - `--offset <bytes>` — Ask about this position in the file rather than about the caret.
 - `--line <number>` — Ask about this line, counting from 1.
 - `--column <number>` — The column on that line. 1 when it is left out.
 - `--stem <text>` — Ask what this hypothetical word would offer at the position, without inserting it or changing the document.
 - `--limit <number>` — Print at most this many rows. All of them when it is left out.
-- `--choose <name>` — Apply this row to the word being typed, as Enter would. It has to be one of the names offered.
+- `--choose <name>` — Apply this row to the word being typed, as Enter would. It is the completion's **name**, never a row number: `--choose 0` is refused with the names there are.
 
 ```sh
 quill-cli editor complete --json
@@ -1280,7 +1280,7 @@ Quill has four panels — the explorer, the terminal, the run tile and the debug
 quill-cli panel list
 ```
 
-Every panel Quill has — the explorer, the terminal, the run tile and the debug tile — which edge of the window each is docked to, where in that edge, how big it is, whether it is showing, and the rectangle it occupies on screen.
+Every panel Quill has — the explorer, the terminal, the run tile and the debug tile — which edge of the window each is docked to, where in that edge, how big it is, whether it is showing, and the rectangle it occupies on screen. A pane a plugin contributes is listed by `plugins list` and can be sized and docked by name here.
 
 ```sh
 quill-cli panel list --json
@@ -1294,7 +1294,7 @@ quill-cli panel dock <panel> <side> [--position <number>]
 
 Move a panel to an edge of the window: the same change dragging its header makes. A side can hold more than one panel, side by side, so the terminal can sit beside the explorer down the left.
 
-- `panel` — explorer, terminal, run or debug.
+- `panel` — explorer, terminal, run, debug, or a contributed pane's <plugin>/<pane>.
 - `side` — left, right, top or bottom.
 
 - `--position <number>` — Where in that side, counting the panels already there from the left, starting at 0. The end of the side when it is not given.
@@ -1302,6 +1302,7 @@ Move a panel to an edge of the window: the same change dragging its header makes
 ```sh
 quill-cli panel dock terminal right
 quill-cli panel dock terminal left --position 0
+quill-cli panel dock agent-chat/chat right
 ```
 
 ### panel size
@@ -1310,9 +1311,9 @@ quill-cli panel dock terminal left --position 0
 quill-cli panel size <panel> [--width <points>] [--height <points>]
 ```
 
-Set how wide or how tall a panel is. A panel at the left or the right is read by its width and one along the top or the bottom by its height, so both are kept and moving a panel does not lose the size it had on the other side.
+Set how wide or how tall a panel is, including a pane a plugin contributed. A panel at the left or the right is read by its width and one along the top or the bottom by its height, so both are kept and moving a panel does not lose the size it had on the other side. The same numbers are `settings set panes.<panel>.width` and `.height`.
 
-- `panel` — explorer, terminal, run or debug.
+- `panel` — explorer, terminal, run, debug, or a contributed pane's <plugin>/<pane>.
 
 - `--width <points>` — How wide it is when it is a column at the left or the right.
 - `--height <points>` — How tall it is when it is in a strip along the top or the bottom.
@@ -1320,6 +1321,7 @@ Set how wide or how tall a panel is. A panel at the left or the right is read by
 ```sh
 quill-cli panel size debug --width 640
 quill-cli panel size terminal --height 320
+quill-cli panel size agent-chat/chat --width 1150
 ```
 
 ### panel zoom
@@ -2655,6 +2657,9 @@ quill-cli plugins run agent-tasks new-task Rewrite the importer
 quill-cli plugins run agent-tasks start task-27
 quill-cli plugins run database tables public --json
 quill-cli plugins run database query select count(*) from member
+quill-cli plugins run database new-table public.shelf id:integer:pk title:text:notnull
+quill-cli plugins run database set 1 title Kind of Green
+quill-cli plugins run database submit
 ```
 
 ### plugins view

@@ -90,7 +90,7 @@ impl SymbolKind {
     /// A variable is the one that does not: a local or a parameter of the same name in another file
     /// is very rarely the same thing, and defaulting to the project would tick a hundred rows a
     /// person then has to untick. Everything else is named once and used everywhere, which is the
-    /// scoping instinct behind IntelliJ disabling text occurrences for locals.
+    /// scoping instinct behind the reference editor disabling text occurrences for locals.
     pub fn renames_the_project(self) -> bool {
         !matches!(self, SymbolKind::Variable)
     }

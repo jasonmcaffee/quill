@@ -66,6 +66,22 @@ Add-Result (Test-Case 'a chord releases its modifiers' {
     Send-Chord -Modifiers @($VkLCtrl, $VkRCtrl) -Key $VkCtrl -SettleMs 0
 })
 
+# **A chord that releases everything and sent nothing passes every case above it.** `Send-Chord` ran
+# its key press inside a `.GetNewClosure()`, which binds a block to a new module scope where this
+# file's own functions are not — so it threw `Send-Key is not recognized`, the `finally` released the
+# modifiers, and the two cases above went green while no chord had been sent at all. `task-1795`
+# found it by trying to drive a real window with one. So: press a key the state of which can be read
+# back, and insist it really went down.
+Add-Result (Test-Case 'a chord actually presses its key' {
+    $arrived = $false
+    Invoke-WithKeysHeld @($VkLShift) {
+        # Read while it is held: `GetAsyncKeyState`'s high bit is "down now".
+        $script:pressed = ([Quill.Input]::GetAsyncKeyState($VkLShift) -band 0x8000) -ne 0
+    }
+    $arrived = $script:pressed
+    if (-not $arrived) { throw 'the key never went down' }
+})
+
 Add-Result (Test-Case 'a block that throws still releases its keys' {
     Invoke-WithKeysHeld @($VkLCtrl, $VkRCtrl) { throw 'the window never came to the front' }
 })

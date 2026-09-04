@@ -1,8 +1,8 @@
 //! The thin rail down the far left of the window.
 //!
-//! `task-1658` asks for what IntelliJ has: a narrow strip holding one button for each pane, so a pane can
+//! `task-1658` asks for what the reference editor has: a narrow strip holding one button for each pane, so a pane can
 //! be put away and brought back without going to a menu, and the buttons stay where they are whether the
-//! pane is showing or not. Quill's is narrower than IntelliJ's — 36 points against about 40 — because it
+//! pane is showing or not. Quill's is narrower than the reference editor's — 36 points against about 40 — because it
 //! holds three buttons rather than a dozen and does not need the room.
 //!
 //! Two groups. The panes that live at the side are at the top, in the order they are in the window: the
@@ -16,7 +16,7 @@
 //!
 //! Since `task-1697` a panel is not always where its button says it is: the terminal can be dragged
 //! to the right and the explorer to the bottom. **The rail does not follow it**, and that is a
-//! decision rather than an oversight — IntelliJ moves a tool window's stripe button to the side the
+//! decision rather than an oversight — the reference editor moves a tool window's stripe button to the side the
 //! window is on, and Quill has one rail on one edge, so its two groups say what a panel *is* (a
 //! list, or a tile with a grid in it) rather than where it happens to be. A rail that reshuffled
 //! itself on every drag would be a second thing moving while somebody was moving the first.
@@ -180,7 +180,7 @@ pub fn show_with(
         (
             // Not `Git`: the menu bar already has a `Git`, and no two controls in one window may share
             // a name — a test cannot tell them apart and neither can anybody reading them out. This
-            // button opens the commit panel, which is IntelliJ's Version Control tool window.
+            // button opens the commit panel, which is the reference editor's Version Control tool window.
             "Version Control",
             icon::branch,
             state.git_open,
@@ -378,7 +378,7 @@ mod tests {
     /// `main.rs` sets to 400 points.
     #[test]
     fn the_rail_is_narrow_enough_to_be_a_rail_and_wide_enough_to_hold_a_button() {
-        assert!(size::ACTIVITY_BAR < 40.0, "narrower than IntelliJ's, which is what was asked for");
+        assert!(size::ACTIVITY_BAR < 40.0, "narrower than the reference editor's, which is what was asked for");
         assert!(size::ACTIVITY_BAR >= BUTTON + 4.0, "a button has to fit inside it");
         // The button starts where the window's own left resize grip stops, so the two never overlap.
         let left = crate::components::resize_edges::EDGE;
