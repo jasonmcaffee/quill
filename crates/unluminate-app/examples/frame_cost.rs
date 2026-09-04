@@ -191,8 +191,12 @@ fn main() {
     });
     println!("  typing a letter:         {ms:8.2} ms  ({:.0} frames a second)", 1000.0 / ms);
 
-    // The same, as the window really does it: a source file is coloured again after every edit,
-    // because the tokeniser reads the whole file rather than the part that changed.
+    // The same, as the window really does it: a source file is coloured again after every edit.
+    //
+    // **Both readings, in one run**, because the point of `task-1804` §5.2 is the difference
+    // between them and a number with nothing beside it is a number nobody can judge. The first is
+    // what the window did until then -- read the whole file, lay every span back over it -- and the
+    // second is what `UnluminateApp::colour_the_file` does now.
     if let Some(plugin) = plugins.for_path(std::path::Path::new(&path)) {
         let base = unluminate_core::Color::rgb(0xF2, 0xF2, 0xF2);
         let ms = timed(20, || {
@@ -215,6 +219,48 @@ fn main() {
             );
             std::hint::black_box(collect_visible_glyphs(&renderer, &carried, 0.0, view_height));
         });
-        println!("  typing, coloured again:  {ms:8.2} ms  ({:.0} frames a second)", 1000.0 / ms);
+        println!("  typing, whole file read: {ms:8.2} ms  ({:.0} frames a second)", 1000.0 / ms);
+
+        let mut cache = unluminate_core::IncrementalTokens::default();
+        // One reading first, so what is timed is the incremental case rather than the first one.
+        {
+            let text = document.text().to_string();
+            let mut spans = Vec::new();
+            cache.update(&text, &plugin.grammar, document.syntax_dirt(), |range, token| {
+                if let Some(colour) = plugin.theme.colour(token) {
+                    spans.push((range, colour));
+                }
+            });
+            let _: &Vec<(std::ops::Range<usize>, unluminate_core::Color)> = &spans;
+            document.set_syntax(base, &spans);
+        }
+        let mut scanned = 0usize;
+        let ms = timed(20, || {
+            document.apply(Command::Insert("z".to_owned()));
+            let text = document.text().to_string();
+            let mut spans: Vec<(std::ops::Range<usize>, unluminate_core::Color)> = Vec::new();
+            let update =
+                cache.update(&text, &plugin.grammar, document.syntax_dirt(), |range, token| {
+                    if let Some(colour) = plugin.theme.colour(token) {
+                        spans.push((range, colour));
+                    }
+                });
+            scanned = update.scanned;
+            document.set_syntax_in(base, &spans, update.changed);
+            carried = relayout(
+                std::mem::take(&mut carried),
+                document.text(),
+                document.chars(),
+                document.paragraphs(),
+                &renderer,
+                width,
+                &unluminate_core::folding::Hidden::none(),
+            );
+            std::hint::black_box(collect_visible_glyphs(&renderer, &carried, 0.0, view_height));
+        });
+        println!(
+            "  typing, coloured again:  {ms:8.2} ms  ({:.0} frames a second, {scanned} tokens read)",
+            1000.0 / ms
+        );
     }
 }

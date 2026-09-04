@@ -298,7 +298,10 @@ fn main() -> eframe::Result {
             // named on the command line is the tab that ends up showing.
             app.restore_project();
             if let Some(file) = file {
-                app.open_path(&file);
+                // A file named on the command line that will not open leaves its reason in the
+                // status bar of the window that has just come up, which is where a person is
+                // looking. Unluminate still starts.
+                let _ = app.open_path(&file);
             }
             if let Some(opacity) = arguments.opacity {
                 app.settings.opacity = opacity.clamp(0.05, 1.0);

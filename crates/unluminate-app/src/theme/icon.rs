@@ -45,6 +45,21 @@ pub fn chevron_down(painter: &egui::Painter, centre: Pos2, color: Color32) {
     ));
 }
 
+/// The same triangle the other way up. What Previous match on the Find bar is drawn with.
+pub fn chevron_up(painter: &egui::Painter, centre: Pos2, color: Color32) {
+    let w = 3.5;
+    let h = 2.2;
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            Pos2::new(centre.x - w, centre.y + h),
+            Pos2::new(centre.x + w, centre.y + h),
+            Pos2::new(centre.x, centre.y - h),
+        ],
+        color,
+        Stroke::NONE,
+    ));
+}
+
 /// A triangle pointing down when a folder is open and right when it is closed.
 pub fn disclosure(painter: &egui::Painter, centre: Pos2, open: bool, color: Color32) {
     disclosure_at(painter, centre, open, color, 1.0);

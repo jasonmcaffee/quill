@@ -24,6 +24,7 @@ pub mod dock;
 pub mod editor_view;
 pub mod explorer;
 pub mod file_tabs;
+pub mod find_bar;
 pub mod find_in_files;
 pub mod git_dialogs;
 pub mod git_panel;

@@ -45,6 +45,14 @@ struct Preview {
 pub struct FindInFiles {
     pub query: String,
     pub match_case: bool,
+    /// True when the Replace row is showing and a Replace All would write to the project.
+    ///
+    /// `task-1804` §3.1 asks for replace **across the results of Find in Files**, and this is
+    /// where it belongs rather than on the in-file bar: the modal already lists every file that
+    /// would be written, which is what makes a change of this size something a person can agree to.
+    pub replacing: bool,
+    /// What each match would become.
+    pub replacement: String,
     pub chosen: usize,
     hits: Vec<Hit>,
     files: usize,
@@ -77,6 +85,8 @@ impl FindInFiles {
         Self {
             query: String::new(),
             match_case: false,
+            replacing: false,
+            replacement: String::new(),
             chosen: 0,
             hits: Vec::new(),
             files: 0,
@@ -164,6 +174,14 @@ impl FindInFiles {
         &self.hits
     }
 
+    /// Forget what was found, so the next `pump` asks the same question again.
+    ///
+    /// What Replace All needs: the words in the box have not changed, so `pump`'s comparison would
+    /// answer "nothing to do" and go on showing matches that are not there any more.
+    pub fn search_again(&mut self) {
+        self.asked = None;
+    }
+
     /// The result that is chosen, if there is one.
     pub fn chosen_hit(&self) -> Option<&Hit> {
         self.hits.get(self.chosen)
@@ -216,6 +234,12 @@ pub struct FindOutcome {
     pub open: Option<(std::path::PathBuf, std::ops::Range<usize>)>,
     /// Shut the modal.
     pub close: bool,
+    /// Replace every match in the results with what is in the Replace box.
+    ///
+    /// The window does the writing rather than this component, because some of the files are open
+    /// in tabs and those have to be edited **through their documents** -- an unsaved change is the
+    /// person's and a write behind their back would lose it.
+    pub replace_all: bool,
     /// How far the divider between the results and the preview was dragged, in points.
     pub drag: f32,
     /// The divider was double clicked, so the split goes back to its usual place.
@@ -264,8 +288,42 @@ pub fn show(ctx: &egui::Context, state: &mut FindInFiles, split: f32) -> FindOut
         );
         modal::check(ui, tick, "Match case", &mut state.match_case);
 
+        // The Replace row, under the Find box, opened by its own tick box. `task-1804` §3.1.
+        let mut top = field.bottom();
+        let replace_tick = Rect::from_min_size(
+            Pos2::new(body.left(), top + 6.0),
+            Vec2::new(tick_width, 26.0),
+        );
+        modal::check(ui, replace_tick, "Replace", &mut state.replacing);
+        top = replace_tick.bottom();
+        if state.replacing {
+            let replace_field = Rect::from_min_size(
+                Pos2::new(body.left(), top + 6.0),
+                Vec2::new(body.width() - 120.0 - 12.0, 30.0),
+            );
+            modal::field(ui, replace_field, "Replace with", &mut state.replacement);
+            let button = Rect::from_min_size(
+                Pos2::new(body.right() - 120.0, replace_field.top() + 1.0),
+                Vec2::new(120.0, 28.0),
+            );
+            // Dimmed to a refusal rather than absent, which is `A control is absent when it cannot
+            // apply` read the other way round: it *can* apply here, there is simply nothing found
+            // yet, and a button that vanished as the search ran would move the row under the pointer.
+            if controls::choice_button_named(
+                ui,
+                button,
+                &format!("Replace {}", state.hits.len()),
+                "Replace all in files",
+                false,
+            ) && !state.hits.is_empty()
+            {
+                outcome.replace_all = true;
+            }
+            top = replace_field.bottom();
+        }
+
         // The results above, the preview below, and the divider between them.
-        let panes = Rect::from_min_max(Pos2::new(body.left(), field.bottom() + 12.0), body.max);
+        let panes = Rect::from_min_max(Pos2::new(body.left(), top + 12.0), body.max);
         outcome.panes_height = panes.height();
         let split = split.clamp(SPLIT_MIN, SPLIT_MAX);
         let results_height = (panes.height() * split).floor();

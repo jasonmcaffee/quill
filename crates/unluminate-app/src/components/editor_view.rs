@@ -8,6 +8,7 @@ use egui::{Color32, Mesh, Pos2, Rect, Sense, Shape, Stroke, Vec2};
 use unluminate_core::{Align, Command, Document, IndentUnit, Layout, Rope, Selection, StyleChange};
 
 use crate::services::text_renderer::TextRenderer;
+use crate::theme::color;
 
 /// Space between the text and the edge of the editing area.
 pub const PADDING: f32 = 16.0;
@@ -330,6 +331,13 @@ pub struct PaintStyle<'a> {
     /// which name is on which line and this draws the answer, which is the rule every component in
     /// Unluminate follows.
     pub inline_values: &'a [(usize, String)],
+    /// Every match of the Find bar's search, painted as a band behind the text.
+    ///
+    /// **The current one is not in this list** -- it is the document's selection, so the bar's own
+    /// match is drawn by the selection above and copies, and is where the caret is left when the bar
+    /// is shut. Two colours for two meanings, which is what `color::find_match` says about itself.
+    /// `task-1804` §3.1.
+    pub find_matches: &'a [std::ops::Range<usize>],
 }
 
 pub fn paint(
@@ -347,6 +355,7 @@ pub fn paint(
         underline,
         execution_point,
         inline_values,
+        find_matches,
     } = style;
     let painter = ui.painter();
     let to_screen = |x: f32, y: f32| Pos2::new(text_origin.x + x, text_origin.y + y);
@@ -364,6 +373,20 @@ pub fn paint(
             2.0,
             selection_color,
         );
+    }
+
+    // Every other match of the search, over the selection so the current one is not covered by a
+    // band, and under the text like every other background. Only the matches on the screen are laid
+    // out: `selection_rects_in` is cut to the visible lines already, and a file with ten thousand
+    // matches in it costs one comparison each for the ones that are not showing.
+    for range in find_matches {
+        for rect in layout.selection_rects_in(visible.clone(), range.clone()) {
+            painter.rect_filled(
+                Rect::from_min_size(to_screen(rect.x, rect.y), Vec2::new(rect.width, rect.height)),
+                2.0,
+                color::find_match(),
+            );
+        }
     }
 
     paint_highlights(ui, document, layout, text_origin, visible.clone());

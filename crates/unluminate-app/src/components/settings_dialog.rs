@@ -16,7 +16,7 @@ use crate::components::modal;
 use crate::components::mcp_page::{self, McpState};
 use crate::components::plugins_page::{self, PluginsOutcome, PluginsState};
 use crate::services::plugins::Plugins;
-use crate::settings::{
+use crate::settings::{LineEndings, 
     Page, Settings, Suggestions, ValueTooltip, FONT_SIZES, MIN_OPACITY, TERMINAL_FONT_SIZES,
     UI_FONT_SIZES,
 };
@@ -851,13 +851,88 @@ fn editor_page(ui: &mut egui::Ui, area: Rect, settings: &mut Settings) -> bool {
         changed = true;
     }
     pen += 32.0;
-    note(
+    pen = note(
         ui,
         area,
         pen,
         "While a program is stopped, resting the pointer on a name shows what it holds, and a structure opens into its fields, which can be typed over. Off, nothing appears until you ask: Show Value on the Debug menu.",
     );
+
+    // `task-1804` §7.1. What a file is written back with, and what the index leaves out.
+    pen = section(ui, area, pen + 12.0, "Files");
+    let ending_row = row_at(area, pen);
+    label(ui, area, ending_row, "Line endings:");
+    if let Some(chosen) = controls::dropdown(
+        ui,
+        Rect::from_min_size(Pos2::new(area.left() + 130.0, ending_row.top()), Vec2::new(180.0, 28.0)),
+        line_ending_name(settings.line_endings),
+        "Line endings",
+        None,
+        |ui| {
+            let mut chosen = None;
+            for option in [LineEndings::Keep, LineEndings::Lf, LineEndings::Crlf] {
+                let selected = settings.line_endings == option;
+                if ui.selectable_label(selected, line_ending_name(option)).clicked() {
+                    chosen = Some(option);
+                }
+            }
+            chosen
+        },
+    ) {
+        settings.line_endings = chosen;
+        changed = true;
+    }
+    pen += 34.0;
+    pen = note(
+        ui,
+        area,
+        pen,
+        "What a file is written back with. Kept as it was found is what leaves a one character edit as a one line diff; the other two bring every file that is saved into line.",
+    );
+
+    let exclude_row = row_at(area, pen + 8.0);
+    label(ui, area, exclude_row, "Exclude:");
+    let before = settings.exclude.clone();
+    modal::field(
+        ui,
+        Rect::from_min_size(
+            Pos2::new(area.left() + 130.0, exclude_row.top()),
+            Vec2::new(300.0, 28.0),
+        ),
+        "Exclude",
+        &mut settings.exclude,
+    );
+    // Compared rather than taken from the field's own `changed`, for `terminal_shell`'s reason: a
+    // field reports a change on every letter and this reloads the project index.
+    if settings.exclude != before {
+        changed = true;
+    }
+    pen += 34.0;
+    pen = note(
+        ui,
+        area,
+        pen,
+        "Patterns Go to File, Find in Files, completion and Go to Definition leave out, separated by commas, written the way a .gitignore line is.",
+    );
+    note(
+        ui,
+        area,
+        pen + 8.0,
+        "The project's own .gitignore is read already; this is a list beside it. The explorer goes on showing everything either way.",
+    );
     changed
+}
+
+/// What the Line endings dropdown calls each value.
+///
+/// Words rather than [`LineEndings::name`]'s `keep`/`lf`/`crlf`, because those are what the settings
+/// file and the command line spell and this is what a person reads.
+fn line_ending_name(endings: LineEndings) -> &'static str {
+    match endings {
+        LineEndings::Keep => "Keep what the file has",
+        LineEndings::Lf => "Always LF (Unix)",
+        LineEndings::Crlf => "Always CRLF (Windows)",
+    }
 }
 
 /// A tick box with its label to the right of it, drawn the way every other control here is.

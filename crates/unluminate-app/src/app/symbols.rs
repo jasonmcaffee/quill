@@ -515,6 +515,114 @@ impl UnluminateApp {
         report
     }
 
+    /// Replace every match of a `Find in Files` search across the project.
+    ///
+    /// `task-1804` §3.1. It keeps [`Self::apply_rename`]'s two rules, because they are the
+    /// right ones and this is the same kind of change: **an open file is edited as a document**, one
+    /// `ReplaceMany` and one undo step, and is left with unsaved changes rather than being written
+    /// behind somebody's back; **a closed file is read, checked, and written once**, with the bytes
+    /// outside the replaced ranges untouched so encodings, line endings and trailing whitespace
+    /// survive byte for byte.
+    ///
+    /// What it does differently is **how a file is checked**. A rename compares each range against
+    /// the old name, which cannot work here: the search may have been case-insensitive, so the text
+    /// at a match is very often not the needle. So each file's matches are **worked out again from
+    /// what is there now**, and a file whose matches are not the ones the modal listed is skipped
+    /// whole and reported by name. That is a stronger check than the rename's, not a weaker one: it
+    /// proves the file has not changed in any way that moved a match, rather than only that one
+    /// string is still where it was.
+    pub(crate) fn replace_across_the_project(
+        &mut self,
+        hits: &[crate::services::text_search::Hit],
+        needle: &str,
+        match_case: bool,
+        with: &str,
+    ) -> RenameReport {
+        let mut report = RenameReport::default();
+        if needle.is_empty() {
+            return report;
+        }
+        // The hits arrive in the order the thread found them, several to a file. Grouped here so
+        // each file is read once and written once.
+        let mut by_file: Vec<(PathBuf, Vec<std::ops::Range<usize>>)> = Vec::new();
+        for hit in hits {
+            match by_file.iter_mut().find(|(path, _)| *path == hit.path) {
+                Some((_, ranges)) => ranges.push(hit.offset.clone()),
+                None => by_file.push((hit.path.clone(), vec![hit.offset.clone()])),
+            }
+        }
+
+        for (path, listed) in &by_file {
+            let open = self.files.iter().position(|file| file.path() == Some(path.as_path()));
+            match open {
+                Some(index) => {
+                    // The document rather than the disk, because a tab with unsaved changes is what
+                    // the person is looking at and is the text they meant.
+                    let text = self.files.at(index).document.text().to_string();
+                    let found =
+                        crate::services::text_search::ranges_in(&text, needle, match_case, false);
+                    if found.is_empty() {
+                        continue;
+                    }
+                    let count = found.len();
+                    // Back to front, which is `Command::ReplaceMany`'s own requirement: no range
+                    // can then shift one still to be made.
+                    let edits: Vec<(std::ops::Range<usize>, String)> =
+                        found.into_iter().rev().map(|range| (range, with.to_owned())).collect();
+                    if self.files.at_mut(index).document.apply(Command::ReplaceMany(edits)) {
+                        report.open.push(path.clone());
+                        report.changed += count;
+                    }
+                }
+                None => match self.replace_in_a_closed_file(path, listed, needle, match_case, with) {
+                    Ok(count) => {
+                        report.files.push(path.clone());
+                        report.changed += count;
+                    }
+                    Err(reason) => report.skipped.push((path.clone(), reason)),
+                },
+            }
+        }
+        // Everything the index knew is wrong now, and so is every tab's cache.
+        self.the_project_changed_on_disk();
+        self.hover = None;
+        report
+    }
+
+    /// Read a closed file, check its matches are the ones that were listed, and write it once.
+    fn replace_in_a_closed_file(
+        &mut self,
+        path: &Path,
+        listed: &[std::ops::Range<usize>],
+        needle: &str,
+        match_case: bool,
+        with: &str,
+    ) -> Result<usize, String> {
+        let text = std::fs::read_to_string(path).map_err(|problem| problem.to_string())?;
+        let found = crate::services::text_search::ranges_in(&text, needle, match_case, false);
+        if found != listed {
+            return Err("it has changed since it was searched".to_owned());
+        }
+        if found.is_empty() {
+            return Ok(0);
+        }
+        let edits: Vec<(std::ops::Range<usize>, String)> =
+            found.iter().rev().map(|range| (range.clone(), with.to_owned())).collect();
+        let after = symbols::applied(&text, &edits);
+        std::fs::write(path, &after).map_err(|problem| problem.to_string())?;
+        // The store owns a closed file's marks and this is one of the two places a closed file's
+        // bytes move, so they are shifted by the same edits -- `rewrite_closed_file`'s rule.
+        let shifted = edits.clone();
+        self.marks.change(path, |marks| {
+            for (range, replacement) in &shifted {
+                marks.remove(range.clone());
+                marks.insert(range.start, replacement.len());
+            }
+            marks.clamp(after.len());
+        });
+        Ok(edits.len())
+    }
+
     /// Read a closed file, check every range still holds the old name, and write it once.
     fn rewrite_closed_file(
         &mut self,
@@ -1121,9 +1229,10 @@ mod tests {
 
     #[test]
     fn the_symbol_entries_are_absent_for_a_file_whose_language_cannot_answer() {
-        // Scenarios 16 and 17, through the menu the window really builds. `Complete Word` sits with
-        // them and asks a wider question — a plugin claiming the file at all — so a stylesheet has
-        // it and a note does not.
+        // Scenarios 16 and 17, through the menu the window really builds. `Complete Word` used to
+        // sit with them and is now on the Edit menu, because it puts a word *into* the document
+        // while these three ask where a name is -- `task-1804` moved the three to the `Find` menu
+        // and left it behind. `app::completion`'s own test is what watches that one.
         let (folder, mut app) = a_window("unluminate-symbols-absent");
         let names = |state: &MenuState| -> Vec<String> {
             crate::app::actions::symbol_entries(state)
@@ -1137,14 +1246,14 @@ mod tests {
         app.open_path_permanently(&folder.join("layout.rs"));
         assert_eq!(
             names(&app.menu_state()),
-            vec!["Go to Definition", "Find References", "Rename Symbol...", "Complete Word"],
-            "a Rust file has all four"
+            vec!["Go to Definition", "Find References", "Rename Symbol..."],
+            "a Rust file has all three"
         );
         app.open_path_permanently(&folder.join("site.css"));
         assert_eq!(
             names(&app.menu_state()),
-            vec!["Find References", "Rename Symbol...", "Complete Word"],
-            "a stylesheet has no definitions, and keeps the other three"
+            vec!["Find References", "Rename Symbol..."],
+            "a stylesheet has no definitions, and keeps the other two"
         );
         app.open_path_permanently(&folder.join("notes.md"));
         assert!(names(&app.menu_state()).is_empty(), "a note has none of them");

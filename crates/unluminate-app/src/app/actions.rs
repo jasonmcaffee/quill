@@ -38,6 +38,14 @@ pub enum Action {
     GoToFile,
     /// Open the `Find in Files` modal: search every file in the project for some text.
     FindInFiles,
+    /// Open the Find bar over the file that is showing. `task-1804` §3.1.
+    Find,
+    /// The same bar with its Replace row already open.
+    Replace,
+    /// Go to the next match of the Find bar's search, wrapping round the end of the file.
+    FindNext,
+    /// And the previous one.
+    FindPrevious,
     /// Go to where the word at the caret is defined.
     ///
     /// One candidate is a jump; several open the modal listing them, ranked; none says so in the
@@ -839,6 +847,9 @@ pub struct MenuState {
     pub can_undo: bool,
     pub can_redo: bool,
     pub has_selection: bool,
+    /// True while the Find bar is open, which is what decides whether Find Next can be used.
+    /// `task-1804`.
+    pub finding: bool,
     pub recent: Vec<PathBuf>,
     pub view_mode: ViewMode,
     /// True when the open file has a preview worth switching to, which is what dims the three view
@@ -946,13 +957,15 @@ pub fn menus(state: &MenuState) -> Vec<Menu> {
         unluminate_menu(),
         file_menu(state),
         edit_menu(state),
+        find_menu(state),
         view_menu(state),
         run_menu(state),
         git_menu(state),
     ];
     // Then one menu per plugin that contributed one, in the order the plugins are listed. **After**
-    // Unluminate's own six, so `Unluminate`, `File`, `Edit`, `View`, `Run` and `Git` never move: a menu bar whose
-    // entries shift when a plugin is installed is a menu bar somebody's hand has to relearn.
+    // Unluminate's own seven, so `Unluminate`, `File`, `Edit`, `Find`, `View`, `Run` and `Git` never
+    // move: a menu bar whose entries shift when a plugin is installed is a menu bar somebody's hand
+    // has to relearn.
     //
     // A plugin cannot add an entry to one of the six. VS Code allows that through about forty named
     // anchors with `when` expressions, which is the largest part of its contribution model and the
@@ -1370,8 +1383,7 @@ fn recent_entries(state: &MenuState) -> Vec<Entry> {
     entries
 }
 
-/// The three symbol entries and the two that walk the history, in the order the Edit menu holds
-/// them.
+/// The three symbol entries, in the order the `Find` menu holds them.
 ///
 /// Built here rather than written into the menu twice, because `components::text_menu` — the
 /// editing area's own right click menu — holds the same three above its highlight section, and two
@@ -1405,18 +1417,31 @@ pub fn symbol_entries(state: &MenuState) -> Vec<Entry> {
             Shortcut { key: egui::Key::F6, command: false, shift: true, alt: false, ctrl: false },
         ));
     }
-    if state.completion_applies {
-        // The reference editor's own binding, and the real control key on both platforms rather than the Apple
-        // key on one of them: `Cmd+Space` is Spotlight. macOS may have claimed `Ctrl+Space` for
-        // switching input sources, in which case the menu entry is how a person reaches it there —
-        // which is a note for the menu test rather than a reason to bind something else here.
-        entries.push(Entry::with_shortcut(
-            "Complete Word",
-            Action::CompleteWord,
-            Shortcut::control(egui::Key::Space),
-        ));
-    }
     entries
+}
+
+/// `Complete Word`, when the file's language can offer one.
+///
+/// **On the Edit menu rather than with the three above**, and `task-1804` is where the two parted
+/// company: those three ask *where a name is* and went to the new `Find` menu with the rest of the
+/// searching; this one puts a word into the document, which is editing. They were one list while
+/// they were all on one menu.
+///
+/// Absent rather than dimmed when no plugin claims the file, which is `symbol_entries`' rule and the
+/// window's: a control that can never apply is not drawn.
+pub fn completion_entries(state: &MenuState) -> Vec<Entry> {
+    if !state.completion_applies {
+        return Vec::new();
+    }
+    // The reference editor's own binding, and the real control key on both platforms rather than the Apple
+    // key on one of them: `Cmd+Space` is Spotlight. macOS may have claimed `Ctrl+Space` for
+    // switching input sources, in which case the menu entry is how a person reaches it there —
+    // which is a note for the menu test rather than a reason to bind something else here.
+    vec![Entry::with_shortcut(
+        "Complete Word",
+        Action::CompleteWord,
+        Shortcut::control(egui::Key::Space),
+    )]
 }
 
 /// The two entries that walk the places a jump has been from.
@@ -1458,21 +1483,11 @@ fn edit_menu(state: &MenuState) -> Menu {
         Entry::with_shortcut("Select All", Action::SelectAll, Shortcut::command(egui::Key::A)),
         Entry::Separator,
         Entry::Submenu { name: "Highlight".to_owned(), entries: highlight_menu(state) },
-        Entry::Separator,
-        // The reference editor keeps this under `Edit -> Find`, one level further down. Unluminate's Edit menu is
-        // eight entries long and a submenu holding one thing is a step for nothing.
-        Entry::with_shortcut(
-            "Find in Files...",
-            Action::FindInFiles,
-            Shortcut::command_shift(egui::Key::F),
-        ),
     ];
-    // The symbol entries under `Find in Files`, because that is what they are: two more ways of
-    // asking where something is, and one of changing it everywhere it was found.
-    let symbols = symbol_entries(state);
-    if !symbols.is_empty() {
+    let completion = completion_entries(state);
+    if !completion.is_empty() {
         entries.push(Entry::Separator);
-        entries.extend(symbols);
+        entries.extend(completion);
     }
     entries.push(Entry::Separator);
     entries.extend(navigation_entries(state));
@@ -1483,6 +1498,52 @@ fn edit_menu(state: &MenuState) -> Menu {
         Shortcut::command(egui::Key::Comma),
     ));
     Menu { name: "Edit".to_owned(), entries }
+}
+
+/// `Find`: every way of asking where something is, and the two of changing it.
+///
+/// **A menu of its own, and it was not one before.** The comment this replaces read *"the reference
+/// editor keeps this under `Edit -> Find`, one level further down. Unluminate's Edit menu is eight
+/// entries long and a submenu holding one thing is a step for nothing"* -- which was right while
+/// `Find in Files` was the only thing in it.
+///
+/// `task-1804` added Find, Replace, Find Next and Find Previous, and the Edit menu then **ran off
+/// the bottom of the window**: `Settings` could not be reached at all in a 740 point tall window, by
+/// a person or by a test, and nothing said so. A submenu did not help, because `controls::menu_rows`
+/// draws one as a heading with its entries in the same list rather than as a flyout -- which is the
+/// right decision for a menu this shape, and is part of why the Edit menu was already at the limit.
+/// `menu_rows` does scroll a menu that will not fit, so nothing was ever *lost*; a menu somebody has
+/// to scroll is simply not an answer.
+///
+/// So the group has its own word in the bar, which is what it is: seven ways of finding something,
+/// in a product whose largest single gap was that `Ctrl+F` did nothing. The order is the order they
+/// are reached in -- what is in front of you first, then the project, then the symbol entries, which
+/// are two more ways of asking where something is and one of changing it everywhere it was found.
+fn find_menu(state: &MenuState) -> Menu {
+    let mut entries = vec![
+        Entry::with_shortcut("Find...", Action::Find, Shortcut::command(egui::Key::F)),
+        Entry::with_shortcut("Replace...", Action::Replace, Shortcut::command(egui::Key::H)),
+        Entry::with_shortcut("Find Next", Action::FindNext, Shortcut::command(egui::Key::G))
+            .enabled(state.finding),
+        Entry::with_shortcut(
+            "Find Previous",
+            Action::FindPrevious,
+            Shortcut::command_shift(egui::Key::G),
+        )
+        .enabled(state.finding),
+        Entry::Separator,
+        Entry::with_shortcut(
+            "Find in Files...",
+            Action::FindInFiles,
+            Shortcut::command_shift(egui::Key::F),
+        ),
+    ];
+    let symbols = symbol_entries(state);
+    if !symbols.is_empty() {
+        entries.push(Entry::Separator);
+        entries.extend(symbols);
+    }
+    Menu { name: "Find".to_owned(), entries }
 }
 
 fn view_menu(state: &MenuState) -> Menu {
@@ -2025,10 +2086,12 @@ mod tests {
     }
 
     #[test]
-    fn unluminate_comes_first_and_then_file_edit_view_and_git() {
+    fn unluminate_comes_first_and_then_file_edit_find_view_and_git() {
         let bar = menus(&MenuState::default());
         let order: Vec<&str> = bar.iter().map(|menu| menu.name.as_str()).collect();
-        assert_eq!(order, vec!["Unluminate", "File", "Edit", "View", "Run", "Git"]);
+        // `Find` sits after `Edit`, which is where every editor puts it and where a hand looking
+        // for it goes. `task-1804` -- see `find_menu` for why it is a menu rather than a submenu.
+        assert_eq!(order, vec!["Unluminate", "File", "Edit", "Find", "View", "Run", "Git"]);
     }
 
     #[test]

@@ -795,11 +795,18 @@ mod tests {
             every.len(),
             grouped.len()
         );
-        // 16,199 today, up from 11,900 when this budget was first set at 16,000: `task-28`'s dozen
-        // `plugins` verbs for the Agent-Tasks board moved the real number past the old ceiling, so
-        // the ceiling moved with it rather than the test being loosened to nothing. 17,500 leaves
-        // room for the next feature without being a number nobody would notice blowing through.
-        assert!(grouped.len() / 4 < 17_500, "grouped MCP schema exceeded budget: {} bytes", grouped.len());
+        // 17,535 today, up from 16,199 when the ceiling was last set at 17,500 and from 11,900 when
+        // it was first set at 16,000. Twice now the real number has walked past the ceiling and the
+        // ceiling has moved with it rather than the test being loosened to nothing: `task-28`'s
+        // dozen `plugins` verbs the first time, and `task-1804`'s `editor find` and `editor replace`
+        // this time, which cost 35 tokens more than there was room for.
+        //
+        // **This number being hard to hold is itself the finding.** `task-1804` §4.2 measured
+        // the default preamble at 18% of the local model's 96k window before a question is asked,
+        // and the answer is not a smaller catalogue -- it is `mcp serve --areas`, which lets an
+        // agent be equipped with the areas it needs and leave the rest out. The ceiling here goes on
+        // saying when the *default* has grown, which is what it is for.
+        assert!(grouped.len() / 4 < 18_500, "grouped MCP schema exceeded budget: {} bytes", grouped.len());
         for command in commands() {
             assert!(
                 grouped.contains(command.verb),

@@ -275,38 +275,72 @@ fn read_text(path: &Path) -> Option<String> {
 
 /// Every match in one file's text, up to `limit` of them.
 ///
-/// Pure, so the matching can be tested without a thread or a disk behind it.
+/// Pure, so the matching can be tested without a thread or a disk behind it. The matching itself is
+/// [`ranges_in`], so the project search and the Find bar in the open file cannot come to different
+/// answers about where a word is; everything here is the turning of a byte range into the row a
+/// person reads.
 pub fn hits_in(path: &Path, text: &str, query: &Query, limit: usize) -> Vec<Hit> {
     let mut hits = Vec::new();
     if query.is_empty() || limit == 0 {
         return hits;
     }
-    let needle = if query.match_case { query.needle.clone() } else { query.needle.to_lowercase() };
+    // Whole words are `references_in`'s question rather than this one's: it asks the grammar what a
+    // hit was found *inside*, which is what `Find References` adds to `Find in Files`.
+    for offset in ranges_in(text, &query.needle, query.match_case, false) {
+        let line_index = text[..offset.start].matches('\n').count();
+        let start_of_line = text[..offset.start].rfind('\n').map_or(0, |at| at + 1);
+        let line = &text[start_of_line..]
+            [..text[start_of_line..].find('\n').unwrap_or(text.len() - start_of_line)];
+        let begin = offset.start - start_of_line;
+        let (shown, range) = shorten(line, begin..(begin + (offset.end - offset.start)));
+        hits.push(Hit {
+            path: path.to_path_buf(),
+            line: line_index + 1,
+            text: shown,
+            range,
+            offset,
+            role: Role::Code,
+        });
+        if hits.len() >= limit {
+            break;
+        }
+    }
+    hits
+}
+
+/// Where every match of `needle` sits in `text`, in bytes into the whole of it.
+///
+/// **The one matcher**, used by the project search above and by the Find bar in the open file --
+/// `task-1804` §3.1 added the second of those, and a second implementation of "where is this
+/// word" would be a second place for the case rule below to be got wrong.
+///
+/// The matching is line by line for one reason: **the lower case of a string can be a different
+/// length from the string.** The Turkish dotted capital is three bytes lower cased and two upper, so
+/// a position in a lower cased line is only a position in the line itself when the two are the same
+/// length. Where they differ the line is matched with its own case instead, which finds *less*
+/// rather than lying about where the match is. Doing that per line rather than per file keeps the
+/// damage to the one line that has such a character in it.
+///
+/// `whole_word` is the Find bar's own toggle: the characters either side of the match must not be
+/// letters, digits or underscores. That is what every editor's `ab|` button means, and it is a
+/// different and much cheaper question from `Find References`, which asks the grammar what the hit
+/// was found inside.
+pub fn ranges_in(text: &str, needle: &str, match_case: bool, whole_word: bool) -> Vec<Range<usize>> {
+    let mut found = Vec::new();
+    if needle.is_empty() {
+        return found;
+    }
+    let needle = if match_case { needle.to_owned() } else { needle.to_lowercase() };
     let mut start_of_line = 0;
-    for (index, line) in text.split('\n').enumerate() {
-        let haystack = if query.match_case { line.to_owned() } else { line.to_lowercase() };
-        // The lower case of a string can be a different length from the string — the Turkish dotted
-        // capital is three bytes lower cased and two upper — so a position in the lower cased line
-        // is only a position in the line itself when the two are the same length. When they differ,
-        // the line is matched with its own case instead, which finds less rather than lying about
-        // where the match is.
-        let usable = haystack.len() == line.len();
-        let searched = if usable { haystack.as_str() } else { line };
+    for line in text.split('\n') {
+        let lowered = if match_case { line.to_owned() } else { line.to_lowercase() };
+        let searched = if lowered.len() == line.len() { lowered.as_str() } else { line };
         let mut at = 0;
-        while let Some(found) = searched[at..].find(&needle) {
-            let begin = at + found;
+        while let Some(offset) = searched[at..].find(&needle) {
+            let begin = at + offset;
             let end = begin + needle.len();
-            let (text, range) = shorten(line, begin..end);
-            hits.push(Hit {
-                path: path.to_path_buf(),
-                line: index + 1,
-                text,
-                range,
-                offset: (start_of_line + begin)..(start_of_line + end),
-                role: Role::Code,
-            });
-            if hits.len() >= limit {
-                return hits;
+            if !whole_word || is_a_whole_word(line, begin, end) {
+                found.push((start_of_line + begin)..(start_of_line + end));
             }
             at = end.max(begin + 1);
             if at >= searched.len() {
@@ -316,7 +350,15 @@ pub fn hits_in(path: &Path, text: &str, query: &Query, limit: usize) -> Vec<Hit>
         // The line break itself is one byte, because the buffer holds line feeds only.
         start_of_line += line.len() + 1;
     }
-    hits
+    found
+}
+
+/// Whether `line[begin..end]` has no word character on either side of it.
+fn is_a_whole_word(line: &str, begin: usize, end: usize) -> bool {
+    let word = |character: char| character.is_alphanumeric() || character == '_';
+    let before = line[..begin].chars().next_back().is_none_or(|character| !word(character));
+    let after = line[end..].chars().next().is_none_or(|character| !word(character));
+    before && after
 }
 
 /// Every whole-word occurrence of `name` in one file's text, up to `limit` of them.

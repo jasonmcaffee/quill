@@ -67,7 +67,7 @@
 //! of the string; JSX, which is text; and regular expression literals, which cannot be told from
 //! division without parsing.
 
-use std::ops::Range;
+use std::ops::{ControlFlow, Range};
 
 use crate::symbols::SymbolKind;
 
@@ -442,17 +442,74 @@ pub fn scan_with_embedded(
         markup::walk(text, grammar, &mut report, Some(embedded), None);
         return;
     }
+    read_from(text, grammar, 0, |range, token| {
+        report(range, token);
+        ControlFlow::Continue(())
+    });
+}
+
+/// The same reading, begun at `start` and able to stop.
+///
+/// **Two things a caller has to be right about, and the second is why this is not `pub` on its own.**
+/// The reading below is position-independent -- at each byte it looks only at `&text[at..]` -- so
+/// starting at `start` gives exactly the tokens starting at zero would give, *provided the scanner
+/// was between tokens there*. Inside a block comment or a multi-line string it was not, and the
+/// answer from there is nonsense. And a `markup` grammar is a different reading altogether, with
+/// state of its own, so it is refused rather than started part way through.
+///
+/// [`crate::incremental::Tokens`] is what knows both of those and is where the rule lives; this is
+/// the reading, with **one loop**, because a second reading of the same rules would be a second
+/// answer to what a word is and the two would drift the first time a language asked for something
+/// new. `task-1804` §5.2.
+pub fn scan_from(
+    text: &str,
+    grammar: &Grammar,
+    start: usize,
+    report: impl FnMut(Range<usize>, Token) -> ControlFlow<()>,
+) {
+    // A markup grammar has no partial reading, so the caller is given the whole file rather than a
+    // wrong answer. `Tokens::update` does not ask for one; this is the belt.
+    if grammar.markup {
+        let mut report = report;
+        markup::walk(
+            text,
+            grammar,
+            &mut |range: Range<usize>, token: Token| {
+                let _ = report(range, token);
+            },
+            None,
+            None,
+        );
+        return;
+    }
+    read_from(text, grammar, start, report);
+}
+
+/// The loop itself. One reading of the rules, shared by every entry point above.
+fn read_from(
+    text: &str,
+    grammar: &Grammar,
+    start: usize,
+    mut report: impl FnMut(Range<usize>, Token) -> ControlFlow<()>,
+) {
     let bytes = text.as_bytes();
-    let mut at = 0;
+    let mut at = start.min(bytes.len());
+    macro_rules! say {
+        ($range:expr, $token:expr) => {
+            if report($range, $token).is_break() {
+                return;
+            }
+        };
+    }
     while at < bytes.len() {
         let rest = &text[at..];
         if let Some(length) = comment(rest, grammar) {
-            report(at..at + length, Token::Comment);
+            say!(at..at + length, Token::Comment);
             at += length;
             continue;
         }
         if let Some(length) = string(rest, grammar) {
-            report(at..at + length, Token::String);
+            say!(at..at + length, Token::String);
             at += length;
             continue;
         }
@@ -460,27 +517,27 @@ pub fn scan_with_embedded(
         // an operator, and before the number, which is the token it becomes.
         if grammar.hex_colors {
             if let Some(length) = hex_colour(rest) {
-                report(at..at + length, Token::Number);
+                say!(at..at + length, Token::Number);
                 at += length;
                 continue;
             }
         }
         if grammar.numbers {
             if let Some(length) = number(rest) {
-                report(at..at + length, Token::Number);
+                say!(at..at + length, Token::Number);
                 at += length;
                 continue;
             }
         }
         if let Some(length) = word_length(rest, grammar) {
             let word = &rest[..length];
-            report(at..at + length, classify(word, &rest[length..], grammar));
+            say!(at..at + length, classify(word, &rest[length..], grammar));
             at += length;
             continue;
         }
         let character = rest.chars().next().unwrap_or(' ');
         if grammar.operators.contains(&character) {
-            report(at..at + character.len_utf8(), Token::Operator);
+            say!(at..at + character.len_utf8(), Token::Operator);
         }
         at += character.len_utf8();
     }

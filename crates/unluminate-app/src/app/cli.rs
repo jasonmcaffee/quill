@@ -246,6 +246,20 @@ fn lines(request: &Request, message: impl Into<String>, lines: Vec<String>, extr
     ok(request, message, Value::Object(result))
 }
 
+/// How many rows `editor complete` prints when the caller does not say.
+///
+/// `task-1804` §7.4 measured what having no default cost: `--stem rel` on this project returned
+/// 1,274 rows and 430 KB, and `--stem a` returned **1.28 MB** -- roughly 320,000 tokens, more than
+/// any model's context, out of one keystroke's worth of stem. `task-1704` set the rule for the whole
+/// surface -- *answer in a payload proportionate to the question* -- and this was the one command
+/// left out of it.
+///
+/// Fifty, because the rows are already ordered best first by the same scoring the popup uses, and a
+/// fiftieth-best completion is not an answer anybody was going to read. The reply says how many
+/// there were as well as how many were shown, so a caller can tell a complete answer from a cut one
+/// without counting.
+const COMPLETIONS_SHOWN: usize = 50;
+
 impl UnluminateApp {
     /// Take everything the command channel has, run it, and answer whatever is now ready.
     ///
@@ -1885,10 +1899,19 @@ impl UnluminateApp {
                 format!("Unluminate cannot open {}: {}", path.display(), refusal.reason()),
             );
         }
-        if request.switch("permanent") {
-            self.open_path_permanently(&path);
+        // **The answer is what happened, not what was attempted.** `task-1804` §7.2 measured
+        // the alternative: on a file that exists and cannot be decoded this replied `ok: true`,
+        // `tab: 0`, exit 0, while `tab list` showed no such tab and the reason sat in the status bar
+        // where no caller was going to read it. For a person that is a bug they can see; for an
+        // agent it is the worst kind there is, because it is told the file is open, given a tab
+        // number, and every step after it works on whatever was there before.
+        let opened = if request.switch("permanent") {
+            self.open_path_permanently(&path)
         } else {
-            self.open_path(&path);
+            self.open_path(&path)
+        };
+        if let Err(reason) = opened {
+            return no(request, code::FAILED, reason);
         }
         ok(
             request,
@@ -2550,10 +2573,205 @@ impl UnluminateApp {
             "references" => self.cli_editor_references(request),
             "rename" => self.cli_editor_rename(request),
             "complete" => self.cli_editor_complete(request),
+            "find" => self.cli_editor_find(request),
+            "replace" => self.cli_editor_replace(request),
             "navigate-back" => self.cli_navigate(request, true),
             "navigate-forward" => self.cli_navigate(request, false),
             _ => unknown(request),
         }
+    }
+
+    /// `editor find` -- the Find bar, driven from the command line.
+    ///
+    /// **It opens the same bar a person opens**, which is `run_cli`'s rule rather than a
+    /// convenience: an agent asking where a word is and a person pressing `Ctrl+F` reach the same
+    /// state, so a screenshot taken after this shows the bar with the tally on it and the match
+    /// selected. A second implementation that only counted would have been a second answer to the
+    /// same question, and the two would have come to disagree.
+    fn cli_editor_find(&mut self, request: &Request) -> Outcome {
+        if let Some(refusal) = self.not_a_document(request) {
+            return refusal;
+        }
+        if request.switch("close") {
+            if self.find.is_none() {
+                return no(request, code::NOT_APPLICABLE, "The Find bar is not open.");
+            }
+            self.close_the_find();
+            return ok(request, "Put the Find bar away.", json!({ "open": false }));
+        }
+        let asked = request.text("text").map(|text| text.to_owned());
+        if self.find.is_none() {
+            let selected = self.document().selected_text();
+            let mut find = crate::services::find::Find::opened_with(Some(selected.as_str()), false);
+            find.start_from(self.document().selection().start());
+            self.find = Some(find);
+        }
+        let find = self.find.as_mut().expect("it is there now");
+        if let Some(text) = asked {
+            find.needle = text;
+        }
+        // A flag that is not given leaves the toggle as it was, so `--next` on its own does not
+        // quietly turn `--match-case` off again.
+        if request.switch("match-case") {
+            find.match_case = true;
+        }
+        if request.switch("whole-word") {
+            find.whole_word = true;
+        }
+        if find.needle.is_empty() {
+            return no(request, code::USAGE, "Say what to look for.");
+        }
+        let text = self.document().text().to_string();
+        let revision = self.document().text_revision();
+        let find = self.find.as_mut().expect("it is there");
+        find.refresh(&text, revision);
+        if request.switch("next") {
+            find.next();
+        } else if request.switch("previous") {
+            find.previous();
+        }
+        // The current match is **selected in the window**, so what the reply says and what the
+        // window shows are the same thing -- `open_the_match`'s rule.
+        if let Some(range) = self.find.as_ref().and_then(|find| find.current()) {
+            self.select_the_match(range);
+        }
+        let find = self.find.as_ref().expect("it is there");
+        let limit = match request.whole("limit") {
+            Some(0) => find.count(),
+            Some(asked) => asked,
+            None => COMPLETIONS_SHOWN,
+        };
+        let needle = find.needle.clone();
+        let (count, index) = (find.count(), find.index());
+        let current = find.current();
+        let shown: Vec<std::ops::Range<usize>> = find.all().iter().take(limit).cloned().collect();
+        let rows: Vec<String> = shown
+            .iter()
+            .map(|range| {
+                let at = status_bar::position_of(self.document().text(), range.start);
+                format!("{:>5}:{:<4} {}", at.line, at.column, self.line_of_the_match(range.start))
+            })
+            .collect();
+        let value: Vec<Value> = shown
+            .iter()
+            .map(|range| {
+                let at = status_bar::position_of(self.document().text(), range.start);
+                json!({
+                    "line": at.line,
+                    "column": at.column,
+                    "start": range.start,
+                    "end": range.end,
+                    "current": Some(range.clone()) == current,
+                })
+            })
+            .collect();
+        lines(
+            request,
+            match count {
+                0 => format!("Nothing matches '{needle}' in this file"),
+                1 => format!("1 match for '{needle}'"),
+                many => format!("{many} matches for '{needle}', on {}", index.unwrap_or(1)),
+            },
+            rows,
+            json!({
+                "needle": needle,
+                "total": count,
+                "shown": shown.len(),
+                "current": index,
+                "matchCase": self.find.as_ref().is_some_and(|find| find.match_case),
+                "wholeWord": self.find.as_ref().is_some_and(|find| find.whole_word),
+                "matches": value,
+            }),
+        )
+    }
+
+    /// The line a match is on, cut short so one minified megabyte is not the reply.
+    fn line_of_the_match(&self, offset: usize) -> String {
+        let text = self.document().text();
+        let line = text.byte_to_line(offset);
+        let start = text.line_to_byte(line);
+        let end = match line + 1 < text.len_lines() {
+            true => text.line_to_byte(line + 1),
+            false => text.len_bytes(),
+        };
+        let whole = text.byte_slice(start..end);
+        let trimmed = whole.trim_end_matches('\n');
+        match trimmed.char_indices().nth(200) {
+            Some((at, _)) => format!("{}...", &trimmed[..at]),
+            None => trimmed.to_owned(),
+        }
+    }
+
+    /// `editor replace` -- replace text in the file that is showing.
+    ///
+    /// **Without `--apply` it changes nothing**, which is `editor rename`'s shape and is here for
+    /// the same reason: a replacement across a file is a change somebody wants to see the size of
+    /// first. With it, every match goes in one `ReplaceMany`, which is one undo step.
+    fn cli_editor_replace(&mut self, request: &Request) -> Outcome {
+        if let Some(refusal) = self.not_a_document(request) {
+            return refusal;
+        }
+        let Some(text) = request.text("text").map(|text| text.to_owned()) else {
+            return no(request, code::USAGE, "Say what to look for.");
+        };
+        if text.is_empty() {
+            return no(request, code::USAGE, "Say what to look for.");
+        }
+        let Some(with) = request.text("with").map(|with| with.to_owned()) else {
+            return no(request, code::USAGE, "Say what to put in its place.");
+        };
+        let mut find = crate::services::find::Find::opened_with(None, true);
+        find.needle = text.clone();
+        find.replacement = with.clone();
+        find.match_case = request.switch("match-case");
+        find.whole_word = request.switch("whole-word");
+        let document_text = self.document().text().to_string();
+        find.refresh(&document_text, self.document().text_revision());
+        find.start_from(self.document().selection().start());
+        let all = request.switch("all");
+        let count = if all { find.count() } else { find.current().map_or(0, |_| 1) };
+        if find.count() == 0 {
+            return no(
+                request,
+                code::NOT_FOUND,
+                format!("Nothing matches '{text}' in this file."),
+            );
+        }
+        if !request.switch("apply") {
+            return ok(
+                request,
+                format!(
+                    "{} of {} would be replaced with '{with}'. Nothing was changed; add --apply.",
+                    count,
+                    find.count()
+                ),
+                json!({ "total": find.count(), "wouldChange": count, "applied": false }),
+            );
+        }
+        // The bar is left open on the search that was applied, so the window shows what happened and
+        // a person can carry on from it -- the same state a person would be in having pressed the
+        // buttons themselves.
+        self.find = Some(find);
+        if all {
+            self.replace_every_match();
+        } else {
+            self.replace_the_current_match();
+        }
+        let remaining = {
+            let text = self.document().text().to_string();
+            let revision = self.document().text_revision();
+            let find = self.find.as_mut().expect("it is there");
+            find.refresh(&text, revision);
+            find.count()
+        };
+        ok(
+            request,
+            format!(
+                "Replaced {count} {} with '{with}'. One undo puts them all back.",
+                if count == 1 { "match" } else { "matches" }
+            ),
+            json!({ "changed": count, "remaining": remaining, "applied": true }),
+        )
     }
 
     /// `unluminate-cli editor navigate-back` and its mirror, through the same stack the menu walks.
@@ -2683,6 +2901,24 @@ impl UnluminateApp {
             "canRedo": self.document().can_redo(),
             "previewApplies": file_kind::preview_applies(file.path()),
             "kind": file_kind::kind_name(file.path()),
+            // What the file was on disk and what saving it will write. The same two facts the status
+            // bar draws, so an agent can read what a person can see -- which is the rule the whole
+            // product is built on. `task-1804` §7.1 and §7.6.
+            //
+            // `lineEnding` is what would be **written**, so it already has `editor.line_ending`
+            // applied; `fileLineEnding` is what was **read**. They differ only when the setting is
+            // not `keep`, and a caller that wants to know whether saving would rewrite the file
+            // compares them.
+            "lineEnding": self
+                .settings
+                .line_endings
+                .applied_to(self.document().line_ending())
+                .name(),
+            "fileLineEnding": self.document().line_ending().name(),
+            "encoding": self.document().encoding().name(),
+            // False for a file read in an encoding Unluminate does not write. Saving it refuses with
+            // the encoding named, rather than re-encoding somebody's file.
+            "writable": self.document().writable(),
         })
     }
 
@@ -3127,7 +3363,13 @@ impl UnluminateApp {
         if word.is_empty() && rows.is_empty() {
             return no(request, code::NOT_APPLICABLE, "There is nothing to complete here.");
         }
-        let limit = request.whole("limit").unwrap_or(rows.len());
+        // **[`COMPLETIONS_SHOWN`], when nothing is asked for.** `--limit 0` means all of them, so
+        // nothing that could be asked for before has been taken away; it just has to be asked for.
+        let limit = match request.whole("limit") {
+            Some(0) => rows.len(),
+            Some(asked) => asked,
+            None => COMPLETIONS_SHOWN,
+        };
         let shown: Vec<&unluminate_core::completion::Row> = rows.iter().take(limit).collect();
         let lines_of_it: Vec<String> = shown
             .iter()
@@ -3158,7 +3400,11 @@ impl UnluminateApp {
             match rows.len() {
                 0 => format!("Nothing completes '{word}'"),
                 1 => format!("1 completion for '{word}'"),
-                many => format!("{many} completions for '{word}', {} shown", shown.len()),
+                many if many == shown.len() => format!("{many} completions for '{word}'"),
+                many => format!(
+                    "{many} completions for '{word}', {} shown - ask for more with --limit",
+                    shown.len()
+                ),
             },
             lines_of_it,
             json!({
@@ -3166,6 +3412,7 @@ impl UnluminateApp {
                 "offset": stem.start,
                 "end": stem.end,
                 "total": rows.len(),
+                "shown": shown.len(),
                 "rows": value,
             }),
         )
@@ -4350,7 +4597,11 @@ impl UnluminateApp {
         let path = self.cli_path(&path);
         // The caret is moved to the line first, and then the ordinary `Run to Cursor` runs — so the
         // command line and the menu entry are the same path rather than two that have to agree.
-        self.open_path_permanently(&path);
+        if let Err(reason) = self.open_path_permanently(&path) {
+            // Everything below places a caret in the file that was opened and then runs to it.
+            // Unguarded it would run to a line of whatever tab happened to be showing.
+            return no(request, code::FAILED, reason);
+        }
         let offset = self.document().offset_of_line_number(line);
         self.document_mut().apply(unluminate_core::Command::PlaceCaret { offset, extend: false });
         self.message = None;
@@ -5305,14 +5556,23 @@ impl UnluminateApp {
         }
         self.tree.reload();
         self.tree.expand(&path);
-        if !directory {
-            self.open_path_permanently(&path);
-        }
+        // The file was made whatever happens next, so this stays an `ok` -- but whether it also
+        // *opened* is a second fact and the reply says which, rather than letting a caller infer a
+        // tab that is not there. `task-1804` §7.2.
+        let opened = if directory { None } else { self.open_path_permanently(&path).err() };
         self.selected = Some(path.clone());
+        let said = match &opened {
+            None => format!("Made {}", path.display()),
+            Some(reason) => format!("Made {}, and it did not open: {reason}", path.display()),
+        };
         ok(
             request,
-            format!("Made {}", path.display()),
-            json!({ "path": path.to_string_lossy(), "directory": directory }),
+            said,
+            json!({
+                "path": path.to_string_lossy(),
+                "directory": directory,
+                "opened": !directory && opened.is_none(),
+            }),
         )
     }
 
@@ -5976,7 +6236,9 @@ impl UnluminateApp {
                 self.go_to_file = Some(go);
                 return no(request, code::NOT_FOUND, "Nothing is chosen, so there is nothing to open.");
             };
-            self.open_path_permanently(&path);
+            if let Err(reason) = self.open_path_permanently(&path) {
+                return no(request, code::FAILED, reason);
+            }
             return ok(
                 request,
                 format!("Opened {}", path.display()),
@@ -6303,6 +6565,8 @@ impl UnluminateApp {
             "terminal.shell" => self.settings.terminal_shell.clone(),
             "editor.line_numbers" => self.settings.line_numbers.to_string(),
             "editor.suggestions" => self.settings.suggestions.name().to_owned(),
+            "editor.line_ending" => self.settings.line_endings.name().to_owned(),
+            "editor.exclude" => self.settings.exclude.clone(),
             "debug.value_tooltip" => self.settings.value_tooltip.name().to_owned(),
             "plugins.chrome" => self.settings.plugin_chrome.to_string(),
             "mcp.enabled" => self.settings.mcp_enabled.to_string(),
@@ -6425,6 +6689,17 @@ impl UnluminateApp {
                     format!("{name} wants automatic or manual, and {value} is neither.")
                 })?
             }
+            "editor.line_ending" => {
+                settings.line_endings =
+                    crate::settings::LineEndings::parse(value).ok_or_else(|| {
+                        format!("{name} wants keep, lf or crlf, and {value} is none of them.")
+                    })?
+            }
+            // Not checked, for `terminal.shell`'s reason turned round: a pattern naming nothing in
+            // this project today may name something tomorrow, and a line that matches nothing costs
+            // nothing. A pattern that will not parse at all is skipped by the reader with the rest
+            // of the line kept, which is what a `.gitignore` comment does.
+            "editor.exclude" => settings.exclude = value.trim().to_owned(),
             "debug.value_tooltip" => {
                 settings.value_tooltip = crate::settings::ValueTooltip::parse(value).ok_or_else(
                     || format!("{name} wants automatic or manual, and {value} is neither."),
@@ -7578,6 +7853,16 @@ const SETTINGS: &[SettingKey] = &[
         help: "Whether the completion popup arrives as you type. Ctrl+Space works either way.",
     },
     SettingKey {
+        name: "editor.line_ending",
+        accepts: "keep, lf or crlf",
+        help: "What line breaks a file is written back with. `keep` writes it the way it was read, which is what leaves a one character edit as a one line diff. A new file gets the platform's own either way.",
+    },
+    SettingKey {
+        name: "editor.exclude",
+        accepts: "comma separated .gitignore patterns",
+        help: "Patterns Go to File, Find in Files, completion, Go to Definition and Find References leave out, beside the project's own .gitignore, which is read already. The explorer goes on showing everything.",
+    },
+    SettingKey {
         name: "debug.value_tooltip",
         accepts: "automatic or manual",
         help: "Whether resting the pointer on a name while the program is stopped shows its value. Show Value on the Debug menu works either way.",
@@ -7654,6 +7939,8 @@ fn fresh_value(name: &str, fresh: &crate::settings::Settings) -> String {
         "terminal.shell" => fresh.terminal_shell.clone(),
         "editor.line_numbers" => fresh.line_numbers.to_string(),
         "editor.suggestions" => fresh.suggestions.name().to_owned(),
+        "editor.line_ending" => fresh.line_endings.name().to_owned(),
+        "editor.exclude" => fresh.exclude.clone(),
         "debug.value_tooltip" => fresh.value_tooltip.name().to_owned(),
         "plugins.chrome" => fresh.plugin_chrome.to_string(),
         "mcp.enabled" => fresh.mcp_enabled.to_string(),

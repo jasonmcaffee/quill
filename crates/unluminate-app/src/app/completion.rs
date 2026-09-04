@@ -1096,7 +1096,7 @@ mod tests {
         app.complete_word();
         assert!(app.completion().is_none(), "and asking by hand says so rather than opening");
         assert!(app.message.is_some());
-        let entries = crate::app::actions::symbol_entries(&app.menu_state());
+        let entries = crate::app::actions::completion_entries(&app.menu_state());
         assert!(
             !entries.iter().any(|entry| matches!(
                 entry,
@@ -1107,7 +1107,7 @@ mod tests {
         // A stylesheet is the opposite: no definers, but its own words and keywords are real offers.
         app.open_path_permanently(&folder.join("site.css"));
         assert!(app.completion_applies_here(), "CSS completes");
-        let entries = crate::app::actions::symbol_entries(&app.menu_state());
+        let entries = crate::app::actions::completion_entries(&app.menu_state());
         assert!(entries.iter().any(|entry| matches!(
             entry,
             Entry::Item { action: Action::CompleteWord, .. }

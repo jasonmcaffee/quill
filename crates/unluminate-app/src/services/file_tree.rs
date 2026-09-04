@@ -15,6 +15,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::services::file_kind::{self, Kind, Refusal};
+use crate::services::ignore::Ignores;
 
 /// Whether Unluminate can open this file.
 pub fn is_openable(path: &Path) -> bool {
@@ -81,6 +82,14 @@ pub struct FileTree {
     /// Every file under the root, found once when the tree is loaded. The filter searches this, so it
     /// finds files inside folders that have never been opened.
     all_files: Vec<PathBuf>,
+    /// What this project leaves out of `all_files`: its `.gitignore`, its `.git/info/exclude` and
+    /// the `editor.exclude` setting. `task-1804` §7.3.
+    ///
+    /// It is read once per reload rather than per file, because it is two small files and a walk
+    /// asks the question thousands of times.
+    ignores: Ignores,
+    /// The `editor.exclude` setting as it was last given, so a reload keeps it.
+    exclude: String,
     /// The last error from reading a directory, so the window can say why a folder looks empty.
     pub last_error: Option<String>,
     /// When each folder that is **showing** was last written to, as the disk said at the moment it
@@ -100,6 +109,8 @@ impl FileTree {
             root,
             entries: Vec::new(),
             all_files: Vec::new(),
+            ignores: Ignores::default(),
+            exclude: String::new(),
             last_error: None,
             folder_times: Vec::new(),
         };
@@ -109,6 +120,23 @@ impl FileTree {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// The `editor.exclude` patterns, applied from the next reload.
+    ///
+    /// Reloads at once when they changed, because a setting that only takes effect after something
+    /// else happens is a setting a person tries once and decides is broken.
+    pub fn set_exclude(&mut self, patterns: &str) {
+        if self.exclude == patterns {
+            return;
+        }
+        self.exclude = patterns.to_owned();
+        self.reload();
+    }
+
+    /// What this project leaves out of the searchable list.
+    pub fn ignores(&self) -> &Ignores {
+        &self.ignores
     }
 
     /// Read the root's children again, keeping which folders were open.
@@ -127,7 +155,13 @@ impl FileTree {
         for path in expanded {
             self.expand(&path);
         }
-        self.all_files = walk_files(&self.root, SEARCH_DEPTH);
+        // Read fresh on every reload, so editing `.gitignore` and pressing refresh takes effect --
+        // which is what a person who has just added a line to it expects. The rules belong to the
+        // repository rather than to whichever folder was opened, so a checkout's own file is honoured
+        // when a subfolder of it is the root.
+        let repository = crate::services::ignore::repository_root(&self.root);
+        self.ignores = Ignores::read(&repository, &self.exclude);
+        self.all_files = walk_files(&self.root, SEARCH_DEPTH, &self.ignores);
         self.folder_times = self.read_folder_times();
     }
 
@@ -335,9 +369,15 @@ impl FileTree {
 ///
 /// This is a separate walk from the tree itself because the tree only reads a folder when it is opened,
 /// and the filter and the file count have to know about files the user has not gone looking for yet.
-fn walk_files(root: &Path, depth: usize) -> Vec<PathBuf> {
+fn walk_files(root: &Path, depth: usize, ignores: &Ignores) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    fn walk(directory: &Path, remaining: usize, out: &mut Vec<PathBuf>) {
+    fn walk(
+        root: &Path,
+        directory: &Path,
+        remaining: usize,
+        ignores: &Ignores,
+        out: &mut Vec<PathBuf>,
+    ) {
         if remaining == 0 || out.len() >= SEARCH_LIMIT * 4 {
             return;
         }
@@ -345,36 +385,33 @@ fn walk_files(root: &Path, depth: usize) -> Vec<PathBuf> {
             return;
         };
         for entry in entries {
+            let relative = match entry.path.strip_prefix(root) {
+                Ok(relative) => relative.to_string_lossy().replace('\\', "/"),
+                // Outside the root entirely, which a symbolic link can produce. Left in, because the
+                // rules are written about paths inside the project and say nothing about this one.
+                Err(_) => String::new(),
+            };
             if entry.is_directory {
-                if is_build_output(&entry.name) {
+                // `.gitignore` first, and the three build folder names only where the project has
+                // not said -- which is what `skips_folder` decides. `task-1804` §7.3.
+                if !relative.is_empty() && ignores.skips_folder(&relative, &entry.name) {
                     continue;
                 }
-                walk(&entry.path, remaining - 1, out);
+                walk(root, &entry.path, remaining - 1, ignores, out);
             } else if entry.refusal != Some(Refusal::NotAFile) {
                 // Regular files only. A device, a pipe or a socket is drawn in the explorer because the
                 // panel is a picture of the folder, and it is not a file anybody searches for by name.
+                if !relative.is_empty() && ignores.ignores(&relative, false) {
+                    continue;
+                }
                 out.push(entry.path);
             }
         }
     }
-    walk(root, depth, &mut out);
+    walk(root, root, depth, ignores, &mut out);
     out
 }
 
-/// Folders holding what a build wrote rather than what a person did.
-///
-/// They are still **shown** in the explorer — it is a picture of the folder and hiding most of it is
-/// exactly what this file's own comment at the top refuses to do. They are left out of the list that
-/// [`FileTree::all_files`] holds, which is what the filter box, `Go to File` and `Find in Files`
-/// search, because a search that answers with a thousand `.rlib` files from `target/deps` has not
-/// answered.
-///
-/// Three names only, and each is a folder nobody writes a source file into. `build`, `dist` and
-/// `out` are **not** here on purpose: those are real folders in real projects, and a search that
-/// silently missed a file in one would be worse than one that offered a few too many.
-fn is_build_output(name: &str) -> bool {
-    matches!(name, "target" | "node_modules" | "__pycache__")
-}
 
 /// Read one directory: folders first, then files, both sorted by name.
 ///
@@ -472,6 +509,80 @@ mod tests_task_28 {
             !tree.all_files().iter().any(|path| path == &pipe),
             "a pipe is not a file anybody looks for by name"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `task-1804` §7.3. A fixture project with a `.gitignore`, asserting both halves: what it
+    /// names is out of the searchable list, **and the explorer still lists it**.
+    ///
+    /// The second half is the one worth having a test for. It is the rule at the top of this file --
+    /// the explorer is a picture of the folder -- and it is the rule a later change that made the
+    /// ignore rules "simply hide things" would break without any other test noticing.
+    #[test]
+    fn a_gitignore_is_honoured_by_the_index_and_the_explorer_still_shows_everything() {
+        let root = std::env::temp_dir().join(format!("unluminate-tree-ignore-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".git/info")).expect("make the repository");
+        std::fs::create_dir_all(root.join("src")).expect("make src");
+        std::fs::create_dir_all(root.join("dist")).expect("make dist");
+        std::fs::create_dir_all(root.join("node_modules/left-pad")).expect("make node_modules");
+        std::fs::create_dir_all(root.join("scratch")).expect("make scratch");
+        std::fs::create_dir_all(root.join("vendor")).expect("make vendor");
+        std::fs::write(root.join(".gitignore"), "dist/\n*.log\n").expect("write .gitignore");
+        std::fs::write(root.join(".git/info/exclude"), "scratch/\n").expect("write exclude");
+        std::fs::write(root.join("src/main.rs"), "fn main() {}").expect("write main.rs");
+        std::fs::write(root.join("dist/bundle.js"), "//").expect("write bundle.js");
+        std::fs::write(root.join("node_modules/left-pad/index.js"), "//").expect("write index.js");
+        std::fs::write(root.join("scratch/notes.txt"), "notes").expect("write notes.txt");
+        std::fs::write(root.join("vendor/lib.rs"), "//").expect("write lib.rs");
+        std::fs::write(root.join("debug.log"), "log").expect("write debug.log");
+
+        let mut tree = FileTree::new(&root);
+        let named = |tree: &FileTree, name: &str| {
+            tree.all_files().iter().any(|path| path.ends_with(name))
+        };
+
+        assert!(named(&tree, "main.rs"), "a source file is in the index");
+        assert!(!named(&tree, "bundle.js"), "`dist/` is named in .gitignore");
+        assert!(!named(&tree, "debug.log"), "and so is `*.log`");
+        assert!(!named(&tree, "notes.txt"), ".git/info/exclude is read too");
+        assert!(named(&tree, "lib.rs"), "vendor is not ignored by this project, so it stays");
+        // **A repository that does not ignore `node_modules` means it.** The three hardcoded names
+        // are the fallback for a folder that is not a repository, and this one is.
+        assert!(named(&tree, "index.js"), "the project's own file is what decides inside a repository");
+
+        // The `editor.exclude` setting is the person's own line beside the project's.
+        tree.set_exclude("vendor/");
+        assert!(!named(&tree, "lib.rs"), "the setting leaves it out");
+        assert!(named(&tree, "main.rs"), "and leaves everything else alone");
+
+        // And the explorer is unchanged: every folder is still there to be opened.
+        let names: Vec<&str> = tree.rows().iter().map(|row| row.entry.name.as_str()).collect();
+        for folder in ["dist", "node_modules", "scratch", "vendor", "src"] {
+            assert!(names.contains(&folder), "{folder} is still shown in the explorer: {names:?}");
+        }
+        assert!(names.contains(&"debug.log"), "and so is an ignored file");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Outside a repository the three build folder names are still what is skipped, which is what
+    /// they always were and what every project with no `.gitignore` relies on.
+    #[test]
+    fn a_folder_that_is_not_a_repository_still_skips_the_three_build_folders() {
+        let root = std::env::temp_dir().join(format!("unluminate-tree-plain-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("target/debug")).expect("make target");
+        std::fs::create_dir_all(root.join("src")).expect("make src");
+        std::fs::write(root.join("target/debug/thing.rs"), "//").expect("write thing.rs");
+        std::fs::write(root.join("src/main.rs"), "fn main() {}").expect("write main.rs");
+
+        let tree = FileTree::new(&root);
+        assert!(tree.all_files().iter().any(|path| path.ends_with("main.rs")));
+        assert!(
+            !tree.all_files().iter().any(|path| path.ends_with("thing.rs")),
+            "target is still skipped when nothing has said otherwise"
+        );
+        assert!(!tree.ignores().is_repository());
         let _ = std::fs::remove_dir_all(&root);
     }
 

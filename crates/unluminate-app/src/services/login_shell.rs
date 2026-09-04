@@ -85,6 +85,10 @@ const NOT_CARRIED: &[&str] = &["PWD", "OLDPWD", "SHLVL", "_"];
 /// password — must not be an Unluminate that never starts an agent, so the read is given up on and what
 /// this process already has is what is left. Ten seconds rather than two, because the read happens
 /// once on a thread and a slow machine's profile is slow rather than broken.
+/// Only the non-Windows reading below uses this, and its tests use it on every platform, so on
+/// Windows it is dead in the binary and alive in the test build. `task-1804` §7.7 cleared the
+/// four warnings that came of saying nothing about that.
+#[cfg_attr(windows, allow(dead_code))]
 const PATIENCE: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Start reading the login shell's environment on a thread, so the first program Unluminate starts does
@@ -247,10 +251,18 @@ fn merge(login: Option<&str>, process: Option<&OsStr>) -> OsString {
 }
 
 /// What the marker in front of the variables says, so a banner the profile printed is not read as one.
+/// Only the non-Windows reading below uses this, and its tests use it on every platform, so on
+/// Windows it is dead in the binary and alive in the test build. `task-1804` §7.7 cleared the
+/// four warnings that came of saying nothing about that.
+#[cfg_attr(windows, allow(dead_code))]
 const MARKER: &str = "UNLUMINATE-ENVIRONMENT";
 
 /// The program that prints the environment, by its full path. See the note at the top of the file for
 /// what a bare `env` turned out to be on the machine this was written on.
+/// Only the non-Windows reading below uses this, and its tests use it on every platform, so on
+/// Windows it is dead in the binary and alive in the test build. `task-1804` §7.7 cleared the
+/// four warnings that came of saying nothing about that.
+#[cfg_attr(windows, allow(dead_code))]
 const ENV: &str = "/usr/bin/env";
 
 /// Run the login shell and read the environment it reports.
@@ -300,6 +312,10 @@ fn read_the_login_shell() -> Option<Vec<(String, String)>> {
 /// person with no environment. A record with no `=` in it is not a variable and is dropped; bytes that
 /// are not text are dropped with the variable they are in, since everything downstream of this is a
 /// `String`.
+/// Only the non-Windows reading below uses this, and its tests use it on every platform, so on
+/// Windows it is dead in the binary and alive in the test build. `task-1804` §7.7 cleared the
+/// four warnings that came of saying nothing about that.
+#[cfg_attr(windows, allow(dead_code))]
 fn parse(said: &[u8]) -> Option<Vec<(String, String)>> {
     let mut records = said.split(|byte| *byte == 0);
     records.find(|record| record.ends_with(MARKER.as_bytes()))?;

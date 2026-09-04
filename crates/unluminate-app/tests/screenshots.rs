@@ -1162,8 +1162,8 @@ fn moving_between_file_tabs_does_not_type_a_tab_into_the_file_it_leaves() {
     // documentation captures for `task-1657`, and the same shape of fault as `task-1656`.
     let folder = sample_folder();
     let mut harness = harness_in(&folder);
-    harness.state_mut().open_path_permanently(&folder.join("readme.md"));
-    harness.state_mut().open_path_permanently(&folder.join("notes.txt"));
+    harness.state_mut().open_path_permanently(&folder.join("readme.md")).expect("the file opens");
+    harness.state_mut().open_path_permanently(&folder.join("notes.txt")).expect("the file opens");
     harness.run();
     let before: Vec<String> =
         harness.state().files.iter().map(|file| file.document.text().to_string()).collect();
@@ -1686,7 +1686,7 @@ fn the_explorer_draws_only_the_rows_that_are_on_screen() {
     // And it is reachable: the window's own reveal is what a person or `unluminate-cli` asks for, and it has to
     // work for a row that was never drawn, which is the one thing virtualisation could have taken away.
     let last = folder.join("entry0599.txt");
-    harness.state_mut().open_path_permanently(&last);
+    harness.state_mut().open_path_permanently(&last).expect("the file opens");
     harness.run();
     harness.run();
     assert!(
@@ -2057,7 +2057,7 @@ fn changing_the_font_reaches_every_open_tab_and_not_only_the_one_showing() {
     let folder = sample_folder();
     let mut harness = harness_in(&folder);
     for name in ["readme.md", "notes.txt", "program.rs"] {
-        harness.state_mut().open_path_permanently(&folder.join(name));
+        harness.state_mut().open_path_permanently(&folder.join(name)).expect("the file opens");
     }
     harness.run();
     assert_eq!(harness.state().files.len(), 3, "one tab each, and none of them transient");
@@ -2301,7 +2301,7 @@ fn a_zoom_leaves_a_tab_that_was_not_showing_at_the_line_it_was_left_at() {
     let long = folder.join("long.txt");
     let mut harness = harness_in(&folder);
     let ctx = harness.ctx.clone();
-    harness.state_mut().open_path_permanently(&long);
+    harness.state_mut().open_path_permanently(&long).expect("the file opens");
     harness.run();
     harness.state_mut().files.active_mut().scroll = 900.0;
     harness.run();
@@ -2309,11 +2309,11 @@ fn a_zoom_leaves_a_tab_that_was_not_showing_at_the_line_it_was_left_at() {
     let was_at_the_top = paragraph_under(harness.state(), top);
 
     // Show a different file, change the size from there, and come back.
-    harness.state_mut().open_path_permanently(&folder.join("short.txt"));
+    harness.state_mut().open_path_permanently(&folder.join("short.txt")).expect("the file opens");
     harness.run();
     harness.state_mut().run_action(Action::ChangeFontSize { larger: true }, &ctx);
     harness.run();
-    harness.state_mut().open_path_permanently(&long);
+    harness.state_mut().open_path_permanently(&long).expect("the file opens");
     harness.run();
     harness.run();
     assert_eq!(harness.state().files.active().name(), "long.txt");
@@ -2332,9 +2332,9 @@ fn a_pinch_in_a_split_is_the_pointers_pane_and_steps_the_size_once() {
     let folder = a_folder_of_long_files();
     let mut harness = harness_in(&folder);
     let ctx = harness.ctx.clone();
-    harness.state_mut().open_path_permanently(&folder.join("long.txt"));
+    harness.state_mut().open_path_permanently(&folder.join("long.txt")).expect("the file opens");
     harness.run();
-    harness.state_mut().open_path_permanently(&folder.join("longer.txt"));
+    harness.state_mut().open_path_permanently(&folder.join("longer.txt")).expect("the file opens");
     harness.state_mut().run_action(Action::SplitRight, &ctx);
     harness.run();
     assert_eq!(harness.state().files.pane_count(), 2, "there should be two panes");
@@ -2983,7 +2983,7 @@ fn a_tab_can_be_dragged_along_the_strip_to_rearrange_it() {
     let mut harness = harness("");
     let folder = sample_folder();
     for name in ["notes.txt", "readme.md", "program.rs"] {
-        harness.state_mut().open_path_permanently(&folder.join(name));
+        harness.state_mut().open_path_permanently(&folder.join(name)).expect("the file opens");
         harness.run();
     }
     let names = |harness: &Harness<'static, UnluminateApp>| -> Vec<String> {
@@ -3007,7 +3007,7 @@ fn a_tab_can_be_dragged_from_one_pane_into_the_other() {
     let mut harness = harness("");
     let folder = sample_folder();
     for name in ["notes.txt", "readme.md"] {
-        harness.state_mut().open_path_permanently(&folder.join(name));
+        harness.state_mut().open_path_permanently(&folder.join(name)).expect("the file opens");
         harness.run();
     }
     let ctx = harness.ctx.clone();
@@ -3816,7 +3816,7 @@ fn typing_a_new_name_in_the_rename_prompt_leaves_the_document_alone() {
     std::fs::create_dir_all(&folder).expect("make the folder");
     std::fs::write(folder.join("before.md"), "# before\n").expect("write it");
     let mut harness = harness_in(&folder);
-    harness.state_mut().open_path_permanently(&folder.join("before.md"));
+    harness.state_mut().open_path_permanently(&folder.join("before.md")).expect("the file opens");
     harness.run();
     let before = harness.state().document().text().to_string();
 
@@ -3902,7 +3902,7 @@ fn enter_in_the_commit_message_is_a_new_line_and_the_command_key_commits() {
     // press.
     let root = harness.state().tree.root().to_path_buf();
     let ctx = harness.ctx.clone();
-    harness.state_mut().open_path_permanently(&root.join("version.ts"));
+    harness.state_mut().open_path_permanently(&root.join("version.ts")).expect("the file opens");
     nudge(&mut harness);
     harness
         .state_mut()
@@ -4121,9 +4121,9 @@ fn the_gutters_own_menu_opens_where_it_was_clicked() {
 fn three_files_open_in_three_tabs_and_the_one_showing_is_underlined() {
     let folder = sample_folder();
     let mut harness = harness_in(&folder);
-    harness.state_mut().open_path_permanently(&folder.join("readme.md"));
-    harness.state_mut().open_path_permanently(&folder.join("notes.txt"));
-    harness.state_mut().open_path_permanently(&folder.join("program.rs"));
+    harness.state_mut().open_path_permanently(&folder.join("readme.md")).expect("the file opens");
+    harness.state_mut().open_path_permanently(&folder.join("notes.txt")).expect("the file opens");
+    harness.state_mut().open_path_permanently(&folder.join("program.rs")).expect("the file opens");
     harness.run();
     assert_eq!(harness.state().files.len(), 3);
     // A change in the middle tab, so the amber dot is in the picture too.
@@ -4139,17 +4139,17 @@ fn three_files_open_in_three_tabs_and_the_one_showing_is_underlined() {
 fn a_single_click_reuses_one_tab_and_a_double_click_opens_another() {
     let folder = sample_folder();
     let mut harness = harness_in(&folder);
-    harness.state_mut().open_path(&folder.join("readme.md"));
+    harness.state_mut().open_path(&folder.join("readme.md")).expect("the file opens");
     harness.run();
     assert_eq!(harness.state().files.len(), 1);
     assert!(harness.state().files.active().transient, "one click is a glance");
 
-    harness.state_mut().open_path(&folder.join("notes.txt"));
+    harness.state_mut().open_path(&folder.join("notes.txt")).expect("the file opens");
     harness.run();
     assert_eq!(harness.state().files.len(), 1, "a second glance replaces the first");
     assert_eq!(harness.state().files.active().name(), "notes.txt");
 
-    harness.state_mut().open_path_permanently(&folder.join("program.rs"));
+    harness.state_mut().open_path_permanently(&folder.join("program.rs")).expect("the file opens");
     harness.run();
     assert_eq!(harness.state().files.len(), 2, "a double click keeps what was there");
 }
@@ -4158,7 +4158,7 @@ fn a_single_click_reuses_one_tab_and_a_double_click_opens_another() {
 fn typing_into_a_tab_that_was_only_glanced_at_keeps_it() {
     let folder = sample_folder();
     let mut harness = harness_in(&folder);
-    harness.state_mut().open_path(&folder.join("readme.md"));
+    harness.state_mut().open_path(&folder.join("readme.md")).expect("the file opens");
     harness.run();
     assert!(harness.state().files.active().transient);
     harness.input_mut().events.push(egui::Event::Text("a".to_owned()));
@@ -4170,8 +4170,8 @@ fn typing_into_a_tab_that_was_only_glanced_at_keeps_it() {
 fn a_tab_can_be_closed_and_the_last_one_leaves_an_untitled_document() {
     let folder = sample_folder();
     let mut harness = harness_in(&folder);
-    harness.state_mut().open_path_permanently(&folder.join("readme.md"));
-    harness.state_mut().open_path_permanently(&folder.join("notes.txt"));
+    harness.state_mut().open_path_permanently(&folder.join("readme.md")).expect("the file opens");
+    harness.state_mut().open_path_permanently(&folder.join("notes.txt")).expect("the file opens");
     harness.run();
     harness.get_by_label("Close notes.txt").click();
     harness.run();
@@ -4243,7 +4243,7 @@ fn renaming_a_file_moves_it_and_the_tab_follows() {
     std::fs::create_dir_all(&folder).expect("make the folder");
     std::fs::write(folder.join("before.md"), "# before\n").expect("write it");
     let mut harness = harness_in(&folder);
-    harness.state_mut().open_path_permanently(&folder.join("before.md"));
+    harness.state_mut().open_path_permanently(&folder.join("before.md")).expect("the file opens");
     harness.run();
     let ctx = harness.ctx.clone();
     harness.state_mut().run_action(Action::RenamePath(folder.join("before.md")), &ctx);
@@ -4376,7 +4376,7 @@ fn the_branches_dialog_lists_the_branches() {
 fn the_gutter_annotates_with_git_blame_and_colours_by_age() {
     let mut harness = git_harness("blame");
     let folder = harness.state().tree.root().to_path_buf();
-    harness.state_mut().open_path_permanently(&folder.join("sqlClient.ts"));
+    harness.state_mut().open_path_permanently(&folder.join("sqlClient.ts")).expect("the file opens");
     harness.run();
     let ctx = harness.ctx.clone();
     harness.state_mut().run_action(Action::Git(unluminate_app::app::actions::GitAction::Annotate), &ctx);
@@ -4406,7 +4406,7 @@ fn a_typescript_file_is_coloured_by_its_plugin() {
     let folder = copy_out_of_the_repository(&git_folder("syntax"), "unluminate-screenshot-syntax");
     std::fs::remove_dir_all(folder.join(".git")).ok();
     let mut harness = harness_in(&folder);
-    harness.state_mut().open_path_permanently(&folder.join("sqlClient.ts"));
+    harness.state_mut().open_path_permanently(&folder.join("sqlClient.ts")).expect("the file opens");
     harness.run();
     harness.run();
     // The colours are in the document's own spans, so the test can check them without looking at
@@ -4456,7 +4456,7 @@ fn a_css_file_is_coloured_by_its_plugin() {
     )
     .expect("write site.css");
     let mut harness = harness_in(&folder);
-    harness.state_mut().open_path_permanently(&path);
+    harness.state_mut().open_path_permanently(&path).expect("the file opens");
     harness.run();
     harness.run();
     // Read out of the document's own spans, so the five things the plugin had to be taught are
@@ -4511,7 +4511,7 @@ fn an_html_file_is_coloured_by_its_plugin() {
     )
     .expect("write page.html");
     let mut harness = harness_in(&folder);
-    harness.state_mut().open_path_permanently(&path);
+    harness.state_mut().open_path_permanently(&path).expect("the file opens");
     harness.run();
     harness.run();
     // Read out of the document's own spans, so the things the plugin had to be taught are checked
@@ -4851,7 +4851,7 @@ fn every_git_operation_can_be_driven_from_the_window() {
     use unluminate_app::app::actions::GitAction;
 
     // ---- stage a file -----------------------------------------------------------------------
-    harness.state_mut().open_path_permanently(&root.join("version.ts"));
+    harness.state_mut().open_path_permanently(&root.join("version.ts")).expect("the file opens");
     nudge(&mut harness);
     harness.state_mut().run_action(git(GitAction::Add(None)), &ctx);
     settle(&mut harness, "the file to be staged", |app| {
@@ -5061,8 +5061,8 @@ fn what_was_open_in_a_project_comes_back_when_it_is_opened_again() {
     {
         let mut harness = harness_in(&root);
         harness.state_mut().restore_project();
-        harness.state_mut().open_path_permanently(&root.join("readme.md"));
-        harness.state_mut().open_path_permanently(&root.join("notes.txt"));
+        harness.state_mut().open_path_permanently(&root.join("readme.md")).expect("the file opens");
+        harness.state_mut().open_path_permanently(&root.join("notes.txt")).expect("the file opens");
         harness.state_mut().tree.expand(&root.join("chapters"));
         harness.run();
         // Written when the window closes, as it is when a person shuts Unluminate.
@@ -5148,7 +5148,7 @@ fn saving_a_tab_that_holds_a_picture_does_not_write_over_the_picture() {
     let path = folder.join("picture.png");
     let before = std::fs::read(&path).expect("read the picture");
     let mut harness = harness_in(&folder);
-    harness.state_mut().open_path_permanently(&path);
+    harness.state_mut().open_path_permanently(&path).expect("the file opens");
     harness.run();
     assert!(harness.state().files.active().is_picture());
     let ctx = harness.ctx.clone();
@@ -5493,7 +5493,7 @@ fn picture_document_folder() -> std::path::PathBuf {
 fn preview_of_the_gallery() -> Harness<'static, UnluminateApp> {
     let folder = picture_document_folder();
     let mut harness = harness_in(&folder);
-    harness.state_mut().open_path_permanently(&folder.join("gallery.md"));
+    harness.state_mut().open_path_permanently(&folder.join("gallery.md")).expect("the file opens");
     harness.run();
     harness.state_mut().set_view_mode(ViewMode::Preview);
     harness.run();
@@ -5558,7 +5558,7 @@ fn a_wide_picture_is_scaled_down_to_the_width_of_the_pane() {
     wide.save(folder.join("wide.png")).expect("write wide.png");
     std::fs::write(folder.join("wide.md"), "![wide](wide.png)\n").expect("write wide.md");
     let mut harness = harness_in(&folder);
-    harness.state_mut().open_path_permanently(&folder.join("wide.md"));
+    harness.state_mut().open_path_permanently(&folder.join("wide.md")).expect("the file opens");
     harness.run();
     harness.state_mut().set_view_mode(ViewMode::Preview);
     harness.run();
@@ -6017,11 +6017,11 @@ fn run_current_file_is_offered_for_a_javascript_file_and_not_for_a_rust_one() {
     std::fs::write(folder.join("main.rs"), "fn main() {}\n").expect("write it");
     let mut harness = harness_in(&folder);
 
-    harness.state_mut().open_path_permanently(&folder.join("server.js"));
+    harness.state_mut().open_path_permanently(&folder.join("server.js")).expect("the file opens");
     harness.run();
     assert_eq!(harness.state().run_file_template().as_deref(), Some("node {file}"));
 
-    harness.state_mut().open_path_permanently(&folder.join("main.rs"));
+    harness.state_mut().open_path_permanently(&folder.join("main.rs")).expect("the file opens");
     harness.run();
     assert_eq!(
         harness.state().run_file_template(),
@@ -6029,7 +6029,7 @@ fn run_current_file_is_offered_for_a_javascript_file_and_not_for_a_rust_one() {
         "running one file of a Cargo project is not a thing cargo does"
     );
 
-    harness.state_mut().open_path_permanently(&folder.join("server.js"));
+    harness.state_mut().open_path_permanently(&folder.join("server.js")).expect("the file opens");
     harness.run();
     harness.state_mut().set_plugin_enabled("javascript", false);
     harness.run();
@@ -6950,6 +6950,48 @@ fn a_fold_change_answers_with_a_summary_and_the_list_is_opt_in() {
     assert_eq!(toggled["collapsed"], 0);
 }
 
+/// `editor complete` prints fifty rows and says how many there were. `task-1804` §7.4.
+///
+/// The one command `task-1704` left out of its own rule. `--stem a` on this project used to return
+/// **1.28 MB** -- roughly 320,000 tokens, more than any model's context -- out of one keystroke's
+/// worth of stem, because `--limit`'s documented default was "all of them".
+///
+/// What is asserted is the shape rather than a number of matches, so the test does not depend on how
+/// many words happen to be in the fixture: the rows are capped, the total is reported, `--limit 0`
+/// still gives everything, and a smaller `--limit` is still honoured.
+#[test]
+fn editor_complete_answers_in_a_payload_proportionate_to_the_question() {
+    let mut harness = harness_in(&sample_folder());
+    did(&mut harness, "tab open program.rs --permanent");
+
+    let all = did(&mut harness, "editor complete --stem a --limit 0");
+    let total = all["total"].as_u64().expect("the total") as usize;
+    assert_eq!(
+        all["rows"].as_array().expect("the rows").len(),
+        total,
+        "--limit 0 is still every row, so nothing has been taken away"
+    );
+
+    let capped = did(&mut harness, "editor complete --stem a");
+    assert_eq!(capped["total"], all["total"], "the count does not change with the cap");
+    let shown = capped["rows"].as_array().expect("the rows").len();
+    assert!(shown <= 50, "at most fifty rows without being asked: {shown}");
+    assert_eq!(capped["shown"], serde_json::json!(shown), "and the reply says how many were shown");
+    if total > 50 {
+        assert_eq!(shown, 50, "fifty of them when there are more than fifty");
+        assert!(
+            capped["message"].as_str().unwrap_or_default().contains("--limit"),
+            "and it says how to ask for the rest: {}",
+            capped["message"]
+        );
+    }
+
+    // An explicit smaller limit is still honoured, which is what it always did.
+    let three = did(&mut harness, "editor complete --stem a --limit 3");
+    assert!(three["rows"].as_array().expect("the rows").len() <= 3);
+    assert_eq!(three["total"], all["total"]);
+}
+
 /// `action list --menu` answers with the menu that was asked for and nothing else, and every
 /// menu is still the answer when none is named.
 #[test]
@@ -7050,6 +7092,8 @@ const SETTINGS_HELP: &[&str] = &[
     "What each terminal tab runs. Empty means PowerShell on Windows and $SHELL elsewhere.",
     "Whether the editing area has a column of line numbers.",
     "Whether the completion popup arrives as you type. Ctrl+Space works either way.",
+    "What line breaks a file is written back with. `keep` writes it the way it was read, which is what leaves a one character edit as a one line diff. A new file gets the platform's own either way.",
+    "Patterns Go to File, Find in Files, completion, Go to Definition and Find References leave out, beside the project's own .gitignore, which is read already. The explorer goes on showing everything.",
     "Whether resting the pointer on a name while the program is stopped shows its value. Show Value on the Debug menu works either way.",
     "Whether a plugin that asked for it draws depth: the soft shadows, gradients and pressed edges behind its own pane. Off, it draws flat.",
     "Whether this Unluminate serves MCP over HTTP. An agent that launches the server itself needs neither this nor a port.",
@@ -7217,7 +7261,7 @@ fn a_file_changed_outside_unluminate_is_read_again_before_it_is_answered_about()
     std::fs::write(&path, "first\n").expect("write notes.md");
 
     let mut harness = harness_in(&folder);
-    harness.state_mut().open_path_permanently(&path);
+    harness.state_mut().open_path_permanently(&path).expect("the file opens");
     harness.run();
     let first = over_the_wire(&mut harness, "editor.text", serde_json::json!({}));
     assert_eq!(first.result["text"], "first\n");
@@ -7258,7 +7302,7 @@ fn a_tab_with_unsaved_changes_is_not_reread_from_the_file() {
     std::fs::write(&path, "first\n").expect("write notes.md");
 
     let mut harness = harness_in(&folder);
-    harness.state_mut().open_path_permanently(&path);
+    harness.state_mut().open_path_permanently(&path).expect("the file opens");
     harness.run();
     over_the_wire(&mut harness, "editor.insert", serde_json::json!({ "text": "mine " }));
     assert!(harness.state().document().is_modified(), "the tab has unsaved changes");
@@ -7728,7 +7772,7 @@ fn diagram_folder() -> std::path::PathBuf {
 fn diagram_harness(name: &str, mode: ViewMode) -> Harness<'static, UnluminateApp> {
     let folder = diagram_folder();
     let mut harness = harness_in(&folder);
-    harness.state_mut().open_path_permanently(&folder.join(name));
+    harness.state_mut().open_path_permanently(&folder.join(name)).expect("the file opens");
     harness.run();
     harness.state_mut().set_view_mode(mode);
     harness.run();
@@ -7809,7 +7853,7 @@ fn a_diagram_that_will_not_parse_says_which_line_rather_than_drawing_nothing() {
     std::fs::write(&broken, "flowchart LR\n  A --> B\n  C[never closed --> D\n")
         .expect("write the broken sample");
     let mut harness = harness_in(&folder);
-    harness.state_mut().open_path_permanently(&broken);
+    harness.state_mut().open_path_permanently(&broken).expect("the file opens");
     harness.state_mut().set_view_mode(ViewMode::Preview);
     harness.run();
     harness.snapshot(shot("mermaid_problem"));
@@ -7822,7 +7866,7 @@ fn a_diagram_type_unluminate_does_not_draw_is_named_rather_than_left_blank() {
     std::fs::write(&path, "wardley\n  title A value chain\n  anchor Customer [0.9, 0.8]\n")
         .expect("write the sample");
     let mut harness = harness_in(&folder);
-    harness.state_mut().open_path_permanently(&path);
+    harness.state_mut().open_path_permanently(&path).expect("the file opens");
     harness.state_mut().set_view_mode(ViewMode::Preview);
     harness.run();
     harness.snapshot(shot("mermaid_not_drawn"));
@@ -7832,7 +7876,7 @@ fn a_diagram_type_unluminate_does_not_draw_is_named_rather_than_left_blank() {
 fn mermaid_blocks_in_a_markdown_file_are_drawn_in_its_preview() {
     let folder = diagram_folder();
     let mut harness = harness_in(&folder);
-    harness.state_mut().open_path_permanently(&folder.join("in-markdown.md"));
+    harness.state_mut().open_path_permanently(&folder.join("in-markdown.md")).expect("the file opens");
     harness.state_mut().set_view_mode(ViewMode::Preview);
     harness.run();
 
@@ -7860,7 +7904,7 @@ fn switching_the_mermaid_plugin_off_withdraws_the_diagrams() {
     // the feature away, in the same frame, in both of the places it appears.
     let folder = diagram_folder();
     let mut harness = harness_in(&folder);
-    harness.state_mut().open_path_permanently(&folder.join("in-markdown.md"));
+    harness.state_mut().open_path_permanently(&folder.join("in-markdown.md")).expect("the file opens");
     harness.state_mut().set_view_mode(ViewMode::Preview);
     harness.run();
     assert_eq!(harness.state().preview_diagrams().len(), 3);
@@ -7875,7 +7919,7 @@ fn switching_the_mermaid_plugin_off_withdraws_the_diagrams() {
     );
 
     // And a `.mmd` file says so rather than drawing.
-    harness.state_mut().open_path_permanently(&folder.join("pie.mmd"));
+    harness.state_mut().open_path_permanently(&folder.join("pie.mmd")).expect("the file opens");
     harness.state_mut().set_view_mode(ViewMode::Preview);
     harness.run();
     assert!(
@@ -7891,7 +7935,7 @@ fn a_diagram_is_laid_out_once_however_many_frames_it_is_drawn_for() {
     // sixty layouts a second for a picture that has not changed.
     let folder = diagram_folder();
     let mut harness = harness_in(&folder);
-    harness.state_mut().open_path_permanently(&folder.join("flowchart.mmd"));
+    harness.state_mut().open_path_permanently(&folder.join("flowchart.mmd")).expect("the file opens");
     harness.state_mut().set_view_mode(ViewMode::Preview);
     harness.run();
     let after_first = harness.state().mermaid_scene_count();
@@ -7913,7 +7957,7 @@ fn the_command_line_can_read_what_a_diagram_came_out_as() {
     // it — which is enough for a script to tell that the right diagram was drawn.
     let folder = diagram_folder();
     let mut harness = harness_in(&folder);
-    harness.state_mut().open_path_permanently(&folder.join("pie.mmd"));
+    harness.state_mut().open_path_permanently(&folder.join("pie.mmd")).expect("the file opens");
     harness.run();
     let answer = did(&mut harness, "editor preview");
     assert_eq!(answer["diagram"], "pie", "{answer}");
@@ -7940,7 +7984,7 @@ fn the_explorer_opens_out_the_folders_above_the_file_that_is_showing_and_scrolls
     // row on the screen.
     let folder = sample_folder();
     let mut harness = harness_in(&folder);
-    harness.state_mut().open_path_permanently(&folder.join("chapters/appendix/tables.txt"));
+    harness.state_mut().open_path_permanently(&folder.join("chapters/appendix/tables.txt")).expect("the file opens");
     harness.run();
     assert_eq!(harness.state().files.active().name(), "tables.txt");
     let open = harness.state().tree.expanded_folders();
@@ -7960,7 +8004,7 @@ fn a_folder_shut_by_hand_is_not_opened_again_until_the_tab_changes() {
     // purpose, and a reveal that ran every frame would open it again before the pointer was up.
     let folder = sample_folder();
     let mut harness = harness_in(&folder);
-    harness.state_mut().open_path_permanently(&folder.join("chapters/one.md"));
+    harness.state_mut().open_path_permanently(&folder.join("chapters/one.md")).expect("the file opens");
     harness.run();
     assert!(harness.state().tree.expanded_folders().contains(&folder.join("chapters")));
     harness.state_mut().tree.toggle(&folder.join("chapters"));
@@ -7971,9 +8015,9 @@ fn a_folder_shut_by_hand_is_not_opened_again_until_the_tab_changes() {
         "the folder should have stayed shut"
     );
     // Showing a different file and then this one again is a change, so it is revealed again.
-    harness.state_mut().open_path_permanently(&folder.join("readme.md"));
+    harness.state_mut().open_path_permanently(&folder.join("readme.md")).expect("the file opens");
     harness.run();
-    harness.state_mut().open_path_permanently(&folder.join("chapters/one.md"));
+    harness.state_mut().open_path_permanently(&folder.join("chapters/one.md")).expect("the file opens");
     harness.run();
     assert!(
         harness.state().tree.expanded_folders().contains(&folder.join("chapters")),
@@ -7985,8 +8029,8 @@ fn a_folder_shut_by_hand_is_not_opened_again_until_the_tab_changes() {
 fn splitting_a_tab_puts_two_files_side_by_side() {
     let folder = sample_folder();
     let mut harness = harness_in(&folder);
-    harness.state_mut().open_path_permanently(&folder.join("readme.md"));
-    harness.state_mut().open_path_permanently(&folder.join("program.rs"));
+    harness.state_mut().open_path_permanently(&folder.join("readme.md")).expect("the file opens");
+    harness.state_mut().open_path_permanently(&folder.join("program.rs")).expect("the file opens");
     harness.run();
     assert_eq!(harness.state().files.pane_count(), 1);
 
@@ -8005,7 +8049,7 @@ fn three_panes_each_show_a_file_of_their_own() {
     let folder = sample_folder();
     let mut harness = harness_in(&folder);
     for name in ["readme.md", "notes.txt", "program.rs"] {
-        harness.state_mut().open_path_permanently(&folder.join(name));
+        harness.state_mut().open_path_permanently(&folder.join(name)).expect("the file opens");
     }
     harness.run();
     choose(&mut harness, Action::SplitRight);
@@ -8023,8 +8067,8 @@ fn three_panes_each_show_a_file_of_their_own() {
 fn a_tabs_own_menu_offers_the_splits() {
     let folder = sample_folder();
     let mut harness = harness_in(&folder);
-    harness.state_mut().open_path_permanently(&folder.join("readme.md"));
-    harness.state_mut().open_path_permanently(&folder.join("program.rs"));
+    harness.state_mut().open_path_permanently(&folder.join("readme.md")).expect("the file opens");
+    harness.state_mut().open_path_permanently(&folder.join("program.rs")).expect("the file opens");
     harness.run();
     // Opened through the window's own state, as the gutter's menu is, because the harness cannot
     // press the right mouse button.
@@ -8042,8 +8086,8 @@ fn only_the_pane_with_the_keyboard_takes_what_is_typed() {
     // the same key presses and draw a caret.
     let folder = sample_folder();
     let mut harness = harness_in(&folder);
-    harness.state_mut().open_path_permanently(&folder.join("readme.md"));
-    harness.state_mut().open_path_permanently(&folder.join("notes.txt"));
+    harness.state_mut().open_path_permanently(&folder.join("readme.md")).expect("the file opens");
+    harness.state_mut().open_path_permanently(&folder.join("notes.txt")).expect("the file opens");
     harness.run();
     choose(&mut harness, Action::SplitRight);
     let left = harness.state().files.tabs_in(0)[0];
@@ -8068,8 +8112,8 @@ fn each_pane_lays_its_own_file_out_at_its_own_width() {
     // would lay their files out over each other every frame, and neither would be at the right width.
     let folder = sample_folder();
     let mut harness = harness_in(&folder);
-    harness.state_mut().open_path_permanently(&folder.join("readme.md"));
-    harness.state_mut().open_path_permanently(&folder.join("program.rs"));
+    harness.state_mut().open_path_permanently(&folder.join("readme.md")).expect("the file opens");
+    harness.state_mut().open_path_permanently(&folder.join("program.rs")).expect("the file opens");
     harness.run();
     choose(&mut harness, Action::SplitRight);
     // Two panes of unequal width, so one cache could not be right for both.
@@ -8088,8 +8132,8 @@ fn each_pane_lays_its_own_file_out_at_its_own_width() {
 fn unsplitting_brings_every_tab_back_into_one_pane() {
     let folder = sample_folder();
     let mut harness = harness_in(&folder);
-    harness.state_mut().open_path_permanently(&folder.join("readme.md"));
-    harness.state_mut().open_path_permanently(&folder.join("notes.txt"));
+    harness.state_mut().open_path_permanently(&folder.join("readme.md")).expect("the file opens");
+    harness.state_mut().open_path_permanently(&folder.join("notes.txt")).expect("the file opens");
     harness.run();
     choose(&mut harness, Action::SplitRight);
     assert_eq!(harness.state().files.pane_count(), 2);
@@ -8147,8 +8191,8 @@ fn a_split_project_opens_split_again() {
     {
         let mut harness = harness_in(&folder);
         harness.state_mut().restore_project();
-        harness.state_mut().open_path_permanently(&folder.join("readme.md"));
-        harness.state_mut().open_path_permanently(&folder.join("program.rs"));
+        harness.state_mut().open_path_permanently(&folder.join("readme.md")).expect("the file opens");
+        harness.state_mut().open_path_permanently(&folder.join("program.rs")).expect("the file opens");
         harness.run();
         let ctx = harness.ctx.clone();
         harness.state_mut().run_action(Action::SplitRight, &ctx);
@@ -8212,7 +8256,7 @@ fn code_harness(open: &str) -> Harness<'static, UnluminateApp> {
     let folder = code_folder();
     let mut harness = harness_in(&folder);
     let path = folder.join(open);
-    harness.state_mut().open_path_permanently(&path);
+    harness.state_mut().open_path_permanently(&path).expect("the file opens");
     // The index is read on a thread, exactly as git and the text search are, so the harness is run
     // until the answer arrives. Each run is a frame; nothing here waits on a clock.
     for _ in 0..600 {
@@ -8399,6 +8443,150 @@ fn opening_a_reference_selects_it_in_the_document() {
     assert!(harness.state().references.is_none(), "opening a reference shuts the modal");
     assert_eq!(harness.state().files.active().name(), "caret.rs");
     assert_eq!(harness.state().document().selected_text(), "draw");
+}
+
+// task-1804 §3.1: Find and Replace in the file that is showing.
+
+/// `Ctrl+F` opens the bar, the tally counts, and every other match carries a band.
+///
+/// The picture is the point of this one: the bar in the corner with `1 of N` on it, the current
+/// match as the selection, and the rest of them in `find_match`. Those three being told apart by
+/// eye is the whole of what the colour was added for.
+#[test]
+fn the_find_bar_counts_the_matches_and_marks_every_one_of_them() {
+    let mut harness = code_harness("layout.rs");
+    let ctx = harness.ctx.clone();
+    harness.state_mut().run_action(Action::Find, &ctx);
+    harness.run();
+    let find = harness.state().find.as_ref().expect("the bar is open");
+    assert!(!find.replacing, "Ctrl+F opens it without the Replace row");
+
+    harness.state_mut().find.as_mut().expect("the bar").needle = "draw".to_owned();
+    harness.run();
+    let find = harness.state().find.as_ref().expect("the bar");
+    assert!(find.count() > 1, "layout.rs holds several of them: {}", find.count());
+    assert_eq!(find.index(), Some(1), "the bar starts on the first");
+    assert_eq!(find.tally().as_deref(), Some(format!("1 of {}", find.count()).as_str()));
+    harness.get_by_label("Find text");
+    harness.get_by_label("Next match");
+    harness.snapshot(shot("find_bar"));
+
+    // Next walks forward and wraps, and the current match is **selected**, which is what makes
+    // Escape leave the caret on it and Ctrl+C copy it.
+    let total = harness.state().find.as_ref().expect("the bar").count();
+    harness.state_mut().run_action(Action::FindNext, &ctx);
+    harness.run();
+    assert_eq!(harness.state().find.as_ref().expect("the bar").index(), Some(2));
+    assert_eq!(harness.state().document().selected_text().to_lowercase(), "draw");
+    for _ in 1..total {
+        harness.state_mut().run_action(Action::FindNext, &ctx);
+    }
+    harness.run();
+    assert_eq!(
+        harness.state().find.as_ref().expect("the bar").index(),
+        Some(1),
+        "past the last one it wraps round to the first"
+    );
+
+    // And Escape puts it away, leaving the caret where it stopped.
+    let stopped = harness.state().document().selection().start();
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+    assert!(harness.state().find.is_none());
+    assert_eq!(harness.state().document().selection().start(), stopped);
+}
+
+/// `Ctrl+H` opens the same bar with the Replace row on it, and Replace All is one undo step.
+///
+/// The undo is the assertion worth having: replacing forty occurrences one at a time would be forty
+/// presses of `Ctrl+Z` to get back, and `Command::ReplaceMany` is what makes it one.
+#[test]
+fn replace_all_changes_every_match_and_one_undo_puts_them_back() {
+    let mut harness = code_harness("layout.rs");
+    let ctx = harness.ctx.clone();
+    let before = harness.state().document().text().to_string();
+    harness.state_mut().run_action(Action::Replace, &ctx);
+    harness.run();
+    assert!(harness.state().find.as_ref().expect("the bar").replacing, "Ctrl+H opens the row");
+
+    {
+        let find = harness.state_mut().find.as_mut().expect("the bar");
+        find.needle = "draw".to_owned();
+        find.replacement = "paint".to_owned();
+    }
+    harness.run();
+    let total = harness.state().find.as_ref().expect("the bar").count();
+    assert!(total > 1, "there are several to replace: {total}");
+    harness.get_by_label("Replace with");
+    harness.snapshot(shot("replace_bar"));
+
+    // Through the button, because that is what a person presses.
+    harness.get_by_label("Replace all").click();
+    harness.run();
+    let after = harness.state().document().text().to_string();
+    assert_ne!(after, before);
+    assert_eq!(
+        after.matches("paint").count(),
+        before.matches("paint").count() + total,
+        "every one of them was replaced"
+    );
+
+    // One undo, not `total` of them.
+    harness.state_mut().command(unluminate_core::Command::Undo);
+    harness.run();
+    assert_eq!(
+        harness.state().document().text().to_string(),
+        before,
+        "one undo puts the whole replacement back"
+    );
+}
+
+/// The same two things through the command line, which is where an agent reaches them.
+///
+/// `editor find` opens **the bar a person opens**, which is the rule the whole product rests on: the
+/// reply and the window say the same thing, so a screenshot taken after the command shows it.
+#[test]
+fn an_agent_finds_and_replaces_through_the_same_bar_a_person_uses() {
+    let mut harness = code_harness("layout.rs");
+
+    let found = did(&mut harness, "editor find draw --json");
+    let total = found["total"].as_u64().expect("a total");
+    assert!(total > 1, "several matches: {total}");
+    assert_eq!(found["current"], serde_json::json!(1));
+    assert!(harness.state().find.is_some(), "it opened the bar a person opens");
+    // Lower cased, because the search ignores case unless told otherwise -- so the first match in
+    // this file is `Draw` in a comment, and that is the right answer rather than a near miss.
+    assert_eq!(harness.state().document().selected_text().to_lowercase(), "draw");
+    // The payload is proportionate: fifty rows unless more are asked for, and the count either way.
+    assert!(found["matches"].as_array().expect("the rows").len() <= 50);
+
+    let stepped = did(&mut harness, "editor find --next --json");
+    assert_eq!(stepped["current"], serde_json::json!(2));
+
+    // Whole word narrows it, and the flags stay set across a later call that does not name them.
+    let word = did(&mut harness, "editor find draw --whole-word --json");
+    assert_eq!(word["wholeWord"], serde_json::json!(true));
+    assert!(word["total"].as_u64().expect("a total") <= total);
+
+    did(&mut harness, "editor find --close");
+    assert!(harness.state().find.is_none());
+
+    // Replace says what it *would* do and changes nothing without --apply, which is `editor rename`'s
+    // shape and is here for the same reason.
+    let before = harness.state().document().text().to_string();
+    let dry = did(&mut harness, "editor replace draw paint --all --json");
+    assert_eq!(dry["applied"], serde_json::json!(false));
+    assert!(dry["wouldChange"].as_u64().expect("a count") > 1);
+    assert_eq!(harness.state().document().text().to_string(), before, "nothing changed");
+
+    let applied = did(&mut harness, "editor replace draw paint --all --apply --json");
+    assert_eq!(applied["applied"], serde_json::json!(true));
+    assert_eq!(applied["remaining"], serde_json::json!(0));
+    assert_ne!(harness.state().document().text().to_string(), before);
+
+    // And a needle that is not there is a refusal rather than a cheerful nothing -- the rule
+    // `task-1804` §7.2 applied to this command.
+    assert_eq!(refused(&mut harness, "editor replace zebra horse --all"), "not-found");
 }
 
 #[test]
@@ -8665,7 +8853,7 @@ fn import_folder() -> std::path::PathBuf {
 fn import_harness() -> Harness<'static, UnluminateApp> {
     let folder = import_folder();
     let mut harness = harness_in(&folder);
-    harness.state_mut().open_path_permanently(&folder.join("src/app/main.ts"));
+    harness.state_mut().open_path_permanently(&folder.join("src/app/main.ts")).expect("the file opens");
     for _ in 0..600 {
         pump(&mut harness);
         let ready = harness
@@ -8805,7 +8993,7 @@ fn completion_folder() -> std::path::PathBuf {
 fn completion_harness(open: &str) -> Harness<'static, UnluminateApp> {
     let folder = completion_folder();
     let mut harness = harness_in(&folder);
-    harness.state_mut().open_path_permanently(&folder.join(open));
+    harness.state_mut().open_path_permanently(&folder.join(open)).expect("the file opens");
     // The index is read on a thread, so the harness is run until the answer arrives. Each run is a
     // frame; nothing here waits on a clock.
     for _ in 0..600 {
@@ -9016,7 +9204,7 @@ fn a_split_view_has_one_list_at_most_and_it_is_in_the_pane_with_the_keyboard() {
     // is what says it is drawn in the right pane and over the divider rather than under it.
     let mut harness = completion_harness("caret.rs");
     let folder = completion_folder();
-    harness.state_mut().open_path_permanently(&folder.join("layout.rs"));
+    harness.state_mut().open_path_permanently(&folder.join("layout.rs")).expect("the file opens");
     let ctx = harness.ctx.clone();
     harness.state_mut().run_action(Action::SplitRight, &ctx);
     harness.run();
@@ -10034,7 +10222,7 @@ fn javascript_folder() -> std::path::PathBuf {
 fn javascript_harness() -> Harness<'static, UnluminateApp> {
     let folder = javascript_folder();
     let mut harness = harness_in(&folder);
-    harness.state_mut().open_path_permanently(&folder.join("person.js"));
+    harness.state_mut().open_path_permanently(&folder.join("person.js")).expect("the file opens");
     for _ in 0..600 {
         pump(&mut harness);
         if harness.state().symbols_indexer().is_some_and(|indexer| !indexer.is_building()) {
@@ -10325,7 +10513,7 @@ fn a_checkout_under_a_running_window_leaves_the_breakpoints_working() {
     // `restore_project` is what turns reading and writing `.unluminate` on: a test neither reads nor
     // writes a person's files unless it says so.
     harness.state_mut().restore_project();
-    harness.state_mut().open_path_permanently(&source);
+    harness.state_mut().open_path_permanently(&source).expect("the file opens");
     harness.run();
     did(&mut harness, &format!("debug breakpoint add {} 3", source.display()));
     for _ in 0..8 {
@@ -10431,7 +10619,7 @@ fn a_breakpoint_in_a_shut_file_with_windows_line_breaks_names_the_line_it_is_on(
     std::fs::write(&main, "fn main() {}\n").expect("write main.rs");
 
     let mut harness = harness_in(&folder);
-    harness.state_mut().open_path_permanently(&main);
+    harness.state_mut().open_path_permanently(&main).expect("the file opens");
     harness.run();
 
     // **The breakpoint is set while `report.rs` is open, and the tab is then closed.** That is the
@@ -10440,7 +10628,7 @@ fn a_breakpoint_in_a_shut_file_with_windows_line_breaks_names_the_line_it_is_on(
     // file's raw bytes because by then nothing has it open. Two raw readings agree with each other
     // and hide the fault, which is why setting it on a file that was never open does not show it.
     let report = folder.join("src").join("report.rs");
-    harness.state_mut().open_path_permanently(&report);
+    harness.state_mut().open_path_permanently(&report).expect("the file opens");
     harness.run();
     did(&mut harness, &format!("debug breakpoint add src/report.rs {stop_at}"));
     let tab = harness.state().files.index_of(&report).expect("report.rs is open");
@@ -10528,10 +10716,10 @@ fn a_breakpoint_binds_wherever_the_editor_is_scrolled() {
 
         // `main.rs` is always the open tab, so that there is something to scroll in both cases and
         // the shut case still has a document the window is drawing.
-        harness.state_mut().open_path_permanently(&folder.join("src").join("main.rs"));
+        harness.state_mut().open_path_permanently(&folder.join("src").join("main.rs")).expect("the file opens");
         harness.run();
         if open {
-            harness.state_mut().open_path_permanently(&report);
+            harness.state_mut().open_path_permanently(&report).expect("the file opens");
             harness.run();
         }
         did(&mut harness, "editor scroll --line 30");
@@ -11113,7 +11301,7 @@ fn a_real_debugger_binds_a_breakpoint_in_a_file_that_is_not_open() {
     // **`main.rs` is the open tab and `report.rs` is not.** That is the whole of the reported case,
     // and it is what the ticket's own tell says: during the session `debug breakpoint list` printed
     // the one that bound as `src\main.rs` and the one that did not as `src/report.rs`.
-    harness.state_mut().open_path_permanently(&main);
+    harness.state_mut().open_path_permanently(&main).expect("the file opens");
     harness.run();
     let scrolled = harness
         .state_mut()
@@ -11284,7 +11472,7 @@ fn a_real_debugger_stops_at_a_breakpoint_and_reads_a_variable() {
     // decided to skip on the absence of.
     harness.state_mut().settings.debug_adapters =
         vec![("lldb".to_owned(), adapter.to_string_lossy().to_string())];
-    harness.state_mut().open_path_permanently(&source);
+    harness.state_mut().open_path_permanently(&source).expect("the file opens");
     harness.run();
 
     // Line 6, `let answer = total;` — after the loop, so `total` is 10 by the time it is reached.
@@ -11468,7 +11656,7 @@ fn a_real_node_debugger_stops_at_a_breakpoint_and_reads_a_variable() {
     let ctx = harness.ctx.clone();
     harness.state_mut().settings.debug_adapters =
         vec![("node".to_owned(), adapter.to_string_lossy().to_string())];
-    harness.state_mut().open_path_permanently(&source);
+    harness.state_mut().open_path_permanently(&source).expect("the file opens");
     harness.run();
 
     let set = harness
@@ -11618,7 +11806,7 @@ fn a_breakpoint_is_still_there_when_the_project_is_opened_again() {
         // `restore_project` is what turns the writing on: a test neither reads nor writes a person's
         // files unless it says so, which is the rule the project state and the marks already keep.
         harness.state_mut().restore_project();
-        harness.state_mut().open_path_permanently(&source);
+        harness.state_mut().open_path_permanently(&source).expect("the file opens");
         harness.run();
         let set = harness
             .state_mut()
@@ -11651,7 +11839,7 @@ fn a_breakpoint_is_still_there_when_the_project_is_opened_again() {
 
     // And the open document holds it, not just the store — which is the ownership rule's other half:
     // a file that is open is owned by its `Document`.
-    harness.state_mut().open_path_permanently(&source);
+    harness.state_mut().open_path_permanently(&source).expect("the file opens");
     harness.run();
     assert_eq!(
         harness.state().document().breakpoints().len(),

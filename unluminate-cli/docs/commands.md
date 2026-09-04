@@ -1012,6 +1012,52 @@ unluminate-cli editor definition Rect --open --json
 unluminate-cli editor definition --line 42 --column 9 --open
 ```
 
+### editor find
+
+```
+unluminate-cli editor find [text] [--match-case] [--whole-word] [--next] [--previous] [--close] [--limit <number>]
+```
+
+Find text in the file that is showing, the way Ctrl+F does: the count, every match's line and column, and the one that is current selected in the window so a screenshot shows it. Use this rather than reading the whole file to locate a string. --replace turns it into an edit; without it nothing is changed.
+
+- `text` (optional) — What to look for. The bar's current search when it is left out.
+
+- `--match-case` — Only matches spelt with the same capitals count.
+- `--whole-word` — Only matches with no letter, digit or underscore either side of them count.
+- `--next` — Move to the match after the one that is current, wrapping round the end of the file.
+- `--previous` — Move to the match before it, wrapping round the start.
+- `--close` — Put the Find bar away, leaving the caret on the match it was on.
+- `--limit <number>` — List at most this many matches. 50 when it is left out, and 0 means all of them.
+
+```sh
+unluminate-cli editor find relayout --json
+unluminate-cli editor find Rect --whole-word --match-case --json
+unluminate-cli editor find --next --json
+unluminate-cli editor find --close
+```
+
+### editor replace
+
+```
+unluminate-cli editor replace <text> <with> [--match-case] [--whole-word] [--all] [--apply]
+```
+
+Replace text in the file that is showing. Use this for a string, a comment, a URL or a number - `editor rename` is for a symbol and is the better tool when it applies, because it knows code from comments. Without --apply it says how many matches there are and changes nothing. Applying is one undo step whether it changes one match or four hundred.
+
+- `text` — What to look for.
+- `with` — What to put in its place. Give an empty string to delete it.
+
+- `--match-case` — Only matches spelt with the same capitals count.
+- `--whole-word` — Only matches with no letter, digit or underscore either side of them count.
+- `--all` — Replace every match rather than only the one that is current.
+- `--apply` — Make the change. Without it the count is printed and nothing is edited.
+
+```sh
+unluminate-cli editor replace teh the --all --json
+unluminate-cli editor replace teh the --all --apply
+unluminate-cli editor replace 0.34.2 0.35.0 --match-case --all --apply
+```
+
 ### editor references
 
 ```
@@ -1064,7 +1110,7 @@ The names a word could become, best first, with what each row is and where it ca
 - `--line <number>` — Ask about this line, counting from 1.
 - `--column <number>` — The column on that line. 1 when it is left out.
 - `--stem <text>` — Ask what this hypothetical word would offer at the position, without inserting it or changing the document.
-- `--limit <number>` — Print at most this many rows. All of them when it is left out.
+- `--limit <number>` — Print at most this many rows. 50 when it is left out, and 0 means all of them.
 - `--choose <name>` — Apply this row to the word being typed, as Enter would. It is the completion's **name**, never a row number: `--choose 0` is refused with the names there are.
 
 ```sh

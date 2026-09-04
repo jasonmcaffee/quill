@@ -220,6 +220,57 @@ impl Suggestions {
     }
 }
 
+/// What line breaks a file is written back with.
+///
+/// `task-1804` §7.1 made the line ending a value the document carries, read from the file when it is
+/// opened. This is the person's say over it, and its default is to have no say at all: **a file is
+/// written the way it was read**, which is the only answer that never produces a whole-file diff out
+/// of a one character edit.
+///
+/// The other two exist for the project that has decided, where a file that arrived the other way
+/// should be brought into line rather than kept as it is. A new file gets the platform's own either
+/// way, because there is nothing to keep.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LineEndings {
+    /// Written the way it was read. What every editor worth using does.
+    #[default]
+    Keep,
+    /// Always `\n`.
+    Lf,
+    /// Always `\r\n`.
+    Crlf,
+}
+
+impl LineEndings {
+    /// The word the settings file, the command line and a test spell it with.
+    pub fn name(self) -> &'static str {
+        match self {
+            LineEndings::Keep => "keep",
+            LineEndings::Lf => "lf",
+            LineEndings::Crlf => "crlf",
+        }
+    }
+
+    /// Read a value, or nothing when the file holds something this version does not have.
+    pub fn parse(name: &str) -> Option<Self> {
+        match name.trim().to_lowercase().as_str() {
+            "keep" | "auto" => Some(LineEndings::Keep),
+            "lf" | "unix" => Some(LineEndings::Lf),
+            "crlf" | "windows" | "dos" => Some(LineEndings::Crlf),
+            _ => None,
+        }
+    }
+
+    /// What a file read as `found` should be written as.
+    pub fn applied_to(self, found: unluminate_core::LineEnding) -> unluminate_core::LineEnding {
+        match self {
+            LineEndings::Keep => found,
+            LineEndings::Lf => unluminate_core::LineEnding::Lf,
+            LineEndings::Crlf => unluminate_core::LineEnding::Crlf,
+        }
+    }
+}
+
 /// Whether the debugger's value tooltip appears without being asked for.
 ///
 /// The reference editor's `Show value tooltip`, in `Suggestions`' shape and for its reason: `manual` is already
@@ -395,6 +446,18 @@ pub struct Settings {
     pub line_numbers: bool,
     /// Whether the completion popup arrives while you type, or waits to be asked.
     pub suggestions: Suggestions,
+    /// What line breaks a file is written back with. See [`LineEndings`].
+    pub line_endings: LineEndings,
+    /// Extra patterns the project index leaves out, beyond `.gitignore` and the build folders.
+    ///
+    /// `task-1804` §7.3: the index skipped three hardcoded folder names and read no ignore file at
+    /// all, so `editor definition` answered out of a gitignored scratch copy of the whole project.
+    /// `.gitignore` is now read; this is the person's own list beside it, for the folder that is not
+    /// a repository and for the pattern a repository has a reason not to ignore.
+    ///
+    /// Written as one line of comma separated patterns, in `.gitignore`'s own syntax, because that
+    /// is the syntax a person already knows and the one the reader beside it implements.
+    pub exclude: String,
     /// Whether the debugger's value tooltip arrives when the pointer rests on a name.
     pub value_tooltip: ValueTooltip,
     /// Whether a plugin that asked for the decoration renderer gets it.
@@ -459,6 +522,12 @@ impl Settings {
             // ticket asked for: suggestions that arrive rather than ones you have to remember to
             // ask for.
             suggestions: Suggestions::Automatic,
+            // Keep, and the type's own comment argues it: any other default rewrites somebody's file
+            // the first time they type in it.
+            line_endings: LineEndings::Keep,
+            // Empty. `.gitignore` is read whether or not this names anything, and a pattern here is
+            // an addition to it rather than a replacement for it.
+            exclude: String::new(),
             // On, which is what the reference editor's own `Show value tooltip` is: the whole point of the
             // feature is that the value is there when you look at the name, rather than being
             // something to remember to ask for.
@@ -513,6 +582,12 @@ impl Settings {
         }
         if let Some(chosen) = values.text("editor.suggestions").and_then(Suggestions::parse) {
             settings.suggestions = chosen;
+        }
+        if let Some(chosen) = values.text("editor.line_ending").and_then(LineEndings::parse) {
+            settings.line_endings = chosen;
+        }
+        if let Some(patterns) = values.text("editor.exclude") {
+            settings.exclude = patterns.trim().to_owned();
         }
         if let Some(on) = values.flag("plugins.chrome") {
             settings.plugin_chrome = on;
@@ -574,6 +649,8 @@ impl Settings {
         values.set("appearance.ui.font.size", format!("{:.1}", self.ui_font_size));
         values.set("editor.line_numbers", if self.line_numbers { "true" } else { "false" });
         values.set("editor.suggestions", self.suggestions.name());
+        values.set("editor.line_ending", self.line_endings.name());
+        values.set_or_clear("editor.exclude", &self.exclude);
         values.set("debug.value_tooltip", self.value_tooltip.name());
         values.set("plugins.chrome", if self.plugin_chrome { "true" } else { "false" });
         values.set("mcp.enabled", if self.mcp_enabled { "true" } else { "false" });
@@ -1044,6 +1121,8 @@ mod tests {
             terminal_shell: "pwsh.exe".to_owned(),
             line_numbers: false,
             suggestions: Suggestions::Manual,
+            line_endings: LineEndings::Crlf,
+            exclude: "dist/, vendor/".to_owned(),
             value_tooltip: ValueTooltip::Manual,
             plugin_chrome: false,
             mcp_enabled: true,

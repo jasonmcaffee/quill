@@ -984,9 +984,33 @@ Right to left and complex writing systems. Version one places one grapheme clust
 left to right, which is correct for Latin, Greek and Cyrillic and wrong for Arabic and Hindi. The
 `FontMetrics` boundary is where a shaping step would go.
 
-Search and replace inside the open file, and several carets at once. `Find in Files` searches the
-project and opens what it finds; it does not replace, which is a destructive operation across a whole
-project and wants a ticket and a confirmation of its own.
+Several carets at once, and column selection. Both are expected by anyone coming from the reference
+editors and neither is here yet.
+
+*Find and Replace **is** here* — this entry used to say it was not. `Ctrl/Cmd+F` finds in the file
+that is showing, with a match count, next and previous, a case toggle and a whole-word toggle;
+`Ctrl/Cmd+H` opens Replace and Replace All beside it, and Replace All is one undo step whether it
+changes one match or four hundred. `Ctrl/Cmd+Shift+F` still searches the project, and it can now
+replace across everything it found — through the modal that already lists every file it would write,
+because a replacement across a project is a change somebody should see the size of first. An open
+tab is edited as a document and left with unsaved changes rather than written behind you; a closed
+file is read, checked that its matches are still the ones that were listed, and written once, with
+every byte outside the replaced ranges untouched. `unluminate-cli editor find` and
+`unluminate-cli editor replace` are the same thing from the command line, and `editor replace`
+changes nothing without `--apply`.
+
+**Writing a file back in an encoding other than UTF-8.** Unluminate is a UTF-8 editor. It *opens* a
+file with a UTF-16 byte order mark, and a file that is not valid UTF-8 at all — read as Latin-1,
+because every byte has a meaning there and so the reading cannot fail — but both open **read-only**,
+with the encoding named in the status bar beside the file's kind, and saving one is refused rather
+than attempted. Re-encoding somebody's file into a scheme this version has not been asked to get
+right is a worse answer than saying no. UTF-8 with a byte order mark is ordinary UTF-8 and is
+written back with its mark.
+
+Its **line endings** are not part of that bargain: what a file was read with — `LF`, `CRLF`, or a
+lone `CR`, which nothing wrote after 2001 and which is kept rather than converted — is what it is
+written back with, so a one character edit is a one line diff. The status bar says which, and
+`Editor -> Editor -> Files` forces one for a project that has decided.
 
 A three way merge editor, a language server, and a marketplace that fetches a plugin over the
 network. Each is named with its reason in `tasks/unluminate-ide-tdd.md`.

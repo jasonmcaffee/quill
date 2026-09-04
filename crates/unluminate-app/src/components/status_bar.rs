@@ -40,6 +40,12 @@ pub struct Status<'a> {
     pub unsaved: bool,
     /// What kind of file it is, as a person would say it: `Markdown` or `Plain text`.
     pub kind: &'a str,
+    /// What the file was on disk: `CRLF`, or `CRLF · Latin-1` when it is not the ordinary UTF-8.
+    ///
+    /// Beside the kind, because it is the same sort of fact about the file and because that is where
+    /// a person looks for it. Absent for a tab with no file behind it -- a picture, or a document
+    /// nobody has saved yet -- for the reason the line and column are. `task-1804` §7.1.
+    pub encoding: Option<&'a str>,
     /// Where the caret is. Absent for a tab holding a picture, which has no caret.
     pub position: Option<Position>,
     /// What is said at the right hand end: the font at the caret, or a picture's size and scale.
@@ -55,7 +61,7 @@ pub struct Status<'a> {
 
 /// Draw the status bar into `area`.
 pub fn show(ui: &egui::Ui, area: Rect, status: &Status<'_>, opacity: f32) {
-    let Status { name, unsaved, kind, position, detail, message, git } = *status;
+    let Status { name, unsaved, kind, encoding, position, detail, message, git } = *status;
     let painter = ui.painter_at(area);
     // The bottom two corners are rounded to match the window.
     painter.rect_filled(
@@ -85,6 +91,13 @@ pub fn show(ui: &egui::Ui, area: Rect, status: &Status<'_>, opacity: f32) {
     label(&painter, &mut pen, "\u{2502}".to_owned(), color::divider());
     pen += 10.0;
     label(&painter, &mut pen, kind.to_owned(), color::text_dim());
+    // What the file was on disk, so that a person can see before they save what saving will write.
+    if let Some(encoding) = encoding {
+        pen += 12.0;
+        label(&painter, &mut pen, "\u{2502}".to_owned(), color::divider());
+        pen += 10.0;
+        label(&painter, &mut pen, encoding.to_owned(), color::text_dim());
+    }
     // A picture has no caret, so it has no line and column either.
     if let Some(position) = position {
         pen += 12.0;

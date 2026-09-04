@@ -837,6 +837,48 @@ pub const COMMANDS: &[Command] = &[
     },
     Command {
         area: "editor",
+        verb: "find",
+        summary: "Find text in the file that is showing, the way Ctrl+F does: the count, every match's line and column, and the one that is current selected in the window so a screenshot shows it. Use this rather than reading the whole file to locate a string. --replace turns it into an edit; without it nothing is changed.",
+        arguments: &[argument("text", false, "What to look for. The bar's current search when it is left out.")],
+        flags: &[
+            switch("match-case", "Only matches spelt with the same capitals count."),
+            switch("whole-word", "Only matches with no letter, digit or underscore either side of them count."),
+            switch("next", "Move to the match after the one that is current, wrapping round the end of the file."),
+            switch("previous", "Move to the match before it, wrapping round the start."),
+            switch("close", "Put the Find bar away, leaving the caret on the match it was on."),
+            option("limit", "number", "List at most this many matches. 50 when it is left out, and 0 means all of them."),
+        ],
+        examples: &[
+            "unluminate-cli editor find relayout --json",
+            "unluminate-cli editor find Rect --whole-word --match-case --json",
+            "unluminate-cli editor find --next --json",
+            "unluminate-cli editor find --close",
+        ],
+        local: false,
+    },
+    Command {
+        area: "editor",
+        verb: "replace",
+        summary: "Replace text in the file that is showing. Use this for a string, a comment, a URL or a number - `editor rename` is for a symbol and is the better tool when it applies, because it knows code from comments. Without --apply it says how many matches there are and changes nothing. Applying is one undo step whether it changes one match or four hundred.",
+        arguments: &[
+            argument("text", true, "What to look for."),
+            argument("with", true, "What to put in its place. Give an empty string to delete it."),
+        ],
+        flags: &[
+            switch("match-case", "Only matches spelt with the same capitals count."),
+            switch("whole-word", "Only matches with no letter, digit or underscore either side of them count."),
+            switch("all", "Replace every match rather than only the one that is current."),
+            switch("apply", "Make the change. Without it the count is printed and nothing is edited."),
+        ],
+        examples: &[
+            "unluminate-cli editor replace teh the --all --json",
+            "unluminate-cli editor replace teh the --all --apply",
+            "unluminate-cli editor replace 0.34.2 0.35.0 --match-case --all --apply",
+        ],
+        local: false,
+    },
+    Command {
+        area: "editor",
         verb: "references",
         summary: "Use this instead of grep to find every place a name is used across the project: the file, line, column and whether it is code or a word inside a comment or string. Reads unsaved open tabs as they stand and everything else from the disk.",
         arguments: &[argument("name", false, "The name to look for. The word at the caret when it is left out.")],
@@ -879,7 +921,7 @@ pub const COMMANDS: &[Command] = &[
             option("line", "number", "Ask about this line, counting from 1."),
             option("column", "number", "The column on that line. 1 when it is left out."),
             option("stem", "text", "Ask what this hypothetical word would offer at the position, without inserting it or changing the document."),
-            option("limit", "number", "Print at most this many rows. All of them when it is left out."),
+            option("limit", "number", "Print at most this many rows. 50 when it is left out, and 0 means all of them."),
             option("choose", "name", "Apply this row to the word being typed, as Enter would. It is the completion's **name**, never a row number: `--choose 0` is refused with the names there are."),
         ],
         examples: &[

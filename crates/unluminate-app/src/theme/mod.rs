@@ -123,6 +123,14 @@ palette! {
     unsaved = Color32::from_rgb(0xFE, 0xBC, 0x2E);
     /// Behind selected text.
     text_selection = Color32::from_rgb(0x30, 0x43, 0x61);
+    /// Behind every match of the Find bar's search that is **not** the current one.
+    ///
+    /// A name of its own rather than `text_selection` at an alpha, because the current match *is*
+    /// the selection -- the bar selects it, so `Ctrl+F` then `Ctrl+C` copies it and Escape leaves
+    /// the caret on it -- and two bands that were the same colour would say the seventeen matches
+    /// and the one you are on are the same thing. Warmer than the selection and darker than the
+    /// accent, so it reads as "also here" rather than as "chosen". `task-1804` §3.1.
+    find_match = Color32::from_rgb(0x4A, 0x43, 0x2B);
     /// Behind a code block, a table and the front matter in the Markdown preview.
     ///
     /// A step up from `editor` rather than a colour of its own, so the block reads as a panel on the

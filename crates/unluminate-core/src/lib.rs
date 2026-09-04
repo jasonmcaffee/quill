@@ -12,10 +12,12 @@ pub mod breakpoints;
 pub mod completion;
 pub mod cursor;
 pub mod document;
+pub mod encoding;
 pub mod expressions;
 pub mod folding;
 pub mod highlights;
 pub mod imports;
+pub mod incremental;
 pub mod layout;
 pub mod markdown;
 pub mod mermaid;
@@ -30,9 +32,11 @@ pub use breakpoints::{Breakpoint, Breakpoints};
 pub use completion::{Candidate, Row as CompletionRow, Source as CompletionSource};
 pub use cursor::Selection;
 pub use document::{Command, Document, IndentUnit};
+pub use encoding::{Decoded, Encoding, LineEnding};
 pub use folding::{Kind as FoldKind, Folds, Hidden, Reading as FoldReading, Region as FoldRegion};
 pub use highlights::{Highlight, Highlights, Rgba};
 pub use imports::Context as ImportContext;
+pub use incremental::{Dirt as SyntaxDirt, Tokens as IncrementalTokens};
 pub use layout::{
     layout, relayout, Anchor, Caret, ClusterText, Layout, PlacedCluster, PlacedLine, PlacedRun,
     Rect,

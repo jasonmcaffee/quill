@@ -823,6 +823,12 @@ pub struct UnluminateApp {
     pub prompt: Option<Prompt>,
     /// The `Go to File` modal, when it is open.
     pub go_to_file: Option<GoToFile>,
+    /// The Find bar over the file that is showing, when it is open. `task-1804` §3.1.
+    ///
+    /// A bar rather than a modal, and it holds no thread: the file being searched is already in
+    /// memory, so the matches are worked out on the drawing thread in a `str::find` per line.
+    /// `Find in Files` needs a thread because it reads the disk; this does not.
+    pub find: Option<crate::services::find::Find>,
     /// The `Find in Files` modal, when it is open. It holds the thread the searching runs on, so
     /// shutting the modal is what stops that thread.
     pub find_in_files: Option<FindInFiles>,
@@ -1052,6 +1058,7 @@ impl UnluminateApp {
             explorer_menu: None,
             prompt: None,
             go_to_file: None,
+            find: None,
             find_in_files: None,
             references: None,
             symbols: None,
@@ -1187,6 +1194,9 @@ impl UnluminateApp {
             self.settings.font_family = self.renderer.default_family();
         }
         self.panes = panes;
+        // What this project leaves out of the searchable list, which reloads the tree when it moved.
+        // `task-1804` §7.3.
+        self.tree.set_exclude(&self.settings.exclude);
         store.remember_project(self.tree.root());
         // And that this project has a window open, which is what `task-1693` asks Unluminate to bring
         // back next time. A window that is already in the list writes nothing — `Store::open_windows`
@@ -1253,7 +1263,9 @@ impl UnluminateApp {
             }
         }
         for path in &state.open_files {
-            self.open_path_permanently(path);
+            // A file that was open last time and has gone or changed since is a message in the
+            // status bar rather than a reason to stop restoring the rest of them.
+            let _ = self.open_path_permanently(path);
         }
         // The panes after the tabs, because a tab has to exist before it can be put in one. The tabs
         // are opened in the order they were written, so the list lines up with them — and anything in
@@ -1488,6 +1500,177 @@ impl UnluminateApp {
         status_bar::position_of(self.document().text(), self.document().selection().head)
     }
 
+    /// Draw the Find bar and act on what was pressed.
+    ///
+    /// `task-1804` §3.1. The keys are taken out of the frame's events **before** the bar is
+    /// drawn, which is `go_to_file`'s rule: egui leaves the events a text box consumed in the list
+    /// for everyone else to read, so Enter typed into the Find box would otherwise also reach the
+    /// document and put a line break in the file being searched.
+    fn show_the_find_bar(&mut self, ui: &mut egui::Ui, area: Rect) {
+        let (enter, shift_enter, escape) = ui.input_mut(|input| {
+            (
+                input.consume_key(egui::Modifiers::NONE, egui::Key::Enter),
+                input.consume_key(egui::Modifiers::SHIFT, egui::Key::Enter),
+                input.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
+            )
+        });
+        let Some(find) = self.find.as_mut() else {
+            return;
+        };
+        let mut outcome = crate::components::find_bar::show(ui, area, find);
+        outcome.next |= enter;
+        outcome.previous |= shift_enter;
+        outcome.close |= escape;
+
+        if outcome.close {
+            self.close_the_find();
+            return;
+        }
+        // Replace before the step, because replacing changes the text and `refresh` then works the
+        // matches out again on the next frame -- stepping first would move off the match that is
+        // about to be replaced.
+        if outcome.replace_all {
+            self.replace_every_match();
+        } else if outcome.replace {
+            self.replace_the_current_match();
+        } else if outcome.next {
+            self.step_the_find(true);
+        } else if outcome.previous {
+            self.step_the_find(false);
+        }
+        if outcome.in_files {
+            self.take_the_search_to_the_project();
+        }
+    }
+
+    /// Move to the next or the previous match and select it.
+    ///
+    /// **Selecting it rather than only putting the caret there** is `open_the_match`'s rule: a
+    /// selection is how a document shows a piece of itself, and it is what makes Escape leave the
+    /// caret on the match you stopped at and `Ctrl+C` copy it.
+    fn step_the_find(&mut self, forward: bool) {
+        let Some(find) = self.find.as_mut() else {
+            return;
+        };
+        let range = if forward { find.next() } else { find.previous() };
+        let Some(range) = range else {
+            return;
+        };
+        self.select_the_match(range);
+    }
+
+    /// Put the selection over `range` and scroll it into view.
+    fn select_the_match(&mut self, range: std::ops::Range<usize>) {
+        let length = self.document().text().len_bytes();
+        if range.end > length {
+            return;
+        }
+        self.document_mut()
+            .apply(Command::PlaceCaret { offset: range.start, extend: false });
+        self.document_mut().apply(Command::PlaceCaret { offset: range.end, extend: true });
+        self.reveal_caret = true;
+    }
+
+    /// Replace the match the bar is on, as one undo step.
+    fn replace_the_current_match(&mut self) {
+        let Some((range, with)) = self.find.as_ref().and_then(|find| find.replacement_for_current())
+        else {
+            return;
+        };
+        if range.end > self.document().text().len_bytes() {
+            return;
+        }
+        self.document_mut().apply(Command::ReplaceMany(vec![(range.clone(), with.clone())]));
+        // The caret goes after what was written, so pressing Replace again lands on the next match
+        // rather than on this one over again.
+        let after = range.start + with.len();
+        self.document_mut().apply(Command::PlaceCaret { offset: after, extend: false });
+        self.reveal_caret = true;
+        self.message = None;
+    }
+
+    /// Replace every match, as **one** undo step.
+    ///
+    /// Through `Command::ReplaceMany`, which is what `editor rename` is applied by and which exists
+    /// for exactly this: undo restores a snapshot, so one snapshot and then every edit is one step.
+    /// Forty occurrences replaced one at a time would be forty presses of `Ctrl+Z` to get back.
+    fn replace_every_match(&mut self) {
+        let Some(find) = self.find.as_ref() else {
+            return;
+        };
+        let edits = find.replacements_for_all();
+        if edits.is_empty() {
+            self.message = Some("Nothing matches, so there is nothing to replace.".to_owned());
+            return;
+        }
+        let count = edits.len();
+        let length = self.document().text().len_bytes();
+        if edits.iter().any(|(range, _)| range.end > length) {
+            return;
+        }
+        self.document_mut().apply(Command::ReplaceMany(edits));
+        self.message = Some(format!(
+            "Replaced {count} {} in this file. One undo puts them all back.",
+            if count == 1 { "match" } else { "matches" }
+        ));
+    }
+
+    /// Hand the search to `Find in Files`, so the same words can be replaced across the project.
+    ///
+    /// The bar's own Replace is about the file that is showing. Replacing across a project is a
+    /// different and more serious thing -- it writes files nobody has open -- so it happens in the
+    /// modal that already lists what it would touch, rather than behind a button on a bar.
+    fn take_the_search_to_the_project(&mut self) {
+        let Some(find) = self.find.as_ref() else {
+            return;
+        };
+        let (needle, replacement) = (find.needle.clone(), find.replacement.clone());
+        let (match_case, whole_word) = (find.match_case, find.whole_word);
+        self.close_the_find();
+        // The folder is read again first, for the reason `Find in Files` reads it when it is opened
+        // from the menu: a file made since the window opened is part of this project.
+        self.tree.reload();
+        let mut modal = FindInFiles::open(self.thread_waker());
+        modal.query = needle;
+        modal.match_case = match_case;
+        // Whole words are not a mode Find in Files has: it searches text rather than asking a
+        // grammar what a hit was found inside, which is Find References' question. So the toggle is
+        // not carried over and the modal says what it is really doing.
+        let _ = whole_word;
+        modal.replacement = replacement;
+        modal.replacing = true;
+        self.find_in_files = Some(modal);
+    }
+
+    /// Put the bar away, leaving the caret on the match it was on.
+    fn close_the_find(&mut self) {
+        self.find = None;
+        self.focus = Focus::Editor;
+        self.reveal_caret = true;
+    }
+
+    /// What the status bar says the open file was on disk: `CRLF`, or `CRLF · Latin-1`.
+    ///
+    /// Nothing at all for a tab with no file behind it -- a picture, a plugin's pane, a document
+    /// nobody has saved yet -- because there is no file whose bytes could be described. `task-1804`
+    /// §7.1: before this, whether saving would rewrite every line in the file was not shown
+    /// anywhere.
+    pub fn line_ending_label(&self) -> Option<String> {
+        let file = self.files.active();
+        if file.is_picture() || file.plugin.is_some() || file.is_browser() {
+            return None;
+        }
+        let document = self.document();
+        document.path()?;
+        let ending = self.settings.line_endings.applied_to(document.line_ending());
+        let encoding = document.encoding();
+        Some(if encoding == unluminate_core::Encoding::Utf8 {
+            ending.name().to_owned()
+        } else {
+            format!("{} · {}", ending.name(), encoding.name())
+        })
+    }
+
     /// Run a command, as the toolbar or a test would.
     pub fn command(&mut self, command: Command) {
         self.document_mut().apply(command);
@@ -1637,6 +1820,7 @@ impl UnluminateApp {
             can_undo: self.document().can_undo(),
             can_redo: self.document().can_redo(),
             has_selection: !self.document().selection().is_empty(),
+            finding: self.find.is_some(),
             recent: self.recent.clone(),
             view_mode: self.view_mode(),
             // The same question the text tools ask, so the `View` menu and the title bar cannot come to
@@ -1744,7 +1928,7 @@ impl UnluminateApp {
                             self.open_folder(parent);
                         }
                     }
-                    self.open_path(&file);
+                    let _ = self.open_path(&file);
                 }
             }
             Action::OpenWebAddress => {
@@ -1766,6 +1950,40 @@ impl UnluminateApp {
                 self.tree.reload();
                 self.go_to_file = Some(GoToFile::default());
             }
+            Action::Find | Action::Replace => {
+                let replacing = action == Action::Replace;
+                // A bar already open is **reused** rather than replaced, so pressing the key twice
+                // does not throw away what is typed in it; what it does do is put the keyboard back
+                // in the box, which is what a person pressing it again is asking for.
+                match self.find.as_mut() {
+                    Some(find) => {
+                        find.replacing |= replacing;
+                        find.field = crate::services::find::Field::Find;
+                    }
+                    None => {
+                        let selected = self.document().selected_text();
+                        let mut find = crate::services::find::Find::opened_with(
+                            Some(selected.as_str()),
+                            replacing,
+                        );
+                        // The matches are worked out now rather than next frame, so that the bar
+                        // opens with its tally already on it when it was seeded from a selection.
+                        let text = self.document().text().to_string();
+                        find.refresh(&text, self.document().text_revision());
+                        find.start_from(self.document().selection().start());
+                        let current = find.current();
+                        self.find = Some(find);
+                        // The match the bar opens on is **selected**, so the picture says which of
+                        // them is current from the first frame rather than after the first Enter.
+                        if let Some(range) = current {
+                            self.select_the_match(range);
+                        }
+                    }
+                }
+                self.focus = Focus::Editor;
+            }
+            Action::FindNext => self.step_the_find(true),
+            Action::FindPrevious => self.step_the_find(false),
             Action::FindInFiles => {
                 // The folder is read again first, for the reason `Go to File` reads it: a file made
                 // since the window opened is part of this project and has to be searched.
@@ -3409,7 +3627,12 @@ impl UnluminateApp {
             // nowhere to jump to, and saying nothing is better than saying something wrong.
             return;
         }
-        self.open_path_permanently(&path);
+        // Guarded, because everything after this places a caret **in the file that was opened**.
+        // Unguarded it would have moved the caret in whatever tab happened to be showing, which is
+        // the shape of fault `task-1804` §7.2 found in `tab open`.
+        if self.open_path_permanently(&path).is_err() {
+            return;
+        }
         let offset = self.document().offset_of_line_number(line);
         // The caret is **placed** rather than the line selected, which is what `open_the_match` does
         // for a search hit. A stop already marks its line with a band across the whole width of the
@@ -3716,7 +3939,11 @@ impl UnluminateApp {
     ) {
         use crate::services::plugin_ui::Request;
         match request {
-            Request::OpenFile(path) => self.open_path_in_tab(&path, true),
+            // The reason is already in the status bar; a plugin that asked for a file has no
+            // reply channel for one, so there is nothing further to do with it here.
+            Request::OpenFile(path) => {
+                let _ = self.open_path_in_tab(&path, true);
+            }
             // **The one place a command becomes a change is `run_cli`**, and this is a plugin
             // reaching it. The answer goes back to the provider that asked, by the id it asked with,
             // because more than one may be outstanding and they do not finish in order.
@@ -4365,6 +4592,9 @@ impl UnluminateApp {
     pub fn open_folder(&mut self, folder: &Path) {
         self.remember_the_project();
         self.tree = FileTree::new(folder);
+        // A fresh tree knows nothing of the settings, and the folder it has just read may be a
+        // different repository with a different `.gitignore`.
+        self.tree.set_exclude(&self.settings.exclude);
         self.filter.clear();
         self.explorer_visible = true;
         self.terminal.tabs.settings.working_directory = Some(folder.to_path_buf());
@@ -4381,22 +4611,34 @@ impl UnluminateApp {
     /// Any file holding text opens. A `.md` file is Markdown, which means the preview button does
     /// something with it; everything else opens as plain text, which is what
     /// `tasks/improvements.md` asks for.
-    pub fn open_path(&mut self, path: &Path) {
-        self.open_path_in_tab(path, false);
+    pub fn open_path(&mut self, path: &Path) -> Result<(), String> {
+        self.open_path_in_tab(path, false)
     }
 
     /// Open a file in a tab of its own, which is what a double click in the explorer does.
-    pub fn open_path_permanently(&mut self, path: &Path) {
-        self.open_path_in_tab(path, true);
+    pub fn open_path_permanently(&mut self, path: &Path) -> Result<(), String> {
+        self.open_path_in_tab(path, true)
     }
 
     /// The one place a file is loaded, whether it is text or a picture. `permanent` decides whether it
     /// takes a tab of its own or reuses the transient one; [`files::OpenFiles::open`] decides what that
     /// means.
-    fn open_path_in_tab(&mut self, path: &Path, permanent: bool) {
+    ///
+    /// **It answers whether the file opened**, and `task-1804` §7.2 is why. It used to set
+    /// `self.message` and return, which is a good answer for a person -- the reason is in the status
+    /// bar in front of them -- and no answer at all for the command line, which built its reply
+    /// without asking whether the tab was there: `tab open` on a file that could not be decoded
+    /// replied `ok: true`, `tab: 0`, exit 0, and every step after it operated on whatever had been
+    /// open before. For an agent that is the worst shape a fault can have, because the product's
+    /// argument is that these answers can be trusted.
+    ///
+    /// The message is still set, because the person at the window still needs it. What is added is
+    /// that the reason is *returned* as well, so a caller can tell.
+    fn open_path_in_tab(&mut self, path: &Path, permanent: bool) -> Result<(), String> {
         if let Err(refusal) = file_kind::openable(path) {
-            self.message = Some(format!("{}: {}", path.display(), refusal.reason()));
-            return;
+            let reason = format!("{}: {}", path.display(), refusal.reason());
+            self.message = Some(reason.clone());
+            return Err(reason);
         }
         // A file that is already open is shown rather than read from disk again, so switching back
         // to a tab does not throw away what has been typed into it.
@@ -4405,7 +4647,7 @@ impl UnluminateApp {
             if permanent {
                 self.files.make_permanent(index);
             }
-            return;
+            return Ok(());
         }
         // A picture is a tab of its own kind. It is read here rather than in `files`, so that the one
         // place a file is opened stays the one place a file is opened.
@@ -4413,7 +4655,7 @@ impl UnluminateApp {
             self.files.open_file(files::OpenFile::picture(path), permanent);
             self.message = None;
             self.forget_layout();
-            return;
+            return Ok(());
         }
         match Document::open(path) {
             Ok(mut document) => {
@@ -4447,12 +4689,15 @@ impl UnluminateApp {
                 // The new document counts its revisions from the beginning, so what was laid out for
                 // the last one has to be thrown away rather than compared against.
                 self.forget_layout();
+                Ok(())
             }
             Err(error) => {
                 // Nothing is thrown away: the document that was open stays open, and the reason is said in
                 // the status bar rather than only on the error output.
-                self.message = Some(format!("Unluminate could not open {}: {error}", path.display()));
-                eprintln!("Unluminate could not open {}: {error}", path.display());
+                let reason = format!("Unluminate could not open {}: {error}", path.display());
+                self.message = Some(reason.clone());
+                eprintln!("{reason}");
+                Err(reason)
             }
         }
     }
@@ -4464,8 +4709,7 @@ impl UnluminateApp {
     /// document shows a piece of itself, and it is the same highlight a search inside a file leaves.
     fn open_the_match(&mut self, path: &Path, range: std::ops::Range<usize>) {
         // A tab of its own, because choosing a line out of a list of matches is not glancing.
-        self.open_path_permanently(path);
-        if self.files.active().path() != Some(path) {
+        if self.open_path_permanently(path).is_err() {
             return; // it would not open, and `open_path_permanently` has already said why
         }
         // The offsets came from the file on disk. A tab that was already open and has been edited
@@ -4574,24 +4818,70 @@ impl UnluminateApp {
         }
         let theme = crate::services::plugins::scheme_of(plugin);
         // **One** reading of the file, answering two questions. Colouring it and reading it for the
-        // blocks that could be collapsed both want `syntax::scan` over the same text at the same
+        // blocks that could be collapsed both want the same tokens over the same text at the same
         // revision, and a second pass was worth 2.5 ms a keystroke on the largest file in this
         // repository. `unluminate_core::folding::Tokens` is the second answer, kept beside the first.
+        //
+        // **And only the part that changed is read.** `task-1804` §5.2: at 2 MB, reading the
+        // whole file after every keystroke was most of a 73.6 ms frame.
+        // `unluminate_core::incremental::Tokens` starts at the line the edit was on and stops once
+        // the tokens agree with what was there before, and reports **every** token either way -- so
+        // the two lists built below are complete lists, exactly as they were.
         let mut spans: Vec<(std::ops::Range<usize>, unluminate_core::Color)> = Vec::new();
         let mut tokens = unluminate_core::folding::Tokens::default();
         let mut embedded: Vec<unluminate_core::syntax::Embedded> = Vec::new();
-        unluminate_core::syntax::scan_with_embedded(&text, &plugin.grammar, &mut embedded, |range, token| {
-            match token {
-                unluminate_core::Token::Comment => tokens.note(range.clone(), true),
-                unluminate_core::Token::String => tokens.note(range.clone(), false),
-                _ => {}
+        let dirt = self.files.at(index).document.syntax_dirt();
+        let markup = plugin.grammar.markup;
+        let update = match markup {
+            // A markup grammar has no partial reading, and it is the one that produces embedded
+            // spans -- so that path is left byte for byte as it was.
+            true => {
+                unluminate_core::syntax::scan_with_embedded(
+                    &text,
+                    &plugin.grammar,
+                    &mut embedded,
+                    |range, token| {
+                        match token {
+                            unluminate_core::Token::Comment => tokens.note(range.clone(), true),
+                            unluminate_core::Token::String => tokens.note(range.clone(), false),
+                            _ => {}
+                        }
+                        if token != unluminate_core::Token::Text {
+                            if let Some(colour) = theme.colour(token) {
+                                spans.push((range, colour));
+                            }
+                        }
+                    },
+                );
+                None
             }
-            if token != unluminate_core::Token::Text {
-                if let Some(colour) = theme.colour(token) {
-                    spans.push((range, colour));
+            false => {
+                let grammar = plugin.grammar.clone();
+                let cache = &mut self.files.at_mut(index).syntax_tokens;
+                // **Only the stretch that changed**, and already in file order, so `spans` holds a
+                // handful of entries after a keystroke rather than the file's worth and nothing is
+                // sorted. It is the second half of the saving and it is the larger half: building
+                // and sorting 157,000 spans was 17 ms of every keystroke on a 2 MB file.
+                let update = cache.update(&text, &grammar, dirt, |range, token| {
+                    if token != unluminate_core::Token::Text {
+                        if let Some(colour) = theme.colour(token) {
+                            spans.push((range, colour));
+                        }
+                    }
+                });
+                // The blocks that could be collapsed are a question about the **whole** file however
+                // small the edit was, so they are read off the list the cache already keeps rather
+                // than being reported again. One pass, no second reading of the rules.
+                for (range, token) in cache.all() {
+                    match token {
+                        unluminate_core::Token::Comment => tokens.note(range.clone(), true),
+                        unluminate_core::Token::String => tokens.note(range.clone(), false),
+                        _ => {}
+                    }
                 }
+                Some(update)
             }
-        });
+        };
         // A markup file's raw text elements are other languages, and the plugin that claims each
         // one is what colours it — the same question the Markdown preview asks of a fence.
         if !embedded.is_empty() {
@@ -4602,7 +4892,12 @@ impl UnluminateApp {
             tokens.put_in_order();
         }
         let file = self.files.at_mut(index);
-        file.document.set_syntax(base, &spans);
+        match update {
+            // Only the stretch whose tokens changed is painted again: `insert` and `remove_range`
+            // have already shifted the style spans outside it by the edit, so they are already right.
+            Some(update) => file.document.set_syntax_in(base, &spans, update.changed),
+            None => file.document.set_syntax(base, &spans),
+        }
         // `set_syntax` bumps the revision, so what is remembered is the revision *after* it, or the
         // next frame would colour it all over again for ever. The tokens are keyed on that same
         // number, which is what lets `fold_regions` use them instead of reading the file again.
@@ -4925,7 +5220,7 @@ impl UnluminateApp {
                     let _ = std::fs::create_dir_all(path.parent().unwrap_or(&path));
                     let _ = std::fs::write(&path, "# Paths listed here are ignored, and this file is not committed.\n");
                 }
-                self.open_path_permanently(&path);
+                let _ = self.open_path_permanently(&path);
             }
             GitAction::Refresh => git.send(Request::Refresh),
         }
@@ -5401,8 +5696,9 @@ impl UnluminateApp {
                 let path = self.selected.clone()?;
                 if path.is_dir() {
                     self.tree.toggle(&path);
-                } else {
-                    self.open_path_permanently(&path);
+                } else if self.open_path_permanently(&path).is_ok() {
+                    // The keyboard goes with the file, so it stays in the explorer when the file
+                    // did not open and the reason is on the status bar.
                     self.focus = Focus::Editor;
                 }
             }
@@ -5557,7 +5853,7 @@ impl UnluminateApp {
                     Ok(()) => {
                         self.tree.reload();
                         self.tree.expand(&folder);
-                        self.open_path_permanently(&target);
+                        let _ = self.open_path_permanently(&target);
                     }
                     Err(problem) => {
                         self.message =
@@ -5770,7 +6066,18 @@ impl UnluminateApp {
             }
             return;
         }
-        let _ = self.document_mut().save();
+        // The setting is applied at the moment of writing rather than at the moment of opening, so
+        // that changing it takes effect on the next save of a file that is already open, and so that
+        // `keep` -- the default -- never touches what was read. `task-1804` §7.1.
+        let chosen = self.settings.line_endings.applied_to(self.document().line_ending());
+        self.document_mut().set_line_ending(chosen);
+        // A file Unluminate reads and does not write refuses here rather than silently doing nothing,
+        // which is the same rule `tab open` is held to in §7.2: a command that could not do what it
+        // was asked says so.
+        if let Err(refusal) = self.document_mut().save() {
+            self.message = Some(refusal.to_string());
+            return;
+        }
         // Written by this tab, so this tab and the file agree again: without this the tab's own write
         // would look like somebody else's change and the next read would re-read what it just wrote.
         self.files.active_mut().note_what_is_on_disk();
@@ -6603,10 +6910,10 @@ impl UnluminateApp {
             // behaviour and is what makes `Down` `Down` `Down` a way to look through a folder. A
             // double click is somebody going to the editor, so the keyboard goes with them.
             if let Some(path) = explorer_outcome.open {
-                self.open_path(&path);
+                let _ = self.open_path(&path);
             }
             if let Some(path) = explorer_outcome.open_permanently {
-                self.open_path_permanently(&path);
+                let _ = self.open_path_permanently(&path);
                 self.focus = Focus::Editor;
             }
             if let Some((source, folder)) = explorer_outcome.moved {
@@ -7023,6 +7330,7 @@ impl UnluminateApp {
                 format!("{} \u{00B7} {:.0} pt", style.family, style.size),
             ),
         };
+        let encoding = self.line_ending_label();
         status_bar::show(
             ui,
             status_rect,
@@ -7030,6 +7338,7 @@ impl UnluminateApp {
                 name: &self.file_name(),
                 unsaved: self.document().is_modified(),
                 kind: file_kind::kind_name(self.document().path()),
+                encoding: encoding.as_deref(),
                 position,
                 detail: &detail,
                 message: self
@@ -7078,8 +7387,9 @@ impl UnluminateApp {
             if let Some(path) = outcome.open {
                 // A tab of its own, not the transient one: choosing a file out of a list of file
                 // names is not glancing at it.
-                self.open_path_permanently(&path);
-                self.focus = Focus::Editor;
+                if self.open_path_permanently(&path).is_ok() {
+                    self.focus = Focus::Editor;
+                }
             }
             if !outcome.close {
                 self.go_to_file = Some(finder);
@@ -7102,6 +7412,19 @@ impl UnluminateApp {
             if outcome.reset_split {
                 self.panes.find_split = find_in_files::SPLIT;
                 self.unsaved_settings = true;
+            }
+            if outcome.replace_all {
+                // Taken before the replacement, because applying it changes every file the search
+                // read and the hits are then about a project that has moved.
+                let hits = find.hits().to_vec();
+                let (needle, match_case) = (find.query.trim().to_owned(), find.match_case);
+                let with = find.replacement.clone();
+                let report =
+                    self.replace_across_the_project(&hits, &needle, match_case, &with);
+                self.message = Some(report.sentence(&with));
+                // The search is asked again, so the list shows what is there now rather than the
+                // matches that have just been replaced.
+                find.search_again();
             }
             if let Some((path, range)) = outcome.open {
                 self.open_the_match(&path, range);
@@ -7378,6 +7701,9 @@ impl UnluminateApp {
         // changed" in two comparisons and a list of the settings that have to remember to tell it
         // is a list whose next entry will be the one that forgot.
         self.reconcile_mcp();
+        // The project index follows `editor.exclude`, and only reloads when the line really moved --
+        // `FileTree::set_exclude` compares before it walks. `task-1804` §7.3.
+        self.tree.set_exclude(&self.settings.exclude);
         self.unsaved_settings = true;
     }
 
@@ -9430,6 +9756,30 @@ impl UnluminateApp {
         // the reason a fold is: changing the document half way through drawing this pane would leave
         // the rest of the frame drawing from a layout that no longer matches.
         let mut toggled_breakpoint: Option<usize> = None;
+        // Where the Find bar's matches are, worked out before anything is drawn for the same reason
+        // once more: `Find::refresh` wants `&mut self` and every component here is handed what it
+        // draws. Empty when the bar is shut or this pane does not have the keyboard, so a split view
+        // paints the bands in the pane being searched and not in the other one. `task-1804`.
+        let find_matches: Vec<std::ops::Range<usize>> = match (focused, self.find.as_mut()) {
+            (true, Some(_)) => {
+                let text = self.files.at(index).document.text().to_string();
+                let revision = self.files.at(index).document.text_revision();
+                let find = self.find.as_mut().expect("it is there");
+                // **Selected as you type**, which is what makes the Find box an incremental search
+                // rather than a box you press Enter on. Only when the *search* changed, never when
+                // the document did -- see `Find::refresh` for why the two are told apart.
+                let search_changed = find.refresh(&text, revision);
+                let current = find.current();
+                let others = find.others();
+                if search_changed {
+                    if let Some(range) = current {
+                        self.select_the_match(range);
+                    }
+                }
+                others
+            }
+            _ => Vec::new(),
+        };
         // The gutter takes the left of the editing area, and the text starts after it. With no
         // gutter the text keeps the padding it always had, so putting the numbers away leaves the
         // window looking exactly as it did before there were any.
@@ -9686,8 +10036,15 @@ impl UnluminateApp {
                 underline: symbol.word.clone(),
                 execution_point,
                 inline_values: &inline_values,
+                find_matches: &find_matches,
             },
         );
+        // The Find bar, over the text at the top right. After the editing area for the reason the
+        // fold badges below are: egui hands a point to the last widget that asked for it, and the
+        // editing area asks for the whole of its rectangle.
+        if focused && self.find.is_some() {
+            self.show_the_find_bar(&mut painter_ui, area);
+        }
         // The badge standing for each collapsed block, over the text and after the end of its head
         // line. It takes clicks, so it is added after the editing area rather than before it: egui
         // hands a point to the last widget that asked for it and the editing area asks for all of

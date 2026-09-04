@@ -187,6 +187,12 @@ pub struct OpenFile {
     /// for one revision. One per file rather than one for the window, so the file in the second pane
     /// is coloured too.
     pub coloured_revision: Option<u64>,
+    /// The tokens of this file as they were last read, so the next reading starts at the edit.
+    ///
+    /// One per file rather than one for the window, for `coloured_revision`'s reason: the file in
+    /// the second pane is coloured too, and a shared cache would have the two overwriting each
+    /// other's reading every frame. See `unluminate_core::incremental`. `task-1804` §5.2.
+    pub syntax_tokens: unluminate_core::IncrementalTokens,
     /// Where the diagram has been moved and scaled to, for a tab holding a Mermaid file.
     ///
     /// Beside `preview_scroll` rather than instead of it, because they are two different ways of
@@ -232,6 +238,7 @@ impl OpenFile {
             marked_revision: None,
             breakpoints_at: None,
             coloured_revision: None,
+            syntax_tokens: unluminate_core::IncrementalTokens::default(),
             diagram: crate::components::diagram_view::View::default(),
             pane: 0,
             shown_at: 0,

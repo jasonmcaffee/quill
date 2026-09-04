@@ -101,5 +101,21 @@
 
 {"id":"s22-multifile","area":"mixed","name":"A realistic multi-step job",
  "expect":"Chains several areas together without falling back to bash for the editor parts.",
- "prompts":["I want to add a perimeter function to src/shapes.rs, next to area_of, with a doc comment. Put the file in a split beside main.rs while you do it, save it, and then run cargo check in a terminal tab to prove it compiles."]}
+ "prompts":["I want to add a perimeter function to src/shapes.rs, next to area_of, with a doc comment. Put the file in a split beside main.rs while you do it, save it, and then run cargo check in a terminal tab to prove it compiles."]},
+
+{"id":"s23-replace","area":"editor/search","name":"Replace a string in the open file",
+ "expect":"Uses editor replace rather than reading the file and writing it back with its own edit tool. A string is not a symbol, so editor rename does not apply; falling back to bash sed is a miss.",
+ "prompts":["In src/shapes.rs, change every \"width\" to \"span\", and tell me how many you changed."]},
+
+{"id":"s24-browser","area":"browser","name":"Open a page in a browser tab",
+ "expect":"Uses the browser area to open a tab and report the address it settled on, rather than curling the page in a terminal.",
+ "prompts":["Open README.md rendered in a browser tab, and tell me the address the tab ended up on."]},
+
+{"id":"s25-database","area":"database","name":"Run a query and read the answer back",
+ "expect":"Uses the database area \u2014 add a source, run a statement, read the grid \u2014 rather than shelling out to sqlite3.",
+ "prompts":["There is a SQLite file at data/sample.db. Add it as a data source, list its tables, and tell me how many rows are in the biggest one."]},
+
+{"id":"s26-chat","area":"chat","name":"Configure and read the agent chat pane",
+ "expect":"Uses the chat area to open the pane, say which providers are configured and read the transcript back, rather than saying it cannot see the pane.",
+ "prompts":["Open the agent chat pane on the right, tell me which providers are configured, and read back whatever is in the transcript."]}
 ]

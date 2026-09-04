@@ -325,6 +325,127 @@ impl StyleSpans {
         self.merge_neighbours();
     }
 
+    /// [`StyleSpans::set`] and [`StyleSpans::set_many`] in one call, over **one stretch** of the
+    /// document, touching no span outside it.
+    ///
+    /// `task-1804` §5.2, and this is the part of that measurement that surprised: once the
+    /// tokeniser had stopped reading the whole file after every keystroke, what was left was *this*
+    /// list being rebuilt. `set_many` writes a fresh vector and clones each span's style into it —
+    /// and a `CharStyle` owns its family name, so on a 2 MB file coloured into 234,000 spans that was
+    /// **234,000 string allocations for a change of one letter**, about 20 ms of every keystroke.
+    /// It is `task-1666` §12's third bullet arriving from a direction nobody expected.
+    ///
+    /// So this rebuilds only the spans that overlap `range` and splices them back, which moves the
+    /// rest rather than copying them. `base` is applied to the whole stretch first and `changes` over
+    /// the top, which is exactly what the two calls did in the order they did it.
+    ///
+    /// **The spans outside `range` are not merged**, and they do not need to be: nothing about them
+    /// changed, so any two that could have been folded together already were. Only the two joins at
+    /// the ends of the splice are new, and those are folded here.
+    pub fn set_in(&mut self, range: Range<usize>, base: &StyleChange, changes: &[(Range<usize>, StyleChange)]) {
+        let total = self.total_len();
+        let from = range.start.min(total);
+        let to = range.end.min(total);
+        if from >= to {
+            return;
+        }
+        // Split so that the affected spans are exactly a contiguous run of the vector.
+        self.split_at(from);
+        self.split_at(to);
+        let mut first = self.spans.len();
+        let mut last = 0usize;
+        let mut acc = 0usize;
+        for (index, span) in self.spans.iter().enumerate() {
+            let start = acc;
+            acc += span.len;
+            if start >= from && acc <= to && span.len > 0 {
+                first = first.min(index);
+                last = index + 1;
+            }
+            if start >= to {
+                break;
+            }
+        }
+        if first >= last {
+            return;
+        }
+
+        // The changes that fall inside the stretch, in order and not overlapping — `set_many`'s own
+        // reading of its argument, made once here rather than per span.
+        let mut ordered: Vec<(Range<usize>, &StyleChange)> = Vec::with_capacity(changes.len());
+        let mut previous_end = from;
+        for (span, change) in changes {
+            let start = span.start.max(from);
+            let end = span.end.min(to);
+            if start < previous_end || start >= end || change.is_empty() {
+                continue;
+            }
+            previous_end = end;
+            ordered.push((start..end, change));
+        }
+
+        let mut out: Vec<Span> = Vec::with_capacity((last - first) + ordered.len() * 2);
+        let mut next = 0usize;
+        let mut acc = from;
+        for span in &self.spans[first..last] {
+            let start = acc;
+            let end = acc + span.len;
+            acc = end;
+            let mut styled = span.style.clone();
+            base.apply_to(&mut styled);
+            let mut at = start;
+            while next < ordered.len() && ordered[next].0.end <= at {
+                next += 1;
+            }
+            while at < end {
+                let Some((over, change)) = ordered.get(next) else { break };
+                if over.start >= end {
+                    break;
+                }
+                if over.start > at {
+                    out.push(Span { len: over.start - at, style: styled.clone() });
+                    at = over.start;
+                }
+                let stop = over.end.min(end);
+                let mut both = styled.clone();
+                change.apply_to(&mut both);
+                out.push(Span { len: stop - at, style: both });
+                at = stop;
+                if over.end <= end {
+                    next += 1;
+                }
+            }
+            if at < end {
+                out.push(Span { len: end - at, style: styled });
+            }
+        }
+        merge_in_place(&mut out);
+        let after = first + out.len();
+        self.spans.splice(first..last, out);
+        // **Both ends**, and the far one is not an afterthought: the spliced run is folded within
+        // itself already, so exactly two joins in the list are new -- the one in front of it and the
+        // one behind. Folding only the front left the list growing by a span for every keystroke
+        // that coloured a stretch the same as the text after it, which is the fault
+        // `merge_neighbours` exists to prevent, reintroduced at one end.
+        self.join_around(after);
+        self.join_around(first);
+        if self.spans.is_empty() {
+            self.spans.push(Span { len: 0, style: CharStyle::default() });
+        }
+    }
+
+    /// Fold the one join in front of `index`, if the two spans either side of it now agree.
+    fn join_around(&mut self, index: usize) {
+        if index == 0 || index >= self.spans.len() {
+            return;
+        }
+        if self.spans[index].len == 0 || self.spans[index - 1].style == self.spans[index].style {
+            let len = self.spans[index].len;
+            self.spans[index - 1].len += len;
+            self.spans.remove(index);
+        }
+    }
+
     /// Walk the runs overlapping `range`, each as a byte range in document coordinates paired with its
     /// formatting. A run is a stretch of text with one style, which is what layout needs: one run is
     /// one font at one size in one colour.
@@ -747,5 +868,150 @@ mod tests {
         let mut paragraphs = ParagraphStyles::new(3);
         paragraphs.join(0, 5);
         assert_eq!(paragraphs.len(), 1);
+    }
+}
+
+/// [`StyleSpans::merge_neighbours`] over a list that is not a `StyleSpans` yet.
+///
+/// The spliced stretch is folded before it goes in, so the only joins left to check afterwards are
+/// the two at its ends. One pass with a write cursor, which is the shape the method already uses and
+/// for the reason it records: removing from the middle of a vector in a loop is quadratic.
+fn merge_in_place(spans: &mut Vec<Span>) {
+    let mut write = 0usize;
+    for read in 0..spans.len() {
+        if spans[read].len == 0 {
+            continue;
+        }
+        if write > 0 && spans[write - 1].style == spans[read].style {
+            let len = spans[read].len;
+            spans[write - 1].len += len;
+            continue;
+        }
+        if write != read {
+            spans.swap(write, read);
+        }
+        write += 1;
+    }
+    spans.truncate(write);
+}
+
+#[cfg(test)]
+mod set_in_tests {
+    use super::*;
+
+    fn colour(value: u8) -> StyleChange {
+        StyleChange::color(Color::rgb(value, value, value))
+    }
+
+    /// A span list of `count` runs, each ten bytes, in alternating colours -- which is roughly what a
+    /// coloured source file is.
+    fn striped(count: usize) -> StyleSpans {
+        let mut spans = StyleSpans::new(count * 10, CharStyle::default());
+        let changes: Vec<(Range<usize>, StyleChange)> = (0..count)
+            .map(|index| ((index * 10)..(index * 10 + 10), colour((index % 7) as u8 * 30)))
+            .collect();
+        spans.set_many(&changes);
+        spans
+    }
+
+    /// The two readings, byte for byte the same style at every offset.
+    fn same(left: &StyleSpans, right: &StyleSpans, note: &str) {
+        assert_eq!(left.total_len(), right.total_len(), "{note}: different lengths");
+        for offset in 0..left.total_len() {
+            assert_eq!(
+                left.style_at(offset),
+                right.style_at(offset),
+                "{note}: byte {offset} differs"
+            );
+        }
+        assert_eq!(left.span_count(), right.span_count(), "{note}: and folded the same way");
+    }
+
+    /// **The invariant the whole optimisation rests on.** `set_in` over a stretch has to leave the
+    /// list exactly as `set` followed by `set_many` would, or a file is coloured wrongly from the
+    /// middle down and nothing says so.
+    #[test]
+    fn set_in_over_a_stretch_is_set_and_set_many_over_the_same_stretch() {
+        for (from, to) in [(0usize, 100usize), (35, 95), (0, 1000), (10, 20), (997, 1000)] {
+            let mut wholesale = striped(100);
+            let mut ranged = striped(100);
+            let changes: Vec<(Range<usize>, StyleChange)> = (0..40)
+                .map(|index| {
+                    let start = from + index * 7;
+                    (start..(start + 4), colour(200 - index as u8))
+                })
+                .filter(|(range, _)| range.end <= to)
+                .collect();
+
+            wholesale.set(from..to, &colour(9));
+            wholesale.set_many(&changes);
+            ranged.set_in(from..to, &colour(9), &changes);
+            same(&wholesale, &ranged, &format!("{from}..{to}"));
+        }
+    }
+
+    /// And nothing outside the stretch is touched at all.
+    #[test]
+    fn set_in_leaves_everything_outside_the_stretch_alone() {
+        let before = striped(100);
+        let mut after = striped(100);
+        after.set_in(300..400, &colour(9), &[(310..320, colour(200))]);
+        // 400 is skipped rather than checked, and the reason is `style_at`'s own rule: an offset on
+        // a boundary reports the **earlier** span, so `style_at(400)` describes byte 399 -- which is
+        // inside the stretch and is supposed to have changed.
+        for offset in (0..300).chain(401..1000) {
+            assert_eq!(before.style_at(offset), after.style_at(offset), "byte {offset} moved");
+        }
+    }
+
+    /// The list does not grow. A stretch coloured the same as the text after it folds into it, and
+    /// doing that a thousand times leaves the list the length it started.
+    #[test]
+    fn colouring_a_stretch_the_same_as_its_neighbours_a_thousand_times_does_not_grow_the_list() {
+        let mut spans = StyleSpans::new(1000, CharStyle::default());
+        spans.set(0..1000, &colour(5));
+        for round in 0..1000 {
+            let at = (round % 90) * 10;
+            spans.set_in(at..(at + 20), &colour(5), &[]);
+        }
+        assert_eq!(spans.span_count(), 1, "it folded back every time");
+        assert_eq!(spans.total_len(), 1000);
+    }
+
+    /// A stretch that lands inside one span, so the splice is a single run cut into three.
+    #[test]
+    fn a_stretch_inside_one_span_is_cut_and_put_back() {
+        let mut wholesale = StyleSpans::new(100, CharStyle::default());
+        let mut ranged = StyleSpans::new(100, CharStyle::default());
+        let changes = [(45..55, colour(200))];
+        wholesale.set(40..60, &colour(9));
+        wholesale.set_many(&changes);
+        ranged.set_in(40..60, &colour(9), &changes);
+        same(&wholesale, &ranged, "inside one span");
+    }
+
+    /// An empty stretch, a stretch past the end, and one with nothing to change in it.
+    #[test]
+    fn the_awkward_stretches_change_nothing_and_do_not_panic() {
+        let before = striped(20);
+        for range in [0..0, 50..50, 400..900, 190..200] {
+            let mut after = striped(20);
+            after.set_in(range.clone(), &colour(9), &[]);
+            if range.is_empty() || range.start >= 200 {
+                same(&before, &after, &format!("{range:?} changes nothing"));
+            }
+        }
+    }
+
+    /// And the joins at the ends really are folded: a stretch set to the colour its neighbours
+    /// already have comes back as one span, not three.
+    #[test]
+    fn a_stretch_set_to_its_neighbours_colour_folds_into_them() {
+        let mut spans = StyleSpans::new(300, CharStyle::default());
+        spans.set(0..300, &colour(5));
+        assert_eq!(spans.span_count(), 1);
+        spans.set_in(100..200, &colour(5), &[]);
+        assert_eq!(spans.span_count(), 1, "it folded back into one");
+        assert_eq!(spans.total_len(), 300);
     }
 }

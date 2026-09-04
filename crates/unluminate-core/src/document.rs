@@ -8,6 +8,8 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use crate::cursor::{self, Selection};
+use crate::encoding::{Encoding, LineEnding};
+use crate::incremental::Dirt;
 use crate::breakpoints::Breakpoints;
 use crate::folding::Folds;
 use crate::highlights::{Highlights, Rgba};
@@ -160,6 +162,17 @@ pub struct Document {
     redo: Vec<Snapshot>,
     last_edit: EditKind,
     path: Option<PathBuf>,
+    /// What this file's line breaks were on disk, so that writing it back does not change them.
+    ///
+    /// The text above holds line feeds and nothing else -- see `read_to_normalised_string` for why
+    /// there is one meaning of an offset -- and this is what that normalisation is undone with in
+    /// `save_as`.
+    /// `task-1804` §7.1: without it, typing one character into a file with Windows line breaks
+    /// rewrote every line ending in it.
+    line_ending: LineEnding,
+    /// What this file's characters were on disk. A file that is not UTF-8 is opened read-only rather
+    /// than refused, and `save_as` will not write one back. `task-1804` §7.6.
+    encoding: Encoding,
     /// Identity of the current persisted-content state. Unlike `text_revision`, this value is
     /// restored by undo rather than advanced, so returning to a saved state can be recognised.
     history_revision: u64,
@@ -180,6 +193,16 @@ pub struct Document {
     /// laid the whole document out again. See `tasks/task-1666-performance-tdd.md` section 2, and
     /// the test that says a layout which changed means this moved.
     text_revision: u64,
+    /// What has changed since the syntax was last set, so the tokeniser can read the part that
+    /// moved rather than the whole file after every keystroke.
+    ///
+    /// `task-1804` §5.2, which is `task-1666` §12's *"the next thing to become the
+    /// largest item"* becoming it: at 2 MB a keystroke cost 73.6 ms, and nearly all of that was
+    /// reading a file that had changed in one place. Kept here because `insert` and `remove_range`
+    /// are the two functions that already know the text moved -- the same two that shift the marks,
+    /// the folds and the breakpoints -- and a fourth thing told in the same place cannot drift from
+    /// the other three.
+    syntax_dirt: Dirt,
     /// Bumped only when a block is collapsed or expanded.
     ///
     /// The third counter, and it is the second one's argument made once more. Folding changes the
@@ -212,12 +235,24 @@ impl Default for Document {
 ///
 /// So this is public and every reading of a file's own bytes goes through it.
 pub fn read_to_normalised_string(path: &Path) -> std::io::Result<String> {
-    Ok(normalise_line_breaks(&std::fs::read_to_string(path)?))
+    Ok(read_file(path)?.text)
+}
+
+/// The same reading, keeping what the bytes were as well as what they say.
+///
+/// `Document::open` is this plus a caret, and everything else that reads a file's own bytes uses the
+/// line above, so the two cannot drift: an offset means the same byte in both.
+pub fn read_file(path: &Path) -> std::io::Result<crate::encoding::Decoded> {
+    Ok(crate::encoding::decode(&std::fs::read(path)?))
 }
 
 /// The same rule applied to text that has already been read.
+///
+/// Every one of the three endings, not only Windows': `task-1804` §7.5 found that a lone carriage
+/// return was not a line break anywhere in Unluminate, so a classic-Macintosh file opened as one line
+/// however long it was.
 pub fn normalise_line_breaks(text: &str) -> String {
-    text.replace("\r\n", "\n")
+    crate::encoding::normalise_line_breaks(text)
 }
 
 impl Document {
@@ -236,22 +271,36 @@ impl Document {
             redo: Vec::new(),
             last_edit: EditKind::None,
             path: None,
+            line_ending: LineEnding::platform_default(),
+            encoding: Encoding::default(),
             history_revision: 1,
             saved_history_revision: 1,
             next_history_revision: 2,
             revision: 1,
             text_revision: 1,
+            // A fresh document has nothing coloured, so the first reading is the whole of it.
+            syntax_dirt: Dirt::Whole,
             fold_revision: 1,
         }
     }
 
     /// A document holding `text`, as if it had just been opened from disk.
+    ///
+    /// **Including its line ending**, because "as if it had just been opened" is what the sentence
+    /// above promises and a document built this way is otherwise written back with the platform's
+    /// own -- which on Windows turns a body of text with line feeds in it into a file with carriage
+    /// returns the first time it is saved. Text with no line break in it at all gets the platform's,
+    /// because there is nothing to keep.
+    ///
+    /// `Document::open` passes text that has already been normalised and then sets the real answer
+    /// over the top, so the two do not disagree.
     pub fn from_text(text: &str) -> Self {
         let rope = Rope::from_str(text);
         Self {
             chars: StyleSpans::new(rope.len_bytes(), CharStyle::default()),
             paragraphs: ParagraphStyles::new(rope.len_lines()),
             text: rope,
+            line_ending: LineEnding::dominant_in(text),
             ..Self::new()
         }
     }
@@ -266,11 +315,52 @@ impl Document {
         Self { path: Some(path.to_owned()), ..Self::new() }
     }
 
+    /// Open the file at `path`, keeping what its bytes were so that saving it does not change them.
+    ///
+    /// A file that is not UTF-8 opens **read-only** rather than being refused: see [`Encoding`] for
+    /// which shapes are read that way and why none of them is written back.
     pub fn open(path: &Path) -> std::io::Result<Self> {
-        let text = read_to_normalised_string(path)?;
-        let mut document = Self::from_text(&text);
+        let read = read_file(path)?;
+        let mut document = Self::from_text(&read.text);
         document.path = Some(path.to_owned());
+        document.line_ending = read.line_ending;
+        document.encoding = read.encoding;
         Ok(document)
+    }
+
+    /// What this file's line breaks were on disk, and what saving it will write.
+    pub fn line_ending(&self) -> LineEnding {
+        self.line_ending
+    }
+
+    /// Write this file with `ending` from now on. What a Settings key and `editor line-ending` set.
+    ///
+    /// It does not touch the text -- the text holds one kind of line break and only one -- so it is
+    /// not an edit and does not go through `apply`. It does make the document unsaved, because what
+    /// is on disk and what saving would write are no longer the same thing, and a person who chose an
+    /// ending and saw nothing to save would reasonably think it had not been taken.
+    pub fn set_line_ending(&mut self, ending: LineEnding) {
+        if self.line_ending == ending {
+            return;
+        }
+        self.line_ending = ending;
+        self.history_revision = self.next_history_revision;
+        self.next_history_revision += 1;
+        self.revision += 1;
+    }
+
+    /// What this file's characters were on disk.
+    pub fn encoding(&self) -> Encoding {
+        self.encoding
+    }
+
+    /// Whether this document can be written back at all.
+    ///
+    /// False for a file opened in an encoding Unluminate reads and does not write. The window asks
+    /// this before it offers Save, rather than letting the write fail at the end of the person's
+    /// work. See [`Encoding::writable`].
+    pub fn writable(&self) -> bool {
+        self.encoding.writable()
     }
 
     pub fn save(&mut self) -> std::io::Result<()> {
@@ -282,8 +372,24 @@ impl Document {
     }
 
     /// Write the current text to `path` and make this history revision the saved point.
+    ///
+    /// **As the file was read**: its own line breaks, its own byte order mark, and a refusal rather
+    /// than a re-encoding for anything this version only reads. `task-1804` §7.1 measured what the
+    /// first of those is worth -- one character typed into a file with Windows line breaks used to
+    /// rewrite every line ending in it, which on a checkout with `core.autocrlf` set is every file.
     pub fn save_as(&mut self, path: &Path) -> std::io::Result<()> {
-        std::fs::write(path, self.text.to_string())?;
+        if !self.encoding.writable() {
+            return Err(std::io::Error::other(format!(
+                "this file was read as {} and Unluminate does not write that encoding",
+                self.encoding.name()
+            )));
+        }
+        let normalised = self.text.to_string();
+        let text = self.line_ending.apply(&normalised);
+        let mut bytes = Vec::with_capacity(self.encoding.prefix().len() + text.len());
+        bytes.extend_from_slice(self.encoding.prefix());
+        bytes.extend_from_slice(text.as_bytes());
+        std::fs::write(path, &bytes)?;
         self.path = Some(path.to_owned());
         self.saved_history_revision = self.history_revision;
         // Typing after a save must begin a new undo group. Otherwise it merges with the typing that
@@ -429,7 +535,69 @@ impl Document {
             changes.push((start..stop, StyleChange::color(*color)));
         }
         self.chars.set_many(&changes);
+        self.syntax_dirt = Dirt::Clean;
         self.text_changed();
+    }
+
+    /// The same, over one stretch of the file rather than the whole of it.
+    ///
+    /// **The other half of `task-1804` §5.2, and the larger half.** Reading the tokens
+    /// incrementally took the tokeniser's share of a keystroke away and left `set_syntax`'s, which at
+    /// 2 MB was the bigger of the two: it painted the base colour over two million bytes and then
+    /// laid 157,000 spans back over it, every time.
+    ///
+    /// It does not have to. `insert` and `remove_range` have **already shifted the style spans** by
+    /// the edit -- that is what `chars.insert` and `chars.remove` do -- so outside the stretch whose
+    /// tokens changed, the colours are already right. Only `changed` needs painting again, and
+    /// `spans` are the tokens that fall inside it.
+    ///
+    /// `base` is applied to `changed` only, for the same reason: everything outside it keeps the
+    /// colour it had, which is the colour it should have.
+    pub fn set_syntax_in(
+        &mut self,
+        base: Color,
+        spans: &[(Range<usize>, Color)],
+        changed: Range<usize>,
+    ) {
+        let end = self.text.len_bytes();
+        if end == 0 {
+            self.syntax_dirt = Dirt::Clean;
+            return;
+        }
+        let from = changed.start.min(end);
+        let to = changed.end.min(end);
+        if from >= to {
+            self.syntax_dirt = Dirt::Clean;
+            self.text_changed();
+            return;
+        }
+        let mut changes: Vec<(Range<usize>, StyleChange)> = Vec::with_capacity(spans.len());
+        for (range, color) in spans {
+            let start = range.start.max(from).min(end);
+            let stop = range.end.min(to);
+            if start >= stop
+                || !self.text.is_char_boundary(start)
+                || !self.text.is_char_boundary(stop)
+            {
+                continue;
+            }
+            changes.push((start..stop, StyleChange::color(*color)));
+        }
+        // One call rather than a `set` and a `set_many`, and rebuilding only the spans it touches:
+        // see `StyleSpans::set_in` for what the difference is worth.
+        self.chars.set_in(from..to, &StyleChange::color(base), &changes);
+        self.syntax_dirt = Dirt::Clean;
+        self.text_changed();
+    }
+
+    /// What has changed since the syntax was last set.
+    pub fn syntax_dirt(&self) -> Dirt {
+        self.syntax_dirt
+    }
+
+    /// Say the whole file has to be read again, which is what an undo and a fresh text mean.
+    pub fn syntax_is_wholly_dirty(&mut self) {
+        self.syntax_dirt = Dirt::Whole;
     }
 
     // --------------------------------------------------------------------- the marked passages
@@ -848,6 +1016,10 @@ impl Document {
         self.fold_revision += 1;
         // And which lines the program was to stop on, for the third time and the same reason.
         self.breakpoints = snapshot.breakpoints;
+        // A restored snapshot brings its **own** style spans with it, and they were the spans of a
+        // different text. There is no edit to be incremental about here, so the next colouring reads
+        // the whole file. `task-1804` §5.2.
+        self.syntax_dirt = crate::incremental::Dirt::Whole;
     }
 
     /// Move to the preceding snapshot and preserve the current state for redo.
@@ -894,12 +1066,16 @@ impl Document {
 
         self.text.insert(at, text);
         self.chars.insert(at, text.len());
+        // The fourth thing this function tells, beside the marks, the folds and the breakpoints.
+        self.syntax_dirt = self.syntax_dirt.note(at, 0, text.len());
         // The marked passages and the collapsed blocks move with the text, in the one place that
         // knows the text moved.
         self.highlights.insert(at, text.len());
         self.folds.insert(at, text.len());
         self.breakpoints.insert(at, text.len());
-        self.chars.set(at..at + text.len(), &style_as_change(&style));
+        // `set_in` rather than `set`, because this is one letter and `set` rebuilds the whole span
+        // list to apply it -- 234,000 style clones for a keystroke on a 2 MB file. `task-1804` §5.2.
+        self.chars.set_in(at..at + text.len(), &style_as_change(&style), &[]);
         self.paragraphs.split(paragraph, line_breaks);
 
         self.selection.set_caret(at + text.len());
@@ -1087,6 +1263,7 @@ impl Document {
         let last = self.text.byte_to_line(range.end);
         self.text.remove(range.clone());
         self.chars.remove(range.clone());
+        self.syntax_dirt = self.syntax_dirt.note(range.start, range.end - range.start, 0);
         self.highlights.remove(range.clone());
         self.folds.remove(range.clone());
         self.breakpoints.remove(range.clone());
@@ -2143,6 +2320,107 @@ the fourth line");
         std::fs::remove_file(&path).ok();
     }
 
+    /// `task-1804` §7.1. The measurement in the ticket, made a test: a file with Windows line
+    /// breaks, one character typed, saved, compared **byte for byte** with what it was.
+    ///
+    /// It is a round trip rather than an assertion about `save_as`, because the fault was never in
+    /// one function -- the reading was right and the writing was right, and what was missing was the
+    /// fact that joins them.
+    #[test]
+    fn a_round_trip_leaves_every_line_ending_exactly_as_it_was() {
+        for (name, before, after) in [
+            (
+                "crlf.txt",
+                "line one\r\nline two\r\nline three\r\n",
+                "Xline one\r\nline two\r\nline three\r\n",
+            ),
+            ("lf.txt", "line one\nline two\nline three\n", "Xline one\nline two\nline three\n"),
+            // No trailing newline. This one was already correct and is pinned so it stays that way.
+            ("bare.txt", "line one\r\nline two", "Xline one\r\nline two"),
+            ("classic.txt", "line one\rline two\r", "Xline one\rline two\r"),
+        ] {
+            let path = round_trip_folder().join(name);
+            std::fs::write(&path, before).expect("write the test file");
+            let mut document = Document::open(&path).expect("open it");
+            document.apply(Command::MoveDocumentStart { extend: false });
+            document.apply(Command::Insert("X".to_owned()));
+            document.save().expect("save it");
+            let written = std::fs::read(&path).expect("read it back");
+            assert_eq!(
+                String::from_utf8_lossy(&written),
+                after,
+                "{name} did not come back the way it went in"
+            );
+        }
+    }
+
+    /// A lone carriage return is a line break, which it was not before `task-1804` §7.5.
+    #[test]
+    fn a_classic_macintosh_file_opens_as_its_lines_rather_than_as_one() {
+        let path = round_trip_folder().join("mac-lines.txt");
+        std::fs::write(&path, "one\rtwo\r").expect("write the test file");
+        let document = Document::open(&path).expect("open it");
+        assert_eq!(document.text().len_lines(), 3, "two breaks make three lines");
+        assert_eq!(document.line_ending(), crate::encoding::LineEnding::Cr);
+    }
+
+    /// `task-1804` §7.6. The file that used to be refused, and that `tab open` then reported
+    /// success for. It opens, it says what it is, and it will not be written back.
+    #[test]
+    fn a_file_that_is_not_utf8_opens_read_only_rather_than_being_refused() {
+        let path = round_trip_folder().join("latin1.txt");
+        std::fs::write(&path, b"caf\xE9\n").expect("write the test file");
+        let mut document = Document::open(&path).expect("it opens");
+        assert_eq!(document.encoding(), crate::encoding::Encoding::Latin1);
+        assert_eq!(document.text().to_string(), "caf\u{e9}\n");
+        assert!(!document.writable());
+        let refusal = document.save().expect_err("it must not be written back");
+        assert!(refusal.to_string().contains("Latin-1"), "{refusal}");
+        assert_eq!(
+            std::fs::read(&path).expect("still there"),
+            b"caf\xE9\n",
+            "the bytes are untouched"
+        );
+    }
+
+    /// A byte order mark is part of the file and comes back with it.
+    #[test]
+    fn a_utf8_file_with_a_byte_order_mark_keeps_it() {
+        let path = round_trip_folder().join("bom.txt");
+        std::fs::write(&path, b"\xEF\xBB\xBFhello\n").expect("write the test file");
+        let mut document = Document::open(&path).expect("open it");
+        assert_eq!(document.encoding(), crate::encoding::Encoding::Utf8Bom);
+        assert_eq!(document.text().to_string(), "hello\n");
+        document.save().expect("it is writable");
+        assert_eq!(std::fs::read(&path).expect("read it back"), b"\xEF\xBB\xBFhello\n");
+    }
+
+    /// Choosing an ending is not an edit and is still something to save.
+    #[test]
+    fn choosing_a_line_ending_writes_the_file_that_way_and_marks_it_unsaved() {
+        let path = round_trip_folder().join("chosen.txt");
+        std::fs::write(&path, "one\ntwo\n").expect("write the test file");
+        let mut document = Document::open(&path).expect("open it");
+        assert!(!document.is_modified());
+        document.set_line_ending(crate::encoding::LineEnding::Crlf);
+        assert!(document.is_modified(), "there is something to save now");
+        assert_eq!(document.text().to_string(), "one\ntwo\n", "the text itself did not change");
+        document.save().expect("save it");
+        assert_eq!(std::fs::read(&path).expect("read it back"), b"one\r\ntwo\r\n");
+    }
+
+    /// One folder for the round-trip tests, made once, so two of them cannot race on it.
+    fn round_trip_folder() -> std::path::PathBuf {
+        static FOLDER: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+        FOLDER
+            .get_or_init(|| {
+                let folder = std::env::temp_dir().join("unluminate-core-test-round-trip");
+                std::fs::create_dir_all(&folder).expect("make the test directory");
+                folder
+            })
+            .clone()
+    }
+
     #[test]
     fn saving_writes_the_text_and_clears_the_modified_mark() {
         let directory = std::env::temp_dir().join("unluminate-core-test-save");
@@ -2152,7 +2430,11 @@ the fourth line");
         assert!(document.is_modified());
         document.save_as(&path).expect("save it");
         assert!(!document.is_modified());
-        assert_eq!(std::fs::read_to_string(&path).expect("read it back"), "# heading\n\nbody");
+        // A document nobody opened from disk is written with the platform's own line ending, which
+        // is what a file this machine creates ought to look like. `task-1804`.
+        let expected =
+            crate::encoding::LineEnding::platform_default().apply("# heading\n\nbody").into_owned();
+        assert_eq!(std::fs::read_to_string(&path).expect("read it back"), expected);
 
         document.apply(Command::Insert(" after save".to_owned()));
         document.apply(Command::Undo);
