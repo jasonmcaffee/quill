@@ -8,6 +8,10 @@ bumps the release script makes are left out, because they are the boundaries rat
 
 ## Unreleased
 
+- Rename Unluminate to Unluminous (`task-1808`)
+
+## 0.36.0 — 2026-09-04
+
 - An idle window costs a millisecond instead of twenty-four (`task-1805`)
 
 ## 0.35.0 — 2026-09-04
@@ -29,8 +33,8 @@ bumps the release script makes are left out, because they are the boundaries rat
 
 ## 0.34.0 — 2026-09-03
 
-- Rename Quill to Unluminous (`task-1800`)
-- "an Unluminous", not "a Unluminous" (`task-1800`)
+- Rename Quill to Unluminate (`task-1800`)
+- "an Unluminate", not "a Unluminate" (`task-1800`)
 
 ## 0.33.0 — 2026-09-03
 
