@@ -39,19 +39,19 @@ encoding is negotiated; three server-to-client requests (`workspace/configuratio
 `client/registerCapability`, `window/workDoneProgress/create`) deadlock a server that is never
 answered; a `WorkspaceEdit` must be applied back to front and checked against document versions.
 
-It was rejected for this task, for reasons that are Quill's own rather than the protocol's:
+It was rejected for this task, for reasons that are Unluminate's own rather than the protocol's:
 
 - **The feature dies on most machines.** A server is a separate program per language —
   rust-analyzer, typescript-language-server, pyright — that has to be installed, found on `PATH`,
   and fed its project file (`Cargo.toml`, `tsconfig.json`, `compile_commands.json`). Helix's answer
   to a missing server is a health command that says so; Zed's is downloading binaries from the
-  network. Quill fetches nothing, ever.
+  network. Unluminate fetches nothing, ever.
 - **The costs are out of scale with the product.** rust-analyzer typically holds one to four
   gigabytes and has been measured at twelve on dependency-heavy workspaces; tsserver has shown
-  twenty-second stalls while a monorepo loads. Quill's whole editor budget is a frame at sixty a
+  twenty-second stalls while a monorepo loads. Unluminate's whole editor budget is a frame at sixty a
   second.
 - **Nothing about it can be a screenshot test.** When a server answers, and with what, depends on
-  the machine, the server version and the phase of its indexing. Every layout in Quill is
+  the machine, the server version and the phase of its indexing. Every layout in Unluminate is
   deterministic so that a picture can be a test; a feature that cannot be tested that way would be
   the first.
 - **The tokeniser's own comment already made this choice**: "Real understanding is a language
@@ -69,7 +69,7 @@ sub-millisecond after an edit), and its `locals.scm` queries resolve lexical sco
 within one file. But a grammar is generated C — the TypeScript one compiles to hundreds of
 kilobytes — and every editor that ships tree-sitter either compiles grammars on the user's machine
 (Helix, Neovim, a recurring support burden) or runs them as WebAssembly under a sandbox (Zed,
-which is a runtime Quill deliberately does not have). A tree-sitter grammar is code, and Quill's
+which is a runtime Unluminate deliberately does not have). A tree-sitter grammar is code, and Unluminate's
 plugins are data; bundling a fixed set into the binary is the mermaid precedent, but it would also
 be a second, parallel reading of every language beside the tokeniser that already reads them.
 
@@ -81,7 +81,7 @@ else.
 
 ### 2.3 A syntactic index, chosen
 
-The third mechanism is the one Quill already half-has. Sublime Text's goto-definition is its
+The third mechanism is the one Unluminate already half-has. Sublime Text's goto-definition is its
 syntax definitions feeding a symbol index — no resolution, a candidate list when a name is
 ambiguous — and it is well liked because it is instant and predictable. GitHub's shipped
 "search-based" code navigation is the same tier: all same-named definitions plus all same-named
@@ -89,7 +89,7 @@ references, for twenty-four languages, on every repository under 100,000 files, 
 configuration. Microsoft's `vscode-anycode` re-implements exactly this tier for environments
 where no language server can run. It is a shipped, respected product tier, not a stopgap.
 
-Quill's version of it: **definitions are read from the token stream the tokeniser already
+Unluminate's version of it: **definitions are read from the token stream the tokeniser already
 produces, driven by per-language data in the plugin manifest; references are the project text
 search that already exists, narrowed to whole words and classified by the tokeniser; rename is
 that search feeding a preview the user confirms.** No new parser, no process, no network, nothing
@@ -105,7 +105,7 @@ precise one when a heavier index exists — is the pattern, and the seam costs n
 
 ## 3. The mechanism
 
-### 3.1 `quill_core::symbols` — definitions are read from the tokens
+### 3.1 `unluminate_core::symbols` — definitions are read from the tokens
 
 A new module beside `syntax`, and like `syntax` it draws nothing and its tests run with no window.
 It makes three things from a file's text and its `Grammar`:
@@ -179,7 +179,7 @@ is missed, and that is stated in the plugin's `plugin.limitations` rather than h
 CSS deliberately gets no definers. `--brand-hue: 280` defines a custom property by position, not
 by keyword, and a rule that read `:` as a definer would call every property a definition. Find all
 references still works for CSS — `occurrences` needs no definitions — and go to definition is
-simply absent for a `.css` file, which is Quill's rule for a control that cannot apply.
+simply absent for a `.css` file, which is Unluminate's rule for a control that cannot apply.
 
 ### 3.3 The definitions index, and who owns a file's entry
 
@@ -196,7 +196,7 @@ name (interned) -> Vec<(file_id, name_range, kind, confidence)>
   `target`, `node_modules` and `__pycache__` already left out — and only files whose extension has
   a grammar with a `definers` list (or `brace_definitions`) are read at all.
 - **Cost, measured against what exists**: tokenising is 1.4 ms for a coloured 170 KB file and the
-  whole-project text search reads 618 files in 20 ms on Quill's own repository, so a full index
+  whole-project text search reads 618 files in 20 ms on Unluminate's own repository, so a full index
   build is tens of milliseconds of reading plus tens of tokenising — well under half a second cold,
   on the thread, with the window drawing throughout. The index itself is small: a name, a range
   and two discriminants per definition, a few hundred kilobytes for a project this size.
@@ -204,8 +204,8 @@ name (interned) -> Vec<(file_id, name_range, kind, confidence)>
   its `Document`, and every other file is owned by the index.* An open document's definitions are
   computed from its live text, cached on the tab keyed on `Document::text_revision()` — the same
   key `colour_the_file` uses, so an edit that does not change the text recomputes nothing. The
-  disk-owned side is refreshed per file when Quill saves one, and rebuilt when a project opens.
-  A file changed outside Quill can therefore be briefly stale, and §4.2 shows why that cannot
+  disk-owned side is refreshed per file when Unluminate saves one, and rebuilt when a project opens.
+  A file changed outside Unluminate can therefore be briefly stale, and §4.2 shows why that cannot
   put a jump in the wrong place: the range is re-checked at the moment of use, exactly as
   `open_the_match` already re-checks a search hit.
 - **Lookups allocate nothing.** The hover query (§4.1) runs while the pointer moves, so the index
@@ -226,7 +226,7 @@ common.
 
 Why not store all occurrences? Because the stored copy buys nothing this project size can feel —
 20 ms is already under the 100 ms threshold where an answer feels like the user's own action — and
-it costs the one thing the search never has to pay: invalidation. A file edited outside Quill, a
+it costs the one thing the search never has to pay: invalidation. A file edited outside Unluminate, a
 branch switched under the window, a generated file rewritten by a build — the search reads what is
 on the disk now, and an index of every occurrence would have to notice. rust-analyzer itself
 answers find-usages as "text search, then check each candidate", for the same reason.
@@ -275,7 +275,7 @@ ordinary click, having shown no underline.
 
 ### 4.2 Landing
 
-`QuillApp::open_the_match` already does everything a jump needs: opens the file as a real tab,
+`UnluminateApp::open_the_match` already does everything a jump needs: opens the file as a real tab,
 refuses a range that has drifted past the end of an edited document, selects the range, scrolls
 the caret into view and gives the editor the keyboard. The jump to a definition is
 `open_the_match(path, name_range)` — and before calling it on a disk-owned candidate, the window
@@ -313,7 +313,7 @@ pushed by `Navigate Back` and cleared by any new jump.
 ### 4.6 Menus and keys
 
 Four new `Action` variants, entries in the list `app::actions::menus` builds, and arms in
-`run_action` — which puts them in both menu bars and, through `quill-cli action list`, on the
+`run_action` — which puts them in both menu bars and, through `unluminate-cli action list`, on the
 command line for free:
 
 | Entry (Edit menu, under `Find in Files`) | Key |
@@ -323,7 +323,7 @@ command line for free:
 | `Rename Symbol` | `Shift+F6` |
 | `Navigate Back` / `Navigate Forward` | `Ctrl+Alt+Left` / `Ctrl+Alt+Right` |
 
-IntelliJ's keys, because Quill's search modals already chose IntelliJ's. The existing menu test
+IntelliJ's keys, because Unluminate's search modals already chose IntelliJ's. The existing menu test
 that refuses two entries one key equivalent guards the additions on macOS. The three symbol
 entries are **absent** — not dimmed — when the active file's grammar has no definers and no
 `brace_definitions` (for rename: when the file has no grammar at all), answered by one new
@@ -378,7 +378,7 @@ clamped like the others.
 name (whole name selected, so typing replaces it), and beneath it the same grouped, previewed
 reference list — but with a tick box per row, because **the list is the change set**. The rename
 that is applied is exactly the ticked rows, nothing else. IntelliJ reaches its preview through a
-dialog and VS Code hides it behind `Shift+Enter`; Quill has one modal where the preview *is* the
+dialog and VS Code hides it behind `Shift+Enter`; Unluminate has one modal where the preview *is* the
 interface, because on a syntactic tier the user's confirmation is the correctness mechanism, and
 a preview that can be skipped is a preview that will be.
 
@@ -411,7 +411,7 @@ Two guards, both answered in the modal's footer before anything is applied:
 ### 6.2 Applying it
 
 One new document command, `Command::ReplaceMany(Vec<(Range<usize>, String)>)`, applied back to
-front so earlier ranges never shift later ones. Undo in Quill restores a snapshot, so the whole of
+front so earlier ranges never shift later ones. Undo in Unluminate restores a snapshot, so the whole of
 a document's rename is **one undo step** by construction — one `push_undo`, then the edits. The
 ranges ride the same shifting `insert`/`remove_range` already do for `chars` and highlights, so
 marks and the caret move with the text.
@@ -457,7 +457,7 @@ The four rules from `task-1666`, applied to what is new:
 - **A caret move is not a change to the text.** Everything new is keyed on `text_revision`, never
   `revision`, so selecting and scrolling recompute nothing.
 
-And the measuring instrument comes with it: `crates/quill-app/examples/symbol_cost.rs`, the
+And the measuring instrument comes with it: `crates/unluminate-app/examples/symbol_cost.rs`, the
 `frame_cost` pattern — open a real project, build the index, time the build, time a thousand
 hover lookups, run a reference search, print each cost. Not a test (a millisecond threshold is a
 different number on every machine); the *work counts* are the tests — how many files the index
@@ -473,7 +473,7 @@ size and stream on arrival regardless of size; every interactive answer inside N
 ## 8. Reachable from the command line
 
 The menu entries come free through `action list`. Beyond them, catalogue rows and `app/cli.rs`
-arms, documented in `quill-cli/docs/commands.md` under the existing doc-or-fail test:
+arms, documented in `unluminate-cli/docs/commands.md` under the existing doc-or-fail test:
 
 | Command | What it does |
 |---|---|
@@ -482,7 +482,7 @@ arms, documented in `quill-cli/docs/commands.md` under the existing doc-or-fail 
 | `editor rename <new-name> [--scope file\|project] [--include comments,strings]` | the modal's default-tick rules as flags; prints the change set; `--apply` applies it |
 | `editor navigate-back` / `navigate-forward` | the stack |
 
-The CLI path goes through `QuillApp::run_cli` into the same functions the modal uses — the rule
+The CLI path goes through `UnluminateApp::run_cli` into the same functions the modal uses — the rule
 that a thing done from the command line and the same thing done by hand are the same thing — which
 is also what lets twenty renames across a project be scripted the way `highlight apply` already
 is.
@@ -490,8 +490,8 @@ is.
 ## 9. The scenario battery
 
 The ticket asks that the mechanism be battle tested through ample scenarios. These are the
-scenarios, each with its expected behaviour and the test layer that holds it (1 = quill-core unit
-test, 2 = quill-app unit test, 3 = screenshot test, 4 = real window / CLI). "The mechanism works
+scenarios, each with its expected behaviour and the test layer that holds it (1 = unluminate-core unit
+test, 2 = unluminate-app unit test, 3 = screenshot test, 4 = real window / CLI). "The mechanism works
 flawlessly" on a syntactic tier means: **every answer it gives is a true statement about the text,
 every guess is visibly a guess, and no input can make it lie, crash, or corrupt a file.**
 
@@ -571,22 +571,22 @@ Four invariants, one test each, in the spirit of `mermaid::check::properties`:
 - **Non-destruction**: for every rename applied to a buffer or file, the result equals the input
   with exactly the ticked ranges substituted — verified by reconstructing it independently in the
   test.
-- **Isolation**: no function in `quill_core::symbols` performs I/O; the app-side workers touch
+- **Isolation**: no function in `unluminate_core::symbols` performs I/O; the app-side workers touch
   only files under the project root from `all_files`.
 
 ## 10. What is built where
 
 | Piece | Crate / place |
 |---|---|
-| `symbols` module: definitions, `identifier_at`, occurrences, ranking, `ReplaceMany` | `quill-core` (unit tests, no window) |
-| `Grammar::definers`, `brace_definitions` + manifest parsing | `quill-core` / `services::plugins` |
-| `symbol_index` worker, references search mode | `quill-app/services` |
-| references + rename modal | `quill-app/components/references.rs` |
+| `symbols` module: definitions, `identifier_at`, occurrences, ranking, `ReplaceMany` | `unluminate-core` (unit tests, no window) |
+| `Grammar::definers`, `brace_definitions` + manifest parsing | `unluminate-core` / `services::plugins` |
+| `symbol_index` worker, references search mode | `unluminate-app/services` |
+| references + rename modal | `unluminate-app/components/references.rs` |
 | underline, `JumpRequest`, landing | `components/editor_view.rs`, `app/mod.rs` |
 | actions, menus, text menu, `file_kind` gate | `app/actions.rs`, `components/text_menu.rs`, `services/file_kind.rs` |
 | navigation stack | `app/mod.rs` |
-| CLI rows + arms + docs | `quill-cli/src/catalogue.rs`, `app/cli.rs`, `quill-cli/docs/commands.md` |
-| `symbol_cost` example | `quill-app/examples` |
+| CLI rows + arms + docs | `unluminate-cli/src/catalogue.rs`, `app/cli.rs`, `unluminate-cli/docs/commands.md` |
+| `symbol_cost` example | `unluminate-app/examples` |
 
 ## 11. Sources
 

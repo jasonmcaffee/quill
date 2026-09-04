@@ -5,7 +5,7 @@
 `task-1664` asks for two things that are the same thing seen from two sides: **knowing where you
 are**.
 
-The first is small and overdue. Quill's explorer already draws the open file as a filled pill, but
+The first is small and overdue. Unluminate's explorer already draws the open file as a filled pill, but
 only when its row happens to be on the screen. Open a file from `Go to File`, from `Find in Files`,
 from the command line, or by pressing `Ctrl+Tab` a few times, and the pill is drawn somewhere nobody
 can see — inside a folder that was never opened out, or four hundred rows below the top of a project
@@ -15,12 +15,12 @@ folders are opened out, and the list is scrolled far enough for it to be visible
 
 The second is the one with the design in it. `task-1664` asks to be able to **right click a tab and
 split the editing area**, so that two files — or three, or four — are on the screen at once, each
-with tabs of its own, the way IntelliJ does it. Quill's editing area has been one pane since it was
+with tabs of its own, the way IntelliJ does it. Unluminate's editing area has been one pane since it was
 written, and everything about it is phrased in terms of *the* open file: one cached layout, one
 cached preview, one caret, one gutter. Splitting it is therefore not a drawing change. It is a change
 to what "the open file" means.
 
-This document says what was chosen, what was rejected, and — for the two places Quill deliberately
+This document says what was chosen, what was rejected, and — for the two places Unluminate deliberately
 does **not** copy IntelliJ — why.
 
 ## Goals and non-goals
@@ -32,25 +32,25 @@ does **not** copy IntelliJ — why.
 | 1 | The file showing in the pane that has the keyboard is drawn selected in the explorer. |
 | 2 | Every folder above it is opened out, so the row exists to be selected at all. |
 | 3 | The list is scrolled by the least amount that brings the row into view, and not at all when it is already visible. |
-| 4 | That happens however the file came to be showing: a tab click, a tab menu, `Go to File`, `Find in Files`, `Ctrl+Tab`, `quill-cli tab show`, closing the tab in front of it. |
+| 4 | That happens however the file came to be showing: a tab click, a tab menu, `Go to File`, `Find in Files`, `Ctrl+Tab`, `unluminate-cli tab show`, closing the tab in front of it. |
 | 5 | Right clicking a tab opens a menu holding `Split Right`, `Move Right`, `Move Left`, `Unsplit`, `Unsplit All` and `Close`. |
 | 6 | `Split Right` puts a second pane beside the first. Each pane has its own tab strip, its own scroll position, its own view mode and its own gutter. |
-| 7 | There may be any number of panes, and the dividers between them are dragged like every other divider in Quill. |
+| 7 | There may be any number of panes, and the dividers between them are dragged like every other divider in Unluminate. |
 | 8 | Typing goes to the pane that was last clicked in, and only that pane draws a caret. |
 | 9 | The split comes back when the project is opened again, panes, tabs and widths. |
-| 10 | Everything above is reachable from `quill-cli`, and documented in `quill-cli/docs/commands.md`. |
+| 10 | Everything above is reachable from `unluminate-cli`, and documented in `unluminate-cli/docs/commands.md`. |
 | 11 | All four test layers stay green, and the new drawing has screenshots a person has looked at. |
 
 **Non-goals**
 
 - **Splitting downwards, and nested splits.** IntelliJ's editing area is a tree of splitters and can
-  be cut into any arrangement of rows and columns. Quill's is a **row of panes**, left to right.
+  be cut into any arrangement of rows and columns. Unluminate's is a **row of panes**, left to right.
   §4 says why, and says what would have to change if the rest is wanted later.
-- **The same file open in two panes at once.** IntelliJ does this and Quill cannot; §3 is the whole
+- **The same file open in two panes at once.** IntelliJ does this and Unluminate cannot; §3 is the whole
   answer.
 - **Dragging a tab from one pane to another.** The menu moves a tab between panes, which is the
   operation; dragging is a second way of asking for it and is worth having only once the first works.
-- **Remembering the split per window rather than per project.** A project is a window in Quill, so
+- **Remembering the split per window rather than per project.** A project is a window in Unluminate, so
   the two are the same thing today.
 
 ## 1. Following the tab: three separate faults, one rule
@@ -65,7 +65,7 @@ around it:
 
 One rule answers all three. **The window remembers which path it last revealed. When the path
 showing in the pane with the keyboard is not that one, it opens out the folders above it, asks the
-explorer to scroll to it, and remembers it.** That is `QuillApp::follow_the_open_file`, called once a
+explorer to scroll to it, and remembers it.** That is `UnluminateApp::follow_the_open_file`, called once a
 frame near the top of `ui`, next to the other two questions of the same shape — has git been asked
 about this file, has this file been coloured.
 
@@ -76,7 +76,7 @@ twelfth, added next month, would be the one that forgot to call it. A comparison
 last revealed cannot be forgotten, and it costs one `Option<PathBuf>` comparison a frame.
 
 **Opening the folders out is `FileTree::expand`,** which already exists and already opens every
-folder above the one it is given — it was written for `quill-cli explorer expand`. Handed a file it
+folder above the one it is given — it was written for `unluminate-cli explorer expand`. Handed a file it
 walks the components, opens each folder, and does nothing to the last one because `toggle` refuses a
 row that is not a directory. So the reveal needs no tree code at all.
 
@@ -86,7 +86,7 @@ brings this rectangle into view*, so a row that is already visible does not move
 not jump every time you switch tabs. `Align::Center` would put the row in the middle of the panel and
 throw away the reader's place in the tree for no reason. Both `Go to File` and `Find in Files`
 already scroll their lists with `scroll_to_rect(rect, None)`, so this is the same call the rest of
-Quill makes.
+Unluminate makes.
 
 **It is a one shot, and it lasts two frames.** The explorer is handed `reveal: bool`, true only just
 after the file changed. A person who closes a folder that holds the open file has closed it
@@ -98,7 +98,7 @@ Two frames rather than one, and this was found by looking at the real window rat
 Revealing a file usually **opens folders out in the same frame**, so the list can grow by forty rows
 between one frame and the next — and egui clamps a scroll target against the content size it measured
 on the *previous* frame. The first frame therefore scrolls as far as the old, shorter list allowed and
-stops short of the row. Measured: opening `crates/quill-app/src/components/explorer.rs` in a collapsed
+stops short of the row. Measured: opening `crates/unluminate-app/src/components/explorer.rs` in a collapsed
 tree left its row just below the fold, and a second frame put it on the screen. `REVEAL_FRAMES` is
 that number, with a repaint asked for so the second frame happens in an idle window.
 
@@ -108,7 +108,7 @@ is still drawn when the file does match, exactly as it was.
 
 **`View -> Select Opened File`** asks for the same thing by hand, which is IntelliJ's button of that
 name, and is what makes the behaviour reachable from the command line as
-`quill-cli explorer select-open-file`. It also opens the explorer if it was hidden, because a person
+`unluminate-cli explorer select-open-file`. It also opens the explorer if it was hidden, because a person
 who asks to be shown where a file is means it.
 
 ## 2. What a pane is
@@ -140,7 +140,7 @@ case that would otherwise need thinking about: close the tab that is showing, an
 forward is the one you were looking at before it, which is what IntelliJ does.
 
 `OpenFiles::active_index` — the single most called method in the window, and the meaning of "the
-open file" everywhere else in Quill — becomes *the highest stamped tab in the focused pane*. That
+open file" everywhere else in Unluminate — becomes *the highest stamped tab in the focused pane*. That
 one line is what makes the whole change small: **the hundred and seven places that say
 `files.active()` did not have to change**, because "the file that is showing" still has exactly one
 answer. The status bar, the title bar's text tools, the Git menu, the highlight commands and the
@@ -155,7 +155,7 @@ Two invariants keep it honest, and both are asserted in the unit tests:
   window as a whole, and it is kept for the same reason: there is never a pane with nothing to draw,
   so nothing anywhere needs a special case for one.
 
-## 3. Splitting moves the tab, because Quill cannot open a file twice
+## 3. Splitting moves the tab, because Unluminate cannot open a file twice
 
 > **Confirmed on the ticket.** Asked about this directly, Jason's answer was: *"We don't need to
 > override long standing rules about documents. In split pane, just have the selected file move to
@@ -164,7 +164,7 @@ Two invariants keep it honest, and both are asserted in the unit tests:
 
 IntelliJ's `Split Right` **duplicates**: the tab appears in both splits, and you are looking at one
 file in two editors, each with its own scroll position. That is genuinely useful — the top of a
-function beside the bottom of it — and Quill cannot do it.
+function beside the bottom of it — and Unluminate cannot do it.
 
 The reason is a rule that predates this ticket by a long way. `OpenFiles::open` says that a file
 already open is *shown* rather than opened twice, "because two tabs on one file would be two
@@ -177,7 +177,7 @@ Three ways round it were weighed:
 
 1. **Two `OpenFile`s sharing one `Document` behind an `Rc<RefCell<_>>`.** This is what IntelliJ
    really has — one document, several editors — and it is the right answer eventually. It is also a
-   change to the type every function in `quill-app` takes, for a feature nobody asked for in this
+   change to the type every function in `unluminate-app` takes, for a feature nobody asked for in this
    ticket: the ask is to see *N tabs* at once, not one tab twice.
 2. **A second, read-only view of the same document.** Cheaper, and worse: an editor you cannot type
    in, in a window where every other pane can be typed in, is a control that behaves differently for
@@ -185,7 +185,7 @@ Three ways round it were weighed:
 3. **Move the tab instead of copying it.** Which is IntelliJ's own `Split and Move Right`, sitting
    two rows below `Split Right` on the same menu.
 
-The third is what Quill does, and the menu says `Split Right` because that is what a person looks
+The third is what Unluminate does, and the menu says `Split Right` because that is what a person looks
 for. One sentence of divergence, recorded here and in `CLAUDE.md`, in exchange for not making every
 document in the program shared to get it — and it is the answer the ticket asked for.
 
@@ -207,15 +207,15 @@ The other four entries need no exception:
 
 **Right clicking a tab shows it first.** The menu's entries all act on "the tab that is showing",
 which is what makes them parameterless — `split-right` rather than `split-right --tab 3` — and so
-what makes them ordinary actions that the View menu, the keyboard and `quill-cli action run` can all
-ask for without inventing a way to name a tab. Quill's editing area already sets this precedent: a
+what makes them ordinary actions that the View menu, the keyboard and `unluminate-cli action run` can all
+ask for without inventing a way to name a tab. Unluminate's editing area already sets this precedent: a
 right click outside the selection puts the caret there before opening the menu, so that
 `Clear Highlight` means the one under the pointer.
 
 ## 4. A row of panes, not a tree of splitters
 
 IntelliJ can cut its editing area into any arrangement, because underneath it is a tree: every node
-is either a splitter with an axis and two children, or a group of tabs. Quill's is a **flat row**,
+is either a splitter with an axis and two children, or a group of tabs. Unluminate's is a **flat row**,
 left to right, and the ask — "another pane on the right that allows me to view N tabs at once" — is
 exactly a row.
 
@@ -229,7 +229,7 @@ ask, every operation on it is a small function with a unit test, and the persist
 numbers rather than a nested document.
 
 **The widths are fractions that sum to one**, one per pane, kept in `OpenFiles` and dragged through
-`components::splitter` like every other divider in Quill. Splitting divides the pane being split in
+`components::splitter` like every other divider in Unluminate. Splitting divides the pane being split in
 half — its half becomes two quarters, and the panes either side of it do not move, which is what a
 person expects when they split the third of four panes. A pane has a smallest width of 160 points so
 a drag cannot make one disappear, and closing a pane gives its share to its neighbour.
@@ -242,10 +242,10 @@ dividers second rather than drawing each divider beside its pane.
 
 ## 5. What had to move: one cache per file
 
-The single change with real risk in it is not the panes. It is that Quill kept **one** laid out
+The single change with real risk in it is not the panes. It is that Unluminate kept **one** laid out
 document, and it now needs one per pane.
 
-`QuillApp` held nine fields that were all about *the* open file: `layout`, `laid_out_revision`,
+`UnluminateApp` held nine fields that were all about *the* open file: `layout`, `laid_out_revision`,
 `laid_out_width`, `layout_stale`, `preview`, `preview_layout`, `preview_revision`, `preview_width`,
 `preview_pictures` and `preview_diagrams`. Every one of them is a cache keyed on a document's
 revision and a width. With two panes drawing two files at two widths, a single cache is not slow —
@@ -299,7 +299,7 @@ the borrowed focus, and both are passed in explicitly:
   itself, so it is a click that moves the keyboard, exactly as it is between the editor and the
   terminal.
 - **Anything the window keeps for the frame after.** `editor_area` — which the status bar and
-  `quill-cli editor status` read — is written by the focused pane only.
+  `unluminate-cli editor status` read — is written by the focused pane only.
 
 Everything else genuinely is per pane and genuinely does want the borrowed focus: the gutter, the
 scroll, the wheel, the pinch zoom, the right click menu, the selection painting.
@@ -312,8 +312,8 @@ which of four panes their typing is going to.
 
 ## 7. Remembering the split
 
-`.quill/workspace.conf` gains two keys and `open-files.txt` gains nothing, which matters: the file
-of paths stays a file of paths, and a Quill that has never heard of panes reads it unchanged.
+`.unluminate/workspace.conf` gains two keys and `open-files.txt` gains nothing, which matters: the file
+of paths stays a file of paths, and a Unluminate that has never heard of panes reads it unchanged.
 
 ```
 files.panes = 0,0,1,1
@@ -340,7 +340,7 @@ another size gives the same proportions rather than the same measurements.
 `task-1661` asks that every feature be reachable from the command line and be documented, and both
 are tests rather than promises. Five new actions and one new area:
 
-Actions, reachable through `quill-cli action run <name>` and listed by `action list` because they
+Actions, reachable through `unluminate-cli action run <name>` and listed by `action list` because they
 are on the View menu: `split-right`, `move-tab-right`, `move-tab-left`, `unsplit`, `unsplit-all`,
 `next-pane`, `previous-pane`, `select-open-file`.
 
@@ -361,7 +361,7 @@ it:
 because it is the explorer that moves. `tab list` and `status` grow a `pane` on each tab, so a
 script can see the arrangement it has just made.
 
-Every one of them goes through the same functions the menu entries do — `QuillApp::run_action` for
+Every one of them goes through the same functions the menu entries do — `UnluminateApp::run_action` for
 the actions and one `OpenFiles` method for each pane operation — so a split made from the command
 line and a split made by right clicking a tab are the same split. That is the rule `run_cli` already
 keeps.
@@ -399,7 +399,7 @@ Every goal in the table above is done, and the evidence is a test rather than a 
 | `OpenFiles`, no window | **20 unit tests.** Splitting a pane with one tab and with three, moving the last tab out of a pane, unsplitting into the left neighbour and into the right one, closing the showing tab, each pane walking only its own tabs, a divider that cannot be dragged past its neighbour, and a state file asking for a pane that would be empty. Every one of them ends by asserting both invariants. |
 | `project_state`, no window | **4 more.** A two pane project round tripping, a deleted file taking its pane number with it rather than sliding everyone else along, a pane number past the end being clamped, and a state file written before there were panes opening in one pane. |
 | The whole window, `egui_kittest` | **11 tests, 4 of them screenshots** — two panes, three panes, a tab's own menu, and the explorer opened out and scrolled to a file two folders down. Also: only the pane with the keyboard takes what is typed, each pane lays its file out at *its own* width, the command line splits and refuses a pane that is not there, and a split project opens split again. |
-| The command line | `quill-cli/docs/commands.md` is regenerated from the catalogue, and `documentation.rs` fails while any of the eight new commands has no section. |
+| The command line | `unluminate-cli/docs/commands.md` is regenerated from the catalogue, and `documentation.rs` fails while any of the eight new commands has no section. |
 
 The whole workspace is green: **1,099 tests**, no failures.
 
@@ -412,9 +412,9 @@ two panes' gutters were one widget as far as egui was concerned. That is what th
 and a person looking at the image is how it was found. The third is the one frame scroll of §1, which
 every test passed and the real window did not.
 
-**The real window, by hand.** `cargo run --release` on Quill's own repository, driven through
-`quill-cli`: two panes, then three at unequal widths, typing in each, `unsplit-all`, and the window
-closed and opened again — which brought the three panes and their tabs back off `.quill`. The captures
+**The real window, by hand.** `cargo run --release` on Unluminate's own repository, driven through
+`unluminate-cli`: two panes, then three at unequal widths, typing in each, `unsplit-all`, and the window
+closed and opened again — which brought the three panes and their tabs back off `.unluminate`. The captures
 are in `_agent_output/task-1664-split-view/`.
 
 ## 11. What this leaves for later

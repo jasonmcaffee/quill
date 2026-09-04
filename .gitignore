@@ -12,16 +12,16 @@ reference/
 # IntelliJ workspace state, which is per machine rather than part of the project.
 .idea/
 
-# What Quill remembers about a project it has open: the tabs, the folders that were opened out, the
+# What Unluminate remembers about a project it has open: the tabs, the folders that were opened out, the
 # terminal. Per person and per machine rather than part of the project, the same as `.idea` above.
-.quill/
+.unluminate/
 
 # What the two installer build scripts write.
 /installer/dist/
 
 # The finished installers. They are staged in `releases/` and uploaded to the GitHub release by
 # `tools/release.ps1`, which is where a downloadable file belongs; a 7 MB installer per finished
-# task is not something a git repository should carry. `releases/quill-0.1.0.dmg` predates this and
+# task is not something a git repository should carry. `releases/unluminate-0.1.0.dmg` predates this and
 # is still tracked.
 /releases/*.exe
 /releases/*.dmg

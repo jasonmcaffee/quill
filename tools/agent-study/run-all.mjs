@@ -1,4 +1,4 @@
-// Runs every scenario, or the ones named on the command line, resetting Quill to a known
+// Runs every scenario, or the ones named on the command line, resetting Unluminate to a known
 // state before each so one cannot contaminate the next.
 //
 //   node tools/agent-study/run-all.mjs                    # all of them

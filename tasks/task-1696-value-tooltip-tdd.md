@@ -9,7 +9,7 @@
 
 `task-1687`/`1688`/`1689` built the debugger and `task-1692` made it start. What neither built is the
 one gesture a person makes most often while a program is paused: **point at a name and find out what
-it holds.** Today the only way to read a value in Quill is to find the row in the variables tree at
+it holds.** Today the only way to read a value in Unluminate is to find the row in the variables tree at
 the bottom of the window — which, on the debug scenario `task-1695` watched, is exactly what an agent
 failed to do: it drove the debugger correctly and then answered the value of a variable *by doing
 arithmetic on the source*, because the value it had already been handed was buried behind nineteen
@@ -42,7 +42,7 @@ no way to see what the two are without going to the tile.
   whatever text is selected. `Evaluate Expression...` already exists here and does that job; a second
   way in would be a second thing to keep in step. §10 records it.
 - **No `toString()`/custom renderers.** IntelliJ's Data Views can call a method on an object to
-  render it. That is the debugger's business, and both adapters Quill drives already render their own
+  render it. That is the debugger's business, and both adapters Unluminate drives already render their own
   values.
 - **No pinning, no "inline watches"**, no dragging the popup off into a window. §10 says why.
 - **Nothing is fetched, ever** — the rule the whole feature has followed since `task-1687`.
@@ -51,7 +51,7 @@ no way to see what the two are without going to the tile.
 
 Read from JetBrains' own documentation and blog, and from the settings page it is configured on.
 
-| IntelliJ | What it does | Quill |
+| IntelliJ | What it does | Unluminate |
 |---|---|---|
 | **Value tooltip** | Hover a variable while paused; after a delay a tooltip shows its value. | Copied. §5. |
 | **Show value tooltip** (Data Views) | A tick box that switches the whole thing off. | Copied — `debug.value_tooltip`, §8. |
@@ -59,10 +59,10 @@ Read from JetBrains' own documentation and blog, and from the settings page it i
 | **Expand in the tooltip** | Click the arrow, or `Ctrl+F1`, and the tooltip becomes a tree of the object's children. | Copied. §6. |
 | **Set Value (`F2`)** | Type a new value into a row and press Enter. | Copied, and reachable from the popup. §7. |
 | **Quick Evaluate (`Alt+Click`, `Ctrl+Alt+F8`)** | Evaluate an arbitrary selected expression. | The chord is copied for *showing the value at the caret*; the arbitrary-selection half is `Evaluate Expression...`, which already exists. §8. |
-| **On-demand tooltip (Alt held)** | A 2009 option making the tooltip appear only with Alt held. | Not copied. Quill already spends the modifier: `Ctrl/Cmd`-hover is Go to Definition. §5.3. |
+| **On-demand tooltip (Alt held)** | A 2009 option making the tooltip appear only with Alt held. | Not copied. Unluminate already spends the modifier: `Ctrl/Cmd`-hover is Go to Definition. §5.3. |
 | **Inline values** | Values at the ends of lines, change-highlighted. | Already built, `task-1687` §8.5. Unchanged. |
 
-The one thing worth naming that IntelliJ does **not** do, and Quill will not either: it does not keep
+The one thing worth naming that IntelliJ does **not** do, and Unluminate will not either: it does not keep
 the tooltip alive across a step. A tooltip is about a moment.
 
 ## 4. The shape of it
@@ -71,7 +71,7 @@ the tooltip alive across a step. A tooltip is about a moment.
 flowchart TD
     P[pointer rests on a name] --> Q{paused, and<br/>the tooltip is on?}
     Q -->|no| X[nothing]
-    Q -->|yes| E[quill_core::expressions::at<br/>the identifier plus its field path]
+    Q -->|yes| E[unluminate_core::expressions::at<br/>the identifier plus its field path]
     E --> D{rested for<br/>HOVER_DELAY?}
     D -->|not yet| W[ask for a repaint then]
     D -->|yes| A[DebugState::ask_the_hover]
@@ -87,9 +87,9 @@ flowchart TD
 
 Five pieces, each in the crate that owns it:
 
-- **`quill_core::expressions`** — what text a point in a file is a question about. No window, no
+- **`unluminate_core::expressions`** — what text a point in a file is a question about. No window, no
   debugger, no allocation beyond the answer.
-- **`quill_dap`** — the `hover` context on `evaluate`, the `setExpression` request, and the two
+- **`unluminate_dap`** — the `hover` context on `evaluate`, the `setExpression` request, and the two
   capabilities that gate them.
 - **`app::debug::DebugState::hover`** — the question, the answer, and the tree built from it.
 - **`app::hover_value`** — when to ask, where the popup hangs, what closes it.
@@ -130,7 +130,7 @@ Three things it deliberately does **not** do:
 
 `separator` comes from the grammar in the sense that the two spellings are the two that exist —
 `.` everywhere and `->` in C-family languages — and neither of them is a word character in any
-grammar Quill ships, so the walk needs no plugin key. This is deliberately **not** a new manifest
+grammar Unluminate ships, so the walk needs no plugin key. This is deliberately **not** a new manifest
 key: `task-1671` and `task-1680` added keys for things where languages genuinely disagree, and every
 language that has field access spells it one of these two ways.
 
@@ -144,7 +144,7 @@ session on an expression that does not resolve — genuinely dangerous.
 `HOVER_DELAY` is **350 ms**. A pointer crossing a line passes over a word in far less than that, so
 nothing is asked for a word merely passed over; a pointer that has come to rest is answered before
 anybody notices waiting. It is a constant rather than a setting, because IntelliJ's setting exists to
-let people turn a *distraction* down and Quill's tick box already turns the distraction off. One
+let people turn a *distraction* down and Unluminate's tick box already turns the distraction off. One
 number, in one place, with the reason beside it.
 
 The wait costs nothing: the frame that notices the pointer has landed asks egui to repaint after the
@@ -162,7 +162,7 @@ the two gestures exactly complementary: modifier down asks *where is this define
 
 `evaluate`, in the **`hover`** context — the context the specification put there for exactly this,
 which adapters use to be permissive about side effects and to answer cheaply. It is gated on
-`supportsEvaluateForHovers`, a capability `quill_dap::Capabilities` has read since `task-1689` and
+`supportsEvaluateForHovers`, a capability `unluminate_dap::Capabilities` has read since `task-1689` and
 nothing has ever used.
 
 An adapter that does not offer it is asked in the **`watch`** context instead, which is what the
@@ -185,7 +185,7 @@ watches and `Evaluate Expression` already share, so an answer that arrives after
 moved on lands nowhere rather than in the wrong popup. Asking a second replaces the first.
 
 The answer is kept while the pointer stays on that expression and thrown away when the program
-resumes, along with every `variablesReference` in it — `quill_dap::Request::resumes`' rule, which
+resumes, along with every `variablesReference` in it — `unluminate_dap::Request::resumes`' rule, which
 `DebugState` already acts on in one place.
 
 ## 6. The tree
@@ -224,15 +224,15 @@ Two requests, and which one is used is decided by what the row *is* rather than 
   cannot name it. **`setExpression`** can — it takes the expression itself as the left-hand side —
   and it is the request the protocol added for exactly this case.
 
-So `quill_dap` gains `Request::SetExpression { expression, value, frame }` and
+So `unluminate_dap` gains `Request::SetExpression { expression, value, frame }` and
 `Capabilities::set_expression` from `supportsSetExpression`, and the root's value is editable only
-when the adapter offers it. **A control that can never apply is absent**, which is Quill's rule: with
+when the adapter offers it. **A control that can never apply is absent**, which is Unluminate's rule: with
 no `setExpression` the root is drawn as a value and a double click on it does nothing, while its
 children stay editable through `setVariable`.
 
 VS Code's own rule is the opposite way round — *prefer `setExpression` whenever the variable has an
 `evaluateName`* — and it is deliberately not copied. That rule exists so VS Code can drop
-`setVariable` support from adapters entirely; Quill's tile already sends `setVariable` and has been
+`setVariable` support from adapters entirely; Unluminate's tile already sends `setVariable` and has been
 tested against two real adapters doing so, and swapping the request under it to gain nothing would be
 a change with only risk in it. Each request is used where it is the only one that can do the job.
 
@@ -241,7 +241,7 @@ The answer is drawn rather than what was typed, which is `DebugState::absorb`'s 
 
 **Editing is a field in the row**, opened by a double click, `F2`, or `Enter` on the chosen row —
 `DebugPanel::editing`'s shape exactly, through `controls::field_text_rect`, which is what stops it
-being the seventh field in Quill to put its words against its own top edge. `Enter` applies and
+being the seventh field in Unluminate to put its words against its own top edge. `Enter` applies and
 `Escape` cancels.
 
 ## 8. The controls
@@ -256,7 +256,7 @@ being the seventh field in Quill to put its words against its own top edge. `Ent
 
 **The setting is `debug.value_tooltip`, `automatic` or `manual`**, which is `editor.suggestions`'
 shape and its reason: `manual` is already the off switch, because `Debug -> Show Value` and
-`quill-cli debug hover` work either way, so there is no third value. It goes on the **Editor** page
+`unluminate-cli debug hover` work either way, so there is no third value. It goes on the **Editor** page
 under a new `Debugger` heading rather than in a Debugger page of its own: one tick box is not a page,
 and the Settings window is one size for every page with the tallest deciding it — a sixth page
 holding one control would cost the other five nothing and gain nobody anything.
@@ -297,14 +297,14 @@ learn one number stops asking, and the debug scenario failed precisely because t
 was buried in a payload about something else.
 
 ```
-quill-cli debug hover <path> <line> <column> [--expand <row>]
-quill-cli debug set-expression <expression> <value>
+unluminate-cli debug hover <path> <line> <column> [--expand <row>]
+unluminate-cli debug set-expression <expression> <value>
 ```
 
 `debug hover` is **not** a spelling of `debug evaluate`. What it adds is the half that is new: it
 takes a **position in a file** and does §5.1's reading, so an agent that has just been told a program
 stopped at `src/main.rs:42` can ask what the third word on that line holds without working out what
-that word is. It answers with the expression Quill read, the value, the type, and the rows — the same
+that word is. It answers with the expression Unluminate read, the value, the type, and the rows — the same
 rows the popup shows, so the two cannot disagree — and `--expand` opens one, naming it the way
 `debug variables --expand` already does.
 
@@ -324,7 +324,7 @@ verb. A second path to the same request would be a second thing to keep in step,
 free — Alt is the modifier `Run to Cursor` and `Evaluate Expression` already build their chords from.
 
 **Pinning the popup / dragging it out into a window.** Rejected for now: a popup that survives being
-left is a panel, and Quill has a panel for variables that is one keystroke away and already docks to
+left is a panel, and Unluminate has a panel for variables that is one keystroke away and already docks to
 four edges since `task-1697`. The watch list is the durable form of "keep an eye on this", and
 `Add to Watches` from the popup is a natural follow-up rather than part of this.
 
@@ -345,13 +345,13 @@ next to a tree that could not be opened. One rule, already written down, applied
 
 ## 11. Testing
 
-1. **`quill-core`, no window.** §5.1's reading: the bare word, the field path, the `->` spelling, the
+1. **`unluminate-core`, no window.** §5.1's reading: the bare word, the field path, the `->` spelling, the
    `::` that is not crossed, the bracket that is not crossed, the newline that is not crossed, the
    comment and the string that answer nothing, the keyword that answers nothing.
-2. **`quill-dap`, scripted adapters.** The `hover` context reaches the wire; `setExpression` is
+2. **`unluminate-dap`, scripted adapters.** The `hover` context reaches the wire; `setExpression` is
    shaped as the specification says; `supportsSetExpression` is read; an adapter offering neither
    capability is never sent either request.
-3. **`quill-app`, no window.** §8.1's liveness rule as a pure function of two rectangles and a point;
+3. **`unluminate-app`, no window.** §8.1's liveness rule as a pure function of two rectangles and a point;
    the popup's rows built from a scripted `evaluate` answer; the root that opens itself; the edit
    that goes to `setExpression` for a root and `setVariable` for a child; `manual` stopping the
    unasked popup and not the asked one — `task-1678`'s own test, made once more.
@@ -380,7 +380,7 @@ than by any test.
 **`self` is a keyword, so a pointer resting on it alone asks nothing.** §5.1 said the reading starts
 from `FileSymbols::identifier_at`, and that answers nothing for a keyword — which `self` and `this`
 are. The alternative is a list of the keywords that happen to be values, which is a list of languages
-inside Quill and the exact thing `language.definers` and `task-1680`'s nine keys exist to prevent. So
+inside Unluminate and the exact thing `language.definers` and `task-1680`'s nine keys exist to prevent. So
 the *segment* walk reads the text through `Grammar::is_word_character` rather than the identifier
 list, which means `self.items.count` is read whole; only `self` entirely on its own is not a
 question. The cost is small and the rule stays the plugin's.
@@ -393,14 +393,14 @@ what tells them to run. What the popup actually wants to know is whether the let
 still there, so it remembers them and compares the bytes.
 
 **CodeLLDB 1.12.3 does not offer `supportsSetExpression`.** §7 made the root editable only through
-`setExpression`, which would have meant that on the adapter Quill's own registry prefers, the
+`setExpression`, which would have meant that on the adapter Unluminate's own registry prefers, the
 commonest thing anybody wants to change — a bare local — could not be changed from the popup at all.
 So there are two ways and the second is the fallback: **when the expression is a name the paused
 frame's own scopes already hold, `setVariable` on that scope**. That is not an approximation of the
 assignment; it is byte for byte the request the debug tile already sends when the same row is typed
 over there, so it is one operation reached from two places rather than a second answer. Anything else
 — `basket.label` on such an adapter — still has no field, which is §7's absent-control rule intact.
-`quill-cli debug set-expression` takes the same two ways, so the command line and the popup cannot
+`unluminate-cli debug set-expression` takes the same two ways, so the command line and the popup cannot
 disagree.
 
 **The execution point was being followed on every frame rather than on every stop**, and this ticket

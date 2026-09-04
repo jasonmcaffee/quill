@@ -1,4 +1,4 @@
-# agent-tasks-plugin — the task board as a Quill plugin
+# agent-tasks-plugin — the task board as a Unluminate plugin
 
 > For our next plugin, we want rebuild our entire Tasks project (terminals, tasks, jira, etc) as a
 > plugin called Agent-Tasks in rust. The db should be a built in sql-lite db that is stored somewhere
@@ -13,7 +13,7 @@
 > The design should look like our current, but dark theme. The background can match the transparency of
 > our IDE settings.
 
-The board, its tickets, its terminals and its agents, drawn in `egui` inside Quill, over a single
+The board, its tickets, its terminals and its agents, drawn in `egui` inside Unluminate, over a single
 SQLite file. `services/agent_tasks/` is the implementation and this is the design.
 
 ## 1. What is being replaced
@@ -146,9 +146,9 @@ holds the data, and it owns the terminals.
 
 That was refused, and the ticket asks for the opposite: a built in SQLite database. Three reasons hold
 independently of the ask. A pane that draws nothing until four processes are up is a pane that is empty
-most of the time, and the failure looks like a bug in Quill. A plugin that needs PostgreSQL, Node and a
-daemon is not a plugin somebody installs. And Quill already owns real pseudoterminals with a real
-emulator in `quill-terminal`, so going through a WebSocket to a daemon that spawns `node-pty` would be
+most of the time, and the failure looks like a bug in Unluminate. A plugin that needs PostgreSQL, Node and a
+daemon is not a plugin somebody installs. And Unluminate already owns real pseudoterminals with a real
+emulator in `unluminate-terminal`, so going through a WebSocket to a daemon that spawns `node-pty` would be
 a second terminal stack inside a program that has one.
 
 What is lost is stated rather than hidden: **the plugin's board is a different board from the browser's.**
@@ -158,23 +158,23 @@ They do not share a database and nothing syncs between them. §11 records what a
 
 | | Verdict |
 |---|---|
-| **`rusqlite` with the `bundled` feature** | **Chosen.** The C library is compiled into Quill, so there is nothing to install and no server to be running. One file, which is what makes the setting in §4 meaningful and the tests disposable. Transactions, indexes and a real query language, which the board's queries need: the lanes are one grouped read and the watchdog's candidate query is arithmetic over timestamps. |
+| **`rusqlite` with the `bundled` feature** | **Chosen.** The C library is compiled into Unluminate, so there is nothing to install and no server to be running. One file, which is what makes the setting in §4 meaningful and the tests disposable. Transactions, indexes and a real query language, which the board's queries need: the lanes are one grouped read and the watchdog's candidate query is arithmetic over timestamps. |
 | **PostgreSQL** | What is being replaced. A server per machine, a role, a schema and a port, and the failure mode the environment notes in the repository being replaced already record: the Docker server on 5432 stores its data on tmpfs, so every restart destroyed the database. A text editor does not ask for a database server. |
-| **A file of records Quill writes itself** | The board has ten tables, foreign keys with cascade deletes, ordering within lanes, and a search across two text columns. `settings.conf` is `name = value` and needs no parser worth a dependency; this needs joins. Writing the storage engine instead of using one is the mistake `pulldown-cmark` was refused for in reverse. |
+| **A file of records Unluminate writes itself** | The board has ten tables, foreign keys with cascade deletes, ordering within lanes, and a search across two text columns. `settings.conf` is `name = value` and needs no parser worth a dependency; this needs joins. Writing the storage engine instead of using one is the mistake `pulldown-cmark` was refused for in reverse. |
 
 `rusqlite = { version = "0.32", features = ["bundled"] }` adds one dependency and a C compile. Nothing
 is fetched at run time, which is the rule the whole repository keeps.
 
 ### 2.3 The terminal
 
-`quill-terminal` already has everything the board needs and it is already tested with no window: a
+`unluminate-terminal` already has everything the board needs and it is already tested with no window: a
 session over a pseudoterminal, the screen a painter reads, the colour palette, key encoding, mouse
 reports, and `Tabs` holding several sessions with one active.
 
-So a ticket's terminal is a `quill_terminal::Session` owned by the plugin, and the pane draws it with
+So a ticket's terminal is a `unluminate_terminal::Session` owned by the plugin, and the pane draws it with
 the same painter the terminal tile uses. There is no daemon, no WebSocket, and no second emulator.
 
-The cost is the one thing the daemon bought: **a session does not survive Quill closing.** The daemon
+The cost is the one thing the daemon bought: **a session does not survive Unluminate closing.** The daemon
 was a separate process precisely so that restarting the API left the terminals alive. §5.4 is what
 replaces it, and it is the mechanism the agents themselves already rely on: Claude and Codex both resume
 a conversation by id, so what has to survive is the id rather than the process.
@@ -195,7 +195,7 @@ menu.name   = Agent-Tasks  # with entries and a nested submenu
 settings.page = Agent-Tasks
 ```
 
-The layout is one crate module with one file per part of the window, which is `quill-app`'s own rule.
+The layout is one crate module with one file per part of the window, which is `unluminate-app`'s own rule.
 
 ```
 services/agent_tasks/
@@ -214,17 +214,17 @@ components/agent_tasks/
 ```
 
 `store.rs`, `model.rs`, `board.rs`, `watchdog.rs` and `search.rs` have no user interface dependency and
-are tested with no window, which is the rule the crate table in `CLAUDE.md` sets for `quill-core`,
-`quill-terminal` and `quill-git`. The four files under `components/` draw and decide nothing.
+are tested with no window, which is the rule the crate table in `CLAUDE.md` sets for `unluminate-core`,
+`unluminate-terminal` and `unluminate-git`. The four files under `components/` draw and decide nothing.
 
 ## 4. The database, and the setting that names it
 
-One file, in the folder Quill already keeps its settings in.
+One file, in the folder Unluminate already keeps its settings in.
 
 ```
-macOS    ~/Library/Application Support/Quill/plugins/agent-tasks/board.sqlite3
-Windows  %APPDATA%\Quill\plugins\agent-tasks\board.sqlite3
-Linux    ~/.config/Quill/plugins/agent-tasks/board.sqlite3
+macOS    ~/Library/Application Support/Unluminate/plugins/agent-tasks/board.sqlite3
+Windows  %APPDATA%\Unluminate\plugins\agent-tasks\board.sqlite3
+Linux    ~/.config/Unluminate/plugins/agent-tasks/board.sqlite3
 ```
 
 `store::default_path` is that path and `Settings -> Agent-Tasks` shows it in a field with `Reveal` and
@@ -257,7 +257,7 @@ exist would be a table nothing ever writes.
 `CREATE TABLE IF NOT EXISTS` for every table and then a pass that adds any column a later version needs,
 guarded by a read of `pragma_table_info`, because SQLite has no `ADD COLUMN IF NOT EXISTS`. Nothing is
 ever dropped and no table is ever recreated. A `schema_version` row in a `meta` table records what the
-file was last written by, so a file from a newer Quill is refused with a message rather than opened and
+file was last written by, so a file from a newer Unluminate is refused with a message rather than opened and
 half understood.
 
 **Every query is a named function on `Store` and there is no query anywhere else.** That is what makes
@@ -292,8 +292,8 @@ on the right hand side of the window and a modal in a 420 point column is a moda
 In the tab, where there is a whole editing area, the board is on the left and the detail on the right,
 which is the arrangement the Markdown side by side view already uses.
 
-The description is markdown, and Quill already reads and draws markdown. So the description is a
-`quill_core::Document` and the preview is the one `components::editor_view` draws, which means the
+The description is markdown, and Unluminate already reads and draws markdown. So the description is a
+`unluminate_core::Document` and the preview is the one `components::editor_view` draws, which means the
 description editor is the editor, with the same three view modes, the same fonts and the same code
 blocks. That is the largest single saving in the design and it falls out of the plugin being inside a
 text editor.
@@ -304,22 +304,22 @@ agent.
 
 ### 5.3 Running an agent
 
-`agent.rs` builds the same command lines §1.3 records, from the same three registries the rest of Quill
-uses for this kind of decision: which agent programs exist is a list in Quill, which one a ticket uses
+`agent.rs` builds the same command lines §1.3 records, from the same three registries the rest of Unluminate
+uses for this kind of decision: which agent programs exist is a list in Unluminate, which one a ticket uses
 is data on the row, and where it is found on this machine is `services::debuggers`' pattern applied to
 agents.
 
 ```rust
-/// The agents this version of Quill can launch. Checked the way `plugins::DEBUGGERS` is checked.
+/// The agents this version of Unluminate can launch. Checked the way `plugins::DEBUGGERS` is checked.
 pub const AGENTS: &[&str] = &["claude", "codex"];
 ```
 
-Launching one is `quill_terminal::Session::spawn` in the ticket's project directory, then waiting until
+Launching one is `unluminate_terminal::Session::spawn` in the ticket's project directory, then waiting until
 the agent is ready for input, then writing the handoff line. Claude is ready after 1800 ms, which is what
 the application being replaced measured; Codex is ready when its prompt appears. Both numbers are in one
 place with the measurement written beside them.
 
-**The session id is a UUID Quill chooses for Claude, and Codex does not take one.** Claude accepts
+**The session id is a UUID Unluminate chooses for Claude, and Codex does not take one.** Claude accepts
 `--session-id <uuid>` on a first run and `--resume <uuid>` later, so the id stored on the row is one
 Claude will answer to. `codex --help` offers no equivalent: a Codex session gets an id from Codex and
 `codex resume <id>` takes it back, so a first Codex run names nothing.
@@ -331,7 +331,7 @@ that pressing Start begins a new one which reads the ticket's comments. Capturin
 which is what the board being replaced does, reading the rollout id recorded after the launch — is its own
 piece of work, and §10 keeps it.
 
-### 5.4 Resuming a session after Quill has closed
+### 5.4 Resuming a session after Unluminate has closed
 
 The daemon existed so that a terminal survived the API restarting. A plugin inside the window cannot
 have that, so the design keeps the thing that actually matters: **the conversation, not the process.**
@@ -344,11 +344,11 @@ requires of a resumed run.
 
 So for Claude, `Resume session` means the same thing it means today from a person's point of view, and it
 is implemented by the mechanism the agent already has rather than by a process that outlives the editor. A
-session started in one Quill is resumed by another Quill window, because the id is in the database rather
+session started in one Unluminate is resumed by another Unluminate window, because the id is in the database rather
 than in the window.
 
 **For Codex it is refused, and the refusal is the honest answer.** Codex names its own sessions, so the id
-on the ticket is Quill's marker rather than a conversation Codex has heard of. Pressing Start begins a new
+on the ticket is Unluminate's marker rather than a conversation Codex has heard of. Pressing Start begins a new
 one, and what it reads is the ticket: the description, the todos and the comments, which is what the
 previous worker left behind for exactly this. Building the other half — finding the rollout id Codex wrote
 after the launch — is §10.
@@ -370,8 +370,8 @@ comment does.
 ### 5.6 JIRA
 
 The sync of §1.5, with the same query, the same two passes, the same lane rules and the same exemptions.
-Reading JIRA is HTTP and Quill has no HTTP client, so this is the one part of the plugin that adds a
-dependency for a network call: `ureq`, blocking, on the worker thread pattern `quill_git::Worker`
+Reading JIRA is HTTP and Unluminate has no HTTP client, so this is the one part of the plugin that adds a
+dependency for a network call: `ureq`, blocking, on the worker thread pattern `unluminate_git::Worker`
 already establishes. **The rule that nothing is fetched is not broken by it.** That rule is about the
 editor reaching out on its own: a document cannot make a request, a diagram fetches nothing, and no
 adapter is downloaded. A sync a person configured with their own credentials and asked for with a button
@@ -403,9 +403,9 @@ check a drawn card against the palette:
 | What | Colour |
 |---|---|
 | The pane's background | `EDITOR`, with the opacity setting applied, so the desktop shows through the board exactly as it shows through the text |
-| A lane's background | `EXPLORER`, which is the panel ground every list in Quill sits on |
+| A lane's background | `EXPLORER`, which is the panel ground every list in Unluminate sits on |
 | A card | `CONTROL`, with `CONTROL_BORDER` round it and the epic's colour down its left edge |
-| A card under the pointer | `SELECTED_ROW`, which is the pill every list in Quill draws for its chosen row |
+| A card under the pointer | `SELECTED_ROW`, which is the pill every list in Unluminate draws for its chosen row |
 | A card's title | `TEXT_STRONG`; its key, counts and dates `TEXT_DIM` |
 | The lane names and counts | `TEXT_DIM` |
 | The start button | `ACCENT` |
@@ -423,7 +423,7 @@ either in `Settings -> Appearance` changes the board in the same frame.
 
 ## 7. Reaching all of it without a pointer
 
-Every control on the board is reachable from `quill-cli plugin run agent-tasks <command>`, and
+Every control on the board is reachable from `unluminate-cli plugin run agent-tasks <command>`, and
 `plugin view agent-tasks` prints the board as JSON. Nineteen commands, one per thing a person can do:
 
 ```
@@ -444,14 +444,14 @@ search --query
 ```
 
 That list is not a convenience. A board drawn with `egui` is invisible to a test and to an agent, and
-Quill's rule is that everything a person can do an agent can do too, through the same code. So each of
+Unluminate's rule is that everything a person can do an agent can do too, through the same code. So each of
 those goes into `provider.command`, which is the same function the button calls, and the answer to
 `plugin view` is built from the same store reads the drawing uses.
 
 ## 8. Tests
 
 The application being replaced has 276 test cases on its API and 25 in Playwright. The plugin's tests are
-in the same places Quill's are, and the count below is what the design commits to.
+in the same places Unluminate's are, and the count below is what the design commits to.
 
 **The store, with no window and a temporary file.** Opening a file that does not exist creates the schema.
 Opening it again is a no operation. A file written by a newer schema version is refused with a message. A
@@ -498,7 +498,7 @@ handoff line still works.
 
 ## 9. What is measured rather than assumed
 
-`cargo run --release -p quill-app --example board_cost` is what measures all of it, on a board of 5000
+`cargo run --release -p unluminate-app --example board_cost` is what measures all of it, on a board of 5000
 tickets — more than any board anybody keeps, which is the point of the number.
 
 **Drawing the board costs nothing when nothing changed.** The store is read when the board opens, when a
@@ -539,7 +539,7 @@ tickets. The `Messages` rail entry is absent rather than empty.
 
 **The Remote Control page.** A phone attaching to a terminal is the reason the daemon is a separate
 process and the reason there is an HTTP server at all. A plugin inside one window has no way to serve a
-phone, and giving it one would mean putting a web server inside Quill.
+phone, and giving it one would mean putting a web server inside Unluminate.
 
 **The browser login.** No browser, no cookie, no session table. The board is a file on this machine
 readable by whoever can read the file.
@@ -553,11 +553,11 @@ already a named function in one file.
 **The desktop shell.** Tasks.app exists so the browser board has a dock icon. The plugin is inside an
 application that already has one.
 
-**Dictation.** The description editor can dictate through a local speech service the API proxies. Quill
+**Dictation.** The description editor can dictate through a local speech service the API proxies. Unluminate
 has no audio and adding one for a text field is a feature of its own.
 
 **Image paste into a description.** The board being replaced writes a pasted image into the project's
-uploads folder and rewrites the markdown to point at a route that reads it back. Quill draws pictures
+uploads folder and rewrites the markdown to point at a route that reads it back. Unluminate draws pictures
 already and `services::preview_images` already resolves an image in a markdown preview, so the pieces are
 there; what is missing is a decision about where a pasted image is written, and it is not a decision this
 design needs to make to draw a board.

@@ -1,7 +1,7 @@
-//! Draws the Quill application icon, once, at 1024 points, and writes every size and both container
+//! Draws the Unluminate application icon, once, at 1024 points, and writes every size and both container
 //! formats the two installers ask for.
 //!
-//! Quill's rule is that icons are drawn rather than lettered, and the application's own icon is held
+//! Unluminate's rule is that icons are drawn rather than lettered, and the application's own icon is held
 //! to the same rule. It is two colours out of `theme::color` — the window's own darks behind, and
 //! `ACCENT` for the ink — so that the thing on the taskbar is recognisably the thing in the window.
 //!
@@ -10,7 +10,7 @@
 //! application's small icon is.
 //!
 //! Run it with `cargo run --release --manifest-path installer/icon/Cargo.toml`. Its output is
-//! committed, because `quill.ico` is a build input for `quill.exe` itself and a checkout must build
+//! committed, because `unluminate.ico` is a build input for `unluminate.exe` itself and a checkout must build
 //! without running this first.
 
 use std::fs;
@@ -25,11 +25,11 @@ use tiny_skia::{
 /// The side of the drawing everything else is averaged down from.
 const MASTER: u32 = 1024;
 
-/// The sizes that go into `quill.ico`. Windows asks for these seven; the three smallest are written
-/// as a DIB and the rest as PNG, for the reason in `tasks/quill-installer-tdd.md`.
+/// The sizes that go into `unluminate.ico`. Windows asks for these seven; the three smallest are written
+/// as a DIB and the rest as PNG, for the reason in `tasks/unluminate-installer-tdd.md`.
 const ICO_SIZES: [u32; 7] = [16, 24, 32, 48, 64, 128, 256];
 
-/// The sizes an `.iconset` folder holds, and so the sizes `quill.icns` is built from.
+/// The sizes an `.iconset` folder holds, and so the sizes `unluminate.icns` is built from.
 const ICONSET_SIZES: [u32; 6] = [16, 32, 64, 128, 256, 512];
 
 fn main() {
@@ -46,8 +46,8 @@ fn main() {
     let images: Vec<(u32, Vec<u8>)> =
         sizes.iter().map(|&size| (size, resample(&master, MASTER, size))).collect();
     write_iconset(&out, &images);
-    write_ico(&out.join("quill.ico"), &images);
-    write_icns(&out.join("quill.icns"), &images);
+    write_ico(&out.join("unluminate.ico"), &images);
+    write_icns(&out.join("unluminate.icns"), &images);
 
     println!("wrote {}", out.display());
 }
@@ -122,7 +122,7 @@ fn plate(pixmap: &mut Pixmap, t: Transform) {
     pixmap.stroke_path(&plate, &edge, &stroke(6.0), t, None);
 }
 
-/// The quill: a vane from the nib at the lower left up to the tip at the upper right, the barbs cut
+/// The unluminate: a vane from the nib at the lower left up to the tip at the upper right, the barbs cut
 /// into its lower edge, and the shaft down the middle of it.
 fn feather(pixmap: &mut Pixmap, t: Transform) {
     // The two ends of the feather. Everything else is placed between them.
@@ -300,10 +300,10 @@ fn png(pixels: &[u8], size: u32) -> Vec<u8> {
     bytes
 }
 
-/// Write `Quill.iconset`, which is the folder `iconutil` on a Mac turns into an `.icns`, and which is
+/// Write `Unluminate.iconset`, which is the folder `iconutil` on a Mac turns into an `.icns`, and which is
 /// also the plain PNG set anything else can read.
 fn write_iconset(out: &Path, images: &[(u32, Vec<u8>)]) {
-    let folder = out.join("Quill.iconset");
+    let folder = out.join("Unluminate.iconset");
     fs::create_dir_all(&folder).expect("the iconset folder");
     // Apple's names: a size, and the same picture again at twice it for a retina screen.
     for (name, size) in [
@@ -322,7 +322,7 @@ fn write_iconset(out: &Path, images: &[(u32, Vec<u8>)]) {
     }
 }
 
-/// Write `quill.ico`.
+/// Write `unluminate.ico`.
 ///
 /// Six bytes of header, sixteen per image, then the images. The three smallest are a DIB — a
 /// `BITMAPINFOHEADER` with double height, bottom-up BGRA rows and an all-zero AND mask, because the
@@ -361,8 +361,8 @@ fn write_ico(path: &Path, images: &[(u32, Vec<u8>)]) {
         file.extend_from_slice(body);
     }
 
-    let mut handle = fs::File::create(path).expect("quill.ico");
-    handle.write_all(&file).expect("quill.ico");
+    let mut handle = fs::File::create(path).expect("unluminate.ico");
+    handle.write_all(&file).expect("unluminate.ico");
 }
 
 /// One image inside an `.ico`, in the device independent bitmap form.
@@ -397,7 +397,7 @@ fn dib(pixels: &[u8], size: u32) -> Vec<u8> {
     out
 }
 
-/// Write `quill.icns`.
+/// Write `unluminate.icns`.
 ///
 /// The four bytes `icns`, a big-endian total length, then one chunk per picture: a four byte type, a
 /// big-endian length that counts the eight bytes of its own header, and a PNG. macOS has taken PNG in
@@ -432,5 +432,5 @@ fn write_icns(path: &Path, images: &[(u32, Vec<u8>)]) {
     file.extend_from_slice(&((body.len() + 8) as u32).to_be_bytes());
     file.extend_from_slice(&body);
 
-    fs::write(path, file).expect("quill.icns");
+    fs::write(path, file).expect("unluminate.icns");
 }

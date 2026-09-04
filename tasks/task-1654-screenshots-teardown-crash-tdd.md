@@ -2,7 +2,7 @@
 
 ## Introduction
 
-`cargo test --workspace --release` in `C:\jason\dev\quill` fails about two runs in five with
+`cargo test --workspace --release` in `C:\jason\dev\unluminate` fails about two runs in five with
 `STATUS_ACCESS_VIOLATION` from `screenshots-<hash>.exe`, listing 91 passing tests and no failures.
 The ticket reads it as a teardown fault that only appears in a full-workspace run. Measurement says
 otherwise on both counts, and the difference matters because it changes what has to be fixed.
@@ -24,7 +24,7 @@ once per test — and the two further flakes that turned up once the crash stopp
 
 **Non-Goals**
 
-- Patching `wgpu`, `egui_kittest` or the graphics driver. The change lives in Quill's own test setup.
+- Patching `wgpu`, `egui_kittest` or the graphics driver. The change lives in Unluminate's own test setup.
 - Changing anything the released binary runs. This is test-harness code only.
 
 ## Problem statement
@@ -86,7 +86,7 @@ Intel Vulkan ICD, the NVIDIA D3D user-mode driver, `D3D12Core.dll`, `d3d10warp.d
 `dxilconv.dll` all get loaded and unloaded during a single run, some repeatedly. Adapter enumeration
 touches every installed backend, so each of the 91 instances walks the whole set.
 
-Nothing in Quill needs that. Every one of the 91 tests wants the same thing: a device to draw
+Nothing in Unluminate needs that. Every one of the 91 tests wants the same thing: a device to draw
 1180x740 into and read back. It is the churn that is unusual, and removing the churn removes the
 fault.
 
@@ -114,7 +114,7 @@ graph TB
 
 ## Components and interfaces
 
-### The change, in `crates/quill-app/tests/screenshots.rs`
+### The change, in `crates/unluminate-app/tests/screenshots.rs`
 
 ```rust
 const DEVICES: usize = 8;
@@ -189,7 +189,7 @@ built once, never torn down. It comes out quicker than what it replaces as well 
 ## The two flakes underneath
 
 Both were hidden by the crash and both are the same class of problem — a test failing for a reason
-that is not a defect in Quill.
+that is not a defect in Unluminate.
 
 ### 1. A shared fixture folder rewritten from 32 threads
 
@@ -201,7 +201,7 @@ written the bytes back:
 ---- clicking_a_file_in_the_explorer_opens_it_in_the_editor ----
 assertion `left == right` failed: clicking the file should have loaded it
   left: ""
- right: "# Quill\n"
+ right: "# Unluminate\n"
 ```
 
 It now builds the folder once behind a `OnceLock`; everyone else waits for it and then reads a file

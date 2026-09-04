@@ -48,25 +48,25 @@ flowchart LR
     J[JSON request] --> N[Canonical argument and command normalization]
     M[MCP tools/call] --> R[MCP resolver]
     R --> N
-    N --> W[Quill control channel]
-    W --> D[Quill command dispatch]
+    N --> W[Unluminate control channel]
+    W --> D[Unluminate command dispatch]
 ```
 
 ## Detailed Technical Sections
 
 ### Components and Interfaces
 
-- `quill-cli/src/catalogue.rs`: add one canonical argument-name conversion that removes leading
+- `unluminate-cli/src/catalogue.rs`: add one canonical argument-name conversion that removes leading
   dashes, converts `_` to `-`, and inserts word boundaries before capitals. `normalise_arguments`
   gives an exact canonical key precedence over aliases. `find` recognizes the four explicit editor
   file aliases and returns the existing tab command.
-- `quill-cli/src/protocol.rs`: canonicalize a parsed command through `catalogue::find` and apply
+- `unluminate-cli/src/protocol.rs`: canonicalize a parsed command through `catalogue::find` and apply
   `normalise_arguments` to every object before constructing `Request`.
-- `quill-cli/src/mcp/tools.rs`: generate a grouped `arguments.properties` union from each area's
+- `unluminate-cli/src/mcp/tools.rs`: generate a grouped `arguments.properties` union from each area's
   command metadata; preserve `additionalProperties: false` at the outer call and nested argument
   level. Apply the same argument normalization to narrow calls and resolve aliases to canonical
   commands.
-- `crates/quill-app/src/app/cli.rs`: receives canonical wire names, so the existing tab dispatch is
+- `crates/unluminate-app/src/app/cli.rs`: receives canonical wire names, so the existing tab dispatch is
   the only implementation path. Unknown argument refusals continue to use catalogue names.
 
 The grouped schema is intentionally a union rather than a `oneOf` per verb. A `oneOf` would model
@@ -80,7 +80,7 @@ sequenceDiagram
     participant A as Agent
     participant S as MCP server
     participant N as Normalizer
-    participant Q as Quill window
+    participant Q as Unluminate window
     A->>S: tools/call with alias spelling
     S->>N: normalize command and argument keys
     N->>Q: canonical tab/editor request
@@ -123,7 +123,7 @@ while the catalogue and resolver remain the source of truth.
   aliases resolve to the same `Command`.
 - Schema tests proving each grouped area advertises its catalogue names, nested arguments are
   closed, and serialized grouped tools stay below the 16,000-token budget.
-- Functional verification with `cargo run --release -p quill-cli -- mcp tools --count`, direct
+- Functional verification with `cargo run --release -p unluminate-cli -- mcp tools --count`, direct
   MCP JSON-RPC calls through the existing server test seam, and the agent-study harness scenarios.
   No production visual change is involved.
 

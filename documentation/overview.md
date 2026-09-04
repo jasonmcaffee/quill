@@ -1,14 +1,14 @@
-# What Quill looks like
+# What Unluminate looks like
 
-Twenty-two captures of Quill running on Windows, taken from the real window rather than rendered
+Twenty-two captures of Unluminate running on Windows, taken from the real window rather than rendered
 offscreen, and cropped with a margin of desktop left round the edge. The margin is there on purpose:
-Quill's background is translucent, and a picture cropped tight to the window cannot show that the
+Unluminate's background is translucent, and a picture cropped tight to the window cannot show that the
 green in it is the desktop rather than a shade someone chose.
 
-They were taken from `quill 0.1.0` after `task-1658`, on a 3840 by 2160 screen, with the window at
+They were taken from `unluminate 0.1.0` after `task-1658`, on a 3840 by 2160 screen, with the window at
 1800 by 1160. Nothing in them is a mock up; every one is a photograph of the program working.
 
-`README.md` says what Quill is and how to run it. This file is the same ground covered in pictures.
+`README.md` says what Unluminate is and how to run it. This file is the same ground covered in pictures.
 
 Some things came after these were taken and so are not in them: `Go to File`, `Find in Files`,
 pictures drawn in the Markdown preview rather than shown as their alt text, everything `task-1685`
@@ -23,7 +23,7 @@ them — a capture here has a clear desktop behind it, which is most of the work
 
 ## The window
 
-A title bar Quill draws itself, holding the menus at the left, the project's name after them, and the
+A title bar Unluminate draws itself, holding the menus at the left, the project's name after them, and the
 text options and the three Markdown view modes at the right beside the window buttons. Down the far
 left a thin rail with a button for each pane. Then the file explorer with its filter box, a tab for
 each open file, the line numbers, the editing area, and a status bar naming the file, its kind, the
@@ -33,7 +33,7 @@ The desktop is visible through the rail, the explorer, the editing area and the 
 piece of text on top of it is solid. That is the whole character of the product, and it is the first
 thing to look at in any of these pictures.
 
-![Quill open on a Markdown file, the desktop showing through the window](images/01-quill-window.jpg)
+![Unluminate open on a Markdown file, the desktop showing through the window](images/01-unluminate-window.jpg)
 
 ## The desktop shows through, and how far is a setting
 
@@ -44,7 +44,7 @@ opacity at every setting, so turning the background down never makes the documen
 
 It works on both platforms, but Windows takes three separate things to get there that macOS does not
 need. All three are in `services/windows_transparency.rs`, and section 9.2 of
-`tasks/quill-technical-design-document.md` records how each was measured.
+`tasks/unluminate-technical-design-document.md` records how each was measured.
 
 ![The same window at 15 per cent background opacity](images/10-opacity-low.jpg)
 
@@ -54,7 +54,7 @@ need. All three are in `services/windows_transparency.rs`, and section 9.2 of
 
 Down the far left is a button for each pane: the explorer, git, and the terminal at the bottom left.
 It is 36 points wide, narrower than the reference editor's, because it holds three buttons rather than a dozen.
-A button whose pane is open is drawn as the same filled pill every list in Quill uses for its chosen
+A button whose pane is open is drawn as the same filled pill every list in Unluminate uses for its chosen
 row, so the rail says at a glance what is showing. Resting on one names it.
 
 The rail is the only way a pane is put away and brought back. There used to be a small button
@@ -65,7 +65,7 @@ Below, the explorer has been put away and the terminal brought up, both from the
 
 ![The rail with the explorer hidden and the terminal open](images/21-activity-bar.jpg)
 
-The window is dragged by its title bar and resized by any of its four edges or four corners. Quill
+The window is dragged by its title bar and resized by any of its four edges or four corners. Unluminate
 draws those grips itself, invisibly, because the window is created with no operating system frame —
 rounded corners and a translucent background need the decorations turned off — and a window with no
 frame has no resize grip of its own.
@@ -88,14 +88,14 @@ or not.
 
 Below, the third line has been made bold and red from that panel, the heading under it centred and
 the line after it italic. The dot on the tab, against the file in the explorer and in the status bar
-is how Quill says there are changes that have not been saved.
+is how Unluminate says there are changes that have not been saved.
 
 ![A document with bold, colour, italic and a centred heading applied from the panel](images/16-formatting.jpg)
 
 ## Nothing is shown that does not apply to the file
 
 The `F` button is drawn for prose — a `.md` file, a `.txt` file, a document that has not been saved
-anywhere yet. Quill saves plain text and carries no formatting to disk, so for a `.rs` or a `.json`
+anywhere yet. Unluminate saves plain text and carries no formatting to disk, so for a `.rs` or a `.json`
 file every one of those controls is a decoration that lasts until the file is reopened, and the three
 view modes offer the Markdown parser's reading of a file that was never Markdown. So a source file
 gets neither, and the right hand end of the title bar is simply empty — which is the next picture but
@@ -124,9 +124,9 @@ A `.mmd` file gets the same three view modes a Markdown file has, named after wh
 `Raw Mermaid`, `Side by side` and `Mermaid diagram`. There is no `F` beside them, because a diagram
 is not prose and nothing behind that button means anything in one.
 
-The picture is Quill's own drawing. Nothing runs `mermaid.js` — `tasks/quill-mermaid-plugin-tdd.md`
+The picture is Unluminate's own drawing. Nothing runs `mermaid.js` — `tasks/unluminate-mermaid-plugin-tdd.md`
 weighs the three ways of doing that and says why none of them belongs in a text editor — so a
-diagram is rectangles, circles, polygons, lines and text worked out by `quill_core::mermaid` and
+diagram is rectangles, circles, polygons, lines and text worked out by `unluminate_core::mermaid` and
 painted by the same painter that draws everything else. Which is why the leaves are still visible
 through it: a diagram is drawn into the window rather than pasted over it.
 
@@ -144,7 +144,7 @@ preview, in the room its paragraph reserved. A fence in any other language is st
 ## Writing code in it
 
 Line numbers down the left, a tab for each open file, syntax colouring from a plugin — and no text
-options in the title bar, because there is nothing in them that means anything for a Rust file. Quill
+options in the title bar, because there is nothing in them that means anything for a Rust file. Unluminate
 wraps, so a paragraph that runs over several rows on screen carries one number against its first row
 and nothing against its continuations, which is what a line number means everywhere else.
 
@@ -163,12 +163,12 @@ behind the code.
 `Settings -> Appearance -> Font` sets the family and the size the editor shows text in, the way
 The reference editor has one editor font. A change reaches every file that is open, not only the one showing,
 and the preview with them. Setting it is not an edit: it pushes nothing onto the undo history and
-does not mark any file as changed, because what Quill saves is plain text and carries no formatting.
+does not mark any file as changed, because what Unluminate saves is plain text and carries no formatting.
 
 The size is on the keyboard as well — command or control with plus and minus, and `Reset Font Size`
 to put it back — and on a trackpad pinch, or the wheel with the same modifier held, over the editing
 area. All of them change that one setting, so whichever is used the size is still there next time
-Quill starts. `+` and `=` are one key on nearly every layout, so either does it, with or without
+Unluminate starts. `+` and `=` are one key on nearly every layout, so either does it, with or without
 shift, and so does the keypad's `+`.
 
 ![The settings window on the Appearance page](images/08-settings-appearance.jpg)
@@ -198,32 +198,32 @@ matches file names anywhere in the tree, not only the rows that happen to be sho
 The divider between the explorer and the editing area is dragged to resize it, and a double click on
 the divider puts it back to its usual width. The split between the Markdown source and its preview
 and the height of the terminal work the same way, through the same code, and where each was left is
-written to the settings file so it is the same next time Quill starts.
+written to the settings file so it is the same next time Unluminate starts.
 
 ![The explorer widened by dragging its edge, with its folders expanded](images/17-explorer.jpg)
 
 Right clicking a row opens a menu aimed at that row: a `New` submenu, cut, copy, copy path and
 paste, rename, show the file in Explorer, reload it from disk, and a `Git` section that acts on that
-file alone. Cut and paste go through Quill's own clipboard rather than the operating system's, and
+file alone. Cut and paste go through Unluminate's own clipboard rather than the operating system's, and
 pasting onto a name that is already taken adds a number rather than overwriting what is there.
 
 ![The right click menu on a file in the explorer](images/05-explorer-menu.jpg)
 
 ## The menus, and a project is a window
 
-`Quill`, `File`, `Edit`, `View` and `Git`. On macOS they are in the bar along the top of the screen,
-where macOS puts menus; on Windows they are drawn at the left of Quill's own title bar and the three
+`Unluminate`, `File`, `Edit`, `View` and `Git`. On macOS they are in the bar along the top of the screen,
+where macOS puts menus; on Windows they are drawn at the left of Unluminate's own title bar and the three
 window buttons move to the right hand end, where Windows puts them. Both bars are built from one
 list, so they hold the same entries with the same shortcuts, and adding an entry adds it to both.
 
 The `File` menu opens another window, opens a file or a folder, and lists the folders that have been
 open before. **Opening a folder opens it in a window of its own**, the way `Recent Projects` does and
 the way the reference editor works, so the project you were in stays where it was. Each window is its own
-process, so several Quills can run at once on different projects and share nothing but the settings
+process, so several Unluminates can run at once on different projects and share nothing but the settings
 file.
 
 What each project had open — its tabs, which of them was showing, which folders in the explorer were
-opened out, whether the terminal was up and how many tabs it had — is written into a `.quill` folder
+opened out, whether the terminal was up and how many tabs it had — is written into a `.unluminate` folder
 beside the project, and put back when the project is opened again. It sits with the code rather than
 in the settings folder, so copying the project copies its state.
 
@@ -255,18 +255,18 @@ a program that asked for it.
 
 ## Git
 
-Quill runs the `git` program rather than binding a library. What matters is that the machine's own
+Unluminate runs the `git` program rather than binding a library. What matters is that the machine's own
 git is already configured — a credential helper, an ssh agent, signing, hooks, an identity for this
-repository in particular — and a push from Quill has to be the same push you get in a terminal.
+repository in particular — and a push from Unluminate has to be the same push you get in a terminal.
 Every command runs on a thread, one at a time, so the window never stops drawing to wait for one and
 two commands cannot fight over `index.lock`. When something goes wrong, what the status bar shows is
 git's own message, because a rejected push and a merge conflict explain themselves better than
-anything Quill could say about them.
+anything Unluminate could say about them.
 
 `Commit...` opens a panel with a changes tree, a tick box a file, the repository's row carrying its
 branch, an `Unversioned Files` group, `Amend`, the counts, the message box with the last twenty
 messages behind a button, and `COMMIT` and `COMMIT AND PUSH...`. Ticking a file stages it at once,
-so Quill's idea of what is staged and git's cannot disagree while the panel is open. The rail's git
+so Unluminate's idea of what is staged and git's cannot disagree while the panel is open. The rail's git
 button opens the same panel and shuts it again.
 
 ![The commit panel, with a changed file and two untracked ones](images/15-git-commit.jpg)
@@ -292,16 +292,16 @@ authors' work and which part is new.
 
 ## Settings
 
-`Edit -> Settings`, `Quill -> Settings`, or control and comma, opens a modal laid out like
+`Edit -> Settings`, `Unluminate -> Settings`, or control and comma, opens a modal laid out like
 The reference editor's: the pages down the left under their headings, and the chosen page on the right. Changes
 take effect as they are made, and are written to two plain text files that can be read and edited by
-hand — `%APPDATA%\Quill` on Windows and `~/Library/Application Support/Quill` on macOS. What belongs
-to a *project* rather than to a person is not kept there; it is in the project's own `.quill` folder.
+hand — `%APPDATA%\Unluminate` on Windows and `~/Library/Application Support/Unluminate` on macOS. What belongs
+to a *project* rather than to a person is not kept there; it is in the project's own `.unluminate` folder.
 
 `Plugins` is the marketplace and what is installed. A plugin is a folder holding a `plugin.conf` and
 an icon, in the same `name = value` format the settings file uses, and it describes a language: its
 extensions, its keywords, what a comment and a string look like, and a colour per kind of token.
-**Nothing in one is executed**, so installing one is copying a folder. Four ship with Quill —
+**Nothing in one is executed**, so installing one is copying a folder. Four ship with Unluminate —
 CSS, JavaScript, TypeScript and Rust — and each page says plainly what its colouring does not
 handle.
 
@@ -311,16 +311,16 @@ handle.
 
 ## How these were taken
 
-They are captures of the screen, not renders. `crates/quill-app/tests/screenshots.rs` builds the
+They are captures of the screen, not renders. `crates/unluminate-app/tests/screenshots.rs` builds the
 same window offscreen and writes a PNG for each of its tests, and those images are the right ones for
 checking that a control moved or a colour changed; they cannot show that the operating system
 honoured the window's transparency, because there is no desktop behind them.
 
-So each of these was taken by starting the real `quill.exe`, putting the window at a fixed rectangle,
+So each of these was taken by starting the real `unluminate.exe`, putting the window at a fixed rectangle,
 driving it with real mouse clicks and key presses, and copying the screen. The crop is the window's
 rectangle grown by 48 pixels on every side, which is the margin of desktop you can see. The scripts
 that do it are in `_agent_output/task-1658-screenshots/`, which is not tracked:
-`build-fixture.ps1` builds the project, `quill-capture.ps1` starts the window and drives it, and
+`build-fixture.ps1` builds the project, `unluminate-capture.ps1` starts the window and drives it, and
 `capture-all.ps1` runs the seven stages that take the twenty-two pictures.
 
 The two diagram pictures were taken the same way, by
@@ -329,7 +329,7 @@ stage. It does one thing the earlier scripts did not have to: it puts every othe
 way first, so what shows through is the desktop picture rather than whatever happened to be open.
 
 Two things those scripts do that matter. The project in the pictures is a fixture built under the
-temporary folder rather than a real one, because `sample/` lives inside Quill's own repository, so
+temporary folder rather than a real one, because `sample/` lives inside Unluminate's own repository, so
 opening it where it lies makes the status bar say how many files happened to be uncommitted that
 day; a copy with three commits of its own says `main`, which is what a reader with a fresh checkout
 sees. And the window is given a settings folder of its own, through its own `APPDATA`, so the

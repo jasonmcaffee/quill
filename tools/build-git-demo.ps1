@@ -1,4 +1,4 @@
-# Builds a small git repository for exercising Quill's git integration by hand.
+# Builds a small git repository for exercising Unluminate's git integration by hand.
 #
 # It has three commits by three authors on three widely separated dates, so the blame column has a
 # real spread of ages to colour; a branch to merge or rebase; a change that has not been committed,
@@ -8,12 +8,12 @@
 # It is built OUTSIDE the repository, under the temporary folder, because `sample/` is a fixture a
 # screenshot test counts the files in and a repository dropped into it would change that count.
 #
-#   pwsh tools/build-git-demo.ps1              -> %TEMP%\quill-git-demo
+#   pwsh tools/build-git-demo.ps1              -> %TEMP%\unluminate-git-demo
 #   pwsh tools/build-git-demo.ps1 -At C:\some\where
 #
-# Then open it:  cargo run --release -- %TEMP%\quill-git-demo
+# Then open it:  cargo run --release -- %TEMP%\unluminate-git-demo
 
-param([string]$At = (Join-Path $env:TEMP 'quill-git-demo'))
+param([string]$At = (Join-Path $env:TEMP 'unluminate-git-demo'))
 
 $ErrorActionPreference = 'Stop'
 $demo = $At
@@ -29,7 +29,7 @@ try {
     Set-Content -Encoding utf8 readme.md @'
 # Git demo
 
-A small project for exercising Quill's git integration by hand.
+A small project for exercising Unluminate's git integration by hand.
 '@
     Set-Content -Encoding utf8 src/sqlClient.ts @'
 import { createScopedSql } from '../db/sqlClient';

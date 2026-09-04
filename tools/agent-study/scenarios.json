@@ -1,7 +1,7 @@
 [
 {"id":"s00-discover","area":"discovery","name":"Cold open: what can you do with the editor?",
- "expect":"Names Quill by its areas without being told the command names; does not guess or invent verbs.",
- "prompts":["I have the Quill editor open on this project. What can you actually do with it? Give me a short list of the kinds of things, not every command."]},
+ "expect":"Names Unluminate by its areas without being told the command names; does not guess or invent verbs.",
+ "prompts":["I have the Unluminate editor open on this project. What can you actually do with it? Give me a short list of the kinds of things, not every command."]},
 
 {"id":"s01-tabs","area":"tab","name":"Open files and list tabs",
  "before":{"tabs":["tab","list"]},"after":{"tabs":["tab","list"]},
@@ -10,12 +10,12 @@
 
 {"id":"s02-create","area":"tab/editor","name":"Create a new file with content and save it",
  "after":{"tabs":["tab","list"]},
- "expect":"Creates src/util.rs through Quill, types the function, saves it. File exists on disk.",
+ "expect":"Creates src/util.rs through Unluminate, types the function, saves it. File exists on disk.",
  "prompts":["Make me a new file at src/util.rs with a small Rust function called double that takes an i64 and returns it doubled. Write it in the editor and save it."]},
 
 {"id":"s03-edit","area":"editor","name":"Edit text in an open file",
  "after":{"editor":["editor","status"]},
- "expect":"Adds the comment via editor commands, not by writing the file behind Quill's back.",
+ "expect":"Adds the comment via editor commands, not by writing the file behind Unluminate's back.",
  "prompts":["Open src/shapes.rs and put a doc comment above the same_size function saying what it does. Leave it unsaved so I can look at it first."]},
 
 {"id":"s04-fold","area":"fold","name":"Fold the file down to its shape",
@@ -31,7 +31,7 @@
 {"id":"s06-terminal","area":"terminal","name":"New terminal tab, named, running something",
  "after":{"terminals":["terminal","list"]},
  "expect":"Opens a terminal tab, renames it, runs a command, reads the output back.",
- "prompts":["Open a new terminal tab in Quill, call it 'checks', and run `cargo check` in it. Tell me whether it passed."]},
+ "prompts":["Open a new terminal tab in Unluminate, call it 'checks', and run `cargo check` in it. Tell me whether it passed."]},
 
 {"id":"s07-run","area":"run","name":"Add and start a run configuration",
  "after":{"runs":["run","list"]},
@@ -44,7 +44,7 @@
  "prompts":["Put a breakpoint in src/main.rs on the line that prints the total area, start the debugger, and when it stops there tell me what the value of total is."]},
 
 {"id":"s09-git","area":"git","name":"Git status and a diff",
- "expect":"Reads git status through Quill, names the modified and untracked file.",
+ "expect":"Reads git status through Unluminate, names the modified and untracked file.",
  "prompts":["What's the git status of this project? Anything uncommitted? Show me what changed."]},
 
 {"id":"s10-search","area":"editor/search","name":"Find every use of a function",
@@ -57,7 +57,7 @@
  "prompts":["Where is the Rect type defined? Take me there in the editor."]},
 
 {"id":"s12-rename","area":"editor/refactor","name":"Rename a symbol project-wide",
- "expect":"Uses Quill's rename rather than editing files by hand.",
+ "expect":"Uses Unluminate's rename rather than editing files by hand.",
  "prompts":["Rename the function area_of to just area, everywhere it's used in the project."]},
 
 {"id":"s13-highlight","area":"highlight","name":"Mark a passage",
@@ -81,7 +81,7 @@
 
 {"id":"s17-screenshot","area":"window","name":"Look at the window",
  "expect":"Takes a screenshot and describes what is actually on screen.",
- "prompts":["Take a screenshot of the Quill window and tell me what you can see in it."]},
+ "prompts":["Take a screenshot of the Unluminate window and tell me what you can see in it."]},
 
 {"id":"s18-modal","area":"modal","name":"Drive a dialog",
  "expect":"Opens Go to File, types, chooses the css file.",
@@ -89,11 +89,11 @@
 
 {"id":"s19-actions","area":"action","name":"Menus and toggling a pane",
  "expect":"Lists View actions and toggles the explorer.",
- "prompts":["What's on Quill's View menu? Then hide the file explorer for me, and put it back."]},
+ "prompts":["What's on Unluminate's View menu? Then hide the file explorer for me, and put it back."]},
 
 {"id":"s20-project","area":"project/plugins","name":"What project and what languages",
  "expect":"Answers from project info and the plugin list.",
- "prompts":["What folder is this Quill window showing, and which languages does it know how to colour?"]},
+ "prompts":["What folder is this Unluminate window showing, and which languages does it know how to colour?"]},
 
 {"id":"s21-complete","area":"editor/completion","name":"Ask for a completion",
  "expect":"Uses editor complete --stem ar to see what names are on offer without editing the document.",

@@ -1,6 +1,6 @@
 # task-1691 — The command channel answers a window that is not drawing, and says so when it cannot
 
-An agent was asked to drive a Quill window entirely through the Model Context Protocol: write a
+An agent was asked to drive a Unluminate window entirely through the Model Context Protocol: write a
 JavaScript file that prints prime numbers, open it in a tab, run it, read the output, edit it, save
 it and run it again. All of that worked. Five faults turned up on the way, and `tasks/mcp-issues.md`
 is the report — what was seen, measured on a real session, with the code that causes each one. This
@@ -16,21 +16,21 @@ the one argument that controls waiting was not written down anywhere an agent re
 
 ### 1.1 What happens
 
-With the window idle, every tool call and every `quill-cli` command fails with `timed-out: Quill did
+With the window idle, every tool call and every `unluminate-cli` command fails with `timed-out: Unluminate did
 not answer <command> within 15000 ms`. The process is alive the whole time, sleeping at 0% processor
 use and still listening on its port. Bringing the window to the front fixes it instantly:
 
 ```
---- before: Quill idle in the background ---
-Quill did not answer tab.list within 15000 ms.     took 15.09s
---- activating the window with: open -b com.jasonmcaffee.quill ---
---- after: Quill frontmost ---
+--- before: Unluminate idle in the background ---
+Unluminate did not answer tab.list within 15000 ms.     took 15.09s
+--- activating the window with: open -b com.jasonmcaffee.unluminate ---
+--- after: Unluminate frontmost ---
 1 open                                              took 0.05s
 ```
 
 Raising the deadline does not help. Sixty-five seconds with an idle window and the queue was still
 not drained, so it is not a slow frame that a longer wait would cover. `sample` on the process showed
-four `quill-control-connection` threads each parked on a semaphore inside `control::serve`, and the
+four `unluminate-control-connection` threads each parked on a semaphore inside `control::serve`, and the
 main thread parked in its ordinary event wait with no frame pending.
 
 ### 1.2 Why it happens
@@ -41,7 +41,7 @@ drains the queue at the top of a frame — which is also what makes a command's 
 very next screenshot. None of that is wrong. What is wrong is the **wake**.
 
 The wake is one call to `egui::Context::request_repaint`, made once, and a single repaint request is
-not a reliable way to wake a window. Two mechanisms lose it, and both are in code Quill does not own:
+not a reliable way to wake a window. Two mechanisms lose it, and both are in code Unluminate does not own:
 
 **egui drops a repaint request it has already served.** `ContextImpl::request_repaint_after` calls
 the backend's callback only `if delay < viewport.repaint.repaint_delay`, so a request made while the
@@ -85,7 +85,7 @@ because a lost wake is lost for ever rather than late.
 **Send a winit user event through an `EventLoopProxy` instead of asking egui for a repaint.** This is
 the ticket's first suggestion and it is the right shape, but it is not reachable from here. `eframe`
 owns the event loop and the proxy; `request_repaint` *already is* a proxy `send_event` underneath,
-and the two places the request is dropped are both downstream of the proxy. Quill would have to stop
+and the two places the request is dropped are both downstream of the proxy. Unluminate would have to stop
 using `eframe::run_native` to get at it, which is a change to how the whole application starts in
 order to fix one channel.
 
@@ -112,7 +112,7 @@ nudging stops and the thread waits as it did before.
 loop {
     match wait.recv_timeout(NUDGE) {
         Ok(reply) => return reply,
-        Err(RecvTimeoutError::Disconnected) => return /* Quill is closing */,
+        Err(RecvTimeoutError::Disconnected) => return /* Unluminate is closing */,
         Err(RecvTimeoutError::Timeout) => { /* deadline? abandon. taken? just wait. else nudge. */ }
     }
 }
@@ -146,7 +146,7 @@ The client gives up at fifteen seconds. The window's backstop is a hundred and t
 hundred and five seconds the caller has been told the command failed and the command has not been
 cancelled — and when something eventually wakes the window, it runs. Three commands in the ticket's
 session reported `timed-out` and all three had in fact been applied: `run add bogus` was in
-`.quill/run-configurations.conf` afterwards, `run remove bogus` was gone afterwards, and `run rerun
+`.unluminate/run-configurations.conf` afterwards, `run remove bogus` was gone afterwards, and `run rerun
 primes` had run.
 
 An agent that retries after a timeout applies the command twice. For `run add` that is harmless. For
@@ -226,14 +226,14 @@ fixing on its own. The listener already knows three things without asking the wi
 So the timeout says them:
 
 ```
-Quill did not answer run.list within 15000 ms. It has not drawn a frame for 65.0 s and has 4
+Unluminate did not answer run.list within 15000 ms. It has not drawn a frame for 65.0 s and has 4
 requests queued, so it is not drawing rather than busy. The command was not run.
 ```
 
 against, for a window that really is working:
 
 ```
-Quill did not answer git.action within 15000 ms. It drew a frame 16 ms ago, so it is busy rather
+Unluminate did not answer git.action within 15000 ms. It drew a frame 16 ms ago, so it is busy rather
 than stopped. The command was not run.
 ```
 
@@ -248,10 +248,10 @@ sentence above answers it with what is already known.
 
 ### 4.1 What happens
 
-The first attempt at running the prime numbers file used `node primes.js`. Quill spawns without a
+The first attempt at running the prime numbers file used `node primes.js`. Unluminate spawns without a
 shell and a window launched from Finder has no nvm directory on its `PATH`, so `node` could not be
 found. Through MCP the failure was invisible: `started` false, `state` null, no reason anywhere, and
-`isError` false. The same command through `quill-cli` prints `Quill could not start node: Failed to
+`isError` false. The same command through `unluminate-cli` prints `Unluminate could not start node: Failed to
 spawn command 'node': No such file or directory (os error 2)`.
 
 The reason is that `start_a_run` puts the failure in the status bar message and `cli_run_do` reads
@@ -274,7 +274,7 @@ Every arm that today writes an apology into `self.message` returns it instead, a
 that is a menu (`run_action`) puts it in the status bar exactly as before, so nothing a person sees
 changes. `cli_run_do` and `cli_run_select` return `no(request, code::FAILED, problem)`, which sets
 `reply.error`, which makes the MCP layer answer with a refusal carrying the real reason and makes
-`quill-cli`'s exit code right at the same time.
+`unluminate-cli`'s exit code right at the same time.
 
 This is `run_action`'s own rule restated: the one place a run action turns into a change is also the
 one place that knows whether it did.
@@ -310,7 +310,7 @@ is known, do not pretend to know more, and never silently do nothing.
 The MCP tool schemas take a free-form `arguments` object described as "the values the command takes,
 by the name in its usage line". `timeout` is a global flag of the command line rather than part of
 any usage line, so it appears in no tool description — and the agent only found it by reading
-`quill-cli/src/parse.rs`.
+`unluminate-cli/src/parse.rs`.
 
 `DEFAULT_TIMEOUT.max(...)` also makes fifteen seconds a **floor**. A caller can raise the deadline
 and cannot lower it, so an agent that wants to fail fast cannot.
@@ -330,12 +330,12 @@ already knows which those are, because it is the list the client parses against.
 
 So `Command::flag("timeout")` decides it. A command that waits keeps the stretch it has today; a
 command that does not is given exactly the deadline that was asked for, so `timeout: 500` on `tab
-list` fails in half a second. The same rule is applied to `quill-cli`'s own `client_timeout`, because
+list` fails in half a second. The same rule is applied to `unluminate-cli`'s own `client_timeout`, because
 `--timeout 500` had the identical floor and the two must not come to different answers about one
 argument.
 
 `timeout` is also stripped from the arguments of a command that has no such flag, so what goes on
-the wire is exactly what `quill-cli` would have sent — the rule `mcp::driver` is built on.
+the wire is exactly what `unluminate-cli` would have sent — the rule `mcp::driver` is built on.
 
 ### 5.3 And it was being dropped on the floor
 
@@ -352,11 +352,11 @@ Every word in a property's description is paid once per tool: eighteen times in 
 a hundred and thirty-six times in the other. A first, fuller sentence for `timeout` took the grouped
 shape from 43,364 bytes to 49,250; the one that shipped takes it to 47,684, about 1,100 tokens. That
 is the trade `Shape::Grouped` exists to make, so it is made deliberately rather than by writing until
-the paragraph reads well. `quill-cli mcp tools --count` is how it is measured again.
+the paragraph reads well. `unluminate-cli mcp tools --count` is how it is measured again.
 
 ## 6. What is deliberately not here
 
-- **Leaving `eframe`.** §1.3. The channel is fixed from outside the event loop, which is where Quill
+- **Leaving `eframe`.** §1.3. The channel is fixed from outside the event loop, which is where Unluminate
   sits.
 - **Answering commands off the frame loop.** §1.3 and §3. It trades away the property the whole
   module is built on to fix a wake.
@@ -391,7 +391,7 @@ the paragraph reads well. `quill-cli mcp tools --count` is how it is measured ag
 - `the_margin_is_a_share_of_the_deadline_up_to_half_a_second` — §2.3.
 - `a_command_that_does_not_wait_is_given_exactly_the_deadline_it_asked_for` and
   `a_command_that_waits_still_outlasts_its_own_wait` — the two halves of §5.2, in `mcp::driver` and
-  in `quill-cli`'s `client_timeout`.
+  in `unluminate-cli`'s `client_timeout`.
 - `every_tool_says_how_to_change_the_deadline` — `timeout` is a property of every tool in both
   shapes, beside `instance`.
 - `an_area_tools_timeout_reaches_the_command_it_names` — §5.3, which is what it was not doing.
@@ -401,19 +401,19 @@ the paragraph reads well. `quill-cli mcp tools --count` is how it is measured ag
 ## 8. What was verified against a real window
 
 The ticket measured this on macOS and the work was done on Windows, where the fault does not happen
-by itself — Windows delivers a redraw to a covered window, so an idle Quill here answers `tab list`
+by itself — Windows delivers a redraw to a covered window, so an idle Unluminate here answers `tab list`
 in 74 ms. So the fault was made to happen, twice over, and both shapes were driven live.
 
 `SuspendThread` on the **main thread alone** stops the frame loop and leaves the listener running,
 which is the real fault's exact shape:
 
 ```
-Quill did not answer tab.list within 3000 ms. It has not drawn a frame for 21.2 s and 1 request
+Unluminate did not answer tab.list within 3000 ms. It has not drawn a frame for 21.2 s and 1 request
 is queued, so it is not drawing rather than busy. The command was not run.
         answered at 2,756 ms — the window's own refusal, ahead of the client's deadline
 ```
 
-`NtSuspendProcess` on the **whole process** is the harder shape, where nothing in Quill can run at
+`NtSuspendProcess` on the **whole process** is the harder shape, where nothing in Unluminate can run at
 all and the request is not even accepted until it wakes:
 
 ```
@@ -422,12 +422,12 @@ run add ghost   ->  timed-out at 2,032 ms
 run list        ->  0 run configurations          the command was not applied
 ```
 
-And the other three, through the MCP server over stdio and through `quill-cli`:
+And the other three, through the MCP server over stdio and through `unluminate-cli`:
 
 ```
 tools/list                        18 tools, 0 without a timeout property
-tools/call quill_tab timeout 800  754 ms          (the fifteen second floor is gone)
-run start ghost                   isError true, "failed: Quill could not start
+tools/call unluminate_tab timeout 800  754 ms          (the fifteen second floor is gone)
+run start ghost                   isError true, "failed: Unluminate could not start
                                   definitely-not-a-real-program: The system cannot find the
                                   file specified. (os error 2)",  exit code 1
 run add ghost …                   "Added ghost, but definitely-not-a-real-program could not be

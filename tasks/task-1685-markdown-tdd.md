@@ -2,7 +2,7 @@
 
 The ticket says four things:
 
-> Quill markdown preview has a few issues. It's not rendering md tables correctly. I can't select
+> Unluminate markdown preview has a few issues. It's not rendering md tables correctly. I can't select
 > and copy text from the preview. Code blocks aren't easy to read, etc. Seems like a lot of
 > formatting isn't complete or is missing.
 
@@ -14,7 +14,7 @@ cannot express most of what Markdown is: a list item holding a paragraph, a quot
 fence indented inside a bullet, or the question of whether the `*` in `2 * 3 * 4` opens emphasis.
 Every missing feature named below is downstream of that one decision.
 
-So this is a rewrite of `quill_core::markdown` into the two phases every conforming Markdown
+So this is a rewrite of `unluminate_core::markdown` into the two phases every conforming Markdown
 implementation uses — a **block parser** that builds a tree, then an **inline parser** with a
 delimiter stack — plus three features on top of it: tables, selection, and code that can be read.
 
@@ -23,7 +23,7 @@ delimiter stack — plus three features on top of it: tables, selection, and cod
 ## 1. What is wrong today, measured against CommonMark 0.31.2 and GFM
 
 The module's own comment is honest about the omissions, which makes the audit short. Everything in
-this table was checked against the code in `crates/quill-core/src/markdown.rs` as it stands.
+this table was checked against the code in `crates/unluminate-core/src/markdown.rs` as it stands.
 
 | Markdown | What the preview does now | Why it matters |
 |---|---|---|
@@ -76,11 +76,11 @@ grammar the plugin already supplies, and put it on a panel of its own.
 ## 2. Where the work goes, and why not a crate
 
 `pulldown-cmark` is the obvious answer and is the wrong one here, for the reason
-`tasks/quill-mermaid-plugin-tdd.md` §2 gives about `mermaid.js` and `task-1675` §2 gives about a
-language server: it would answer a different question from the one Quill is asking.
+`tasks/unluminate-mermaid-plugin-tdd.md` §2 gives about `mermaid.js` and `task-1675` §2 gives about a
+language server: it would answer a different question from the one Unluminate is asking.
 
 A Markdown crate produces **events for HTML** — `Start(Tag::Table)`, `Start(Tag::TableCell)`,
-`Html`, `SoftBreak`. Quill has no HTML, no box model and no inline layout: it has a rope, a list of
+`Html`, `SoftBreak`. Unluminate has no HTML, no box model and no inline layout: it has a rope, a list of
 character spans, one paragraph style a line, and a layout engine that places glyphs left to right.
 So the crate's output would have to be walked and re-expressed as those four things anyway, which is
 the whole of the work; what the crate would save is the tokenising, which is the part with the tests
@@ -174,7 +174,7 @@ non-space in it. That is what makes `` `` `code` `` `` work.
 decoded to their character. The table is small and static; the full HTML5 list of 2,231 is not worth
 the two hundred kilobytes.
 
-**Raw HTML** is *removed* rather than shown. Quill cannot render it, and a reader seeing `<sub>`
+**Raw HTML** is *removed* rather than shown. Unluminate cannot render it, and a reader seeing `<sub>`
 in the middle of a sentence is worse off than a reader seeing neither. Four tags are given a meaning
 because they are the ones that appear in prose and have an obvious equivalent in styled text:
 `<br>` is a line break, `<b>`/`<strong>` is bold, `<i>`/`<em>` is italic, `<code>` is code. A block
@@ -192,7 +192,7 @@ wants: it makes the broken link visible.
 
 ### The shape of the answer
 
-A table needs columns of equal width, and Quill's layout engine places one glyph after another with
+A table needs columns of equal width, and Unluminate's layout engine places one glyph after another with
 no notion of a column. Three ways to give it one were weighed.
 
 **Teach the layout engine tab stops.** A paragraph would carry a list of column positions and an
@@ -217,7 +217,7 @@ it selects, copies, scrolls and hit-tests with no new code at all; and what land
 is a table a person can paste anywhere.
 
 It is also what the field does. `glamour`, the renderer behind `glow`, draws exactly this, and so do
-`rich`, `mdcat` and `bat`. The precedent is inside Quill too: the horizontal rule has been drawn as
+`rich`, `mdcat` and `bat`. The precedent is inside Unluminate too: the horizontal rule has been drawn as
 forty-eight `─` since the preview was written, for the same reason — the layout engine places
 glyphs, so a line that is not text is a line made of text.
 
@@ -302,14 +302,14 @@ Three changes, each small, and together they are the ticket's third complaint.
 **A panel behind the block.** `Preview` gains `panels: Vec<PreviewPanel>` — a paragraph range and
 what kind of panel it is. The window paints a rounded rectangle behind those paragraphs before it
 paints the text, exactly as it already paints a highlight's colour behind a passage, and exactly
-where the pictures and the diagrams get their room. `quill-core` still knows nothing about drawing:
+where the pictures and the diagrams get their room. `unluminate-core` still knows nothing about drawing:
 it says which paragraphs are code and the window decides what a code background looks like.
 
-**Colour from the grammar.** The fence's language is looked up in the plugins Quill already has, and
-the code inside is coloured with `quill_core::syntax::highlight` and the plugin's own theme — the
+**Colour from the grammar.** The fence's language is looked up in the plugins Unluminate already has, and
+the code inside is coloured with `unluminate_core::syntax::highlight` and the plugin's own theme — the
 same two calls `colour_the_file` makes for a source file, so a fence of Rust in a document is
 coloured exactly as a `.rs` file is. The seam is a trait, `CodeHighlighter`, with one method:
-`quill-core` holds no plugin registry and must not learn about one, and the window implements the
+`unluminate-core` holds no plugin registry and must not learn about one, and the window implements the
 trait over `Plugins::grammars`. A language nothing claims falls back to today's single colour, which
 is why the change can never make anything worse.
 
@@ -336,7 +336,7 @@ scroll position they live with:
 pub preview_selection: Selection,
 ```
 
-One field, because `quill_core::Selection` is already an anchor and a head and already knows how to
+One field, because `unluminate_core::Selection` is already an anchor and a head and already knows how to
 be dragged either way round — the editing area's own selection is one of these, so a preview's is the
 same thing rather than a second spelling of it.
 
@@ -368,7 +368,7 @@ Rules:
   five keys and the explorer's keys already use — the source pane is drawn first and would otherwise
   take it and copy its own selection.
 
-`quill-cli` gets **one** command rather than two — `editor preview-select`, with `--from`, `--to`,
+`unluminate-cli` gets **one** command rather than two — `editor preview-select`, with `--from`, `--to`,
 `--all`, `--none` and `--copy` — because "select this" and "copy what is selected" are one question
 asked of a page that cannot be edited, and a second verb would have been a second thing to document.
 It goes through the same three functions the pointer goes through, so a selection made from the
@@ -381,17 +381,17 @@ panels and the inline code beside the text, so what a person can see is what a s
 
 | File | Change |
 |---|---|
-| `quill-core/src/markdown/mod.rs` | The public shape: `render`, `Options`, `Preview`, `PreviewPanel`, `PreviewTable`, `CodeHighlighter` |
-| `quill-core/src/markdown/blocks.rs` | The block parser and its stack |
-| `quill-core/src/markdown/inline.rs` | The delimiter stack, code spans, links, autolinks, entities |
-| `quill-core/src/markdown/entity.rs` | Named and numeric character references |
-| `quill-core/src/markdown/table.rs` | Pipe tables, column fitting, box drawing |
-| `quill-core/src/markdown/build.rs` | Blocks to text, spans and paragraph styles |
-| `quill-app/src/app/mod.rs` | `refresh_preview` passes metrics and a highlighter; panels and selection are painted; the preview's pointer is read |
-| `quill-app/src/app/files.rs` | `preview_selection` on the tab |
-| `quill-app/src/services/plugins.rs` | `Plugins::for_language` |
-| `quill-app/src/components/editor_view.rs` | Reading the pointer in a page that cannot be typed into, and painting the box-drawing characters rather than lettering them |
-| `quill-app/src/app/cli.rs`, `quill-cli` | The two new commands and their documentation |
+| `unluminate-core/src/markdown/mod.rs` | The public shape: `render`, `Options`, `Preview`, `PreviewPanel`, `PreviewTable`, `CodeHighlighter` |
+| `unluminate-core/src/markdown/blocks.rs` | The block parser and its stack |
+| `unluminate-core/src/markdown/inline.rs` | The delimiter stack, code spans, links, autolinks, entities |
+| `unluminate-core/src/markdown/entity.rs` | Named and numeric character references |
+| `unluminate-core/src/markdown/table.rs` | Pipe tables, column fitting, box drawing |
+| `unluminate-core/src/markdown/build.rs` | Blocks to text, spans and paragraph styles |
+| `unluminate-app/src/app/mod.rs` | `refresh_preview` passes metrics and a highlighter; panels and selection are painted; the preview's pointer is read |
+| `unluminate-app/src/app/files.rs` | `preview_selection` on the tab |
+| `unluminate-app/src/services/plugins.rs` | `Plugins::for_language` |
+| `unluminate-app/src/components/editor_view.rs` | Reading the pointer in a page that cannot be typed into, and painting the box-drawing characters rather than lettering them |
+| `unluminate-app/src/app/cli.rs`, `unluminate-cli` | The two new commands and their documentation |
 
 `Preview` keeps `text`, `chars`, `paragraphs`, `source_lines`, `images` and `diagrams` exactly as
 they are, so `scroll_sync`, the pictures, the diagrams and the side-by-side scrolling are untouched.
@@ -402,7 +402,7 @@ line — is what the existing test already checks.
 
 ## 9. How it is held down
 
-**A battery in `quill-core`, with no window.** One test per row of the table in §1, asserting on the
+**A battery in `unluminate-core`, with no window.** One test per row of the table in §1, asserting on the
 preview's text and on the style at a named position — never on numbers a font decides. Plus the
 sixty-odd examples from the CommonMark specification that are expressible in styled text, kept as a
 source-and-expectation table so a reader can see what is claimed.
@@ -426,14 +426,14 @@ because these files were written by hand over months and hold every shape of Mar
 actually writes. Measured: 116 ms for the lot, nothing broken.
 
 **The real window**: `sample/welcome.md` grows a table, a task list and a coloured fence, so what a
-person sees on first opening Quill is what the ticket asked for.
+person sees on first opening Unluminate is what the ticket asked for.
 
 ---
 
 ## 10. Deliberately not done
 
 - **Nested tables, and block content in a table cell.** GFM forbids both.
-- **Inline HTML rendered as HTML.** Quill has no HTML engine and will not grow one; §4 says what
+- **Inline HTML rendered as HTML.** Unluminate has no HTML engine and will not grow one; §4 says what
   happens instead.
 - **Definition lists, abbreviations, and the rest of the PHP-Markdown-Extra family.** Not in
   CommonMark, not in GFM, and not in anything in this repository.

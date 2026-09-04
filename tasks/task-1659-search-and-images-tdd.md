@@ -2,7 +2,7 @@
 
 ## Introduction
 
-`task-1659` asks for three things Quill has not had, all of them modelled on IntelliJ: a **Go to
+`task-1659` asks for three things Unluminate has not had, all of them modelled on IntelliJ: a **Go to
 File** box on `Ctrl/Cmd+Shift+O` that narrows a list of the project's files as you type and opens one
 on a double click; a **Find in Files** modal on `Ctrl/Cmd+Shift+F` that searches the whole project as
 you type, highlights the match in the document it opens, and shows the whole of the chosen file in a
@@ -10,9 +10,9 @@ preview under the results; and a **Markdown preview that draws pictures** rather
 alt text where an image should be. It also asks that the modals involved be **draggable and
 resizable**.
 
-Three of the four are new user interface over machinery Quill already has — a file tree, a text
+Three of the four are new user interface over machinery Unluminate already has — a file tree, a text
 buffer, a layout engine, a modal shape. The fourth, pictures in the preview, is the only one that
-reaches into `quill-core`: the layout engine places glyphs and has no notion of a line that is taller
+reaches into `unluminate-core`: the layout engine places glyphs and has no notion of a line that is taller
 than its letters, and an image is exactly that.
 
 ## Goals and non-goals
@@ -25,24 +25,24 @@ than its letters, and an image is exactly that.
 | 2 | `Ctrl/Cmd+Shift+F` opens a modal; typing searches every text file in the project without the window stopping; results appear as they are found. |
 | 3 | Choosing a result shows the **whole** of that file under the results, with the matching line picked out and scrolled to. |
 | 4 | Opening a result opens the file with **the match itself selected**, and scrolls the editor to it. |
-| 5 | Every modal in Quill can be dragged by its header and resized from any of its four edges and four corners. |
+| 5 | Every modal in Unluminate can be dragged by its header and resized from any of its four edges and four corners. |
 | 6 | `![alt](picture.png)` in a `.md` file draws the picture in the preview and in the right hand pane of the side by side view. |
 | 7 | All four test layers stay green, and each new piece has a screenshot a person has looked at. |
 
 **Non-goals**
 
-- The rest of IntelliJ's `Search Everywhere`: tabs for classes, symbols and actions. Quill has no
+- The rest of IntelliJ's `Search Everywhere`: tabs for classes, symbols and actions. Unluminate has no
   symbol index, and its actions are two short menus.
 - Replace in files. `task-1659` asks to find, not to change, and replacing across a project is a
   destructive operation that wants its own ticket and its own confirmation.
 - Regular expressions in the search box. `Match case` is offered because it is one line of code and
   is asked for constantly; a regular expression box wants a syntax error message, a highlighter and a
   performance story.
-- Remote images (`![](https://…)`) in the preview. Quill makes no network requests, and a preview
+- Remote images (`![](https://…)`) in the preview. Unluminate makes no network requests, and a preview
   that quietly fetched from the internet would be a surprise.
 - An index. Both searches read the project when they are asked to. An index is what a project of a
-  million files needs and is a cache to keep correct; the thread and the cap answer the sizes Quill
-  is used at. Measured on Quill's own repository: 618 files, and a search of all of them in 20 ms.
+  million files needs and is a cache to keep correct; the thread and the cap answer the sizes Unluminate
+  is used at. Measured on Unluminate's own repository: 618 files, and a search of all of them in 20 ms.
 - Refreshing `documentation/overview.md`'s gallery with captures of the three new pieces. Every
   capture in it has a clear desktop behind it, which cannot be had without minimising whatever else
   is open on the machine. The file says so, and it is a pass of its own.
@@ -53,11 +53,11 @@ than its letters, and an image is exactly that.
 inside the explorer, and its results are rows in the tree. There is no way to type four letters and
 open a file, which is the single most used key press in any IntelliJ.
 
-**Finding text means leaving Quill.** Nothing in the editor searches more than the open file — in
+**Finding text means leaving Unluminate.** Nothing in the editor searches more than the open file — in
 fact nothing searches even that. A person looking for where a word is used has to go to a terminal
 and grep, then come back and open the file by hand.
 
-**The Markdown preview shows `alt text` where a picture should be.** `quill-core::markdown` reads
+**The Markdown preview shows `alt text` where a picture should be.** `unluminate-core::markdown` reads
 `![alt](src)` as an ordinary link, because that is what its inline pass does with `[alt](src)` and
 the `!` in front of it falls through as plain text. Every other Markdown previewer draws the picture,
 and a document of screenshots — which is what `documentation/overview.md` is — previews as a list of
@@ -73,8 +73,8 @@ moved, and a history list cannot be made taller.
 flowchart TB
     subgraph app["app (the window)"]
         actions["actions::Action\nGoToFile / FindInFiles"]
-        run["QuillApp::run_action"]
-        ui["QuillApp::ui"]
+        run["UnluminateApp::run_action"]
+        ui["UnluminateApp::ui"]
         openmatch["open_the_match\nselect + reveal"]
     end
 
@@ -92,7 +92,7 @@ flowchart TB
         pimg["preview_images\ndecode once, keep the texture"]
     end
 
-    subgraph core["quill-core (no user interface)"]
+    subgraph core["unluminate-core (no user interface)"]
         md["markdown::render\nPreview + images"]
         layout["layout::layout\nParagraphStyle::min_height"]
     end
@@ -126,8 +126,8 @@ pub struct Placement { pub offset: Vec2, pub grown: Vec2 }
 ```
 
 Held as differences from "middle of the window, at the size the dialog asked for", so that resizing
-the Quill window carries a dragged modal along with the middle it was dragged from. They live in
-egui's own memory under the modal's id rather than in `QuillApp`: the window has no decision to make
+the Unluminate window carries a dragged modal along with the middle it was dragged from. They live in
+egui's own memory under the modal's id rather than in `UnluminateApp`: the window has no decision to make
 about a modal's geometry, nothing is written to disk, and a dialog closed and reopened is where it
 was left.
 
@@ -180,18 +180,18 @@ chooses without opening, so the list reads the same way with a mouse as with the
 
 Searching a project on every key press means reading every file on every key press, and a window
 that did that where it draws would stop drawing while it read. So there is a thread, arranged exactly
-as `quill_git::Worker` and the terminal already are, with a waker that asks the window to draw again.
+as `unluminate_git::Worker` and the terminal already are, with a waker that asks the window to draw again.
 
 ```mermaid
 sequenceDiagram
     participant U as typing
     participant M as find_in_files (window)
     participant S as Searcher (thread)
-    U->>M: "quil"
+    U->>M: "unluminat"
     M->>S: send(files, query) -> generation 4
     Note over S: reads files, checks `newest` as it goes
     S-->>M: Reply { generation 4, hits, done: false }
-    U->>M: "quill"
+    U->>M: "unluminate"
     M->>S: send(files, query) -> generation 5
     Note over S: `newest` is 5 while answering 4 -> abandon, send nothing
     S-->>M: Reply { generation 5, hits, done: true }
@@ -213,24 +213,24 @@ sits in the whole file (so the editor can select it). `hits_in` is pure and carr
 case folding, several matches on one line, and cutting a minified line down without moving the match
 out of it.
 
-The modal is two panes with a `components::splitter` between them, because every pane in Quill is
+The modal is two panes with a `components::splitter` between them, because every pane in Unluminate is
 resized by dragging its edge and a pane inside a modal is still a pane. Its size is
 `settings::Panes::find_split`, written to the settings file like every other divider.
 
-Opening a result goes through `QuillApp::open_the_match`, which opens the file in a tab of its own,
+Opening a result goes through `UnluminateApp::open_the_match`, which opens the file in a tab of its own,
 selects `offset`, and sets `reveal_caret` so the next frame scrolls the editor to it. A selection is
 how a document highlights a piece of itself — the same highlight a search inside a file leaves —
 which is what the ticket means by "the results highlight the matching spot in the document".
 
 ### 4. Pictures in the Markdown preview
 
-This is the only part that reaches into `quill-core`. The preview is not a second renderer: markdown
+This is the only part that reaches into `unluminate-core`. The preview is not a second renderer: markdown
 is turned into the same three things a document holds — a rope, character spans, paragraph styles —
 and the ordinary layout and painter draw it. An image is a line that is as tall as a picture, and
 `layout::layout` currently makes every line as tall as its tallest font.
 
 ```rust
-// quill-core::style
+// unluminate-core::style
 pub struct ParagraphStyle {
     pub align: Align,
     pub line_spacing: f32,
@@ -238,7 +238,7 @@ pub struct ParagraphStyle {
     pub min_height: f32,
 }
 
-// quill-core::markdown
+// unluminate-core::markdown
 pub struct PreviewImage { pub paragraph: usize, pub source: String, pub alt: String }
 pub struct Preview { pub text: Rope, pub chars: StyleSpans, pub paragraphs: ParagraphStyles,
                      pub images: Vec<PreviewImage> }
@@ -272,7 +272,7 @@ to the document's own folder; an absolute path is used as it is; anything with a
 The preview's two passes — measure, then lay out — are the cost of this design: the height of a
 picture depends on the width of the pane, which is known only where the window draws. The alternative
 is a layout engine that knows about images, which would put a user interface concern inside
-`quill-core`, and that crate's whole point is that its tests run with no window, no graphics card and
+`unluminate-core`, and that crate's whole point is that its tests run with no window, no graphics card and
 no fonts.
 
 ## Data flows, risks and error handling
@@ -289,13 +289,13 @@ no fonts.
 | The search thread outliving the modal | A thread per opening | The `Searcher` is owned by the modal's state; shutting the modal drops it, the channel closes and the thread ends |
 
 Nothing here invents an error message. A file that will not read reports the operating system's own
-words, exactly as `quill-git` reports git's.
+words, exactly as `unluminate-git` reports git's.
 
 ## Alternatives considered
 
-**Modal geometry in `QuillApp` rather than in egui's memory.** Rejected: it is state no other part of
+**Modal geometry in `UnluminateApp` rather than in egui's memory.** Rejected: it is state no other part of
 the window has a decision to make about, and every dialog would have to thread a field through.
-`gutter_menu` is held in `QuillApp` for a reason that does not apply here — a screenshot test cannot
+`gutter_menu` is held in `UnluminateApp` for a reason that does not apply here — a screenshot test cannot
 press the right mouse button, but it *can* drag a header.
 
 **One `Search Everywhere` modal with tabs**, as IntelliJ has. Rejected: two of the four tabs would be
@@ -310,10 +310,10 @@ too long on a small project, too short on a large one — where a generation cou
 costs one atomic read per file.
 
 **An index of the project's text**, built once and updated on save. Rejected for now: it is a cache
-to keep correct, it costs memory proportional to the project, and the thread answers the sizes Quill
+to keep correct, it costs memory proportional to the project, and the thread answers the sizes Unluminate
 is used at in well under a second. If a project ever makes it feel slow, this is where to go.
 
-**Images through a new `Command`/`Document` concept in `quill-core`.** Rejected: the preview is not a
+**Images through a new `Command`/`Document` concept in `unluminate-core`.** Rejected: the preview is not a
 document and cannot be edited, so an image needs no undo, no selection and no clipboard. A paragraph
 that is at least so tall is the smallest thing that makes it drawable.
 
@@ -324,12 +324,12 @@ than its words, and the fallback would have to be "cover it up", which is not a 
 
 Four layers, as `CLAUDE.md` requires, and the weight is on the ones that drive the real window.
 
-**`quill-core` (no window).** `markdown::render` produces an image entry for a line that is only an
+**`unluminate-core` (no window).** `markdown::render` produces an image entry for a line that is only an
 image, with the right paragraph index; an image mark inside prose still produces its alt text;
 `layout` makes a paragraph with `min_height` exactly that tall and leaves every other line alone;
 `min_height` never *shrinks* a line whose letters are taller.
 
-**`quill-app` services (no window).** `file_search`: subsequence matching, name beating folder,
+**`unluminate-app` services (no window).** `file_search`: subsequence matching, name beating folder,
 adjacency ranking, the returned hit positions, the cap. `text_search`: line numbers from one, the
 whole-file offset, several matches on a line, case folding both ways, one file not filling the list,
 a very long line cut with the match still in it and its file offset untouched, and a live thread
@@ -367,7 +367,7 @@ A search test waits for the thread with `pump` in a loop rather than `Harness::r
 `task-1654` records: `run` gives the window four steps to go quiet and panics otherwise, which is
 right for a settled window and wrong while something is still being worked on.
 
-**The real application.** `cargo run --release` on Quill's own repository — a project with a few
+**The real application.** `cargo run --release` on Unluminate's own repository — a project with a few
 thousand files, which is the size that says whether the search feels quick — driving all three
 shortcuts by hand and looking at `documentation/overview.md` in the preview, which is a document made
 of screenshots and so is the honest test of the images.

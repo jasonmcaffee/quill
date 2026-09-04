@@ -1,0 +1,24 @@
+[package]
+name = "unluminate-cli"
+description = "Drive a running Unluminate window from the command line."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+default-run = "unluminate-cli"
+
+# Two targets from one crate, and that is the point. The library is the catalogue of commands, the
+# wire format and where a running Unluminate advertises itself; `unluminate-app` depends on it so that the
+# window and the client cannot come to disagree about what `tab.open` is called or what it takes.
+# The binary is the client a person or an agent types at. Nothing here depends on `unluminate-app`, so
+# the client stays a small, fast program with no window, no graphics card and no fonts behind it.
+[lib]
+name = "unluminate_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "unluminate-cli"
+path = "src/main.rs"
+
+[dependencies]
+serde_json.workspace = true

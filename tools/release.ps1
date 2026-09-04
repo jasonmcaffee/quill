@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Releases Quill: bump the version, build, install it on this machine, tag, push, and publish a
+  Releases Unluminate: bump the version, build, install it on this machine, tag, push, and publish a
   GitHub release with the installer on it.
 
 .DESCRIPTION
@@ -13,14 +13,14 @@
 
     1. Refuses to run on a dirty checkout. A release built from one is a release nobody can rebuild.
     2. Bumps `version` under `[workspace.package]` in Cargo.toml, which is the one place the version
-       is written down. It reaches quill.exe's version block, the installer's file name, the Add or
+       is written down. It reaches unluminate.exe's version block, the installer's file name, the Add or
        Remove Programs entry and Info.plist from there.
-    3. Runs installer\windows\build.ps1 -Install: builds quill.exe and quill-cli.exe, refuses to
+    3. Runs installer\windows\build.ps1 -Install: builds unluminate.exe and unluminate-cli.exe, refuses to
        package an executable with no version block, compiles the Inno Setup installer, closes a
-       running Quill politely and installs it with every optional task on. The rebuild is what moves
+       running Unluminate politely and installs it with every optional task on. The rebuild is what moves
        the build date the About box shows.
     4. Copies the installer into releases\.
-    5. Commits Cargo.toml and Cargo.lock on their own as `Quill <version>`, tags `v<version>`, and
+    5. Commits Cargo.toml and Cargo.lock on their own as `Unluminate <version>`, tags `v<version>`, and
        pushes the branch and the tag.
     6. Creates the GitHub release with the installer attached.
 
@@ -40,7 +40,7 @@
 .PARAMETER SkipInstall
   Build the installer but do not install it on this machine. The About box will then still show the
   old build, which is the thing this script exists to keep true, so use it only when releasing from a
-  machine that is not the one Quill is used on.
+  machine that is not the one Unluminate is used on.
 
 .PARAMETER SkipPublish
   Do everything up to and including the tag, and stop before touching GitHub.
@@ -145,7 +145,7 @@ function Set-Version([string] $New) {
   The GitHub CLI, installing it with winget the first time.
 .DESCRIPTION
   The same choice installer\windows\build.ps1 makes about Inno Setup: the one thing this needs that a
-  machine able to build Quill does not already have is installed here rather than described in a
+  machine able to build Unluminate does not already have is installed here rather than described in a
   document. It is looked for on the PATH first, then where the MSI puts it, because a shell opened
   before the install will not have the new PATH.
 #>
@@ -193,7 +193,7 @@ function Get-GitHubToken {
     # answers `refusing to work with credential missing protocol field` — and a redirection from a
     # file does. The file holds the protocol and the host and no secret; the answer, which does hold
     # one, is only ever in memory.
-    $ask = Join-Path ([System.IO.Path]::GetTempPath()) ("quill-credential-" + [guid]::NewGuid().ToString('N') + ".txt")
+    $ask = Join-Path ([System.IO.Path]::GetTempPath()) ("unluminate-credential-" + [guid]::NewGuid().ToString('N') + ".txt")
     try {
         Set-Content -Path $ask -Value "protocol=https`nhost=github.com`n" -NoNewline -Encoding ascii
         $answer = & cmd /c "git credential fill < `"$ask`"" 2>$null
@@ -217,7 +217,7 @@ function Get-GitHubToken {
   believes a synthesised key is held until its key-up arrives, and the physical keyboard cannot clear
   it, because the physical key was never down.
 
-  Releasing it is one line, and the reason it is here is that this is the line a Quill task ends on.
+  Releasing it is one line, and the reason it is here is that this is the line a Unluminate task ends on.
   Anything that drove the real window has finished by now, so nothing legitimate is holding a
   modifier, and a person about to type into their own machine again should not have to know any of
   the above. It only reports under -WhatIf, which changes nothing by contract.
@@ -250,15 +250,15 @@ if (-not (Test-Higher $next $current)) {
 }
 
 $branch = (& git rev-parse --abbrev-ref HEAD).Trim()
-Write-Host "Quill $current -> $next  on $branch"
+Write-Host "Unluminate $current -> $next  on $branch"
 
 if ($WhatIf) {
     Write-Host ''
     Write-Host 'What would happen:' -ForegroundColor Yellow
     Write-Host "  1. Cargo.toml version -> $next"
     Write-Host "  2. installer\windows\build.ps1$(if (-not $SkipInstall) { ' -Install' })"
-    Write-Host "  3. releases\QuillSetup-$next-x64.exe"
-    Write-Host "  4. commit `"Quill $next`", tag v$next, push $branch"
+    Write-Host "  3. releases\UnluminateSetup-$next-x64.exe"
+    Write-Host "  4. commit `"Unluminate $next`", tag v$next, push $branch"
     if (-not $SkipPublish) { Write-Host "  5. gh release create v$next with the installer attached" }
     return
 }
@@ -292,17 +292,17 @@ if (-not $SkipInstall) { $arguments += '-Install' }
 & powershell @arguments
 if ($LASTEXITCODE -ne 0) { throw 'installer\windows\build.ps1 failed.' }
 
-$setup = Join-Path $Repo "installer\dist\QuillSetup-$next-x64.exe"
+$setup = Join-Path $Repo "installer\dist\UnluminateSetup-$next-x64.exe"
 if (-not (Test-Path $setup)) { throw "The installer was not written to $setup." }
 New-Item -ItemType Directory -Force -Path $ReleasesDir | Out-Null
-$kept = Join-Path $ReleasesDir "QuillSetup-$next-x64.exe"
+$kept = Join-Path $ReleasesDir "UnluminateSetup-$next-x64.exe"
 Copy-Item -Path $setup -Destination $kept -Force
 Write-Host "Kept $kept"
 
 Write-Step "Committing and tagging v$next"
 Invoke-Checked 'git add' { & git add -- Cargo.toml Cargo.lock }
-Invoke-Checked 'git commit' { & git commit -m "Quill $next" | Out-Null }
-Invoke-Checked 'git tag' { & git tag -a "v$next" -m "Quill $next" }
+Invoke-Checked 'git commit' { & git commit -m "Unluminate $next" | Out-Null }
+Invoke-Checked 'git tag' { & git tag -a "v$next" -m "Unluminate $next" }
 Invoke-Checked 'git push' { & git push origin $branch }
 Invoke-Checked 'git push --tags' { & git push origin "v$next" }
 
@@ -317,19 +317,19 @@ if (-not $Notes) { $Notes = (& git log -1 --pretty=%s "v$next^").Trim() }
 $body = @"
 $Notes
 
-Windows: download **QuillSetup-$next-x64.exe** below and run it. It installs into
-%LOCALAPPDATA%\Programs\Quill with no elevation prompt, and puts ``quill`` and ``quill-cli`` on the PATH.
+Windows: download **UnluminateSetup-$next-x64.exe** below and run it. It installs into
+%LOCALAPPDATA%\Programs\Unluminate with no elevation prompt, and puts ``unluminate`` and ``unluminate-cli`` on the PATH.
 
-``Quill -> About Quill`` in the window says which build this is.
+``Unluminate -> About Unluminate`` in the window says which build this is.
 "@
-& $gh release create "v$next" $kept --repo jasonmcaffee/quill --title "Quill $next" --notes $body
+& $gh release create "v$next" $kept --repo jasonmcaffee/unluminate --title "Unluminate $next" --notes $body
 if ($LASTEXITCODE -ne 0) {
-    throw "The tag v$next was pushed but the release was not created. Run: gh release create v$next `"$kept`" --title `"Quill $next`""
+    throw "The tag v$next was pushed but the release was not created. Run: gh release create v$next `"$kept`" --title `"Unluminate $next`""
 }
 
-$url = (& $gh release view "v$next" --repo jasonmcaffee/quill --json url --jq .url).Trim()
+$url = (& $gh release view "v$next" --repo jasonmcaffee/unluminate --json url --jq .url).Trim()
 Write-Host ''
-Write-Host "Quill $next is released: $url" -ForegroundColor Green
+Write-Host "Unluminate $next is released: $url" -ForegroundColor Green
 if (-not $SkipInstall) {
-    Write-Host "Installed at $(Join-Path $env:LOCALAPPDATA 'Programs\Quill\quill.exe')" -ForegroundColor Green
+    Write-Host "Installed at $(Join-Path $env:LOCALAPPDATA 'Programs\Unluminate\unluminate.exe')" -ForegroundColor Green
 }

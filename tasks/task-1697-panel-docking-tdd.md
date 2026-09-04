@@ -9,9 +9,9 @@
 Four panels, four sides, one drag. This is the design; `app/dock.rs` is the implementation of it and
 `components/dock.rs` is what a person sees while a panel is in the air.
 
-## 1. What Quill has today, and why it cannot answer the ask as it stands
+## 1. What Unluminate has today, and why it cannot answer the ask as it stands
 
-The window's layout is written out once, in `QuillApp::ui`, as a run of rectangle arithmetic:
+The window's layout is written out once, in `UnluminateApp::ui`, as a run of rectangle arithmetic:
 
 ```
 body      = between the title bar and the status bar
@@ -48,14 +48,14 @@ and leave every one of the above reading the value rather than a field.
 
 | | What it is | Why not here |
 |---|---|---|
-| `egui_dock` | Docking for egui: tabs that can be torn off, dragged between splits and undocked into windows. Binary splits only — a node is left/right or top/bottom. | It owns the whole layout **and the tab bars**. Quill draws its own tab strip, its own title bar, its own splitters and its own status bar at absolute positions taken from `design/intial-design-screenshot.png`, and `design/style-guide.md` says what a control here is made of. Adopting it would mean adopting its furniture. |
+| `egui_dock` | Docking for egui: tabs that can be torn off, dragged between splits and undocked into windows. Binary splits only — a node is left/right or top/bottom. | It owns the whole layout **and the tab bars**. Unluminate draws its own tab strip, its own title bar, its own splitters and its own status bar at absolute positions taken from `design/intial-design-screenshot.png`, and `design/style-guide.md` says what a control here is made of. Adopting it would mean adopting its furniture. |
 | `egui_tiles` | rerun's tiling layout engine: full horizontal, vertical and grid layouts, drag-and-drop, resizing, a `Behavior` trait to override the look. The more capable of the two. | The same objection, and a second one: a tiling engine's shape is a **tree**, and the ask is four sides. `task-1664` already refused a tree of splitters for the editing area — "a row answers the ask and every operation on it is a small function with a unit test" — and the same is true here. Every accepted screenshot in `tests/snapshots` is a picture of the layout this would replace. |
-| `egui_docking` | Multi-viewport docking, bridging `egui_tiles` for the model. | Adds viewports — panels torn off into operating system windows. Quill's windows are one per project (`services::launcher`), and a floating panel is a second window with no project. Out of scope and deliberately so; see §11. |
+| `egui_docking` | Multi-viewport docking, bridging `egui_tiles` for the model. | Adds viewports — panels torn off into operating system windows. Unluminate's windows are one per project (`services::launcher`), and a floating panel is a second window with no project. Out of scope and deliberately so; see §11. |
 
 The verdict is `task-1675`'s and `task-1685`'s verdict again, for the third time and for the same
 reason: **the crate's output is shaped for a different consumer**. `pulldown-cmark` was refused
 because its events are shaped for HTML; a language server was refused because it answers when it
-pleases. A docking crate is shaped for an application that has no layout of its own yet. Quill has
+pleases. A docking crate is shaped for an application that has no layout of its own yet. Unluminate has
 one, it is measured against an image, and what is actually needed here is arithmetic.
 
 ### 2.2 The two drop-target mechanics
@@ -107,7 +107,7 @@ right, order 0 is the column nearest the editing area, because on the right "lef
 at the middle. In a top or bottom strip the panels are columns too. One rule, one axis, and the drop
 position is therefore one comparison everywhere.
 
-The default is what Quill has now: `Explorer → Left(0)`, `Terminal → Bottom(0)`, `Run → Bottom(1)`,
+The default is what Unluminate has now: `Explorer → Left(0)`, `Terminal → Bottom(0)`, `Run → Bottom(1)`,
 `Debug → Bottom(2)`.
 
 **Two invariants**, kept by `Layout::tidy` after every change and asserted in the tests, which are
@@ -134,8 +134,8 @@ The debug tile is wider than the other two because it holds two panes side by si
 the values — and `debug_panel::PANE_MIN` is what says how narrow that can get.
 
 Where the arrangement is written down is `settings::Panes`, beside the sizes, which puts it in the
-person's own `settings.conf` rather than in the project's `.quill`. That is deliberate and it is the
-line `task-1693` already drew: the window's **geometry** belongs to the project, because Quill's
+person's own `settings.conf` rather than in the project's `.unluminate`. That is deliberate and it is the
+line `task-1693` already drew: the window's **geometry** belongs to the project, because Unluminate's
 windows are one per project and a geometry kept per person would open the second window on top of the
 first; the window's **shape** is a habit, and somebody who works with the terminal on the right wants
 it on the right in every project. `panes.<panel>.side` and `panes.<panel>.order` are the two keys.
@@ -147,7 +147,7 @@ window. It takes the `panes` rectangle and gives back a rectangle for each panel
 one for the editing area.
 
 **The strips are taken first, across the whole width; then the columns, from what is left.** That is
-what Quill does today — the terminal spans the full width of `panes`, including under the explorer —
+what Unluminate does today — the terminal spans the full width of `panes`, including under the explorer —
 and it is what IntelliJ does with its bottom tool window. Doing it the other way round would move
 every accepted screenshot of the terminal for no gain.
 
@@ -242,7 +242,7 @@ panel"* work.
 **A right click on a panel's header, or on its button in the rail, opens the panel's own menu**: `Move
 to Left`, `Move to Right`, `Move to Top`, `Move to Bottom` with the current side ticked, and `Reset
 Panel Layout` under a separator. `Action::Dock { panel, side }` is what each row asks for, named
-`dock-terminal-right` and read back by `Action::from_name`, so `quill-cli action run` reaches every one
+`dock-terminal-right` and read back by `Action::from_name`, so `unluminate-cli action run` reaches every one
 of them.
 
 They are **not** put on the `View` menu, and that is a decision rather than an omission. A submenu is
@@ -255,15 +255,15 @@ require finding the panel you lost.
 The command line is the other half and is the one an agent reads:
 
 ```
-quill-cli panel list                          every panel, its side, its order, its size, whether it shows
-quill-cli panel dock terminal right           move a panel to a side
-quill-cli panel dock terminal left --position 0    ... and say where in that side
-quill-cli panel size debug --width 640        set either measurement of any panel
-quill-cli panel reset                         put them all back
+unluminate-cli panel list                          every panel, its side, its order, its size, whether it shows
+unluminate-cli panel dock terminal right           move a panel to a side
+unluminate-cli panel dock terminal left --position 0    ... and say where in that side
+unluminate-cli panel size debug --width 640        set either measurement of any panel
+unluminate-cli panel reset                         put them all back
 ```
 
-`panel` is a new area in `quill-cli/src/catalogue.rs`, so the MCP tools carry it the day it is added
-and `documentation.rs` fails until `quill-cli/docs/commands.md` has a section for each. `explorer
+`panel` is a new area in `unluminate-cli/src/catalogue.rs`, so the MCP tools carry it the day it is added
+and `documentation.rs` fails until `unluminate-cli/docs/commands.md` has a section for each. `explorer
 width` and `terminal height` stay exactly as they are and write the same two numbers: they are the
 older spelling of two of these, and removing them would break every script that has one in it.
 
@@ -273,7 +273,7 @@ older spelling of two of these, and removing them would break every script that 
   move, the defaults, that docking a panel where it already is changes nothing, that a side with
   three panels lays them out left to right, that the strips are taken before the columns, that the
   editing area never goes below its minimum, and that `regions` of the default layout is exactly the
-  arithmetic `QuillApp::ui` used to do inline.
+  arithmetic `UnluminateApp::ui` used to do inline.
 - **The zones** — that the four bands cover the four edges, that the middle is not a target, that a
   corner goes to the band it is deeper into, and that the band covers the panels already on its side.
 - **The position** — that the pointer left of the explorer's middle gives 0 and right of it gives 1.
@@ -285,7 +285,7 @@ older spelling of two of these, and removing them would break every script that 
 ## 11. Deliberately not here
 
 - **Floating panels.** A panel torn off into a window of its own is a second operating system window
-  with no project behind it, and `services::launcher` says a Quill window *is* a project. It is a
+  with no project behind it, and `services::launcher` says a Unluminate window *is* a project. It is a
   feature of its own.
 - **Panels as tabs of one another.** VS Code stacks views in one region and shows one at a time; that
   is a second arrangement of the same panels and would need a strip of its own to switch between
@@ -294,5 +294,5 @@ older spelling of two of these, and removing them would break every script that 
   window. That is the tree §2.1 refuses, and the ask asks for columns.
 - **Dropping onto the editing area.** §6.1.
 - **The rail following its panel.** IntelliJ moves a tool window's stripe button to the side the
-  window is on. Quill has one rail on one edge; its groups say what a panel *is*, and a rail that
+  window is on. Unluminate has one rail on one edge; its groups say what a panel *is*, and a rail that
   reshuffled itself as panels moved would be a second thing moving for every drag.

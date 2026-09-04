@@ -1,25 +1,25 @@
-# Issues found driving Quill through the MCP tools
+# Issues found driving Unluminate through the MCP tools
 
 ## What this records
 
-An agent was asked to drive a Quill window entirely through the Model Context Protocol (MCP) tools:
+An agent was asked to drive a Unluminate window entirely through the Model Context Protocol (MCP) tools:
 write a JavaScript file that prints prime numbers, open it in a tab, run it, read the output, edit
 it, save it and run it again. All of that worked. Five problems turned up while doing it, and this
 document records them with the code that causes each one.
 
-MCP is the protocol an agent uses to call tools in another program. Quill serves it through
-`quill-cli`, which forwards each tool call to a running window over a loopback TCP connection.
+MCP is the protocol an agent uses to call tools in another program. Unluminate serves it through
+`unluminate-cli`, which forwards each tool call to a running window over a loopback TCP connection.
 
-The session used Quill 0.12.0, build date 2026-08-26 1:51pm, on macOS 26.5.1 (25F80), driving the
-window on `/Users/jason.mcaffee/dev/quill-testing` (process 88081, port 64874). The source line
+The session used Unluminate 0.12.0, build date 2026-08-26 1:51pm, on macOS 26.5.1 (25F80), driving the
+window on `/Users/jason.mcaffee/dev/unluminate-testing` (process 88081, port 64874). The source line
 numbers below are from commit
-[`db470c6`](https://github.com/jasonmcaffee/quill/commit/db470c66ef151f7a02991631fe3e7490a2bcdcb6).
+[`db470c6`](https://github.com/jasonmcaffee/unluminate/commit/db470c66ef151f7a02991631fe3e7490a2bcdcb6).
 
 ## Jargon used below
 
 | Term | What it means here |
 | --- | --- |
-| Frame loop | The single thread that draws the window. Quill answers every command from this thread, one command batch per drawn frame. |
+| Frame loop | The single thread that draws the window. Unluminate answers every command from this thread, one command batch per drawn frame. |
 | Semaphore | A lock a thread waits on until another thread signals it. A thread waiting on one is asleep and uses no processor time. |
 | Occluded window | A window macOS has decided is not visible, because another window covers it. macOS stops asking an occluded window to draw. |
 | `request_repaint` | The egui call that asks the window to draw another frame. It is how a background thread tells the window there is something to do. |
@@ -27,26 +27,26 @@ numbers below are from commit
 
 ## Issue 1: an idle window never drains the command queue, so every command times out
 
-This is the one that makes driving Quill through MCP unreliable. Everything else in this document is
+This is the one that makes driving Unluminate through MCP unreliable. Everything else in this document is
 smaller.
 
 ### What happens
 
-When the Quill window sits idle, every MCP tool call and every `quill-cli` command fails with
-`timed-out: Quill did not answer <command> within 15000 ms`. The process is alive the whole time,
+When the Unluminate window sits idle, every MCP tool call and every `unluminate-cli` command fails with
+`timed-out: Unluminate did not answer <command> within 15000 ms`. The process is alive the whole time,
 sleeping at 0% processor use, still listening on its port. It looks exactly like a hung application
 and it is not hung.
 
 Generating any user interface event fixes it instantly. This is the measurement, with `tab list`
 called twice and nothing changed in between except bringing the window to the front:
 
-**Evidence: two `quill-cli tab list` calls, before and after activating the window.**
+**Evidence: two `unluminate-cli tab list` calls, before and after activating the window.**
 
 ```
---- before: Quill idle in the background ---
-Quill did not answer tab.list within 15000 ms.     took 15.09s
---- activating the window with: open -b com.jasonmcaffee.quill ---
---- after: Quill frontmost ---
+--- before: Unluminate idle in the background ---
+Unluminate did not answer tab.list within 15000 ms.     took 15.09s
+--- activating the window with: open -b com.jasonmcaffee.unluminate ---
+--- after: Unluminate frontmost ---
 1 open                                              took 0.05s
 ```
 
@@ -56,11 +56,11 @@ correctly, and the command still never gets answered:
 **Evidence: the same `run list` tool call twice, with an idle window.**
 
 ```
-mcp__quill__quill_run {"command": "list"}
-  -> timed-out: Quill did not answer run.list within 15000 ms.
+mcp__unluminate__unluminate_run {"command": "list"}
+  -> timed-out: Unluminate did not answer run.list within 15000 ms.
 
-mcp__quill__quill_run {"command": "list", "arguments": {"timeout": 60000}}
-  -> timed-out: Quill did not answer run.list within 65000 ms.
+mcp__unluminate__unluminate_run {"command": "list", "arguments": {"timeout": 60000}}
+  -> timed-out: Unluminate did not answer run.list within 65000 ms.
 ```
 
 Sixty five seconds with an idle window and the queue was still not drained. So this is not a slow
@@ -71,7 +71,7 @@ frame that a longer deadline would cover.
 Every command is answered by the frame loop, which is the correct design and is written down as
 such:
 
-**Source:** [`quill`, `crates/quill-app/src/services/control.rs` lines 27 to 32](https://github.com/jasonmcaffee/quill/blob/db470c66ef151f7a02991631fe3e7490a2bcdcb6/crates/quill-app/src/services/control.rs#L27-L32)
+**Source:** [`unluminate`, `crates/unluminate-app/src/services/control.rs` lines 27 to 32](https://github.com/jasonmcaffee/unluminate/blob/db470c66ef151f7a02991631fe3e7490a2bcdcb6/crates/unluminate-app/src/services/control.rs#L27-L32)
 
 ```rust
 //! ## Why the window answers rather than the thread
@@ -84,13 +84,13 @@ such:
 
 The connection thread queues the request, calls `wake()`, and then waits:
 
-**Source:** [`quill`, `crates/quill-app/src/services/control.rs` lines 285 to 298](https://github.com/jasonmcaffee/quill/blob/db470c66ef151f7a02991631fe3e7490a2bcdcb6/crates/quill-app/src/services/control.rs#L285-L298)
+**Source:** [`unluminate`, `crates/unluminate-app/src/services/control.rs` lines 285 to 298](https://github.com/jasonmcaffee/unluminate/blob/db470c66ef151f7a02991631fe3e7490a2bcdcb6/crates/unluminate-app/src/services/control.rs#L285-L298)
 
 ```rust
     let command = request.command.clone();
     let (answer, wait) = mpsc::channel();
     if sender.send(Pending { request, reply: Some(answer) }).is_err() {
-        return Reply::failed(&command, code::NOT_RUNNING, "Quill is closing.");
+        return Reply::failed(&command, code::NOT_RUNNING, "Unluminate is closing.");
     }
     wake();
     match wait.recv_timeout(BACKSTOP) {
@@ -98,14 +98,14 @@ The connection thread queues the request, calls `wake()`, and then waits:
         Err(_) => Reply::failed(
             &command,
             code::TIMED_OUT,
-            "Quill did not answer. The window may be busy or may have stopped drawing.",
+            "Unluminate did not answer. The window may be busy or may have stopped drawing.",
         ),
     }
 ```
 
 `wake` is `request_repaint` on the egui context:
 
-**Source:** [`quill`, `crates/quill-app/src/app/mod.rs` lines 689 to 695](https://github.com/jasonmcaffee/quill/blob/db470c66ef151f7a02991631fe3e7490a2bcdcb6/crates/quill-app/src/app/mod.rs#L689-L695)
+**Source:** [`unluminate`, `crates/unluminate-app/src/app/mod.rs` lines 689 to 695](https://github.com/jasonmcaffee/unluminate/blob/db470c66ef151f7a02991631fe3e7490a2bcdcb6/crates/unluminate-app/src/app/mod.rs#L689-L695)
 
 ```rust
     pub fn open_control_channel(&mut self, ctx: &egui::Context) {
@@ -122,14 +122,14 @@ draw. When the window is occluded or otherwise idle, the request is recorded, no
 queue is never drained, and the waiting connection thread sleeps until its deadline.
 
 Process stacks taken with `sample 88081` while four commands were stuck confirm this exactly. Four
-threads named `quill-control-connection` were each parked on the semaphore inside
-`quill_app::services::control::serve`:
+threads named `unluminate-control-connection` were each parked on the semaphore inside
+`unluminate_app::services::control::serve`:
 
-**Evidence: `sample 88081`, one of four identical `quill-control-connection` threads.**
+**Evidence: `sample 88081`, one of four identical `unluminate-control-connection` threads.**
 
 ```
-2495 Thread_13934062: quill-control-connection
-  2495 quill_app::services::control::serve  (in quill) + 1936
+2495 Thread_13934062: unluminate-control-connection
+  2495 unluminate_app::services::control::serve  (in unluminate) + 1936
     2495 _dispatch_semaphore_wait_slow  (in libdispatch.dylib) + 76
       2495 _dispatch_sema4_timedwait  (in libdispatch.dylib) + 64
         2495 semaphore_timedwait_trap  (in libsystem_kernel.dylib) + 8
@@ -150,7 +150,7 @@ At the same moment the frame loop was parked in its ordinary event wait, with no
 The comment on the backstop constant already anticipates this state, which suggests it was known to
 be possible but was treated as something only a broken window would reach:
 
-**Source:** [`quill`, `crates/quill-app/src/services/control.rs` lines 49 to 54](https://github.com/jasonmcaffee/quill/blob/db470c66ef151f7a02991631fe3e7490a2bcdcb6/crates/quill-app/src/services/control.rs#L49-L54)
+**Source:** [`unluminate`, `crates/unluminate-app/src/services/control.rs` lines 49 to 54](https://github.com/jasonmcaffee/unluminate/blob/db470c66ef151f7a02991631fe3e7490a2bcdcb6/crates/unluminate-app/src/services/control.rs#L49-L54)
 
 ```rust
 /// How long the listener will hold a connection open waiting for the window to answer.
@@ -161,7 +161,7 @@ be possible but was treated as something only a broken window would reach:
 const BACKSTOP: Duration = Duration::from_secs(120);
 ```
 
-An idle window is a normal window, not a broken one. An agent driving Quill produces exactly this
+An idle window is a normal window, not a broken one. An agent driving Unluminate produces exactly this
 state, because between two tool calls nothing touches the keyboard or the mouse.
 
 ### Suggested fix
@@ -186,7 +186,7 @@ and assert that it is still answered.
 ### What happens
 
 The first attempt at running the prime numbers file used a run configuration whose command was
-`node primes.js`. Quill spawns without a shell, and a window launched from Finder does not have the
+`node primes.js`. Unluminate spawns without a shell, and a window launched from Finder does not have the
 nvm directory on its `PATH`, so `node` could not be found. Through MCP the failure was invisible.
 This is the whole reply the agent received:
 
@@ -200,12 +200,12 @@ This is the whole reply the agent received:
 ```
 
 `started` is `false`, `state` is `null`, and there is no reason given anywhere. The call is not
-marked as an error. The same command through `quill-cli` prints the reason:
+marked as an error. The same command through `unluminate-cli` prints the reason:
 
-**Evidence: `quill-cli run start primes` with `node` not on the window's PATH.**
+**Evidence: `unluminate-cli run start primes` with `node` not on the window's PATH.**
 
 ```
-Quill could not start node: Failed to spawn command 'node': No such file or directory (os error 2)
+Unluminate could not start node: Failed to spawn command 'node': No such file or directory (os error 2)
 ```
 
 An agent holding only the structured content cannot tell why nothing ran, and cannot tell the
@@ -215,7 +215,7 @@ difference between a program that failed to spawn and a program that ran and exi
 
 The failure text is put into the window's status bar message:
 
-**Source:** [`quill`, `crates/quill-app/src/app/mod.rs` lines 1563 to 1570](https://github.com/jasonmcaffee/quill/blob/db470c66ef151f7a02991631fe3e7490a2bcdcb6/crates/quill-app/src/app/mod.rs#L1563-L1570)
+**Source:** [`unluminate`, `crates/unluminate-app/src/app/mod.rs` lines 1563 to 1570](https://github.com/jasonmcaffee/unluminate/blob/db470c66ef151f7a02991631fe3e7490a2bcdcb6/crates/unluminate-app/src/app/mod.rs#L1563-L1570)
 
 ```rust
         match self.run.start(configuration, &root, size, waker) {
@@ -231,7 +231,7 @@ The failure text is put into the window's status bar message:
 `cli_run_do` then reads that status bar message and returns `ok` regardless of whether the run
 started:
 
-**Source:** [`quill`, `crates/quill-app/src/app/cli.rs` lines 2927 to 2930](https://github.com/jasonmcaffee/quill/blob/db470c66ef151f7a02991631fe3e7490a2bcdcb6/crates/quill-app/src/app/cli.rs#L2927-L2930)
+**Source:** [`unluminate`, `crates/unluminate-app/src/app/cli.rs` lines 2927 to 2930](https://github.com/jasonmcaffee/unluminate/blob/db470c66ef151f7a02991631fe3e7490a2bcdcb6/crates/unluminate-app/src/app/cli.rs#L2927-L2930)
 
 ```rust
         self.message = None;
@@ -243,7 +243,7 @@ started:
 Because `reply.error` is never set, the MCP layer takes the success path, marks `isError` false, and
 attaches the structured content that a client will render in preference to the text:
 
-**Source:** [`quill`, `quill-cli/src/mcp/server.rs` lines 181 to 195](https://github.com/jasonmcaffee/quill/blob/db470c66ef151f7a02991631fe3e7490a2bcdcb6/quill-cli/src/mcp/server.rs#L181-L195)
+**Source:** [`unluminate`, `unluminate-cli/src/mcp/server.rs` lines 181 to 195](https://github.com/jasonmcaffee/unluminate/blob/db470c66ef151f7a02991631fe3e7490a2bcdcb6/unluminate-cli/src/mcp/server.rs#L181-L195)
 
 ```rust
     /// Turn what the window said into what an agent reads.
@@ -267,7 +267,7 @@ attaches the structured content that a client will render in preference to the t
 
 Make `run_a_configuration` report whether it started, and have `cli_run_do` return `no(request,
 code::FAILED, problem)` when it did not. That sets `reply.error`, which makes the MCP layer return a
-refusal carrying the real reason, and makes the `quill-cli` exit code correct at the same time.
+refusal carrying the real reason, and makes the `unluminate-cli` exit code correct at the same time.
 
 Separately, a run configuration whose program cannot be found is worth catching earlier. `run add`
 accepts `node primes.js` without complaint and the problem only appears at `run start`. Resolving
@@ -286,7 +286,7 @@ after the caller has been told it failed.
 Three commands in this session reported `timed-out` over MCP and all three had in fact been applied:
 
 - `run add bogus` reported a timeout. The configuration was in
-  `.quill/run-configurations.conf` as `run.3` afterwards.
+  `.unluminate/run-configurations.conf` as `run.3` afterwards.
 - `run remove bogus` reported a timeout. The configuration was gone afterwards.
 - `run rerun primes` reported a timeout. The program had run, the state was `finished`, and the
   output was there.
@@ -299,7 +299,7 @@ For `editor insert`, `tab close --discard` or `explorer delete` it is not.
 The client deadline is shorter than the window's own backstop, so the client abandons a request the
 window will still honour. The client default is 15 seconds:
 
-**Source:** [`quill`, `quill-cli/src/client.rs` line 16](https://github.com/jasonmcaffee/quill/blob/db470c66ef151f7a02991631fe3e7490a2bcdcb6/quill-cli/src/client.rs#L16)
+**Source:** [`unluminate`, `unluminate-cli/src/client.rs` line 16](https://github.com/jasonmcaffee/unluminate/blob/db470c66ef151f7a02991631fe3e7490a2bcdcb6/unluminate-cli/src/client.rs#L16)
 
 ```rust
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_millis(15_000);
@@ -325,7 +325,7 @@ failure.
 actually did, and it travels over the same channel as everything else. During the stall in Issue 1 it
 timed out along with the rest, so the one tool that would show what the window was doing was
 unavailable exactly when it was needed. Diagnosis had to fall back on the macOS `screencapture`
-command and on `sample` to read the process stacks, neither of which an agent driving Quill would
+command and on `sample` to read the process stacks, neither of which an agent driving Unluminate would
 normally reach for.
 
 Four connection threads were stuck at once, each holding a thread for its full deadline.
@@ -347,7 +347,7 @@ takes, by the name in its usage line". The usage lines cover each command's own 
 not mention that `timeout` is accepted on every call, because `timeout` is a global flag of the
 command line interface rather than part of any usage line:
 
-**Source:** [`quill`, `quill-cli/src/parse.rs` line 85](https://github.com/jasonmcaffee/quill/blob/db470c66ef151f7a02991631fe3e7490a2bcdcb6/quill-cli/src/parse.rs#L85)
+**Source:** [`unluminate`, `unluminate-cli/src/parse.rs` line 85](https://github.com/jasonmcaffee/unluminate/blob/db470c66ef151f7a02991631fe3e7490a2bcdcb6/unluminate-cli/src/parse.rs#L85)
 
 ```rust
     ("timeout", Some("milliseconds"), "How long to wait for an answer. 15000 by default."),
@@ -355,7 +355,7 @@ command line interface rather than part of any usage line:
 
 It is accepted, and the MCP driver reads it and adds five seconds of headroom:
 
-**Source:** [`quill`, `quill-cli/src/mcp/driver.rs` lines 205 to 214](https://github.com/jasonmcaffee/quill/blob/db470c66ef151f7a02991631fe3e7490a2bcdcb6/quill-cli/src/mcp/driver.rs#L205-L214)
+**Source:** [`unluminate`, `unluminate-cli/src/mcp/driver.rs` lines 205 to 214](https://github.com/jasonmcaffee/unluminate/blob/db470c66ef151f7a02991631fe3e7490a2bcdcb6/unluminate-cli/src/mcp/driver.rs#L205-L214)
 
 ```rust
 /// How long to wait for this call.
@@ -380,16 +380,16 @@ Say in each tool's description that `timeout` in milliseconds is accepted on any
 should be able to fail faster than 15 seconds, use the passed value directly rather than taking the
 maximum of it and the default.
 
-## One note about the setup, which is not a Quill bug
+## One note about the setup, which is not a Unluminate bug
 
-The agent that found all of this was running inside the Quill window it was driving. The parent chain
-was Quill (process 88081) to `/bin/zsh` to `claude` to the shell each command ran in, and the hosting
-terminal tab was named "Quill MCP UI driving".
+The agent that found all of this was running inside the Unluminate window it was driving. The parent chain
+was Unluminate (process 88081) to `/bin/zsh` to `claude` to the shell each command ran in, and the hosting
+terminal tab was named "Unluminate MCP UI driving".
 
-That matters for anyone reproducing this. Restarting Quill to clear the stall destroys the session
+That matters for anyone reproducing this. Restarting Unluminate to clear the stall destroys the session
 doing the testing, which happened once before the session that produced this document. Recover with
 a user interface event instead. To test anything that needs a restart, start a second window with
-`quill-cli launch <folder>` and drive it with the `instance` argument.
+`unluminate-cli launch <folder>` and drive it with the `instance` argument.
 
 It also affects how the stall presents. A Claude Code session draws an animated spinner in its
 terminal, and that animation keeps waking the frame loop, so commands are fast for as long as the

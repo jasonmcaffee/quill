@@ -31,7 +31,7 @@ is wrong for one reason and the reason is fatal: `claude` sets a title on every 
 `git`, and so does anything using an OSC 0. A rename written into the title would last until the
 program next spoke, which is a rename that appears to work and then quietly undoes itself.
 
-**A name on the tab rather than on the session.** `quill-terminal`'s `Tabs` is a list of `Session`s
+**A name on the tab rather than on the session.** `unluminate-terminal`'s `Tabs` is a list of `Session`s
 and nothing else — its own module comment says "a tab is a session and nothing else: there is no
 state a tab carries that the session does not". A parallel `Vec<Option<String>>` would be a second
 thing to keep in step with every `open`, `close` and `move_tab`, and the first one to forget would be
@@ -44,7 +44,7 @@ a name a program set, and nothing a program does takes it away.*
 
 An **empty** name puts the tab back to being named after its program, so there is one way to undo a
 rename rather than a second command meaning "forget the name I gave". The dialog cannot ask for it —
-its button needs something in the field — but `quill-cli terminal rename --tab 0` can, and that is
+its button needs something in the field — but `unluminate-cli terminal rename --tab 0` can, and that is
 what a test asserts.
 
 ### 1.3 A name a person typed is never numbered
@@ -64,19 +64,19 @@ with the same name. It counts against the name the session gives now, through a 
 
 `components::terminal_panel` reports `PanelOutcome::menu` — which tab, and where the pointer was —
 and the window opens `components::context_menu` on it, exactly as the explorer, the gutter and a file
-tab's strip already do. The menu is `QuillApp::terminal_menu`, held in the window's own state rather
+tab's strip already do. The menu is `UnluminateApp::terminal_menu`, held in the window's own state rather
 than in egui's memory for the reason the other three are: a screenshot test cannot press the right
 mouse button, and a menu that can only be reached by pressing it cannot be looked at.
 
 **Every entry is about the terminal tab that is showing**, which is `actions::tab_menu`'s rule
 restated. That is what makes them ordinary parameterless `Action`s the View menu, the keyboard and
-`quill-cli action run` can all ask for without inventing a way to name a tab — so the strip **shows**
+`unluminate-cli action run` can all ask for without inventing a way to name a tab — so the strip **shows**
 the tab a right click landed on before the menu opens. `actions::terminal_tab_menu` takes no
 `MenuState` at all, because the menu can only be opened by right clicking a tab and there is
 therefore always one to rename and one to close.
 
 `Rename Terminal Tab...` is also on the `View` menu beside `New Terminal Tab` and `Close Terminal
-Tab`. Not for symmetry: `quill-cli action list` is built by walking the real menus, and a context
+Tab`. Not for symmetry: `unluminate-cli action list` is built by walking the real menus, and a context
 menu is not one of them, so an entry that lived only in the right click menu would be an entry the
 command line could not find.
 
@@ -101,7 +101,7 @@ and `tab_strip` settles it itself — which is also where `close` and `show` are
 screen now**, including the one being carried, because that is what a person dragging it is looking
 at. Taking it out first shifts everything after it up by one, so a move to a place further along has
 one subtracted from it inside that function rather than at every call. `OpenFiles::drag_tab` already
-says the same sentence about file tabs, and `quill-cli terminal move` and the drag both go through
+says the same sentence about file tabs, and `unluminate-cli terminal move` and the drag both go through
 it, so a rearrangement made from a script and one made with the pointer are the same rearrangement.
 
 The tab that was moved is the one showing afterwards, which is what dragging something somewhere
@@ -127,7 +127,7 @@ left alone rather than doing nothing loudly.
 ### 4.2 The one modal that owns Enter
 
 The commit message is a `TextEdit::multiline`, where Enter is a new line and has to stay one.
-`modal::Confirm` has two values for that reason: `Enter` for every modal in Quill but one, and
+`modal::Confirm` has two values for that reason: `Enter` for every modal in Unluminate but one, and
 `CommandEnter` for the commit panel, which is IntelliJ's own chord for the same dialog. Both of that
 modal's tabs use it — one modal, one key — because Enter alone in the `Stashes` tab would pop a stash
 for somebody who pressed it meaning nothing.
@@ -165,19 +165,19 @@ the delete confirmation would have deleted the file **and** inserted a new line 
 **and** opened the row the explorer's cursor was on.
 
 `a_modal_has_the_keyboard` is the other half of the same question, asked of egui's own modal layer
-rather than of a list of Quill's dialogs, so a modal added later is covered without being added
+rather than of a list of Unluminate's dialogs, so a modal added later is covered without being added
 anywhere. It is the layer as it stood at the **end of the last frame**, which is the honest answer at
 the point those three read the keyboard: before anything is drawn, and so before this frame's modal
 has said it is there.
 
 ## 5. The command line
 
-`quill-cli terminal rename [--tab <index>] <name>` and `quill-cli terminal move [--tab <index>]
+`unluminate-cli terminal rename [--tab <index>] <name>` and `unluminate-cli terminal move [--tab <index>]
 <position>`, both through the same two functions the window uses. The name takes the rest of the line
 so it needs no quotes, which is what `terminal send` already does, and `--tab` therefore comes before
 it.
 
-`quill-cli action run rename-terminal-tab` opens the prompt, because the action is on a real menu.
+`unluminate-cli action run rename-terminal-tab` opens the prompt, because the action is on a real menu.
 
 ## 6. What is deliberately not here
 
@@ -194,16 +194,16 @@ else about itself, and not before.
 **Dragging a terminal tab out of the strip.** There is one strip and nowhere else to put it.
 
 **A three-answer dialog for Enter.** VS Code has a three-valued setting for whether Enter accepts a
-completion, and `task-1678` records why Quill does not need one. The same reasoning holds here: the
+completion, and `task-1678` records why Unluminate does not need one. The same reasoning holds here: the
 one modal where Enter means something else says so with a different chord, rather than every modal
 growing a preference.
 
 ## 7. Tests
 
-- `quill-terminal`: a typed name beats a program's title and survives one being set; an empty name
+- `unluminate-terminal`: a typed name beats a program's title and survives one being set; an empty name
   puts it back; a typed name is never numbered; the third tab of a kind is the third; a tab dragged
   along the strip lands where the pointer left it; a tab picked up and put back moves nothing.
-- `quill-app` screenshots, which feed real events through the real window:
+- `unluminate-app` screenshots, which feed real events through the real window:
   `a_terminal_tab_is_renamed_from_its_own_menu` (the menu, the prompt, and the title a program sets
   afterwards), `a_terminal_tab_is_dragged_along_the_strip` (with a picture taken mid-drag, showing
   the tab in the air and the mark where it would land),

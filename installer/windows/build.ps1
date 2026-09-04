@@ -1,11 +1,11 @@
 <#
 .SYNOPSIS
-  Builds the Windows installer for Quill, and optionally installs it.
+  Builds the Windows installer for Unluminate, and optionally installs it.
 
 .DESCRIPTION
   Goes from a checkout to a file that can be handed to somebody: find or install the Inno Setup
   compiler, build the release binary, read the version out of Cargo.toml, and compile
-  installer\windows\quill.iss into installer\dist\QuillSetup-<version>-x64.exe.
+  installer\windows\unluminate.iss into installer\dist\UnluminateSetup-<version>-x64.exe.
 
   Anything a person would otherwise have to remember is in here rather than in a document.
 
@@ -13,12 +13,12 @@
   Use the binary already in target\release rather than running cargo.
 
 .PARAMETER Icon
-  Redraw installer\icon\quill.ico, quill.icns and Quill.iconset before building. The drawn files are
+  Redraw installer\icon\unluminate.ico, unluminate.icns and Unluminate.iconset before building. The drawn files are
   committed, so this is only needed after changing the drawing.
 
 .PARAMETER Install
   Run the installer that was just built, silently, with every optional task switched on. This is how
-  Quill is installed on this machine and how it is upgraded.
+  Unluminate is installed on this machine and how it is upgraded.
 
 .PARAMETER AllUsers
   Install for every user, into Program Files, rather than for this user into %LOCALAPPDATA%. Needs
@@ -41,7 +41,7 @@ $ErrorActionPreference = 'Stop'
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Repo = Resolve-Path (Join-Path $Here '..\..')
 $Dist = Join-Path $Repo 'installer\dist'
-$Script = Join-Path $Here 'quill.iss'
+$Script = Join-Path $Here 'unluminate.iss'
 $BinaryDir = Join-Path $Repo 'target\release'
 
 function Write-Step([string] $Message) {
@@ -53,7 +53,7 @@ function Write-Step([string] $Message) {
 .SYNOPSIS
   The path to the Inno Setup command line compiler, installing Inno Setup first if it is missing.
 .DESCRIPTION
-  Inno Setup is the one thing this build needs that is not already on a machine that can build Quill.
+  Inno Setup is the one thing this build needs that is not already on a machine that can build Unluminate.
   Rather than telling the reader to go and install it, it is installed here with winget, which is on
   every Windows 10 and 11. It is looked for in both the per user and the per machine location,
   because winget will have chosen one of them.
@@ -92,12 +92,12 @@ function Get-InnoSetupCompiler {
   the macOS bundle from here. `cargo metadata` is asked rather than the file being parsed, so that a
   workspace inheriting its version still answers correctly.
 #>
-function Get-QuillVersion {
+function Get-UnluminateVersion {
     $json = & cargo metadata --no-deps --format-version 1 --manifest-path (Join-Path $Repo 'Cargo.toml')
     if ($LASTEXITCODE -ne 0) { throw 'cargo metadata failed.' }
     $metadata = $json | ConvertFrom-Json
-    $package = $metadata.packages | Where-Object { $_.name -eq 'quill-app' }
-    if (-not $package) { throw 'quill-app is not in the workspace metadata.' }
+    $package = $metadata.packages | Where-Object { $_.name -eq 'unluminate-app' }
+    if (-not $package) { throw 'unluminate-app is not in the workspace metadata.' }
     return $package.version
 }
 
@@ -112,11 +112,11 @@ if ($Icon) {
 $compiler = Get-InnoSetupCompiler
 Write-Host "Inno Setup: $compiler"
 
-$version = Get-QuillVersion
-Write-Host "Quill $version"
+$version = Get-UnluminateVersion
+Write-Host "Unluminate $version"
 
 if (-not $SkipBuild) {
-    Write-Step 'Building quill.exe and quill-cli.exe'
+    Write-Step 'Building unluminate.exe and unluminate-cli.exe'
     # `CC` naming cl.exe by its full path, with no `INCLUDE` beside it, is worse than `CC` not being
     # set at all: `cc-rs` takes it as the compiler to use and then skips the work it would otherwise
     # do to find the Visual Studio environment, so `cl.exe` runs with no include path and the first
@@ -126,23 +126,23 @@ if (-not $SkipBuild) {
     $keptCc = $env:CC; $keptCxx = $env:CXX
     if ($env:CC -and -not $env:INCLUDE) { $env:CC = $null; $env:CXX = $null }
     try {
-        & cargo build --release --manifest-path (Join-Path $Repo 'Cargo.toml') -p quill-app --bin quill
+        & cargo build --release --manifest-path (Join-Path $Repo 'Cargo.toml') -p unluminate-app --bin unluminate
         if ($LASTEXITCODE -ne 0) { throw 'cargo build failed.' }
-        # The command line ships beside the editor, and `quill-cli` looks for `quill` next to itself,
+        # The command line ships beside the editor, and `unluminate-cli` looks for `unluminate` next to itself,
         # so the two have to be installed into one folder.
-        & cargo build --release --manifest-path (Join-Path $Repo 'Cargo.toml') -p quill-cli --bin quill-cli
-        if ($LASTEXITCODE -ne 0) { throw 'cargo build failed for quill-cli.' }
+        & cargo build --release --manifest-path (Join-Path $Repo 'Cargo.toml') -p unluminate-cli --bin unluminate-cli
+        if ($LASTEXITCODE -ne 0) { throw 'cargo build failed for unluminate-cli.' }
     } finally {
         $env:CC = $keptCc
         $env:CXX = $keptCxx
     }
 }
 
-$exe = Join-Path $BinaryDir 'quill.exe'
+$exe = Join-Path $BinaryDir 'unluminate.exe'
 if (-not (Test-Path $exe)) {
     throw "There is no binary at $exe. Run without -SkipBuild."
 }
-$cli = Join-Path $BinaryDir 'quill-cli.exe'
+$cli = Join-Path $BinaryDir 'unluminate-cli.exe'
 if (-not (Test-Path $cli)) {
     throw "There is no binary at $cli. Run without -SkipBuild."
 }
@@ -151,8 +151,8 @@ if (-not (Test-Path $cli)) {
 # Windows SDK was not there when it was built, and the shortcut, the taskbar and Add or Remove
 # Programs would all show a generic icon.
 $info = (Get-Item $exe).VersionInfo
-if ($info.ProductName -ne 'Quill') {
-    throw "quill.exe has no version block, so it has no icon either. Install the Windows SDK (it comes with the C++ build tools) and build again."
+if ($info.ProductName -ne 'Unluminate') {
+    throw "unluminate.exe has no version block, so it has no icon either. Install the Windows SDK (it comes with the C++ build tools) and build again."
 }
 
 Write-Step 'Compiling the installer'
@@ -164,7 +164,7 @@ New-Item -ItemType Directory -Force -Path $Dist | Out-Null
     $Script
 if ($LASTEXITCODE -ne 0) { throw 'ISCC failed.' }
 
-$setup = Join-Path $Dist "QuillSetup-$version-x64.exe"
+$setup = Join-Path $Dist "UnluminateSetup-$version-x64.exe"
 if (-not (Test-Path $setup)) { throw "ISCC reported success but $setup is not there." }
 $size = [math]::Round((Get-Item $setup).Length / 1MB, 1)
 Write-Host ''
@@ -172,21 +172,21 @@ Write-Host "Built $setup ($size MB)" -ForegroundColor Green
 
 <#
 .SYNOPSIS
-  Closes a copy of Quill already running from the folder that is about to be written to.
+  Closes a copy of Unluminate already running from the folder that is about to be written to.
 .DESCRIPTION
-  Quill does not answer the Restart Manager's request to shut down, so a silent install over a
+  Unluminate does not answer the Restart Manager's request to shut down, so a silent install over a
   running copy stops with "Setup was unable to automatically close all applications". The installer
   itself is deliberately left polite about this — CloseApplications=yes asks a person rather than
   killing an editor that may have unsaved changes — so the closing is done here, where it is our own
   automated install doing the asking, and with the window's own close rather than a kill.
 #>
-function Close-RunningQuill([string] $Folder) {
+function Close-RunningUnluminate([string] $Folder) {
     if (-not (Test-Path $Folder)) { return }
-    $running = Get-Process -Name 'quill' -ErrorAction SilentlyContinue |
+    $running = Get-Process -Name 'unluminate' -ErrorAction SilentlyContinue |
         Where-Object { $_.Path -and $_.Path.StartsWith($Folder, [StringComparison]::OrdinalIgnoreCase) }
     if (-not $running) { return }
 
-    Write-Host 'Closing the copy of Quill that is already running'
+    Write-Host 'Closing the copy of Unluminate that is already running'
     foreach ($process in $running) { $process.CloseMainWindow() | Out-Null }
 
     $deadline = (Get-Date).AddSeconds(20)
@@ -195,18 +195,18 @@ function Close-RunningQuill([string] $Folder) {
         $still = Get-Process -Id ($running | Select-Object -ExpandProperty Id) -ErrorAction SilentlyContinue
         if (-not $still) { return }
     }
-    throw 'Quill is running and would not close. Close it and run this again.'
+    throw 'Unluminate is running and would not close. Close it and run this again.'
 }
 
 if ($Install) {
     Write-Step 'Installing'
     if ($AllUsers) {
-        $target = Join-Path $env:ProgramFiles 'Quill'
+        $target = Join-Path $env:ProgramFiles 'Unluminate'
     } else {
-        $target = Join-Path $env:LOCALAPPDATA 'Programs\Quill'
+        $target = Join-Path $env:LOCALAPPDATA 'Programs\Unluminate'
     }
-    Close-RunningQuill $target
-    # Every optional task, because this is the switch that installs Quill on the machine it was built
+    Close-RunningUnluminate $target
+    # Every optional task, because this is the switch that installs Unluminate on the machine it was built
     # on and the point is to have all of it.
     $arguments = @(
         '/VERYSILENT',
@@ -220,7 +220,7 @@ if ($Install) {
     $run = Start-Process -FilePath $setup -ArgumentList $arguments -Wait -PassThru
     if ($run.ExitCode -ne 0) { throw "The installer exited with $($run.ExitCode)." }
 
-    foreach ($name in @('quill.exe', 'quill-cli.exe')) {
+    foreach ($name in @('unluminate.exe', 'unluminate-cli.exe')) {
         $installed = Join-Path $target $name
         if (Test-Path $installed) {
             Write-Host "Installed $installed" -ForegroundColor Green

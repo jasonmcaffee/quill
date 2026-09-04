@@ -1,6 +1,6 @@
 # The `material` icon set, and where its design came from
 
-`theme::icon` draws two sets of marks. `classic` is what Quill shipped with; `material` is the one
+`theme::icon` draws two sets of marks. `classic` is what Unluminate shipped with; `material` is the one
 `task-1776` added and the one a window comes up in. This records how the second one was designed, so
 it can be designed again — the same thing `plugins/mermaid/icon.md` and `plugins/css/icon.md` record
 for the file-type icons.
@@ -30,7 +30,7 @@ curl -s -X POST http://localhost:8091/image-creation/generateImageToProjectFile 
     "prompt": "A flat vector icon sheet on a 4 by 2 grid, eight separate developer-tool glyphs evenly spaced with generous margins between them, all in one single solid light grey colour on a completely flat solid dark navy background. The eight glyphs, in order: a filled folder with a raised tab, a rounded rectangle split into two panes, a git branch of two dots joined by a curved line, a terminal window with a chevron prompt, a filled play triangle, a rounded bug with two antennae and legs, a kanban board of three vertical columns, a rounded speech bubble. Material Design style: heavy even shapes, filled rather than outlined, rounded corners and round line caps, geometric, perfectly aligned on the grid, minimal, crisp, very high contrast. No text, no letters, no words, no numbers, no gradients, no shadows, no perspective, no white outlines, no colour variation.",
     "negativePrompt": "text, letters, words, numbers, watermark, signature, photorealistic, 3d render, gradient, drop shadow, noise, texture, busy background, clutter, person, face, hand, multiple colours, colourful, rainbow, white outline, stroke, border, frame, thin hairlines, skeuomorphic",
     "width": 1024, "height": 1024,
-    "projectId": "quill",
+    "projectId": "unluminate",
     "relativePath": "_agent_output/task-1776-themes/icons-rail-material.png",
     "transparentBackground": false,
     "timeoutMs": 900000
@@ -54,7 +54,7 @@ they are looked at, not used — and the flat navy ground is what makes the shap
 | Mark | What the sheet gave |
 |---|---|
 | `folder` | The silhouette: a filled body with a raised tab on the left and a **step** where the tab meets it. The body's top left corner is square when the folder is shut, or the round leaves a notch that reads as a bite. |
-| `editing_area` | **Two slabs side by side**, which is better than the panel-with-a-tab that was drawn first: Quill's editing area *is* a row of panes, and a panel with a tab could as easily have meant the explorer. |
+| `editing_area` | **Two slabs side by side**, which is better than the panel-with-a-tab that was drawn first: Unluminate's editing area *is* a row of panes, and a panel with a tab could as easily have meant the explorer. |
 | `terminal` | A window with a filled title bar and a chevron prompt in the body. |
 | `disclosure` | A chevron of two thick strokes with round caps, taller than it is wide. |
 | `bug` | A filled body with stroked legs and antennae, which is the set's rule in one mark: mass is filled and limbs are lines. |
@@ -75,7 +75,7 @@ is behind it. Where the design sheet knocked a shape out, the Rust uses a stroke
 ## Looking at one
 
 ```bash
-cargo run --example crop  -- crates/quill-app/tests/snapshots/windows/git_commit_panel.png out.png 3 50 32 200
+cargo run --example crop  -- crates/unluminate-app/tests/snapshots/windows/git_commit_panel.png out.png 3 50 32 200
 cargo run --example scale -- out.png out-8x.png 8
 ```
 

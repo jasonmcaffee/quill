@@ -13,13 +13,13 @@ the terminal.
 
 ## 1. What a CSS plugin has to get right, and what the tokeniser could not do
 
-A Quill plugin is data: a `plugin.conf` naming a language's extensions, its comments, its strings,
+A Unluminate plugin is data: a `plugin.conf` naming a language's extensions, its comments, its strings,
 two lists of words and a colour a token. Three of those manifests already exist, and writing a fourth
 for CSS is half an hour's typing. The half hour would have produced a bad plugin, and it is worth
 being precise about why, because the answer is what most of this ticket is.
 
 CSS was written by people who had no reason to care what a tokeniser finds easy. Four of its
-commonest shapes fall straight through the rules in `quill_core::syntax`:
+commonest shapes fall straight through the rules in `unluminate_core::syntax`:
 
 | The CSS | What the tokeniser did with it |
 |---|---|
@@ -33,7 +33,7 @@ in it, every custom property starts with two, and every vendor prefix is one. A 
 a word at a hyphen cannot recognise a single CSS property by name, so the whole point of the plugin —
 "colour the properties" — is unreachable.
 
-There is a fifth, subtler one. CSS has **three** kinds of word worth telling apart, and a Quill
+There is a fifth, subtler one. CSS has **three** kinds of word worth telling apart, and a Unluminate
 grammar had two lists:
 
 ```css
@@ -46,7 +46,7 @@ grammar had two lists:
 used to: every one of them separates the property from the value, because that is the one distinction
 a stylesheet is made of.
 
-So three small, data-driven additions to `quill-core` come first, and the manifest is written against
+So three small, data-driven additions to `unluminate-core` come first, and the manifest is written against
 them. Each is a key in the manifest, off unless a language asks for it, so no existing plugin changes
 by a pixel.
 
@@ -112,9 +112,9 @@ random. A rule that is sometimes wrong beats one that is arbitrarily inconsisten
 
 ## 5. Which word goes in which list
 
-The colours are Dracula's, as the other three bundled plugins are, and **the mapping is Quill's
+The colours are Dracula's, as the other three bundled plugins are, and **the mapping is Unluminate's
 per-token one rather than Dracula's CSS-specific one**. Dracula's specification asks for a green
-property, a pink selector and a purple value; Quill's token kinds are shared across every language,
+property, a pink selector and a purple value; Unluminate's token kinds are shared across every language,
 `theme.builtin` is purple in the JavaScript, TypeScript and Rust manifests, and a `.css` file sitting
 in a tab next to a `.ts` file should be coloured by the same scheme rather than by a second one that
 almost agrees with it. So:
@@ -129,7 +129,7 @@ almost agrees with it. So:
 | — | String | yellow `#F1FA8C` | `"Segoe UI"`, `'…'` |
 | — | Comment | grey `#6272A4` | `/* … */` |
 
-A property is a **builtin** because that is what `builtin` means in every other Quill manifest — a
+A property is a **builtin** because that is what `builtin` means in every other Unluminate manifest — a
 name the language itself provides. A value keyword is a **type** because `flex`, `grid`, `absolute`
 and `ellipsis` name a kind of thing.
 
@@ -142,7 +142,7 @@ Three consequences, all of them in `plugin.limitations` rather than left to be d
   property; `flex`, `grid` and `all` are values, because `display: flex` and `transition: all` are
   written far more often than the shorthand properties of the same name.
 - **A selector is only as coloured as its parts.** `.card` is a pink dot and a plain word, `#main` a
-  pink hash and a plain word; a class name is somebody's own name, and Quill has nothing to say about
+  pink hash and a plain word; a class name is somebody's own name, and Unluminate has nothing to say about
   it. `div`, `a:hover` and `::before` are coloured, because those words are the language's.
 - **A custom property is plain text.** `--brand-hue` is a name its author chose, which is what
   Dracula's own specification says a variable should look like.
@@ -162,12 +162,12 @@ want a language server, and `services/plugins.rs` records why that seam is named
 
 ## 7. How it is checked
 
-- `quill-core` gains a test per addition — hyphenated words, the three-list order, and the four hex
+- `unluminate-core` gains a test per addition — hyphenated words, the three-list order, and the four hex
   lengths with `#header` and `#abcde` failing — and its existing tests must all still pass, which is
   what proves the additions are off by default.
 - `services::plugins` gains the CSS plugin to the list every bundled manifest is checked against: it
   parses, it claims `.css` and nothing else, it has an icon, a description and a colour scheme.
-- `crates/quill-app/tests/screenshots.rs` gains `a_css_file_is_coloured_by_its_plugin`, which opens a
+- `crates/unluminate-app/tests/screenshots.rs` gains `a_css_file_is_coloured_by_its_plugin`, which opens a
   real stylesheet and asserts the colour of a property, a value, an at-rule, a hex colour and a
   comment by asking the document's own spans, then takes the picture. `plugins_page` is re-accepted
   with a fourth row on it.
@@ -179,11 +179,11 @@ want a language server, and `services/plugins.rs` records why that seam is named
 
 ### What was wrong
 
-`Ctrl+C` in Quill's terminal on Windows did nothing to the program. It copied the selection, or, with
+`Ctrl+C` in Unluminate's terminal on Windows did nothing to the program. It copied the selection, or, with
 nothing selected, copied nothing at all — so there was no way to stop a command, and no way to detach
 from `claude`, which is what the ticket is really about.
 
-The encoding was never the problem. `quill_terminal::keys` turns `Ctrl+C` into `0x03`, and
+The encoding was never the problem. `unluminate_terminal::keys` turns `Ctrl+C` into `0x03`, and
 `terminal_panel::tests::control_and_a_letter_becomes_a_terminal_key_press` has asserted that since
 the terminal was written. **The key press never arrived.** `egui-winit`, before it pushes an
 `Event::Key`, asks whether the press is a clipboard command:
@@ -234,12 +234,12 @@ Windows anyway.
 
 Written after the work was done, so it says what happened rather than what was intended.
 
-`cargo test --workspace` is green on Windows: 290 in `quill-core`, 205 screenshot tests, and the rest
+`cargo test --workspace` is green on Windows: 290 in `unluminate-core`, 205 screenshot tests, and the rest
 across the other crates. `syntax_css.png` is a new accepted picture and `plugins_page.png` was
 re-accepted with a fourth row on it; both were opened and looked at before being accepted.
 
 **The stylesheet.** `cargo build --release`, the real binary opened on a 98 line stylesheet with the
-real fonts of the machine. `quill-cli plugins list` answers `5 plugins, 5 switched on`, with `css`
+real fonts of the machine. `unluminate-cli plugins list` answers `5 plugins, 5 switched on`, with `css`
 among them. Every kind of token in section 5 comes out as that table says: `@import`, `@font-face`
 and `:hover` pink; `background-color`, `font-family` and `line-height` purple; `dark`, `light`,
 `column`, `monospace` and `ease-in-out` cyan; `url(`, `format(`, `var(`, `calc(`, `rgba(` and

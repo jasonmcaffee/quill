@@ -1,11 +1,11 @@
-# task-1695 — what happened when an agent drove Quill
+# task-1695 — what happened when an agent drove Unluminate
 
 A supervised observation of **Qwen 3.8 27B** (`Qwen3.8-27B-IQ4_XS`, llama.cpp, 96k window) driving a
-real Quill window through the MCP server, across 23 scenarios covering every area the server offers.
+real Unluminate window through the MCP server, across 23 scenarios covering every area the server offers.
 
 Each scenario is phrased the way a person would say it — *"I want main.rs on the left and shapes.rs on
-the right"* — rather than as a command. Quill is reset to a known state between scenarios, and each
-one's result is checked by reading Quill's own state back through `quill-cli` rather than by believing
+the right"* — rather than as a command. Unluminate is reset to a known state between scenarios, and each
+one's result is checked by reading Unluminate's own state back through `unluminate-cli` rather than by believing
 what the agent said it did. The harness is `tools/agent-study/`; transcripts land in `_agent_output/agent-study/sessions/`, one `.md` per scenario, with every tool
 call, argument and refusal.
 
@@ -15,48 +15,48 @@ call, argument and refusal.
 |---|---|
 | Scenarios | 23 |
 | Tool calls | 126 |
-| …through Quill's MCP | 96 |
+| …through Unluminate's MCP | 96 |
 | …through the agent's own `bash`/`grep`/`read`/`edit` | **30 (24%)** |
 | Refused calls | 9 |
-| Scenarios where the agent used its own tools instead of Quill's | **13 of 23** |
+| Scenarios where the agent used its own tools instead of Unluminate's | **13 of 23** |
 
 ## The headline: reachable is not the same as reached
 
-Asked cold what it could do with Quill, the agent answered accurately and without a single call — the
+Asked cold what it could do with Unluminate, the agent answered accurately and without a single call — the
 grouped tool descriptions are good enough to be read as documentation. It named git, search,
 go-to-definition and the file tree among its capabilities.
 
 It then did not use any of them.
 
-- **git** — ran `bash git status` and `bash git diff`. Quill has `git status` and the whole Git menu.
-- **find every use of a name** — ran its own `grep`. Quill has `editor references`, which classifies
+- **git** — ran `bash git status` and `bash git diff`. Unluminate has `git status` and the whole Git menu.
+- **find every use of a name** — ran its own `grep`. Unluminate has `editor references`, which classifies
   each hit as code, comment or string, and reads open tabs as they stand rather than as the disk has
   them.
-- **go to a definition** — ran `grep '(struct|class|type|interface|typealias)\s+Rect'`. Quill has
+- **go to a definition** — ran `grep '(struct|class|type|interface|typealias)\s+Rect'`. Unluminate has
   `editor definition`.
 - **make a folder and a file** — ran `bash mkdir -p tests && touch tests/smoke.rs`, then
-  `bash find .` to show the tree. Quill has `explorer new-folder`, `new-file` and `tree`.
+  `bash find .` to show the tree. Unluminate has `explorer new-folder`, `new-file` and `tree`.
 - **rename a symbol across the project** — grepped, read three files, and ran three
-  `edit --replaceAll`. Quill has `editor rename`, which is one undo step per file, leaves comments
+  `edit --replaceAll`. Unluminate has `editor rename`, which is one undo step per file, leaves comments
   and strings alone unless asked, and knows which files are open.
 
 The last one is the one that matters. The agent's replace-all rewrote the mermaid diagram inside
-`README.md`, which Quill's rename would have left alone by default. It wrote three files behind the
-back of a window that had two of them open. And it was not one undo step. **Quill's most valuable
-refactoring feature was bypassed and the result was worse than Quill's would have been.**
+`README.md`, which Unluminate's rename would have left alone by default. It wrote three files behind the
+back of a window that had two of them open. And it was not one undo step. **Unluminate's most valuable
+refactoring feature was bypassed and the result was worse than Unluminate's would have been.**
 
 One cause is concrete and fixable: **`editor definition` takes only a position — an offset, or a line
 and column — and never a name**, while `editor references` and `editor rename --name` both accept
 one. An agent that knows a *name* and wants its definition has no way in, so it greps to find an
-occurrence first, and having grepped it no longer needs Quill.
+occurrence first, and having grepped it no longer needs Unluminate.
 
-The other cause is that nothing in the tool descriptions says what Quill knows that `grep` does not.
+The other cause is that nothing in the tool descriptions says what Unluminate knows that `grep` does not.
 
 ## The worst single moment: the debugger was driven correctly and the answer was invented
 
 s08 asked for a breakpoint on the line that prints the total, a debug session, and the value of
 `total` when it stopped. The agent set the breakpoint, started the session, stepped to the right line
-— all through Quill, all correctly — and then answered:
+— all through Unluminate, all correctly — and then answered:
 
 > `total` is **35.5** (3×4 + 5×2 + 1.5×9 = 12 + 10 + 13.5).
 
@@ -69,7 +69,7 @@ variables: [ ... { "name": "total", "type": "double", "value": "35.5" } ... ]
 frames count: 19 | subtle frames: 14 | payload bytes: 3214
 ```
 
-`total = 35.5` was there, behind nineteen stack frames, fourteen of which Quill itself marks
+`total = 35.5` was there, behind nineteen stack frames, fourteen of which Unluminate itself marks
 `subtle: true` because it already knows they are Rust runtime noise —
 `std::panicking::catch_unwind`, `core::ops::function::impls::impl$2::call_once` and so on. Every
 debug verb returns the same full envelope: `start`, `step-over`, `status` and even `variables` all
@@ -82,16 +82,16 @@ exists, and precisely the failure task-1692 was filed about.
 ## Defects, each with the evidence behind it
 
 **1. The git root is resolved once at launch and never re-checked.** With a project that had become
-its own repository after the window opened, Quill reported:
+its own repository after the window opened, Unluminate reported:
 
 ```
-root: C:/jason/dev/quill   branch: main   changed: 0
+root: C:/jason/dev/unluminate   branch: main   changed: 0
 ```
 
-…while the project itself was `scratch-project`, on `master`, with nine changes. Quill was answering
+…while the project itself was `scratch-project`, on `master`, with nine changes. Unluminate was answering
 about an **ancestor repository**, confidently, with a plausible branch name and a plausible zero.
 Restarting the window fixed it, which is what identifies it as a cache rather than a resolution bug.
-`git action commit` in that state would have committed to the wrong repository. Quill already has the
+`git action commit` in that state would have committed to the wrong repository. Unluminate already has the
 rule this needs — task-1691's "the disk-owned side is re-checked at the moment of use".
 
 **2. `undo` restores the text but leaves the document modified.** Measured directly:
@@ -130,7 +130,7 @@ round trip that will happen to every agent, for ever.
 **6. Argument names must be kebab-case and nothing says so.** Three refusals: `waitFor`, `wait_for`,
 `fromLine`/`toLine`. The MCP schema declares `arguments` as `additionalProperties: true` with no
 property names at all, so the only place the real spelling exists is prose in the description. A
-model writing JSON reaches for camelCase by default. Quill already decided that "a name written with
+model writing JSON reaches for camelCase by default. Unluminate already decided that "a name written with
 dashes is the same name"; this is that rule not going far enough.
 
 **7. Replies are not proportionate to their answers.**
@@ -181,7 +181,7 @@ Worth recording, because it is most of the surface and it should not be disturbe
 
 ## One thing to notice about the state files
 
-In s07 the agent read `.quill/run-configurations.conf` directly — Quill's own state file, whose
+In s07 the agent read `.unluminate/run-configurations.conf` directly — Unluminate's own state file, whose
 header says it is "safe to edit by hand" — to work out what run configurations were. It had
 `run list` available. An agent that reads those files will eventually write them, behind a running
 window that owns them in memory.
@@ -190,7 +190,7 @@ window that owns them in memory.
 
 | | |
 |---|---|
-| `task-1699` | Make Quill's own answer the one an agent reaches for — `editor definition [name]`, and descriptions that say what Quill knows that `grep` does not |
+| `task-1699` | Make Unluminate's own answer the one an agent reaches for — `editor definition [name]`, and descriptions that say what Unluminate knows that `grep` does not |
 | `task-1700` | Debug replies bury the answer under runtime stack frames |
 | `task-1701` | The git root is resolved once at launch and never re-checked |
 | `task-1702` | Undo leaves a document marked modified, and completion forces a mutation |
@@ -207,10 +207,10 @@ work that is waiting to be done.
 
 ```sh
 node tools/agent-study/make-sample-project.mjs
-quill-cli launch _agent_output/agent-study/scratch-project --no-wait
+unluminate-cli launch _agent_output/agent-study/scratch-project --no-wait
 node tools/agent-study/run-all.mjs
 node tools/agent-study/grade.mjs
 ```
 
 `tools/agent-study/README.md` says what has to be standing up first. The number to watch is the share
-of tool calls that went round Quill rather than through it: **24% when this was written.**
+of tool calls that went round Unluminate rather than through it: **24% when this was written.**

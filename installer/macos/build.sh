@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Builds Quill.app and the disk image it is delivered in.
+# Builds Unluminate.app and the disk image it is delivered in.
 #
 # A Mac needs two things Windows does not. A bundle, because an application that is a bare executable
 # has no icon in the Dock, no name in the menu bar and no bundle identity to hang a transparent,
@@ -12,13 +12,13 @@
 # codesign, hdiutil, plutil, and notarytool and stapler when notarising.
 #
 # Usage:
-#   installer/macos/build.sh                # build Quill.app and releases/quill-<version>.dmg
+#   installer/macos/build.sh                # build Unluminate.app and releases/unluminate-<version>.dmg
 #   installer/macos/build.sh --install      # and copy the bundle into /Applications
 #   installer/macos/build.sh --no-dmg       # just the bundle
 #   installer/macos/build.sh --icon         # redraw the icon first (needs a Rust toolchain)
 #   installer/macos/build.sh --notarize     # sign, send it to Apple, staple the ticket to the image
 #
-# The image goes to `releases/quill-<version>.dmg`, named from the version in Cargo.toml, so that past
+# The image goes to `releases/unluminate-<version>.dmg`, named from the version in Cargo.toml, so that past
 # versions sit beside each other and a file's name says which one it is.
 #
 # Signing and notarising. There are three levels and the script says which one it did.
@@ -44,7 +44,7 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(cd "$here/../.." && pwd)"
 dist="$repo/installer/dist"
-app="$dist/Quill.app"
+app="$dist/Unluminate.app"
 # Where a finished image is kept. `installer/dist` is the working area and is rewritten on every run;
 # this is what is kept, and every file in it carries the version it was built from.
 releases="$repo/releases"
@@ -193,9 +193,9 @@ need python3
 # ---------------------------------------------------------------------------------------------
 version="$(
     cargo metadata --no-deps --format-version 1 --manifest-path "$repo/Cargo.toml" |
-    python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="quill-app"))'
+    python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="unluminate-app"))'
 )"
-echo "Quill $version"
+echo "Unluminate $version"
 
 if [ "$draw_icon" = 1 ]; then
     step "Drawing the icon"
@@ -205,12 +205,12 @@ fi
 # ---------------------------------------------------------------------------------------------
 # The binaries. Universal when both targets are installed, and whichever one is when only one is.
 #
-# Two of them: the editor, and `quill-cli`, which drives a running one from a terminal. The command
+# Two of them: the editor, and `unluminate-cli`, which drives a running one from a terminal. The command
 # line goes inside the bundle beside the editor because that is where it looks for it — see
-# `quill_cli::client::quill_program` — so putting `Quill.app/Contents/MacOS` on the PATH, or making
+# `unluminate_cli::client::unluminate_program` — so putting `Unluminate.app/Contents/MacOS` on the PATH, or making
 # one symlink into it, gives you both with nothing configured.
 # ---------------------------------------------------------------------------------------------
-step "Building quill and quill-cli"
+step "Building unluminate and unluminate-cli"
 targets=()
 for target in aarch64-apple-darwin x86_64-apple-darwin; do
     if rustup target list --installed 2>/dev/null | grep -qx "$target"; then
@@ -223,52 +223,52 @@ built_cli=()
 if [ "${#targets[@]}" -eq 0 ]; then
     echo "Neither Apple target is installed; building for this machine only."
     echo "For a universal binary: rustup target add aarch64-apple-darwin x86_64-apple-darwin"
-    cargo build --release --manifest-path "$repo/Cargo.toml" -p quill-app --bin quill
-    cargo build --release --manifest-path "$repo/Cargo.toml" -p quill-cli --bin quill-cli
-    built+=("$repo/target/release/quill")
-    built_cli+=("$repo/target/release/quill-cli")
+    cargo build --release --manifest-path "$repo/Cargo.toml" -p unluminate-app --bin unluminate
+    cargo build --release --manifest-path "$repo/Cargo.toml" -p unluminate-cli --bin unluminate-cli
+    built+=("$repo/target/release/unluminate")
+    built_cli+=("$repo/target/release/unluminate-cli")
 else
     for target in "${targets[@]}"; do
         echo "  $target"
-        cargo build --release --target "$target" --manifest-path "$repo/Cargo.toml" -p quill-app --bin quill
-        cargo build --release --target "$target" --manifest-path "$repo/Cargo.toml" -p quill-cli --bin quill-cli
-        built+=("$repo/target/$target/release/quill")
-        built_cli+=("$repo/target/$target/release/quill-cli")
+        cargo build --release --target "$target" --manifest-path "$repo/Cargo.toml" -p unluminate-app --bin unluminate
+        cargo build --release --target "$target" --manifest-path "$repo/Cargo.toml" -p unluminate-cli --bin unluminate-cli
+        built+=("$repo/target/$target/release/unluminate")
+        built_cli+=("$repo/target/$target/release/unluminate-cli")
     done
 fi
 
 # ---------------------------------------------------------------------------------------------
 # The bundle. Four files and a directory tree, which is why it is built here rather than by a tool.
 # ---------------------------------------------------------------------------------------------
-step "Building Quill.app"
+step "Building Unluminate.app"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 
 if [ "${#built[@]}" -gt 1 ]; then
-    lipo -create -output "$app/Contents/MacOS/quill" "${built[@]}"
-    lipo -create -output "$app/Contents/MacOS/quill-cli" "${built_cli[@]}"
-    echo "  universal: $(lipo -archs "$app/Contents/MacOS/quill")"
+    lipo -create -output "$app/Contents/MacOS/unluminate" "${built[@]}"
+    lipo -create -output "$app/Contents/MacOS/unluminate-cli" "${built_cli[@]}"
+    echo "  universal: $(lipo -archs "$app/Contents/MacOS/unluminate")"
 else
-    cp "${built[0]}" "$app/Contents/MacOS/quill"
-    cp "${built_cli[0]}" "$app/Contents/MacOS/quill-cli"
-    echo "  single architecture: $(lipo -archs "$app/Contents/MacOS/quill")"
+    cp "${built[0]}" "$app/Contents/MacOS/unluminate"
+    cp "${built_cli[0]}" "$app/Contents/MacOS/unluminate-cli"
+    echo "  single architecture: $(lipo -archs "$app/Contents/MacOS/unluminate")"
 fi
-chmod +x "$app/Contents/MacOS/quill" "$app/Contents/MacOS/quill-cli"
+chmod +x "$app/Contents/MacOS/unluminate" "$app/Contents/MacOS/unluminate-cli"
 
 # The icon. `iconutil` is Apple's own tool and so is the definition of the format; the committed
-# quill.icns is the fallback, so that the icon can also be rebuilt on a machine that is not a Mac.
-# The committed quill.icns is used when iconutil is absent **and when it refuses the iconset**. It refuses
+# unluminate.icns is the fallback, so that the icon can also be rebuilt on a machine that is not a Mac.
+# The committed unluminate.icns is used when iconutil is absent **and when it refuses the iconset**. It refuses
 # this one on macOS 26 with `Invalid Iconset` and says nothing about which file it objects to; every image
 # is present, every one is the size its name claims, and a clean copy with no extended attributes is
 # refused as well. Aborting the whole build over the icon meant a working editor could not be installed at
 # all, which is a worse outcome than an icon built the other way.
-if command -v iconutil >/dev/null 2>&1 && [ -d "$repo/installer/icon/Quill.iconset" ] \
-    && iconutil --convert icns --output "$app/Contents/Resources/Quill.icns" \
-        "$repo/installer/icon/Quill.iconset" 2>/dev/null; then
+if command -v iconutil >/dev/null 2>&1 && [ -d "$repo/installer/icon/Unluminate.iconset" ] \
+    && iconutil --convert icns --output "$app/Contents/Resources/Unluminate.icns" \
+        "$repo/installer/icon/Unluminate.iconset" 2>/dev/null; then
     echo "  icon built by iconutil"
 else
-    cp "$repo/installer/icon/quill.icns" "$app/Contents/Resources/Quill.icns"
-    echo "  icon taken from the committed quill.icns, because iconutil is absent or refused the iconset"
+    cp "$repo/installer/icon/unluminate.icns" "$app/Contents/Resources/Unluminate.icns"
+    echo "  icon taken from the committed unluminate.icns, because iconutil is absent or refused the iconset"
 fi
 
 sed "s/__VERSION__/$version/g" "$here/Info.plist" > "$app/Contents/Info.plist"
@@ -281,15 +281,15 @@ printf 'APPL????' > "$app/Contents/PkgInfo"
 step "Signing"
 identity="${CODESIGN_IDENTITY:--}"
 signed_properly=0
-# Inside out. `quill-cli` is a second Mach-O binary inside `Contents/MacOS`, and codesign treats a
+# Inside out. `unluminate-cli` is a second Mach-O binary inside `Contents/MacOS`, and codesign treats a
 # nested binary as something that must carry its own signature: sealing it as though it were a
 # resource is what makes `codesign --verify --deep --strict` fail on a bundle that looked signed.
 # So it is signed first, and then the bundle round it.
 sign_the_cli() {
     if [ "$1" = "-" ]; then
-        codesign --force --options runtime --sign - "$app/Contents/MacOS/quill-cli"
+        codesign --force --options runtime --sign - "$app/Contents/MacOS/unluminate-cli"
     else
-        codesign --force --options runtime --timestamp --sign "$1" "$app/Contents/MacOS/quill-cli"
+        codesign --force --options runtime --timestamp --sign "$1" "$app/Contents/MacOS/unluminate-cli"
     fi
 }
 if [ "$identity" = "-" ]; then
@@ -328,7 +328,7 @@ if [ "$notarize" = 1 ]; then
     prepare_notarising
     # A zip to send, made with ditto because it keeps the symlinks and the metadata a bundle needs and
     # `zip` does not. It is only the parcel: what gets stapled is the bundle itself.
-    parcel="$dist/Quill.app.zip"
+    parcel="$dist/Unluminate.app.zip"
     rm -f "$parcel"
     ditto -c -k --sequesterRsrc --keepParent "$app" "$parcel"
     notarise "$parcel" "$app"
@@ -350,13 +350,13 @@ if [ "$make_dmg" = 1 ]; then
     need hdiutil
     step "Building the disk image"
     mkdir -p "$releases"
-    dmg="$releases/quill-$version.dmg"
+    dmg="$releases/unluminate-$version.dmg"
     staging="$dist/dmg-staging"
     rm -rf "$staging" "$dmg"
     mkdir -p "$staging"
-    cp -R "$app" "$staging/Quill.app"
+    cp -R "$app" "$staging/Unluminate.app"
     ln -s /Applications "$staging/Applications"
-    hdiutil create -volname "Quill $version" -srcfolder "$staging" -ov -format UDZO "$dmg" >/dev/null
+    hdiutil create -volname "Unluminate $version" -srcfolder "$staging" -ov -format UDZO "$dmg" >/dev/null
     rm -rf "$staging"
     # The image itself is signed as well as the application inside it, with the same identity. An
     # unsigned image round a signed application is a thing a person can be handed and told to trust,
@@ -391,12 +391,12 @@ fi
 # ---------------------------------------------------------------------------------------------
 if [ "$install_it" = 1 ]; then
     step "Installing into /Applications"
-    rm -rf "/Applications/Quill.app"
-    cp -R "$app" "/Applications/Quill.app"
+    rm -rf "/Applications/Unluminate.app"
+    cp -R "$app" "/Applications/Unluminate.app"
     # Launch Services will not notice a new bundle on its own if one was there a moment ago.
     /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
-        -f "/Applications/Quill.app" || true
-    echo "  /Applications/Quill.app"
+        -f "/Applications/Unluminate.app" || true
+    echo "  /Applications/Unluminate.app"
 fi
 
 printf '\nDone. %s\n' "$app"

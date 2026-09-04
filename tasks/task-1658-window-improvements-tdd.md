@@ -16,7 +16,7 @@ together: what each one chose, what it rejected, and what the choice cost.
 
 ## 1. The window can be resized from every edge
 
-**The fault.** Quill's window is created with `with_decorations(false)`, because rounded corners and a
+**The fault.** Unluminate's window is created with `with_decorations(false)`, because rounded corners and a
 translucent background need the operating system's own frame turned off. An undecorated window has no
 frame, and a window with no frame has nowhere for the window manager to offer a resize grip. The
 window could be resized from the top, where the title bar's drag happened to land on something Windows
@@ -57,7 +57,7 @@ answers none of the four edges the ticket names.
 
 ## 2. The pointer is a bar over the writing
 
-One line in `QuillApp::show_editor`: `CursorIcon::Text` while the editing area is hovered.
+One line in `UnluminateApp::show_editor`: `CursorIcon::Text` while the editing area is hovered.
 
 The ordering matters and it is already right for free. The gutter is a rectangle of its own and the
 explorer's divider sets `ResizeHorizontal`, and both are drawn **after** the editing area, so where
@@ -88,15 +88,15 @@ be started the folder takes this window instead, which is better than the entry 
 
 `components/activity_bar.rs`. A 36 point rail down the far left of the body: `Project` and
 `Version Control` at the top, `Terminal tile` at the bottom left, which is where the ticket's own
-reference capture of IntelliJ puts it. Narrower than IntelliJ's forty, because Quill's holds three
+reference capture of IntelliJ puts it. Narrower than IntelliJ's forty, because Unluminate's holds three
 buttons rather than a dozen.
 
 **The names.** Not `Git`, because the menu bar already has a `Git` and no two controls in one window
 may share a name — a test cannot tell them apart and neither can anybody reading them out. Not
 `Terminal` either: `Edit -> Settings` has a page called `Terminal` and the `View` menu has an entry
-called `Terminal`. `tile` is what the rest of Quill already calls the thing along the bottom.
+called `Terminal`. `tile` is what the rest of Unluminate already calls the thing along the bottom.
 
-**The look.** A button that is on is the pill every list in Quill draws for its chosen row —
+**The look.** A button that is on is the pill every list in Unluminate draws for its chosen row —
 `SELECTED_ROW`, corner radius `CONTROL_CORNER` — rather than a filled `ACCENT` square. Three bright
 blue squares in a rail that is nearly always in that state would be the loudest thing in the window,
 and a pane being open is a state rather than a press.
@@ -107,7 +107,7 @@ whether a pane is showing or not, which is the point of having one, so that butt
 
 **The icons are drawn, not generated.** The ticket asks for icons made with Ideogram or Krea. They are
 three strokes each in `theme::icon` instead — `folder`, `branch`, `terminal` — and the reason is
-written down in the style guide and was settled in `task-1657` for the `F`: every icon in Quill is
+written down in the style guide and was settled in `task-1657` for the `F`: every icon in Unluminate is
 tinted where it is used, and these three need three tints apiece (`TEXT_DIM` sitting there,
 `TEXT_STRONG` when the pane is open, `TEXT_FAINT` dimmed outside a repository). A raster picture can
 be neither tinted nor drawn at another scale without resampling it, so one generated icon among
@@ -118,7 +118,7 @@ If the drawn ones are not liked, the answer is to draw them better rather than t
 
 ## 5. What a project remembers
 
-`services/project_state.rs`, and a `.quill` folder **inside the project**, beside `.idea` and
+`services/project_state.rs`, and a `.unluminate` folder **inside the project**, beside `.idea` and
 `.vscode` rather than inside the person's own settings folder. Copying the project copies its state,
 and two people on the same folder do not fight over one file in one home directory.
 
@@ -126,9 +126,9 @@ Three plain text files:
 
 | File | What is in it |
 |---|---|
-| `.quill/workspace.conf` | `explorer.visible`, `terminal.visible`, `terminal.tabs`, `files.active` |
-| `.quill/open-files.txt` | one path a line, in tab order |
-| `.quill/expanded-folders.txt` | one path a line |
+| `.unluminate/workspace.conf` | `explorer.visible`, `terminal.visible`, `terminal.tabs`, `files.active` |
+| `.unluminate/open-files.txt` | one path a line, in tab order |
+| `.unluminate/expanded-folders.txt` | one path a line |
 
 The lists are files of their own rather than numbered names in the conf, because `recent.txt` already
 does exactly that with a list of paths and because a list of paths reads better one to a line than as
@@ -142,9 +142,9 @@ or checked out somewhere else on another machine, still opens the files it was l
 cannot be brought back; what is restored is the same number of shells in the project's folder, which
 is what a person means by "my terminals were there".
 
-**Reading and writing are turned on by the released binary only.** `QuillApp::restore_project` is
+**Reading and writing are turned on by the released binary only.** `UnluminateApp::restore_project` is
 called from `main.rs` and by nothing else, exactly as `load_settings` is, so a test neither reads nor
-writes a `.quill` folder — and a `.quill` written into a screenshot test's own sample project would
+writes a `.unluminate` folder — and a `.unluminate` written into a screenshot test's own sample project would
 change what the explorer draws in the middle of a test.
 
 **It is written when it changes, not every frame.** The window keeps what it last wrote and compares;
@@ -221,15 +221,15 @@ alone because the explorer asks it of every row in a folder; the decoder is what
 The offscreen screenshot tests cover what can be rendered without a window: the rail's three buttons
 and what they toggle, the eight grips by name, the tools being in the title bar and the editing area
 not moving when they are absent, a picture opening and zooming, `Save` leaving a picture alone, and a
-project's state going out to `.quill` and coming back.
+project's state going out to `.unluminate` and coming back.
 
 Four of the seven cannot be proved that way, because they are the operating system's answer rather than
-Quill's, so they were driven against the real `quill.exe` on Windows:
+Unluminate's, so they were driven against the real `unluminate.exe` on Windows:
 
 | What | What happened |
 |---|---|
 | Resize | Right edge 1100→1300, bottom 720→840, left edge, top-left corner, bottom-right corner — all moved the window |
 | Pointer | I-beam over the writing, `sizewe` over the divider and the window's left edge, `sizens` top and bottom, `sizenwse` at the corners |
-| Open Folder | A second `quill.exe` started on the chosen folder; the first window kept its project |
+| Open Folder | A second `unluminate.exe` started on the chosen folder; the first window kept its project |
 | Project state | Four tabs, an expanded folder and a terminal closed and reopened, all back in order |
 | Picture zoom | 100% → 195% on three presses of Ctrl and plus; 195% → 88% on four notches of Ctrl and the wheel |

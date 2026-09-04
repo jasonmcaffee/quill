@@ -32,8 +32,8 @@
 param([switch]$Check)
 
 # Dot sourcing this releases everything by itself, which is the whole of the repair -- unless the
-# question is only being asked, which is what `$QuillInputReadOnly` says.
-$QuillInputReadOnly = [bool]$Check
+# question is only being asked, which is what `$UnluminateInputReadOnly` says.
+$UnluminateInputReadOnly = [bool]$Check
 . "$PSScriptRoot\windows-input.ps1"
 
 if ($Check) {

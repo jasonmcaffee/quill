@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  The one way a Quill script drives the real window with real keyboard and mouse input, written so
+  The one way a Unluminate script drives the real window with real keyboard and mouse input, written so
   that it cannot leave a key or a button held down.
 
 .DESCRIPTION
@@ -9,7 +9,7 @@
   key press leaves behind when its release never happens.
 
   A program presses a key by sending a key-down and releases it by sending a key-up. The scripts that
-  drive Quill's real window — the screenshot walks, the wheel and pinch reproductions, the
+  drive Unluminate's real window — the screenshot walks, the wheel and pinch reproductions, the
   documentation captures — all press Ctrl, Alt or Shift, do something with it held, and then release
   it on the line after. Every one of those scripts also has a `throw` between the two: the window did
   not come to the front, the client area measured zero, the picture could not be written. A script
@@ -38,7 +38,7 @@
   `unstick-keyboard.ps1` is.
 #>
 
-Add-Type -Namespace Quill -Name Input -MemberDefinition @'
+Add-Type -Namespace Unluminate -Name Input -MemberDefinition @'
 [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int vKey);
 [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, System.UIntPtr extra);
 [DllImport("user32.dll")] public static extern void mouse_event(uint flags, int dx, int dy, uint data, System.UIntPtr extra);
@@ -88,10 +88,10 @@ $script:MouseButtons = [ordered]@{
 function Get-HeldInput {
     $held = @()
     foreach ($name in $script:Modifiers.Keys) {
-        if (([Quill.Input]::GetAsyncKeyState($script:Modifiers[$name].vk) -band 0x8000) -ne 0) { $held += $name }
+        if (([Unluminate.Input]::GetAsyncKeyState($script:Modifiers[$name].vk) -band 0x8000) -ne 0) { $held += $name }
     }
     foreach ($name in $script:MouseButtons.Keys) {
-        if (([Quill.Input]::GetAsyncKeyState($script:MouseButtons[$name].vk) -band 0x8000) -ne 0) { $held += $name }
+        if (([Unluminate.Input]::GetAsyncKeyState($script:MouseButtons[$name].vk) -band 0x8000) -ne 0) { $held += $name }
     }
     ,$held
 }
@@ -107,20 +107,20 @@ function Get-HeldInput {
   is tapped first to make it a chord, and Win+Ctrl means nothing.
 #>
 function Clear-HeldInput {
-    $windowsHeld = ([Quill.Input]::GetAsyncKeyState(0x5B) -band 0x8000) -ne 0 -or
-                   ([Quill.Input]::GetAsyncKeyState(0x5C) -band 0x8000) -ne 0
+    $windowsHeld = ([Unluminate.Input]::GetAsyncKeyState(0x5B) -band 0x8000) -ne 0 -or
+                   ([Unluminate.Input]::GetAsyncKeyState(0x5C) -band 0x8000) -ne 0
     if ($windowsHeld) {
-        [Quill.Input]::keybd_event(0x11, 0, $script:KeyDown, [UIntPtr]::Zero)
-        [Quill.Input]::keybd_event(0x11, 0, $script:KeyUp,   [UIntPtr]::Zero)
+        [Unluminate.Input]::keybd_event(0x11, 0, $script:KeyDown, [UIntPtr]::Zero)
+        [Unluminate.Input]::keybd_event(0x11, 0, $script:KeyUp,   [UIntPtr]::Zero)
     }
     foreach ($name in $script:Modifiers.Keys) {
         $key = $script:Modifiers[$name]
         $flags = $script:KeyUp
         if ($key.extended) { $flags = $flags -bor $script:Extended }
-        [Quill.Input]::keybd_event([byte]$key.vk, 0, $flags, [UIntPtr]::Zero)
+        [Unluminate.Input]::keybd_event([byte]$key.vk, 0, $flags, [UIntPtr]::Zero)
     }
     foreach ($name in $script:MouseButtons.Keys) {
-        [Quill.Input]::mouse_event([uint32]$script:MouseButtons[$name].up, 0, 0, 0, [UIntPtr]::Zero)
+        [Unluminate.Input]::mouse_event([uint32]$script:MouseButtons[$name].up, 0, 0, 0, [UIntPtr]::Zero)
     }
 }
 
@@ -135,10 +135,10 @@ function Clear-HeldInput {
 function Send-Key {
     param([Parameter(Mandatory)][int]$Vk, [int]$HoldMs = 60)
     try {
-        [Quill.Input]::keybd_event([byte]$Vk, 0, $script:KeyDown, [UIntPtr]::Zero)
+        [Unluminate.Input]::keybd_event([byte]$Vk, 0, $script:KeyDown, [UIntPtr]::Zero)
         Start-Sleep -Milliseconds $HoldMs
     } finally {
-        [Quill.Input]::keybd_event([byte]$Vk, 0, $script:KeyUp, [UIntPtr]::Zero)
+        [Unluminate.Input]::keybd_event([byte]$Vk, 0, $script:KeyUp, [UIntPtr]::Zero)
     }
 }
 
@@ -155,7 +155,7 @@ function Invoke-WithKeysHeld {
           [Parameter(Mandatory, Position = 1)][scriptblock]$Body)
     try {
         foreach ($vk in $Keys) {
-            [Quill.Input]::keybd_event([byte]$vk, 0, $script:KeyDown, [UIntPtr]::Zero)
+            [Unluminate.Input]::keybd_event([byte]$vk, 0, $script:KeyDown, [UIntPtr]::Zero)
             Start-Sleep -Milliseconds 40
         }
         & $Body
@@ -165,7 +165,7 @@ function Invoke-WithKeysHeld {
         $letGo = @($Keys)
         [array]::Reverse($letGo)
         foreach ($vk in $letGo) {
-            [Quill.Input]::keybd_event([byte]$vk, 0, $script:KeyUp, [UIntPtr]::Zero)
+            [Unluminate.Input]::keybd_event([byte]$vk, 0, $script:KeyUp, [UIntPtr]::Zero)
         }
     }
 }
@@ -213,7 +213,7 @@ function Send-Wheel {
         # Zero notches holds the keys and turns nothing, which is what a test asks for; `1..0`
         # counts backwards in PowerShell and would turn the wheel the wrong way once.
         for ($i = 1; $i -le $turns; $i++) {
-            [Quill.Input]::mouse_event(0x0800, 0, 0, $step, [UIntPtr]::Zero)
+            [Unluminate.Input]::mouse_event(0x0800, 0, 0, $step, [UIntPtr]::Zero)
             Start-Sleep -Milliseconds $StepMs
         }
     }
@@ -236,14 +236,14 @@ function Invoke-Click {
           [int]$Times = 1, [switch]$Right)
     $down = if ($Right) { 0x0008 } else { 0x0002 }
     $up   = if ($Right) { 0x0010 } else { 0x0004 }
-    [void][Quill.Input]::SetCursorPos($X, $Y)
+    [void][Unluminate.Input]::SetCursorPos($X, $Y)
     Start-Sleep -Milliseconds 250
     for ($i = 0; $i -lt $Times; $i++) {
         try {
-            [Quill.Input]::mouse_event([uint32]$down, 0, 0, 0, [UIntPtr]::Zero)
+            [Unluminate.Input]::mouse_event([uint32]$down, 0, 0, 0, [UIntPtr]::Zero)
             Start-Sleep -Milliseconds 40
         } finally {
-            [Quill.Input]::mouse_event([uint32]$up, 0, 0, 0, [UIntPtr]::Zero)
+            [Unluminate.Input]::mouse_event([uint32]$up, 0, 0, 0, [UIntPtr]::Zero)
         }
         Start-Sleep -Milliseconds 60
     }
@@ -266,19 +266,19 @@ function Invoke-Click {
 function Invoke-Drag {
     param([Parameter(Mandatory)][int]$FromX, [Parameter(Mandatory)][int]$FromY,
           [Parameter(Mandatory)][int]$ToX, [Parameter(Mandatory)][int]$ToY, [int]$Steps = 20)
-    [void][Quill.Input]::SetCursorPos($FromX, $FromY)
+    [void][Unluminate.Input]::SetCursorPos($FromX, $FromY)
     Start-Sleep -Milliseconds 300
     try {
-        [Quill.Input]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+        [Unluminate.Input]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
         Start-Sleep -Milliseconds 150
         for ($i = 1; $i -le $Steps; $i++) {
             $x = $FromX + [int](($ToX - $FromX) * $i / $Steps)
             $y = $FromY + [int](($ToY - $FromY) * $i / $Steps)
-            [void][Quill.Input]::SetCursorPos($x, $y)
+            [void][Unluminate.Input]::SetCursorPos($x, $y)
             Start-Sleep -Milliseconds 25
         }
     } finally {
-        [Quill.Input]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+        [Unluminate.Input]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
     }
     Start-Sleep -Milliseconds 300
 }
@@ -287,9 +287,9 @@ function Invoke-Drag {
 # whatever an earlier run left down, and the shell exiting releases whatever this one is holding --
 # which is the case a `throw` nothing caught takes.
 #
-# `$QuillInputReadOnly` is for the one caller that wants to look without touching: `unstick-keyboard
+# `$UnluminateInputReadOnly` is for the one caller that wants to look without touching: `unstick-keyboard
 # -Check` promises to change nothing, and a repair on load would make that a lie.
-if (-not $QuillInputReadOnly) {
+if (-not $UnluminateInputReadOnly) {
     Clear-HeldInput
     Register-EngineEvent -SourceIdentifier PowerShell.Exiting -SupportEvent -Action { Clear-HeldInput } | Out-Null
 }

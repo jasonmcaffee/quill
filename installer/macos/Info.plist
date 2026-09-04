@@ -1,28 +1,28 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  The manifest inside Quill.app.
+  The manifest inside Unluminate.app.
 
   build.sh copies this in and replaces __VERSION__ with the version from Cargo.toml, so the version is
   written down once, in Cargo.toml, and reaches the exe's resource block, the Windows installer's file
   name and this from there.
 
-  Quill asks the operating system for a transparent, undecorated window and installs a menu bar along
+  Unluminate asks the operating system for a transparent, undecorated window and installs a menu bar along
   the top of the screen. Both of those want a real bundle identity rather than a bare executable,
   which is the first reason there is a bundle at all.
 -->
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>Quill</string>
+    <string>Unluminate</string>
     <key>CFBundleDisplayName</key>
-    <string>Quill</string>
+    <string>Unluminate</string>
     <key>CFBundleIdentifier</key>
-    <string>com.jasonmcaffee.quill</string>
+    <string>com.jasonmcaffee.unluminate</string>
     <key>CFBundleExecutable</key>
-    <string>quill</string>
+    <string>unluminate</string>
     <key>CFBundleIconFile</key>
-    <string>Quill</string>
+    <string>Unluminate</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleSignature</key>
@@ -48,9 +48,9 @@
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.developer-tools</string>
 
-    <!-- The same file kinds the Windows installer registers, and on the same terms: Quill is offered
+    <!-- The same file kinds the Windows installer registers, and on the same terms: Unluminate is offered
          as one of the applications that can open them and does not claim to own any of them. That is
-         what `LSHandlerRank: Alternate` says, and `Viewer` rather than `Editor` keeps Quill out of
+         what `LSHandlerRank: Alternate` says, and `Viewer` rather than `Editor` keeps Unluminate out of
          the running for the default. -->
     <key>CFBundleDocumentTypes</key>
     <array>

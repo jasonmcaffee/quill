@@ -2,7 +2,7 @@
 
 ## 1. What was asked
 
-> We want our quill editor to support line breaks and debugging for the languages we support,
+> We want our unluminate editor to support line breaks and debugging for the languages we support,
 > stepping into, stepping out, next step, etc. We also want variable/object/etc inspection,
 > similar to IntelliJ, where we can view, modify, etc values. We want our functionality to mimic
 > IntelliJ's.
@@ -11,11 +11,11 @@
 program on that line — because that is the thing stepping and inspection are built on and the thing
 IntelliJ's debugger opens with. So the ask is: set breakpoints in the gutter, run a program under a
 debugger, step over, into and out of calls, see the call stack, and view and change the values of
-variables while the program is paused — behaving the way IntelliJ behaves, in the languages Quill's
+variables while the program is paused — behaving the way IntelliJ behaves, in the languages Unluminate's
 plugins already claim.
 
 This document is the design. `task-1689` is the implementation, and it is built: the whole of §4 to
-§12 shipped in Quill 0.14.0.
+§12 shipped in Unluminate 0.14.0.
 
 Four things the implementation settled differently from the text below, each recorded where the code
 makes the choice rather than only here:
@@ -23,7 +23,7 @@ makes the choice rather than only here:
 - **§2.2's lifecycle summary has `setBreakpoints` before `launch`, and it has to be the other way.**
   The `initialized` event is what says an adapter will accept breakpoints, and no adapter sends it
   until `launch` has arrived; sending them earlier gets them refused by lldb-dap and dropped by
-  js-debug. `quill_dap::session`'s own comment records it.
+  js-debug. `unluminate_dap::session`'s own comment records it.
 - **§6.2's gutter column was already spent.** `task-1686` put the folding arrows in the 12 points
   `components::gutter` had reserved, and a second control cannot share twelve points with one that
   already fills them. The dot is drawn **over the line number** instead, which is what IntelliJ does
@@ -32,7 +32,7 @@ makes the choice rather than only here:
 - **§9's debug button goes *above* the run one, not below it.** The rail is read bottom upwards, so
   "below" would have taken the bottom-left corner — which is where `task-1658`'s reference capture
   puts the **terminal** and where a dozen accepted screenshots have it. The older promise wins.
-- **`runInTerminal` is answered with `success` and no process id.** §7.2 says Quill replies with the
+- **`runInTerminal` is answered with `success` and no process id.** §7.2 says Unluminate replies with the
   process id; a pseudoconsole hands back a console rather than a child and alacritty's pty layer does
   not surface it. The specification makes `processId` optional for exactly that reason, and it is what
   lldb-dap's own comm-file scheme and js-debug both expect.
@@ -89,12 +89,12 @@ anything structured is a `variablesReference` integer the client asks about only
 expands that row. `setVariable` changes a value; `evaluate` answers watches and the expression box;
 `next`, `stepIn`, `stepOut`, `continue` are the stepping. Breakpoints are set by **full replacement
 per file**, and the adapter answers with where each one actually landed and whether it is
-`verified` — an honest protocol, which suits Quill.
+`verified` — an honest protocol, which suits Unluminate.
 
 Two details matter to this design. The adapter is started as a child process and spoken to over
-**stdio**, or is a server the client connects to on a **port** — both are common, and Quill needs
+**stdio**, or is a server the client connects to on a **port** — both are common, and Unluminate needs
 both. And the protocol has a reverse request, **`runInTerminal`**, by which the adapter asks the
-*editor* to run the debuggee in the editor's own terminal — which is exactly what Quill's run tile
+*editor* to run the debuggee in the editor's own terminal — which is exactly what Unluminate's run tile
 is.
 
 ### 2.3 Zed — the same decision made by a Rust editor
@@ -113,7 +113,7 @@ that inline values are the client's own work; DAP has no request for them.
 Helix — a terminal editor in Rust with no plugin runtime — carries a working DAP client:
 `helix-dap` speaks the framed JSON over stdio or TCP, external adapters translate to gdb and lldb,
 and breakpoints, stepping and variable inspection all work. It is the existence proof that a DAP
-client is a bounded piece of work for an editor of Quill's size, nothing like the open-ended cost
+client is a bounded piece of work for an editor of Unluminate's size, nothing like the open-ended cost
 that made task-1675 refuse a language-server client.
 
 ### 2.5 What was rejected
@@ -143,20 +143,20 @@ testing answer: the protocol client is tested against a scripted adapter with fi
 as the terminal's screenshot tests feed a session with no shell behind it, so when a real adapter
 answers is never something a test waits on.
 
-**Writing our own debuggers.** Quill draws its own Mermaid because a diagram is arithmetic.
+**Writing our own debuggers.** Unluminate draws its own Mermaid because a diagram is arithmetic.
 A debugger for one language is a career; for three it is not a serious option.
 
 ## 3. The shape of the design
 
-A new crate, **`quill-dap`**, speaks the protocol: the framing, the typed messages, the session
-lifecycle, and a worker thread arranged exactly as `quill_git::Worker` is — requests down a
+A new crate, **`unluminate-dap`**, speaks the protocol: the framing, the typed messages, the session
+lifecycle, and a worker thread arranged exactly as `unluminate_git::Worker` is — requests down a
 channel, replies and events back up, a waker that asks the window to draw. It has no user
 interface dependency and its tests run against scripted adapters with no real process.
 
 **Which debugger a language uses is data in the plugin, and the debugger itself is code in
-Quill** — the rule `language.renders` and `run.project` already follow. A manifest names
+Unluminate** — the rule `language.renders` and `run.project` already follow. A manifest names
 `debug.adapter = lldb`; the name is checked against a built-in registry and an unknown one is
-refused with a message; Quill's own code knows how to find and start each adapter it ships
+refused with a message; Unluminate's own code knows how to find and start each adapter it ships
 knowledge of. Nothing in a plugin is executed and nothing is ever fetched.
 
 **Debug is Run, under a debugger.** A debug session starts from the same `Configuration` the play
@@ -165,12 +165,12 @@ is the seam task-1683 §12 said a debugger would need. The debuggee's output lan
 tile's real terminal through `runInTerminal`. The debug tile is the third occupant of the bottom of
 the window, built from the furniture the run tile and the terminal tile already share.
 
-Breakpoints live where highlights live — in `quill_core`, inside the `Document`, as offsets that
-move with the text — and persist beside the project in `.quill`, owned by the open `Document` or by
-the store under the one rule every awkward case in Quill is already settled by.
+Breakpoints live where highlights live — in `unluminate_core`, inside the `Document`, as offsets that
+move with the text — and persist beside the project in `.unluminate`, owned by the open `Document` or by
+the store under the one rule every awkward case in Unluminate is already settled by.
 
 Everything is an `Action` and a row in the CLI catalogue, so the whole feature is reachable from
-the menus, the keyboard, `quill-cli` and the MCP server on the day it lands — which for this
+the menus, the keyboard, `unluminate-cli` and the MCP server on the day it lands — which for this
 feature is worth more than usual: an agent that can set a breakpoint, run to it and read the
 variables is an agent that can debug a program rather than guess about it.
 
@@ -178,19 +178,19 @@ variables is an agent that can debug a program rather than guess about it.
 
 ### 4.1 The wire
 
-`quill-dap` implements the base protocol: ASCII headers, `Content-Length: N`, `\r\n\r\n`, then N
+`unluminate-dap` implements the base protocol: ASCII headers, `Content-Length: N`, `\r\n\r\n`, then N
 bytes of UTF-8 JSON. Three message kinds — `request`, `response`, `event` — each carrying a `seq`;
 a response repeats its request's seq as `request_seq` and says `success`. The codec is two pure
 functions, bytes to messages and messages to bytes, tested on transcripts with no process behind
 them, including the torn-buffer cases (a frame split mid-header, two frames in one read) that a
 pipe will produce in practice.
 
-Messages are typed with `serde`, and only the messages Quill uses are typed: `initialize`,
+Messages are typed with `serde`, and only the messages Unluminate uses are typed: `initialize`,
 `setBreakpoints`, `setExceptionBreakpoints`, `configurationDone`, `launch`, `disconnect`,
 `terminate`, `threads`, `stackTrace`, `scopes`, `variables`, `setVariable`, `evaluate`, `continue`,
 `next`, `stepIn`, `stepOut`, `pause`, and the events `initialized`, `stopped`, `continued`,
 `output`, `breakpoint`, `terminated`, `exited`, plus the `runInTerminal` reverse request. Fields
-Quill does not read are not modelled — the protocol is large and additive, and `serde` ignores
+Unluminate does not read are not modelled — the protocol is large and additive, and `serde` ignores
 what it is not asked for.
 
 ### 4.2 The session lifecycle
@@ -200,7 +200,7 @@ A `Session` is a small state machine: `Starting` (adapter spawned, `initialize` 
 `configurationDone`), `Running`, `Paused` (a `stopped` event named a thread and a reason),
 `Ended` (terminated or the adapter died). The capabilities from `initialize` are kept on the
 session, and every optional feature asks them first — `supportsSetVariable`,
-`supportsConditionalBreakpoints`, `supportsLogPoints`, `exceptionBreakpointFilters` — so Quill
+`supportsConditionalBreakpoints`, `supportsLogPoints`, `exceptionBreakpointFilters` — so Unluminate
 never sends what an adapter did not offer, and a control whose capability is absent is absent (the
 rule the `F` button already follows).
 
@@ -212,14 +212,14 @@ every stepping request, which is Zed's invalidation rule and the protocol's own.
 
 Ending is soft then hard, the shape `RunPanel::stop` already has: `terminate` first (the graceful
 request, honoured by adapters that can), then `disconnect`, and if the adapter process itself will
-not die, kill it — it is a child process Quill owns, the same as any run.
+not die, kill it — it is a child process Unluminate owns, the same as any run.
 
 ### 4.3 The thread
 
-The window never blocks on an adapter. `quill_dap::Client` is arranged as `quill_git::Worker` is:
+The window never blocks on an adapter. `unluminate_dap::Client` is arranged as `unluminate_git::Worker` is:
 
 - `start(adapter: AdapterCommand, waker: Waker) -> Client` spawns the adapter process (with
-  `CREATE_NO_WINDOW` on Windows, as `quill-git` runs git) or connects to its port, and starts one
+  `CREATE_NO_WINDOW` on Windows, as `unluminate-git` runs git) or connects to its port, and starts one
   reader thread that parses frames and pushes `Reply` values onto an `mpsc` channel, calling the
   waker after each — the same `Arc<dyn Fn() + Send + Sync>` the terminal and git already take.
 - `send(request)` writes a frame; `poll() -> Vec<Reply>` drains once a frame at the top of the
@@ -245,7 +245,7 @@ checked in `plugins::parse` against a built-in list, with the refusal message in
 
 ```rust
 pub const DEBUGGERS: &[&str] = &["lldb", "node"];
-// debug.adapter is `gdb`, and this version of Quill drives lldb, node
+// debug.adapter is `gdb`, and this version of Unluminate drives lldb, node
 ```
 
 The rust plugin names `lldb`; javascript and typescript name `node`; css, mermaid and every plugin
@@ -258,7 +258,7 @@ the same ceiling `run.project` has. Nothing in a plugin is executed.
 
 ### 5.2 Finding the program, and the honest refusal
 
-Quill fetches nothing, ever — the preview's rule, kept here. Each registry entry knows the
+Unluminate fetches nothing, ever — the preview's rule, kept here. Each registry entry knows the
 commands it will look for on `PATH`, in order, and a settings key overrides the lot
 (`debug.lldb = C:\tools\codelldb\adapter\codelldb.exe` in the settings file, the
 `terminal.shell` pattern: empty means "what this machine has").
@@ -268,7 +268,7 @@ session refuses to start and the status bar says what was looked for and where i
 `Debugging rust needs lldb-dap or codelldb on PATH. lldb-dap ships with LLVM.` — one sentence,
 built from the registry entry, in the place every other message already lands. Nothing invents a
 message once a session *is* running: an adapter's own error responses and `output` events are shown
-as git's stderr is shown, because a debugger explains itself better than Quill could.
+as git's stderr is shown, because a debugger explains itself better than Unluminate could.
 
 ### 5.3 The adapters this version knows
 
@@ -286,7 +286,7 @@ formatters that improve this; the GNU toolchain's DWARF is fully readable.)
 stdio child, which is why `AdapterCommand` has both shapes. It debugs Node programs and TypeScript
 through source maps — the same programs `run.file = node {file}` and `npx tsx {file}` already run.
 
-**What about Python?** Quill ships no Python plugin today, so the registry ships no `python`
+**What about Python?** Unluminate ships no Python plugin today, so the registry ships no `python`
 entry — an entry no manifest can name would be dead code. The day a Python plugin is written,
 `debugpy` (`python -m debugpy.adapter`, stdio, and it *is* the protocol natively) is the entry to
 add, and §13 records it.
@@ -295,7 +295,7 @@ add, and §13 records it.
 
 ### 6.1 Where they live
 
-`quill_core::breakpoints`, inside the `Document`, built as `highlights` is built: a sparse set
+`unluminate_core::breakpoints`, inside the `Document`, built as `highlights` is built: a sparse set
 sorted by position, each holding the **byte offset of its line's start**, an `enabled` flag, and
 optional `condition` and `log_message` strings. It lives in the document so that `insert` and
 `remove_range` — the only two places that know bytes moved — shift it in the same lines that
@@ -331,7 +331,7 @@ that true for every dialog built from the furniture.
 ### 6.3 What the adapter says back
 
 `setBreakpoints` is full replacement per file, and the adapter answers with where each breakpoint
-really landed and `verified`. Quill draws the adapter's answer, not its own hope: a breakpoint the
+really landed and `verified`. Unluminate draws the adapter's answer, not its own hope: a breakpoint the
 adapter moved to the next statement is drawn where the adapter put it for the life of the session,
 and one the adapter could not bind — a line with no code, a file not in the build — stays hollow.
 This is the honesty rule task-1675 set (`Confidence::Likely` stays marked all the way to the
@@ -346,23 +346,23 @@ surveyed editor does, and the dots follow the text so the picture stays right fo
 ### 6.4 Conditions, log messages, and exceptions
 
 A condition and a log message are **data in the `setBreakpoints` request** — `SourceBreakpoint`
-carries both fields — so the adapter does the evaluating and the logging, and Quill's cost is two
+carries both fields — so the adapter does the evaluating and the logging, and Unluminate's cost is two
 optional strings and the modal that edits them. They are offered only when the capabilities say
 `supportsConditionalBreakpoints` / `supportsLogPoints`; otherwise the fields are absent, not dead.
 
 Exception breakpoints — IntelliJ's "break on exception" — come from the adapter too:
 `exceptionBreakpointFilters` in the capabilities is a list of named filters (debugpy offers
 raised/uncaught, lldb offers throw/catch), shown as tick boxes in the debug tile's header flyout
-and sent back through `setExceptionBreakpoints`. Quill holds no list of its own; an adapter that
+and sent back through `setExceptionBreakpoints`. Unluminate holds no list of its own; an adapter that
 offers none gets no control.
 
 ### 6.5 The file beside the project
 
-`.quill/breakpoints.conf`, in the numbered form `run-configurations.conf` established, written by
+`.unluminate/breakpoints.conf`, in the numbered form `run-configurations.conf` established, written by
 `store::Values` with the usual header, read and written **only by the released binary**:
 
 ```
-# The breakpoints in this project. Written by Quill, and safe to edit by hand.
+# The breakpoints in this project. Written by Unluminate, and safe to edit by hand.
 breakpoint.1.path = src/main.rs
 breakpoint.1.offset = 1204
 breakpoint.1.enabled = true
@@ -374,11 +374,11 @@ breakpoint.2.condition = attempts > 3
 Paths relative to the project, so a project that moves keeps its breakpoints — `file_marks`'
 reason. A block missing `path` or `offset` is dropped whole, the `run.N.*` rule. And the ownership
 rule is stated once and settles every case, verbatim from highlights: **a file that is open is
-owned by its `Document`, and every other file is owned by the store.** `QuillApp::change_highlights`
+owned by its `Document`, and every other file is owned by the store.** `UnluminateApp::change_highlights`
 gains a sibling, `change_breakpoints`, the one place the choice is made; the every-frame
 reconciliation rides the same revision comparison `remember_the_marks` already makes, so it costs
 an integer compare per tab. Offsets read from disk are clamped to the file's length as
-`set_highlights` clamps, so a file rewritten outside Quill gives a misplaced dot rather than a
+`set_highlights` clamps, so a file rewritten outside Unluminate gives a misplaced dot rather than a
 panic — and the adapter's `verified` answer then says so honestly.
 
 ## 7. A debug session
@@ -390,7 +390,7 @@ one-instance rule. Starting it spawns the adapter (§5.2), runs the lifecycle (�
 `launch` request carries the configuration's parts — the program and arguments from
 `split_command`, `cwd` from `working_directory(root)`, `env` from `environment()` — translated by
 the registry entry into the adapter's launch shape (each adapter names these slightly differently;
-that knowledge is Quill's, in the registry, never the plugin's). `Debug Current File` exists
+that knowledge is Unluminate's, in the registry, never the plugin's). `Debug Current File` exists
 exactly where `Run Current File` exists *and* the language names an adapter — both questions asked,
 so a `.rs` file (no `run.file`, deliberately) offers neither, and a `.css` file offers nothing.
 
@@ -406,9 +406,9 @@ Zed's locators — deriving the binary from the build system — are the right e
 ### 7.2 Where the program's output goes
 
 The debuggee runs **in the run tile**. When the adapter sends the `runInTerminal` reverse request
-— lldb-dap, js-debug and debugpy can all ask for it — Quill answers it by starting the requested
+— lldb-dap, js-debug and debugpy can all ask for it — Unluminate answers it by starting the requested
 command through the run tile's own path (`RunPanel::start`'s machinery, a real
-`quill_terminal::Session` at the size `run_grid_size()` already computes), and replies with the
+`unluminate_terminal::Session` at the size `run_grid_size()` already computes), and replies with the
 process id. The program gets a real ConPTY, its colours and its interactivity, and the run tile's
 rules — opened at final size, never resized while starting, exit code in the strip — all hold
 because it *is* a run. When an adapter does not ask (launch in the adapter's own process), the
@@ -435,7 +435,7 @@ debugger running means nothing and costs nothing.
 
 ### 7.4 The execution point
 
-On `stopped`, Quill fetches the stack, opens the top frame's file if it is not open
+On `stopped`, Unluminate fetches the stack, opens the top frame's file if it is not open
 (`open_the_match`'s path — re-read at the moment of use), scrolls the least amount that shows the
 line (`scroll_to_rect(row, None)`, the explorer-follow rule), and paints the line's band in an
 accent-tinted wash behind the text — drawn where `paint_highlights` draws, under the glyphs, in a
@@ -500,7 +500,7 @@ code fragments) is attempted in this version.
 While the program is paused, each visible line that binds a variable in the top frame's scope gets
 that variable's value painted after the line's end in the quiet colour — `pos = <10, 4>` — the
 way IntelliJ and Zed paint them. DAP has no request for this; it is the client matching names, and
-Quill already owns the machinery: `FileSymbols::read` has the file's identifier list sorted by
+Unluminate already owns the machinery: `FileSymbols::read` has the file's identifier list sorted by
 position, the paused frame's `variables` are already fetched (§4.2), and the painter already takes
 a visible-line range. Matching is a walk over the visible lines' identifiers against one HashMap —
 nothing that runs once a frame allocates; the match is computed once per stop and cached on the
@@ -551,7 +551,7 @@ bar and the CLI so the three cannot disagree.
 
 ### 10.2 The catalogue
 
-A `debug` area in `quill-cli/src/catalogue.rs`, one row per verb, and therefore — with no further
+A `debug` area in `unluminate-cli/src/catalogue.rs`, one row per verb, and therefore — with no further
 work — a section the documentation test enforces in `commands.md`, an arm in `app/cli.rs`'s
 `cli_debug`, and an MCP tool the day it lands:
 
@@ -575,18 +575,18 @@ deeper only for `--expand`, the tile's own laziness. Waiting verbs ride the `Wai
 `run output --wait-for` already uses — `debug start --wait-for-pause`, so a script or an agent can
 set a breakpoint, start, wait for the stop and read a variable in four commands. That sequence is
 the acceptance test of the whole feature, and it is also the feature's second customer: an agent
-driving Quill can now observe a program's actual state instead of reasoning about it.
+driving Unluminate can now observe a program's actual state instead of reasoning about it.
 
 ## 11. Where the state lives
 
-- `.quill/breakpoints.conf` — the project's breakpoints (§6.5). Shared, written by the released
+- `.unluminate/breakpoints.conf` — the project's breakpoints (§6.5). Shared, written by the released
   binary only.
-- `.quill/workspace.conf` — `debug.visible`, `debug.watches` (per-person, beside `run.selected`).
-- `QuillApp` — one `Option<DebugState>` (in `app/debug.rs`, as `app/git.rs` holds `GitState`):
-  the `quill_dap::Client`, the session state machine, the fetched stack and variable rows, the
+- `.unluminate/workspace.conf` — `debug.visible`, `debug.watches` (per-person, beside `run.selected`).
+- `UnluminateApp` — one `Option<DebugState>` (in `app/debug.rs`, as `app/git.rs` holds `GitState`):
+  the `unluminate_dap::Client`, the session state machine, the fetched stack and variable rows, the
   watch results, the inline-value cache. All of it dies with the session; none of it is written
   anywhere.
-- `quill_core::breakpoints` — the open documents' sets, riding the document exactly as highlights
+- `unluminate_core::breakpoints` — the open documents' sets, riding the document exactly as highlights
   ride it.
 - Settings — `debug.lldb`, `debug.node`: explicit adapter paths, empty meaning "what this machine
   has" (`Settings::shell()`'s sentence).
@@ -595,14 +595,14 @@ driving Quill can now observe a program's actual state instead of reasoning abou
 
 The four layers as the project keeps them:
 
-1. **`quill-dap`, no window, no process.** The codec against byte transcripts, including torn
+1. **`unluminate-dap`, no window, no process.** The codec against byte transcripts, including torn
    frames. The session state machine against scripted adapters — a `Transcript` of
    request-in/messages-out pairs standing where the process would — covering the happy lifecycle,
    an adapter that dies mid-session, `verified: false`, a `stopped` before `configurationDone`,
    and capability gating (a `setVariable` never sent to an adapter that did not offer it).
-   `quill_core::breakpoints`: offsets shift under `insert`/`remove_range`, ride the undo snapshot,
+   `unluminate_core::breakpoints`: offsets shift under `insert`/`remove_range`, ride the undo snapshot,
    clamp on load — the highlights tests, re-asked.
-2. **`quill-app` units.** `breakpoints.conf` round-trips through `store::Values`; a block missing
+2. **`unluminate-app` units.** `breakpoints.conf` round-trips through `store::Values`; a block missing
    `path` is dropped whole. The registry refuses `debug.adapter = gdb` with the house message; the
    older plugins ask for none of what debugging added (the CSS-keys test, re-asked). Every menu
    entry has a name; `debugger_for` and the menu agree about a `.css` file.
@@ -613,11 +613,11 @@ The four layers as the project keeps them:
    the tile-exclusivity picture (debug tile up, run tile up, never both). Accepted images looked
    at before `UPDATE_SNAPSHOTS=1` accepts them.
 4. **The real thing.** A fixture program per adapter (a ten-line Rust binary built by the test, a
-   `hello.js`), driven end to end through `quill-cli`: breakpoint add, `debug start
+   `hello.js`), driven end to end through `unluminate-cli`: breakpoint add, `debug start
    --wait-for-pause`, `debug variables` asserting a real value, `debug step-over`, `debug
    continue`, exit observed — asserted on text, waiting with a timeout, skipped with a message
    naming the missing adapter on a machine without one (a skipped test that says why, never a red
-   one that lies about Quill). And the real window: a person sets a breakpoint in a real project,
+   one that lies about Unluminate). And the real window: a person sets a breakpoint in a real project,
    steps, and watches a value change — which is the only layer that proves the adapter on this
    machine behaves as the transcripts said.
 
@@ -634,7 +634,7 @@ without a revision check, so the budget conversation should never start.
   session chooser in every pane of the tile for a case that is rare in a one-window editor.
 - **Debugging a Cargo/npm configuration by deriving the binary** — Zed's locators. Right and
   wanted, and a design of its own (reading Cargo's JSON messages to find the artifact); until
-  then the registry's refusal sentence keeps Quill honest (§7.1).
+  then the registry's refusal sentence keeps Unluminate honest (§7.1).
 - **Python.** No Python plugin ships, so no `python` registry entry. The day one exists, debugpy
   is the adapter, and it is the easiest of the three.
 - **Smart Step Into** (`stepInTargets` — adapter support is patchy), **Force variants**,
@@ -642,11 +642,11 @@ without a revision check, so the budget conversation should never start.
   **memory and disassembly views**, **hot code replace**: each real, each a capability the
   protocol names, none of them what the ticket asked for. The capability gating in §4.2 means any
   of them can arrive later without re-plumbing.
-- **Downloading adapters.** Zed fetches them; Quill fetches nothing — the rule that keeps a
+- **Downloading adapters.** Zed fetches them; Unluminate fetches nothing — the rule that keeps a
   document from making a network request keeps the editor from doing it too. The refusal sentence
   (§5.2) tells a person exactly what to install; `tools/` may grow an install script the way
   `release.ps1` installs `gh`, but the editor itself never reaches out.
-- **A DAP server for Quill itself.** Out of scope and out of character; Quill is the client.
+- **A DAP server for Unluminate itself.** Out of scope and out of character; Unluminate is the client.
 
 ## 14. Sources
 

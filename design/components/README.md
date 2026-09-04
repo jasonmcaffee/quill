@@ -4,11 +4,11 @@ One capture for each piece of the window, so that a new component can be compare
 ones beside it already look like. `task-1649` asks for exactly this: screenshots in the design folder
 that are referenced when building a new component.
 
-These are **intent**. `crates/quill-app/tests/snapshots` is a different thing and must not be
+These are **intent**. `crates/unluminate-app/tests/snapshots` is a different thing and must not be
 confused with it: those are accepted test output, and a change that alters the rendering fails
 against them. Change one of these when the design changes; accept one of those when the drawing does.
 
-Each was captured from the real window through `crates/quill-app/tests/screenshots.rs`, on Windows,
+Each was captured from the real window through `crates/unluminate-app/tests/screenshots.rs`, on Windows,
 at 1180 x 740. They were all retaken for `task-1658`, which moved the text options into the title
 bar, added the rail down the far left and gave the window its own resize grips: every one of them
 shows a different window from the one it showed before. The last three were added by `task-1663` and
@@ -28,7 +28,7 @@ were captured the same way.
 | `git_history.png` | The history: the short hash, the refs, the subject, the author and the date. The one capture here that is not offscreen output, because a commit made during a test has a hash and a date that are new every run; it is the window from `documentation/images/13-git-history.jpg`, so it is 1800 x 1160 rather than 1180 x 740. |
 | `syntax_typescript.png` | A file coloured by its plugin, in Dracula. |
 | `plugins_page.png` | `Settings -> Plugins`: the tabs, the list, and a plugin's own page. |
-| `settings_appearance.png` | The Settings window, which is the shape every modal in Quill is built from. |
+| `settings_appearance.png` | The Settings window, which is the shape every modal in Unluminate is built from. |
 | `terminal.png` | The terminal tile and its tabs. |
 | `text_options.png` | The flyout behind the title bar's `F` button: the four named rows, the rule between the character half and the paragraph half, and the three line spacings as buttons. |
 | `code_no_toolbar.png` | A source file, which has no text tools at all. The right hand end of the title bar is simply empty, and nothing below it moves. |

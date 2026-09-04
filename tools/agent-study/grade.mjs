@@ -1,5 +1,5 @@
 // Reads the sessions a run produced and prints the numbers the study is judged on:
-// how much of the work went through Quill rather than round it, and every refusal.
+// how much of the work went through Unluminate rather than round it, and every refusal.
 //
 //   node tools/agent-study/grade.mjs
 import fs from 'node:fs';
@@ -10,15 +10,15 @@ const OUT = process.env.STUDY_OUT ?? path.join(REPO, '_agent_output', 'agent-stu
 const dir = path.join(OUT, 'sessions');
 if (!fs.existsSync(dir)) { console.log(`no sessions in ${dir} — run run-all.mjs first`); process.exit(1); }
 
-let total = 0, viaQuill = 0, viaOwn = 0, refused = 0, scenarios = 0, bypassed = 0;
+let total = 0, viaUnluminate = 0, viaOwn = 0, refused = 0, scenarios = 0, bypassed = 0;
 const refusals = [], ownTools = {};
 for (const f of fs.readdirSync(dir).filter(x => x.endsWith('.json') && !x.startsWith('_')).sort()) {
   const r = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
   const calls = r.turns.flatMap(t => t.steps.filter(s => s.kind === 'tool'));
-  const own = calls.filter(s => !/quill/i.test(s.tool ?? ''));
+  const own = calls.filter(s => !/unluminate/i.test(s.tool ?? ''));
   scenarios += 1;
   total += calls.length;
-  viaQuill += calls.length - own.length;
+  viaUnluminate += calls.length - own.length;
   viaOwn += own.length;
   if (own.length) { bypassed += 1; ownTools[r.id] = [...new Set(own.map(s => s.tool))]; }
   for (const s of calls.filter(s => s.error)) {
@@ -30,10 +30,10 @@ for (const f of fs.readdirSync(dir).filter(x => x.endsWith('.json') && !x.starts
 const pct = n => total ? `${(n / total * 100).toFixed(0)}%` : '—';
 console.log(`scenarios            ${scenarios}`);
 console.log(`tool calls           ${total}`);
-console.log(`  through Quill      ${viaQuill}  ${pct(viaQuill)}`);
+console.log(`  through Unluminate      ${viaUnluminate}  ${pct(viaUnluminate)}`);
 console.log(`  the agent's own    ${viaOwn}  ${pct(viaOwn)}   <- the number to drive down`);
 console.log(`refused calls        ${refused}`);
-console.log(`scenarios that went round Quill   ${bypassed} of ${scenarios}`);
+console.log(`scenarios that went round Unluminate   ${bypassed} of ${scenarios}`);
 if (Object.keys(ownTools).length) {
   console.log('\nwhere it went round:');
   for (const [k, v] of Object.entries(ownTools)) console.log(`  ${k.padEnd(18)} ${v.join(', ')}`);

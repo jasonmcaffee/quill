@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Releases Quill on macOS: bump the version, build, install it on this machine, tag, push, and publish
+# Releases Unluminate on macOS: bump the version, build, install it on this machine, tag, push, and publish
 # a GitHub release with the disk image on it.
 #
 # The other half of `tools/release.ps1`, which does the same on Windows and could never run here:
@@ -14,11 +14,11 @@
 #   1. Refuses to run on a dirty checkout. A release built from one is a release nobody can rebuild.
 #   2. Bumps `version` under `[workspace.package]` in Cargo.toml, which is the one place the version is
 #      written down. It reaches Info.plist, the About box and the disk image's name from there.
-#   3. Runs installer/macos/build.sh --install: builds `quill` and `quill-cli`, signs, makes
-#      Quill.app and the disk image, and copies the bundle into /Applications. The rebuild is what
+#   3. Runs installer/macos/build.sh --install: builds `unluminate` and `unluminate-cli`, signs, makes
+#      Unluminate.app and the disk image, and copies the bundle into /Applications. The rebuild is what
 #      moves the build date the About box shows.
 #   4. Copies the image into releases/.
-#   5. Commits Cargo.toml and Cargo.lock on their own as `Quill <version>`, tags `v<version>`, and
+#   5. Commits Cargo.toml and Cargo.lock on their own as `Unluminate <version>`, tags `v<version>`, and
 #      pushes the branch and the tag.
 #   6. Creates the GitHub release with the image attached.
 #
@@ -47,7 +47,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(cd "$here/.." && pwd)"
 manifest="$repo/Cargo.toml"
 releases="$repo/releases"
-slug="jasonmcaffee/quill"
+slug="jasonmcaffee/unluminate"
 
 part=patch
 version=""
@@ -116,8 +116,8 @@ higher "$next" "$current" || die "$next is not higher than the version already r
 
 cd "$repo"
 branch="$(git rev-parse --abbrev-ref HEAD)"
-image="$releases/quill-$next.dmg"
-echo "Quill $current -> $next  on $branch"
+image="$releases/unluminate-$next.dmg"
+echo "Unluminate $current -> $next  on $branch"
 
 if [ "$dry_run" = 1 ]; then
     echo
@@ -125,7 +125,7 @@ if [ "$dry_run" = 1 ]; then
     echo "  1. Cargo.toml version -> $next"
     echo "  2. installer/macos/build.sh$([ "$skip_install" = 1 ] || echo ' --install')"
     echo "  3. $image"
-    echo "  4. commit \"Quill $next\", tag v$next, push $branch"
+    echo "  4. commit \"Unluminate $next\", tag v$next, push $branch"
     [ "$skip_publish" = 1 ] || echo "  5. a GitHub release v$next with the image attached"
     exit 0
 fi
@@ -179,8 +179,8 @@ echo "Kept $image"
 
 step "Committing and tagging v$next"
 git add -- Cargo.toml Cargo.lock
-git commit -m "Quill $next" > /dev/null
-git tag -a "v$next" -m "Quill $next"
+git commit -m "Unluminate $next" > /dev/null
+git tag -a "v$next" -m "Unluminate $next"
 git push origin "$branch"
 git push origin "v$next"
 
@@ -194,10 +194,10 @@ step 'Publishing the GitHub release'
 [ -n "$notes" ] || notes="$(git log -1 --pretty=%s "v$next^")"
 body="$notes
 
-macOS: download **quill-$next.dmg** below, open it and drag Quill to Applications. It is signed but not
+macOS: download **unluminate-$next.dmg** below, open it and drag Unluminate to Applications. It is signed but not
 notarised, so the first launch is a right click and Open.
 
-\`Quill -> About Quill\` in the window says which build this is."
+\`Unluminate -> About Unluminate\` in the window says which build this is."
 
 # The body goes through a file rather than being interpolated into JSON by hand, because a release
 # note holding a quote or a newline would otherwise write a request GitHub refuses.
@@ -205,7 +205,7 @@ payload="$(mktemp)"
 trap 'rm -f "$payload"' EXIT
 python3 - "$next" "$body" > "$payload" <<'PY'
 import json, sys
-print(json.dumps({"tag_name": "v" + sys.argv[1], "name": "Quill " + sys.argv[1], "body": sys.argv[2]}))
+print(json.dumps({"tag_name": "v" + sys.argv[1], "name": "Unluminate " + sys.argv[1], "body": sys.argv[2]}))
 PY
 created="$(curl -sS -X POST \
     -H "Authorization: Bearer $token" -H 'Accept: application/vnd.github+json' \
@@ -219,9 +219,9 @@ fi
 curl -sS -X POST \
     -H "Authorization: Bearer $token" -H 'Accept: application/vnd.github+json' \
     -H 'Content-Type: application/octet-stream' \
-    --data-binary "@$image" "$upload?name=quill-$next.dmg" > /dev/null
+    --data-binary "@$image" "$upload?name=unluminate-$next.dmg" > /dev/null
 
 page="$(echo "$created" | sed -nE 's/.*"html_url"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -1)"
 echo
-echo "Quill $next is released: $page"
-[ "$skip_install" = 1 ] || echo "Installed at /Applications/Quill.app"
+echo "Unluminate $next is released: $page"
+[ "$skip_install" = 1 ] || echo "Installed at /Applications/Unluminate.app"

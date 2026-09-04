@@ -1,11 +1,11 @@
 # task-1694 — an HTML plugin, and the markup a tokeniser could not read
 
-> create a new plugin for html in quill.
+> create a new plugin for html in unluminate.
 >
 > look at our other plugins, search the web to research more, and then create a tdd, then fully implement.
 
 `task-1671` asked the same question about CSS and its answer was three small, data-driven additions
-to `quill_core::syntax` with the manifest written against them. This is that ticket again with a
+to `unluminate_core::syntax` with the manifest written against them. This is that ticket again with a
 harder subject, and the shape of the answer is the same: HTML needs something the tokeniser has
 never had, the thing it needs is a rule rather than a list, and it is a key in the manifest that is
 off unless a language asks for it.
@@ -17,7 +17,7 @@ HTML needs it to change its mind about whether a word means anything **at all**,
 
 ## 1. Why the half hour of typing would have produced an unusable plugin
 
-A Quill plugin is data: a `plugin.conf` naming a language's extensions, its comments, its strings,
+A Unluminate plugin is data: a `plugin.conf` naming a language's extensions, its comments, its strings,
 some lists of words and a colour a token. Five of those manifests exist. Writing a sixth for HTML by
 filling in the same keys takes half an hour, and this is what it produces:
 
@@ -93,7 +93,7 @@ here without modification: a colour that is silently absent because no language 
 be installed looks like a fault rather than a missing feature.
 
 So this is the **syntactic tier**, for the fourth time, and the state machine is written in Rust in
-`quill_core::syntax` where it can be tested with no window. What follows is the design of the states
+`unluminate_core::syntax` where it can be tested with no window. What follows is the design of the states
 and of the one manifest key that turns them on.
 
 The **scope names** the survey settles are worth keeping, because they decide the colours in §5.
@@ -147,7 +147,7 @@ apostrophe is an apostrophe, `2026` is prose and `5 < 3` is arithmetic.
 HTML Standard's own tag-open state, taken verbatim: a less-than sign begins a tag when followed by
 a tag name (which starts with an ASCII letter), a solidus for an end tag, an exclamation mark for a
 comment or a doctype, or a question mark for a processing instruction. Anything else — a space, a
-digit, another `<` — and the browser treats it as literal text, so Quill does too. This is why
+digit, another `<` — and the browser treats it as literal text, so Unluminate does too. This is why
 `5 < 3` stays prose while `<p>` does not, and it costs one comparison.
 
 The one thing that **is** read in text is a **character reference**: `&amp;`, `&#8212;`,
@@ -158,14 +158,14 @@ forms. It is `Token::Number`, for the reason §5 gives.
 
 The word directly after the `<`, past a `/` for an end tag or a `!` for a declaration. Its position
 is certain — there is exactly one tag name per tag and it is the first word in it — so this is the
-one place in HTML where Quill knows what a word is without having to be told.
+one place in HTML where Unluminate knows what a word is without having to be told.
 
 - A name the language names is `Token::Keyword`.
 - **A name the language does not name is `Token::Type`**, not plain text.
 
 That second rule is a departure from what the CSS manifest says about a class selector ("a name its
 author chose is plain text"), and the reason it is a departure is that the CSS case has no
-positional certainty and this one does. Quill's honesty rule is to show what is known and not guess
+positional certainty and this one does. Unluminate's honesty rule is to show what is known and not guess
 at what is not; here it is *known* that the word is a tag name, and only unknown whether the
 language defines it. `<my-widget>`, `<sl-button>`, `<MyPanel>` and `<Foo>` are custom elements and
 framework components, which are a large fraction of the HTML anybody writes now, and drawing them
@@ -182,7 +182,7 @@ Every other word inside the tag.
   name in a tag and there may be a dozen attributes, and the ones that are not in the list —
   `data-track-id`, `hx-get`, `v-if`, `x-on:click`, `:class`, `@submit` — are names their author
   chose, exactly as a class selector is. A rule that coloured every one of them would make a tag a
-  wall of colour and would say something untrue about names Quill has never heard of.
+  wall of colour and would say something untrue about names Unluminate has never heard of.
 
 ### 3.4 Value
 
@@ -210,12 +210,12 @@ language is raw text, and an entry that names none is escapable raw text**, so `
 `<title>` is still coloured and `&amp;` inside `<script>` is not, exactly as a browser reads them.
 One key, two facts, and neither of them written down twice.
 
-The list is data, not a list of element names inside Quill, for the reason `language.definers`
-exists: a list of languages inside Quill is a list a plugin somebody writes later can never join. A
+The list is data, not a list of element names inside Unluminate, for the reason `language.definers`
+exists: a list of languages inside Unluminate is a list a plugin somebody writes later can never join. A
 manifest for a template language that has its own raw-text element gets the behaviour by naming it.
 
 **The right-hand side is a language name, and it is not checked at parse time.** That is deliberate
-and it is the one registry-shaped key in Quill that is not validated against a list — because the
+and it is the one registry-shaped key in Unluminate that is not validated against a list — because the
 name is resolved by `Plugins::for_language`, the same function a ```` ```rust ```` fence in a
 Markdown document is resolved by, which already documents that a language nothing claims answers
 with nothing. Checking it would mean a plugin refusing to load because *another* plugin is switched
@@ -226,7 +226,7 @@ off, which is a worse outcome than a `<style>` block that is drawn in one colour
 ## 4. The embedded language, and the seam that already existed
 
 A `<style>` block drawn as one flat stretch of text is the difference between an HTML plugin and a
-good one. Quill already has the seam for this and it is `CodeHighlighter`: *`quill-core` holds no
+good one. Unluminate already has the seam for this and it is `CodeHighlighter`: *`unluminate-core` holds no
 plugin registry and must not learn about one, so it asks and the window answers.*
 
 The shape here is the mirror of that one. `scan` cannot colour a `<script>` body, so it **says where
@@ -271,7 +271,7 @@ Two smaller things have to be got right and both are silent wrong answers if the
 ## 5. The colours, and why an entity is a number
 
 Dracula, like the other five, because a folder of mixed files should be read in one scheme rather
-than six that almost agree. The mapping is **Quill's per-token one rather than Dracula's
+than six that almost agree. The mapping is **Unluminate's per-token one rather than Dracula's
 HTML-specific one**, which is the sentence the CSS manifest already writes and the reason is the
 same: `theme.builtin` is purple in every other manifest here, and an HTML file in the tab beside a
 TypeScript file should be read in the same scheme.
@@ -280,7 +280,7 @@ TypeScript file should be read in the same scheme.
 |---|---|---|---|
 | element name | `Keyword` | `#FF79C6` | `entity.name.tag`; and Dracula's own HTML tags are pink, so the two agree |
 | custom element | `Type` | `#8BE9FD` | it is known to be a tag name and known not to be one of HTML's |
-| attribute name | `Builtin` | `#BD93F9` | `entity.other.attribute-name`; purple is what `builtin` is everywhere else in Quill |
+| attribute name | `Builtin` | `#BD93F9` | `entity.other.attribute-name`; purple is what `builtin` is everywhere else in Unluminate |
 | attribute value | `String` | `#F1FA8C` | it is a string |
 | `&amp;` `&#8212;` | `Number` | `#FFB86C` | `constant.character.entity` sits under `constant` beside `constant.numeric`, so this is the conventional mapping rather than a convenience |
 | `<` `>` `/` `=` `!` | `Operator` | `#FF79C6` | the punctuation of `meta.tag` |
@@ -326,7 +326,7 @@ document's exports to offer.
 ### 6.3 No definers, and what that withdraws
 
 `language.definers` is empty and `language.brace_definitions` is off, so `Go to Definition` is
-**absent** for a `.html` file — Quill's rule for a control that can never apply, and the same
+**absent** for a `.html` file — Unluminate's rule for a control that can never apply, and the same
 decision CSS made for the same reason. `id="header"` does name something, but it names it by
 *position* rather than by keyword, and a rule that read `=` as a definer would call every attribute
 a definition.
@@ -402,9 +402,9 @@ class of attribute and HTML does not; the `Type` colour is reached by §3.2's ru
 Each of these was considered and each has a reason, so that nobody has to rediscover it.
 
 - **A rendered preview.** `language.renders = html` would mean a box model, an inline layout engine,
-  a cascade and a network story, which is a browser. `quill-core` draws Mermaid because a diagram is
+  a cascade and a network story, which is a browser. `unluminate-core` draws Mermaid because a diagram is
   arithmetic; a web page is not. The three view mode buttons are absent for a `.html` file, which is
-  Quill's rule for a control that can never apply.
+  Unluminate's rule for a control that can never apply.
 - **`.xml` and `.svg`.** Both are markup and would colour tolerably with these rules, and neither is
   HTML: an XML document has no HTML element names in it, has `<?xml?>` and `CDATA`, and calling its
   files HTML in the status bar would be a lie. An XML plugin is a manifest somebody can write in half
@@ -425,7 +425,7 @@ Each of these was considered and each has a reason, so that nobody has to redisc
   mechanism from embedding inside an element and buys much less.
 - **Case-insensitive element names.** `<DIV>` is valid HTML and is drawn as a custom element here,
   because a case-insensitive match would need a second lookup path in a function that runs over every
-  byte of every file in Quill. Nobody has written uppercase tags since 1999 except in `<!DOCTYPE>`,
+  byte of every file in Unluminate. Nobody has written uppercase tags since 1999 except in `<!DOCTYPE>`,
   which is in the list twice.
 
 ---
@@ -435,18 +435,18 @@ Each of these was considered and each has a reason, so that nobody has to redisc
 Four layers, as always, and the point of listing them is that each catches something the others
 cannot.
 
-1. **`quill-core`, no window.** The state machine's own tests: `5 < 3` in prose is prose, an
+1. **`unluminate-core`, no window.** The state machine's own tests: `5 < 3` in prose is prose, an
    apostrophe in prose is not a string, `<p>` is a tag and `< p>` is not, `if (a < b)` inside a
    script opens no tag, `&amp;` is a number in text and in `<title>` and is not in `<script>`, a tag
    name is a keyword and an unknown one is a type, `<title>` and `title="x"` in one file are drawn
    two ways, an unquoted value is a string, and a `<style>` body is reported as embedded CSS.
-2. **`quill-app` unit tests.** The manifest parses, every key reaches the grammar, the older plugins
+2. **`unluminate-app` unit tests.** The manifest parses, every key reaches the grammar, the older plugins
    ask for none of what this added, and switching the CSS plugin off withdraws the colouring inside
    `<style>` in the same frame.
 3. **A screenshot test.** `syntax_html` opens a page with a doctype, a comment, a `<style>` block, a
    `<script>` block, custom elements, entities and a paragraph of prose with element names in it, and
    the picture is what proves the prose is not pink. `plugins_page` gains a row.
-4. **The real window, through `quill-cli`.** Open a real `.html` file, read `editor text`, take a
+4. **The real window, through `unluminate-cli`.** Open a real `.html` file, read `editor text`, take a
    screenshot, fold a tag, ask for completion inside a tag and in prose.
 
 And the cost is measured rather than asserted: `syntax::tags` is a second pass over a markup file
@@ -458,10 +458,10 @@ for folding, and `examples/folding_cost.rs` is what says what it costs.
 
 | Where | What |
 |---|---|
-| `quill-core/src/syntax.rs` | `Grammar::markup`, `Grammar::raw_text`, the five states in `scan`, `Embedded`, `scan_with_embedded`, `tags`, `markup_position` |
-| `quill-core/src/folding.rs` | `tag_regions` for a markup grammar, `Tokens::put_in_order` |
-| `quill-app/src/services/plugins.rs` | `language.markup` and `language.raw_text` read into the grammar |
-| `quill-app/src/app/mod.rs` | `colour_the_file` and `PluginHighlighter` colour the embedded regions |
-| `quill-app/src/app/completion.rs` | the language's words are offered by position in a markup file |
-| `quill-app/plugins/html/` | the manifest, the icon and `icon.md` |
-| `crates/quill-app/tests/` | the new screenshot and the accepted `plugins_page` |
+| `unluminate-core/src/syntax.rs` | `Grammar::markup`, `Grammar::raw_text`, the five states in `scan`, `Embedded`, `scan_with_embedded`, `tags`, `markup_position` |
+| `unluminate-core/src/folding.rs` | `tag_regions` for a markup grammar, `Tokens::put_in_order` |
+| `unluminate-app/src/services/plugins.rs` | `language.markup` and `language.raw_text` read into the grammar |
+| `unluminate-app/src/app/mod.rs` | `colour_the_file` and `PluginHighlighter` colour the embedded regions |
+| `unluminate-app/src/app/completion.rs` | the language's words are offered by position in a markup file |
+| `unluminate-app/plugins/html/` | the manifest, the icon and `icon.md` |
+| `crates/unluminate-app/tests/` | the new screenshot and the accepted `plugins_page` |

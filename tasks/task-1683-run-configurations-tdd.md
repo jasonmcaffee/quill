@@ -3,7 +3,7 @@
 ## 1. What was asked
 
 `task-1683`: run configurations, similar to IntelliJ's, so that node servers, Rust programs and
-scripts can be started from inside Quill. Clickable from the top right of the title bar. A run panel
+scripts can be started from inside Unluminate. Clickable from the top right of the title bar. A run panel
 and an icon at the bottom left, so a run can be stopped, started again and its output read — the
 shape IntelliJ's run widget and Run tool window make together. The ticket also asks a question that
 has to be answered before anything is designed: which parts of this belong to plugins — should
@@ -74,7 +74,7 @@ needs neither the split nor the matcher.
 
 ### 2.4 Zed — the same feature as data
 
-Zed's tasks are the closest existing thing to Quill's temperament: a `tasks.json` of plain data —
+Zed's tasks are the closest existing thing to Unluminate's temperament: a `tasks.json` of plain data —
 label, command, environment, whether to reuse a terminal — spawned *into the integrated terminal*,
 with variables like `$ZED_FILE` resolved from editor state, and a rerun that reuses the captured
 context. No task types, no plugins-as-code, no separate console: the terminal the editor already has
@@ -91,17 +91,17 @@ debugger would be a second way of starting the same command.
 
 **Configuration types as code, IntelliJ-style.** IntelliJ's `ConfigurationType` /
 `ConfigurationFactory` / `SettingsEditor` exists so that a plugin can ship arbitrary launch logic
-with arbitrary UI. Quill's plugins are data and nothing in one is executed; a typed form per
+with arbitrary UI. Unluminate's plugins are data and nothing in one is executed; a typed form per
 language would mean either widening `plugin.kind` to code — the seam `services::plugins` names and
-deliberately leaves empty — or hard-coding a form per language into Quill, which is the same
+deliberately leaves empty — or hard-coding a form per language into Unluminate, which is the same
 maintenance surface IntelliJ pays, paid by hand. §2.2 shows the forms collapse to a command line
 anyway.
 
 **A second output pane.** A console that is not a terminal re-implements colour, scrollback,
 selection and copy, and then a progress bar or a spinner arrives and it is wrong.
-`quill_terminal::Session` already runs an arbitrary program in a pseudoterminal —
+`unluminate_terminal::Session` already runs an arbitrary program in a pseudoterminal —
 `SessionSettings { shell, args, working_directory }` — and already receives the child's exit code
-(`Event::ChildExit`, currently discarded). The output pane is the terminal stack Quill has.
+(`Event::ChildExit`, currently discarded). The output pane is the terminal stack Unluminate has.
 
 **Problem matchers.** No Problems panel to feed, and §2.3 is the warning. A later ticket could make
 `file:line` in any terminal output clickable, which would serve the shell tabs too and belongs to
@@ -113,19 +113,19 @@ One sentence a piece:
 
 - A run configuration is a **named command**: a command line, a working directory, environment
   variables. One kind, not a template per language.
-- Running one **spawns a `quill_terminal::Session`** with the program in place of the shell, so
-  output is a real terminal and stopping is killing a process Quill owns.
+- Running one **spawns a `unluminate_terminal::Session`** with the program in place of the shell, so
+  output is a real terminal and stopping is killing a process Unluminate owns.
 - The **run tile** along the bottom of the window — a sibling of the terminal tile, drawn from the
   same grid — holds one tab per run, with rerun and stop on the tab strip and the exit code written
   where the person is looking.
 - The **run widget** sits at the right of the title bar, before the text tools: the chosen
   configuration's name, a play button, a stop square while it runs, and a chevron listing the rest.
-- Configurations are **stored in `.quill/run-configurations.conf`**, beside the project state that
+- Configurations are **stored in `.unluminate/run-configurations.conf`**, beside the project state that
   already lives there, in the store format everything else uses.
 - Plugins contribute **data, not types**: a manifest may say how a file of its language is run and
   how its projects announce themselves, exactly as `language.renders` names a built-in renderer. No
   Node plugin — node is how the JavaScript plugin's files run.
-- Everything is reachable from **`quill-cli run`**, which also makes every part of it an MCP tool an
+- Everything is reachable from **`unluminate-cli run`**, which also makes every part of it an MCP tool an
   agent can call — including reading a dev server's output, which no other editor here offers.
 
 ## 4. A configuration is a command
@@ -141,16 +141,16 @@ env          PORT=3000; DEBUG=app:*
 
 Four fields. `command` is one line, RustRover-style, split by the same quoting rules a shell uses
 for a double-quoted word — the first word is the program, the rest are arguments, and a path with a
-space in it is written in quotes. The split is done by Quill and the arguments are passed to the
+space in it is written in quotes. The split is done by Unluminate and the arguments are passed to the
 process as arguments: **no shell runs the command line**, so nothing expands, nothing globs, and a
 command containing `&&` is one program with a strange argument rather than two programs. A person
 who wants a shell writes `pwsh -Command ...` and has said so in the one place it can be seen.
 
 `directory` is relative to the project root, empty meaning the root itself — the same rule
-`.quill/open-files.txt` follows, for the same reason: the project may move. The program is found the
+`.unluminate/open-files.txt` follows, for the same reason: the project may move. The program is found the
 way the terminal's shell is found: an absolute path is used as written, a bare name is looked up on
 `PATH`. `env` is `NAME=value` pairs separated by semicolons, RustRover's spelling, laid over the
-environment Quill itself started with — never replacing it, because a child with no `PATH` is a bug
+environment Unluminate itself started with — never replacing it, because a child with no `PATH` is a bug
 nobody enjoys finding.
 
 There is no *type* field. An IntelliJ Node configuration and a Cargo configuration differ in which
@@ -158,7 +158,7 @@ boxes compose the command line; written as the command line, they differ in noth
 
 ### 4.2 Where they live
 
-`.quill/run-configurations.conf`, read by `services::store::Values` like every other file Quill
+`.unluminate/run-configurations.conf`, read by `services::store::Values` like every other file Unluminate
 writes, numbered the way `files.panes` already numbers a list:
 
 ```
@@ -172,9 +172,9 @@ run.2.command = cargo run
 
 One file for the whole project, not one per configuration: IntelliJ's one-file-each answers a
 merge-conflict problem that XML causes and plain lines mostly do not, and `highlights.txt` already
-chose one file for the same reason. It lives in `.quill` because a run configuration belongs to the
+chose one file for the same reason. It lives in `.unluminate` because a run configuration belongs to the
 *project* — the command that starts this server is a fact about this folder — which is the decision
-IntelliJ's *Store as project file* tick lets you make and Quill simply makes. What is per-person
+IntelliJ's *Store as project file* tick lets you make and Unluminate simply makes. What is per-person
 goes where per-person things go: `workspace.conf` gains `run.selected` (the widget's current name)
 and `run.visible` (whether the tile is up), beside the terminal flags it already holds.
 
@@ -189,7 +189,7 @@ configuration missing is better than a project that will not open.
 the widget's list as a temporary configuration — drawn in the quiet colour, the way an occurrence
 in a comment is listed in the references modal — so it can be rerun and so it can be kept.
 Temporary configurations live in memory, at most five with the oldest dropped, and are **not
-written to disk**; IntelliJ writes its temporaries into `workspace.xml` and Quill deliberately does
+written to disk**; IntelliJ writes its temporaries into `workspace.xml` and Unluminate deliberately does
 not, because a file the project shares should hold what somebody chose to keep. *Save* in the
 dialog, or editing a temporary there, promotes it into `run-configurations.conf`.
 
@@ -199,7 +199,7 @@ dialog, or editing a temporary there, promotes it into `run-configurations.conf`
 
 Starting a configuration builds a `SessionSettings` — program, arguments, resolved working
 directory — and calls `Session::spawn`, the same call the terminal tile makes, with two additions
-to `quill-terminal`:
+to `unluminate-terminal`:
 
 - `SessionSettings.env: Vec<(String, String)>` — variables laid over the inherited environment.
   The terminal's shells leave it empty and change by nothing.
@@ -226,7 +226,7 @@ configurations with two names, which also gives the two tabs two names.
 ### 5.3 Stopping
 
 The stop button's first press is polite: the interrupt byte down the pty, `0x03`, which reaches the
-program as Ctrl+C — the encoding `quill_terminal::keys` already owns. A program still alive after a
+program as Ctrl+C — the encoding `unluminate_terminal::keys` already owns. A program still alive after a
 short grace (two seconds) or a second press is killed through the child handle. That is IntelliJ's
 soft-then-hard rule, and the grace is short because the person pressing stop twice has already
 decided. Closing a run tab, closing the window, or rerunning all take the same path — nothing ever
@@ -236,7 +236,7 @@ orphans a child on purpose, and `Session`'s drop already shuts the pty down.
 
 When `running` goes false the tab stays, holding everything the program wrote, with the exit code
 written in the tab's strip — `finished`, or `exit code 101` in the error colour when it is not
-zero. The grid is never written into by Quill: IntelliJ prints its epilogue into the console, but
+zero. The grid is never written into by Unluminate: IntelliJ prints its epilogue into the console, but
 that line pretending to be program output is exactly the confusion a separate strip avoids, and the
 strip is where the eye already is because rerun and stop live there.
 
@@ -278,7 +278,7 @@ the title bar already has. Three parts:
 - **Play**, running the selected configuration. With none selected it opens the dialog instead,
   which is what `Add Configuration…` means without a second control meaning it.
 - **Stop**, drawn only while the selected configuration runs — a control absent when it cannot
-  apply, Quill's rule — killing by §5.3.
+  apply, Unluminate's rule — killing by §5.3.
 
 With no configurations and no runnable file the widget is just the play button that opens the
 dialog: present, because the way to discover the feature has to be visible, and small, because it
@@ -305,7 +305,7 @@ remove under it, the four fields of the chosen one on the right — `Name`, `Com
 `Environment` — each a `controls` field, each with a plain widget name (`Run configuration name`,
 `Run configuration command`, …) so the screenshot tests can find them. A temporary configuration
 selected in the list shows the same fields plus a `Save` button that promotes it. The footer is
-`Done`. Changes are written to `.quill/run-configurations.conf` when the dialog closes, by the
+`Done`. Changes are written to `.unluminate/run-configurations.conf` when the dialog closes, by the
 released binary only.
 
 Removing a configuration whose run is still going stops the run, after the modal's confirmation —
@@ -315,7 +315,7 @@ worse than one extra click. No folders and no before-launch list: §12.
 ## 8. What a plugin says, and what it never does
 
 The ticket's question: should running node be a Node plugin? **No — node is how JavaScript runs**,
-and Quill already has a JavaScript plugin. A separate Node plugin would be a plugin with no
+and Unluminate already has a JavaScript plugin. A separate Node plugin would be a plugin with no
 language, no extensions and no tokens, existing to carry one line of data that the JavaScript
 manifest can carry itself. The precedent is exact: Mermaid did not widen `plugin.kind` to get its
 diagrams drawn; it named a built-in renderer with a data key. Running follows the same seam, with
@@ -324,7 +324,7 @@ two keys and a named-detector rule, all off unless a manifest asks:
 - **`run.file`** — how one file of this language is run, `{file}` standing for the path:
   `run.file = node {file}` in the JavaScript plugin, `npx tsx {file}` in TypeScript's. Enables
   §6.3 and nothing else.
-- **`run.project = <name>`** — names a **project detector built into Quill**, checked against
+- **`run.project = <name>`** — names a **project detector built into Unluminate**, checked against
   `plugins::PROJECT_RUNNERS` exactly as `language.renders` is checked against `RENDERERS`, refused
   by name when this version has no such detector. Two ship at first: `cargo` — when the project
   root holds `Cargo.toml`, offer a `cargo run` configuration — and `npm` — when it holds
@@ -338,7 +338,7 @@ precisely so that the conf file stays what somebody chose to keep.
 
 **Nothing in a plugin is executed, still.** A manifest contributes a command *line* — data — and
 nothing runs until a person presses run, with the command written in front of them in the widget,
-the flyout and the dialog. The parsing of `package.json` and `Cargo.toml` is Quill's own code,
+the flyout and the dialog. The parsing of `package.json` and `Cargo.toml` is Unluminate's own code,
 shipped in the binary, which is what keeps a third-party manifest from being able to smuggle logic:
 the most a manifest can do is suggest text, visibly. And the switch works the way Mermaid's does:
 disable the JavaScript plugin and `Run Current File` on `.js` files and the npm suggestions
@@ -359,7 +359,7 @@ one-key-one-item test polices the additions.
 
 ### 9.2 The catalogue
 
-A new area `run` in `quill-cli/src/catalogue.rs`, one arm each in `app/cli.rs`:
+A new area `run` in `unluminate-cli/src/catalogue.rs`, one arm each in `app/cli.rs`:
 
 ```
 run list                    the configurations, with state and exit codes, as JSON
@@ -382,7 +382,7 @@ day it lands, documented by the documentation test or failing it.
 
 `services::run_configurations` owns the model: reading and writing the conf file, the temporaries,
 the command-line split, the env parse, the detectors' output — all pure, all unit-testable with a
-temporary folder and no window. `QuillApp` holds a `RunPanel` the way it holds the
+temporary folder and no window. `UnluminateApp` holds a `RunPanel` the way it holds the
 `TerminalPanel`: visibility, focus, and a `Vec` of runs, each a configuration snapshot plus its
 `Session`. A run holds the *snapshot*, not the configuration's name, so editing a configuration
 mid-run changes what the next run does and never what the tab says about the one that already
@@ -393,9 +393,9 @@ those hold and report what was pressed, deciding nothing, as every component doe
 
 The four layers as the project keeps them:
 
-1. **`quill-terminal`**: `SessionSettings.env` reaches the child; a spawned `cmd /c exit 3` (and
+1. **`unluminate-terminal`**: `SessionSettings.env` reaches the child; a spawned `cmd /c exit 3` (and
    `sh -c 'exit 3'` on macOS) ends with `running` false and `exit_code == Some(3)`.
-2. **`quill-app` units**: the conf file round-trips, a block missing its command is dropped whole,
+2. **`unluminate-app` units**: the conf file round-trips, a block missing its command is dropped whole,
    the command splitter handles quotes and refuses nothing, env pairs parse, relative directories
    resolve, detectors read a real `package.json`/`Cargo.toml` from a temporary folder, temporaries
    cap at five, and the plugins that shipped before ask for none of the new keys.
@@ -404,7 +404,7 @@ The four layers as the project keeps them:
    flyout with permanents, temporaries and suggestions; the dialog. Real-process tests assert on
    text with a timeout and pump, never `Harness::run`.
 4. **The real window**: run a node server from the widget, watch it in the tile, stop it; then the
-   same three from `quill-cli run` — which also exercises `run output` for the agent case.
+   same three from `unluminate-cli run` — which also exercises `run output` for the agent case.
 
 `action_names.rs` fails if any new menu entry lacks a name, and the documentation test fails until
 `commands.md` says what `run` does. No performance budget is added: nothing here runs once a frame
@@ -417,13 +417,13 @@ has.
   seam this builds.
 - **Before-launch tasks and compound configurations.** Cargo builds before it runs and npm scripts
   compose in `package.json`; the machinery earns its keep the day somebody actually chains two
-  Quill configurations, and a `run.N.before` key slots into the format without migration.
+  Unluminate configurations, and a `run.N.before` key slots into the format without migration.
 - **Problem matchers, and clickable `file:line` in output.** The second is worth a ticket of its
   own and belongs to the terminal stack, where the shell tabs get it too.
 - **A Services window.** Aggregation pays at a dozen simultaneous runs; the tile's tabs are that
-  window at Quill's size.
+  window at Unluminate's size.
 - **Allow-multiple-instances.** Two names make two runs (§5.2).
-- **Folders, favourites and pinned tabs** — organisation for a hundred configurations a `.quill`
+- **Folders, favourites and pinned tabs** — organisation for a hundred configurations a `.unluminate`
   project does not have.
 
 ## 13. Sources

@@ -1,9 +1,9 @@
-# The Quill mark. A workspace of its own — the empty `[workspace]` table below detaches it from the
-# one at the root — so that `cargo build` on Quill does not build a drawing program, and so that the
+# The Unluminate mark. A workspace of its own — the empty `[workspace]` table below detaches it from the
+# one at the root — so that `cargo build` on Unluminate does not build a drawing program, and so that the
 # repository still holds four crates and no more.
 [package]
-name = "quill-icon"
-description = "Draws the Quill application icon and writes quill.ico, quill.icns and an iconset."
+name = "unluminate-icon"
+description = "Draws the Unluminate application icon and writes unluminate.ico, unluminate.icns and an iconset."
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"

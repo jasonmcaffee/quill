@@ -96,7 +96,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "quill-icon"
+name = "unluminate-icon"
 version = "0.1.0"
 dependencies = [
  "png",

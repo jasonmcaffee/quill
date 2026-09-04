@@ -21,12 +21,12 @@ Six things, and the sixth is the one that decides the design:
    out from the file rather than typed in.
 4. `Collapse All But Highlighted` and `Show All Again` on the editing area's right click menu, so a
    person can read only the passages they have marked.
-5. Keyboard shortcuts, `quill-cli` commands and MCP tools for all of it.
+5. Keyboard shortcuts, `unluminate-cli` commands and MCP tools for all of it.
 6. **The line numbers stay correct.** Line 400 is line 400 whether the four hundred lines above it
    are showing or not.
 
 Point 6 rules out the cheapest implementation, which is to build a second document holding only the
-visible lines and lay that out. Every offset in Quill — the caret, the selection, the marked
+visible lines and lay that out. Every offset in Unluminate — the caret, the selection, the marked
 passages, the syntax spans, the search hits, the definitions index — is a byte offset into the real
 file. A shadow document would need every one of them translated in both directions at every seam,
 and the first seam somebody forgot would put a highlight on the wrong word. What is wanted is the
@@ -52,7 +52,7 @@ keyboard reaches them at three depths:
 What is worth copying: the arrow lives beside the line number rather than in the text; the head line
 stays; a collapsed region has a visible placeholder that is itself the way to expand it. What is not
 worth copying: the numeric keypad. Half the keyboards in this house have no numeric keypad, and
-`Ctrl+NumPad-` on a laptop is not a shortcut, it is a riddle. §8 says what Quill binds instead.
+`Ctrl+NumPad-` on a laptop is not a shortcut, it is a riddle. §8 says what Unluminate binds instead.
 
 ### 2.2 Visual Studio Code
 
@@ -70,15 +70,15 @@ Its commands are the ones the ticket's fourth point names: `editor.foldAll` (`Ct
 `editor.unfoldAll` (`Ctrl+K Ctrl+J`), and **`editor.foldAllExcept`** — "Fold All Regions Except
 Selected", `Ctrl+K Ctrl+-`, which folds everything and then unfolds the regions the selections are
 in, along with their parents. That command is exactly the ticket's `collapse all but highlighted`,
-with a selection where Quill has marked passages.
+with a selection where Unluminate has marked passages.
 
 ### 2.3 CodeMirror 6
 
 Folding is a `Decoration.replace` over a range, held in a state field, and the folded set is queried
 with `foldedRanges`. The decorations ride the document's own position mapping, so an edit above a
-fold moves the fold rather than breaking it. That is the important idea and Quill takes it: **the
+fold moves the fold rather than breaking it. That is the important idea and Unluminate takes it: **the
 fold state is anchored in the document's coordinates and is moved by the same code that moves
-everything else when the text changes** — which in Quill is the two functions `Document::insert` and
+everything else when the text changes** — which in Unluminate is the two functions `Document::insert` and
 `Document::remove_range`, and nothing else.
 
 ### 2.4 The Language Server Protocol
@@ -87,12 +87,12 @@ everything else when the text changes** — which in Quill is the two functions 
 character offsets, an optional `collapsedText`, and a `kind` which is one of `comment`, `imports` or
 `region`. Two things are worth taking from it. First, the range is **lines**, not bytes — every
 editor that folds, folds whole lines. Second, the `kind` exists so that "fold all comments" can be a
-command; Quill's [`Kind`](#4-what-is-foldable) is the same idea and the same three or four values.
+command; Unluminate's [`Kind`](#4-what-is-foldable) is the same idea and the same three or four values.
 
 ### 2.5 Sublime Text and Vim
 
 Sublime folds from its syntax definition's scopes and shows `⋯` in the text. Vim's `foldmethod` is
-the same catalogue Quill is choosing from: `manual`, `indent`, `expr`, `marker`, `syntax`. Vim's
+the same catalogue Unluminate is choosing from: `manual`, `indent`, `expr`, `marker`, `syntax`. Vim's
 `zc`/`zo`/`zR`/`zM` are the same four commands under different names.
 
 ## 3. Which tier decides what is foldable
@@ -109,10 +109,10 @@ without a language server is a bad day; a *fold arrow* that silently does not ap
 that looks broken.
 
 **A parser — tree-sitter, or a hand-written one per language** — would be correct and is code where
-Quill's plugins are data. Twenty-one languages would be twenty-one grammars to carry.
+Unluminate's plugins are data. Twenty-one languages would be twenty-one grammars to carry.
 
-**A syntactic reading**, from the token stream `quill_core::syntax::scan` already produces. That is
-what Quill does everywhere else — the definitions index, find all references, the import refactor —
+**A syntactic reading**, from the token stream `unluminate_core::syntax::scan` already produces. That is
+what Unluminate does everywhere else — the definitions index, find all references, the import refactor —
 and it is what VS Code falls back on for every language with no provider, which in practice is most
 of them. It is instant, deterministic, testable with no window, and it costs nothing that is not
 already being paid: the file is scanned to colour it, and this is one more reader of the same pass.
@@ -121,7 +121,7 @@ So: **a syntactic reading, from the same one pass.**
 
 ## 4. What is foldable
 
-`quill_core::folding` answers it. One entry point, and the file's kind chooses how it reads:
+`unluminate_core::folding` answers it. One entry point, and the file's kind chooses how it reads:
 
 ```rust
 pub enum Reading<'a> {
@@ -150,7 +150,7 @@ pub struct Region {
 pub enum Kind { Block, Comment, Indent, Heading }
 ```
 
-`head` is a paragraph index, which is what `quill_core` calls a source line everywhere else, and it
+`head` is a paragraph index, which is what `unluminate_core` calls a source line everywhere else, and it
 is one less than the number the gutter draws.
 
 ### 4.1 Blocks — `Kind::Block`
@@ -234,22 +234,22 @@ one line at the top of a file would move every fold in it down one, and every fo
 would be pointing at the wrong block until the file was closed.
 
 **In the `Document`**, as byte offsets, which is where the marked passages live and for exactly the
-same reason. `Document::insert` and `Document::remove_range` are the only two places in Quill that
+same reason. `Document::insert` and `Document::remove_range` are the only two places in Unluminate that
 know a range of bytes moved, and they already shift `chars` and `highlights` in the same two lines.
 A third line shifts the folds, and an edit anywhere in the file leaves every fold where it belongs
-without anything else in Quill having to think about it.
+without anything else in Unluminate having to think about it.
 
-So: **`quill_core::folding::Folds` lives in the `Document`**, and it holds the byte offset of the
+So: **`unluminate_core::folding::Folds` lives in the `Document`**, and it holds the byte offset of the
 **start of the head line** of every collapsed region.
 
-Three rules come with it, and each is a rule something else in Quill already follows:
+Three rules come with it, and each is a rule something else in Unluminate already follows:
 
-- **It rides the undo `Snapshot`**, because undo in Quill restores a state and this is part of the
+- **It rides the undo `Snapshot`**, because undo in Unluminate restores a state and this is part of the
   state the document was in. Undoing back past the moment a block was folded unfolds it. That is
   the same sentence `Highlights` carries, and the alternative — folds that survive an undo — would
   need the snapshot to know how to *not* restore something, which nothing here does.
 - **Folding is not an edit.** Nothing goes on the undo history, and the file is not marked as having
-  unsaved changes, because what Quill saves is plain text and a fold is not in it. The editor's font
+  unsaved changes, because what Unluminate saves is plain text and a fold is not in it. The editor's font
   and the marked passages already work this way.
 - **A stored offset is snapped to its line.** A fold is collapsed when one of the stored offsets
   falls anywhere inside its head line, rather than exactly on its first byte, so typing at the start
@@ -303,7 +303,7 @@ pub struct Hidden(Vec<Range<usize>>);   // paragraph ranges, sorted, never overl
 ```
 
 with `Hidden::none()` for every caller that does not fold — the Markdown preview, the diagram view,
-the tests in `quill-core`, `examples/frame_cost.rs`.
+the tests in `unluminate-core`, `examples/frame_cost.rs`.
 
 Two things inside `layout.rs` have to change with it, and both are the sort of thing that is a
 silent wrong answer rather than a crash if it is missed:
@@ -338,7 +338,7 @@ letters. Making it a ceiling as well would change what it means for the one thin
 `components/gutter.rs` has said this since it was written:
 
 > The 12 point gap to the right of the numbers is deliberate empty space. Right clicking anywhere in
-> the gutter opens its menu, and the gap is where a folding arrow would go if Quill ever grows
+> the gutter opens its menu, and the gap is where a folding arrow would go if Unluminate ever grows
 > folding, so adding one later would not move the text.
 
 So the arrow goes in that gap and **the gutter does not change width**, which means no screenshot in
@@ -349,13 +349,13 @@ It is drawn rather than lettered, which is what `design/style-guide.md` asks for
 than its advance and would not sit in the middle of a twelve point column. Two strokes, seven points
 across, pointing **down** when the block is open and **right** when it is collapsed — which is what
 IntelliJ, VS Code and every file tree in the world do, and which the explorer's own disclosure
-triangles in Quill already do.
+triangles in Unluminate already do.
 
 Quiet in `TEXT_FAINT`, and `TEXT_CONTROL` under the pointer or when the block is collapsed. A
 collapsed block's arrow is never faint: it is the only thing on the screen saying that four hundred
 lines are missing.
 
-The gutter reports the click and decides nothing, which is what every component in Quill does:
+The gutter reports the click and decides nothing, which is what every component in Unluminate does:
 `GutterOutcome::toggle_fold: Option<usize>` carries the paragraph.
 
 ### 7.2 The collapsed block
@@ -365,7 +365,7 @@ The head line stays. After the end of its text the window draws a small rounded 
 Sublime's `⋯` and is the affordance a person reaches for before they think about the gutter.
 
 It is painted by the window rather than put into the text, and that is a decision worth writing down.
-Quill's Markdown preview is "a document, which is what makes it read like one": everything on the
+Unluminate's Markdown preview is "a document, which is what makes it read like one": everything on the
 screen is real text in a real `Document` and therefore selects, copies and hit-tests with no new
 code. A placeholder is the opposite case. Putting `{...}` into the text would mean the layout
 engine, the caret, the selection and the clipboard all had to know that three of the characters in
@@ -380,7 +380,7 @@ and it needs no code at all.
 
 Seven actions, all of them parameterless and about the file that is showing, so all seven are
 ordinary `Action`s with an arm in `run_action` — reachable from the menus, the keyboard,
-`quill-cli action run` and the MCP server without any of them being taught anything.
+`unluminate-cli action run` and the MCP server without any of them being taught anything.
 
 | Action | What it does | Key |
 |---|---|---|
@@ -391,21 +391,21 @@ ordinary `Action`s with an arm in `run_action` — reachable from the menus, the
 
 `Ctrl+.` is IntelliJ's own key for folding the selection, so it is the one key a person who has used
 one will already try; and the full stop is next to the comma that already opens Settings, which is a
-small thing that makes a pair of them memorable. Nothing in Quill claims any of the four today, and
+small thing that makes a pair of them memorable. Nothing in Unluminate claims any of the four today, and
 `app::action_names` fails the build if two menu entries claim one key equivalent, so this is checked
 rather than believed.
 
 **Where they are on the menus.**
 
 - `View -> Folding`, a submenu holding all four, beside `Split`. It is on a real menu so that
-  `quill-cli action list` — which is built by walking the real menus — finds them.
+  `unluminate-cli action list` — which is built by walking the real menus — finds them.
 - The editing area's own right click menu, `components::text_menu`, gains `Collapse All But
   Highlighted` and `Expand All` under the highlight section, which is what the ticket asks for and is
   where a person who has just marked four passages is already pointing.
 - The gutter's right click menu gains `Collapse All` and `Expand All`, because a person who has just
   right clicked the fold arrows is asking about folding.
 
-They are **absent for a file that cannot fold**, which is Quill's rule for a control that can never
+They are **absent for a file that cannot fold**, which is Unluminate's rule for a control that can never
 apply — the `F` button is not drawn for a `.rs` file and the view mode buttons are not drawn for a
 `.txt` one. A picture has no folds. One function answers it, `folding_applies`, and the three menus
 and the command line all ask it, so none of them can disagree.
@@ -436,7 +436,7 @@ for this plainly means that function.
 Two rules, and between them they are the whole of the interaction.
 
 **A caret is never inside a hidden paragraph.** Anything that moves the caret into one expands the
-folds around it first: `Go to Definition`, a search hit, `Find in Files`, `quill-cli editor caret
+folds around it first: `Go to Definition`, a search hit, `Find in Files`, `unluminate-cli editor caret
 --line`, `Navigate Back`. It is one function, `reveal(offset)`, called from the one place a jump
 lands — the same shape as `follow_the_open_file`, which is derived from the state rather than fired
 from each of the eleven places that could need it, because the twelfth would be the one that forgot.
@@ -455,11 +455,11 @@ A new area, `fold`, because the areas are what the window is made of and this is
 window:
 
 ```
-quill-cli fold list [--json]
-quill-cli fold toggle [--line <number>]
-quill-cli fold collapse [--line <number>] [--all]
-quill-cli fold expand [--line <number>] [--all]
-quill-cli fold others [--marked] [--selection]
+unluminate-cli fold list [--json]
+unluminate-cli fold toggle [--line <number>]
+unluminate-cli fold collapse [--line <number>] [--all]
+unluminate-cli fold expand [--line <number>] [--all]
+unluminate-cli fold others [--marked] [--selection]
 ```
 
 `fold list` reports every region in the file that is showing — its head line, its last line, its
@@ -467,12 +467,12 @@ kind and whether it is collapsed — which is what an agent needs before it can 
 and what makes the feature testable from outside the window.
 
 The MCP tools come from the catalogue with no further work, which is the fourth rule of
-`quill-cli/src/catalogue.rs` and the reason `quill_cli::mcp` exists:
+`unluminate-cli/src/catalogue.rs` and the reason `unluminate_cli::mcp` exists:
 `every_command_is_offered_as_a_tool_in_both_shapes` fails the build if one ever is not. The area's
 title and note are written for somebody who cannot see the window, because that is who reads them.
 
-Documentation is a test: `quill-cli/src/documentation.rs` fails while a command has no section in
-`quill-cli/docs/commands.md`, and `cargo run -p quill-cli --example reference` writes it.
+Documentation is a test: `unluminate-cli/src/documentation.rs` fails while a command has no section in
+`unluminate-cli/docs/commands.md`, and `cargo run -p unluminate-cli --example reference` writes it.
 
 ## 11. What it costs
 
@@ -487,8 +487,8 @@ is on the screen rather than what is in the file.
 - A frame with a fold open or closed costs one `relayout`, which is what typing a letter costs.
 - `Hidden::contains` is a binary search, asked once per paragraph while laying out.
 
-`cargo run --release -p quill-app --example folding_cost` prints the numbers that matter, so the
-claim stays measured rather than remembered. On `crates/quill-app/src/app/mod.rs` — 274 kilobytes,
+`cargo run --release -p unluminate-app --example folding_cost` prints the numbers that matter, so the
+claim stays measured rather than remembered. On `crates/unluminate-app/src/app/mod.rs` — 274 kilobytes,
 5,554 lines, the largest file in this repository:
 
 | What | Cost |
@@ -506,13 +506,13 @@ tokeniser for — and `fold_regions` uses them. Run separately it would have bee
 keystroke on this file for a second answer to a question that had already been asked, which is
 `task-1666`'s rule and `task-1681`'s fix restated.
 
-A file past `QuillApp::COLOUR_LIMIT` is not read for its blocks at all, for the reason it is not
+A file past `UnluminateApp::COLOUR_LIMIT` is not read for its blocks at all, for the reason it is not
 coloured: both are one linear pass over the text on every change. It keeps its line numbers and
 loses its arrows.
 
 ## 12. Tests
 
-**`quill-core`, with no window.**
+**`unluminate-core`, with no window.**
 
 - Every shape of block: a function, an `if`, a nested pair, `} else {`, `});`, a bracket inside a
   string, a bracket inside a comment, an unclosed bracket.
@@ -528,7 +528,7 @@ loses its arrows.
   is the same test `relayout_agrees_with_layout_after_every_shape_of_edit` already is, and it is what
   catches the byte-shift fault of §6.
 
-**`quill-app`, with no window.** `folding_applies` for each kind of file; `Collapse All But
+**`unluminate-app`, with no window.** `folding_applies` for each kind of file; `Collapse All But
 Highlighted` over a document with three marks, including the parent-expanding rule; the fold menus'
 entries; `action_names`; the CLI catalogue round trip.
 
@@ -547,8 +547,8 @@ numbers, edit above it, check the fold is still on the same function.
 - **Custom `//#region` markers.** They are a language configuration key in VS Code and would be a
   tenth manifest key here. Nothing has asked for one, and a fold that has to be typed into the file
   is a fold that lives in everybody's diff.
-- **Folds that survive closing the file.** IntelliJ keeps them in `workspace.xml`. Quill could keep
-  them in `.quill/` beside the marked passages, and this deliberately does not: a fold is a way of
+- **Folds that survive closing the file.** IntelliJ keeps them in `workspace.xml`. Unluminate could keep
+  them in `.unluminate/` beside the marked passages, and this deliberately does not: a fold is a way of
   reading a file for a minute, and a file that opened with its contents hidden by a decision somebody
   made last Tuesday is a file that looks broken. The marked passages persist because a mark is
   deliberate and durable; a fold is neither.
