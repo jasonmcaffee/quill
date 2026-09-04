@@ -86,7 +86,13 @@ wry = { version = "0.56.1", default-features = false, features = ["os-webview"] 
 # flushing", from egui's own text. See `tasks/agent-tasks-vello-ui-tdd.md` §9.
 vello_cpu = { version = "0.1", default-features = false, features = ["std", "u8_pipeline"] }
 egui = "0.36"
-eframe = { version = "0.36", default-features = false, features = ["wgpu", "default_fonts"] }
+# `accesskit` builds the accessibility tree the operating system's screen reader reads: Narrator and
+# UI Automation on Windows, VoiceOver and NSAccessibility on macOS. It was **off**, and the whole of
+# what that cost is that the 112 `widget_info` calls already in `components/` reached nothing at all
+# in the shipped binary -- every control in Unluminate has carried a name since `task-1655`, and no
+# screen reader could read one of them. `task-1804` §3.4; `design/accessibility.md` is what is
+# still missing.
+eframe = { version = "0.36", default-features = false, features = ["wgpu", "default_fonts", "accesskit"] }
 fontdb = "0.24"
 ab_glyph = "0.2"
 arboard = "3.6"

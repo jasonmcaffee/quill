@@ -144,6 +144,15 @@ flowchart LR
   main --> largest --> area_of
 \`\`\`
 `,
+  // A page for `s24-browser`. A browser tab renders HTML over the `unluminate://` project origin,
+  // so the scenario needs one: the first run of that scenario asked for README.md and was refused,
+  // correctly, with "is not an HTML file". `task-1804`.
+  'web/index.html': `<!doctype html>
+<html>
+  <head><title>Scratch</title><link rel="stylesheet" href="styles.css"></head>
+  <body><h1>Scratch</h1><p>A page for the browser tab to render.</p><script src="app.js"></script></body>
+</html>
+`,
   'docs/notes.md': `# Notes\n\nSome prose to preview.\n\n- one\n- two\n`,
 };
 
@@ -152,6 +161,30 @@ for (const [rel, body] of Object.entries(files)) {
   const f = path.join(P, rel);
   fs.mkdirSync(path.dirname(f), { recursive: true });
   fs.writeFileSync(f, body);
+}
+
+// A small SQLite database for `s25-database`, which asks an agent to add a data source, list its
+// tables and say how many rows are in the biggest one. `task-1804` §4.2: the Database plugin
+// shipped in `task-1777` and no scenario had ever watched an agent use it, which is the state
+// `CLAUDE.md` says a feature must not be left in.
+//
+// Written as SQL and turned into a file by `sqlite3` when this machine has one; the scenario says so
+// itself when it does not, rather than the run failing somewhere further in. Not committed, because
+// nothing binary in this repository is.
+const database = path.join(P, 'data', 'sample.db');
+fs.mkdirSync(path.dirname(database), { recursive: true });
+if (!fs.existsSync(database)) {
+  const schema = [
+    'CREATE TABLE artist (id INTEGER PRIMARY KEY, name TEXT NOT NULL);',
+    'CREATE TABLE album (id INTEGER PRIMARY KEY, title TEXT NOT NULL, artist_id INTEGER REFERENCES artist(id));',
+    'CREATE VIEW album_by_artist AS SELECT artist.name, album.title FROM album JOIN artist ON artist.id = album.artist_id;',
+    "INSERT INTO artist (id, name) VALUES (1, 'Miles Davis'), (2, 'Bill Evans'), (3, 'John Coltrane');",
+    "INSERT INTO album (id, title, artist_id) VALUES (1, 'Kind of Blue', 1), (2, 'Milestones', 1), (3, 'Waltz for Debby', 2), (4, 'Sunday at the Village Vanguard', 2), (5, 'A Love Supreme', 3), (6, 'Giant Steps', 3), (7, 'Blue Train', 3);",
+  ].join('\n');
+  const made = spawnSync('sqlite3', [database], { input: schema, encoding: 'utf8' });
+  if (made.error || made.status !== 0) {
+    console.log('no sqlite3 on this machine, so data/sample.db was not made: s25-database will have nothing to open.');
+  }
 }
 
 const git = (...a) => spawnSync('git', a, { cwd: P, encoding: 'utf8' });

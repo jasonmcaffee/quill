@@ -789,3 +789,102 @@ mod tests {
         assert_eq!(IconSet::parse("atom"), None);
     }
 }
+
+#[cfg(test)]
+mod closed_palette {
+    /// **No component names a colour.** `task-1804` §8.1 asked for this test and said why: the
+    /// palette is closed and the discipline is real -- `theme::color` is the whole list, a theme says
+    /// what a name *means* and cannot add a forty-first -- but *"none of it is enforced by a test,
+    /// unlike almost every other invariant in this project"*.
+    ///
+    /// So this is the enforcement. It reads the source of `components/` and fails on a literal
+    /// colour: `Color32::from_rgb(0x1A, 0x1F, 0x26)` or `from_rgb(26, 31, 38)`.
+    ///
+    /// ## What it deliberately allows
+    ///
+    /// **A conversion of a colour something else already decided.** All 22 raw `from_rgb` calls in
+    /// `components/` today are `Color32::from_rgb(colour.r, colour.g, colour.b)` -- a syntax token's
+    /// colour, a terminal palette entry, an epic's colour off the board -- and those are not the
+    /// thing the rule is about. What the rule forbids is a component *choosing* a colour, and a
+    /// component cannot choose one it was handed.
+    ///
+    /// The test is therefore about **literal numbers**, which is exactly what "a hardcoded hex
+    /// triple" means and is what makes it a rule a reader can check by eye.
+    #[test]
+    fn no_component_writes_a_colour_of_its_own() {
+        let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/components");
+        let mut offenders: Vec<String> = Vec::new();
+        for (path, text) in every_source(&folder) {
+            for (number, line) in text.lines().enumerate() {
+                let trimmed = line.trim_start();
+                // A comment may name a colour -- several explain why one was chosen -- and a comment
+                // is not code. `epaint`'s own named constants are not literals either.
+                if trimmed.starts_with("//") {
+                    continue;
+                }
+                if let Some(at) = trimmed.find("from_rgb") {
+                    let after = &trimmed[at..];
+                    if writes_a_literal(after) {
+                        offenders.push(format!("{}:{}: {}", path, number + 1, trimmed));
+                    }
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "a component chose a colour of its own. The palette is `theme::color` and it is \
+             closed -- a colour that is not in it goes in `theme/mod.rs`'s `palette!` list with a \
+             note saying what it means, so a theme can say what it means too:\n  {}",
+            offenders.join("\n  ")
+        );
+    }
+
+    /// Whether a `from_rgb(` call's first value is a literal number rather than something read.
+    fn writes_a_literal(after: &str) -> bool {
+        let Some(open) = after.find('(') else {
+            return false;
+        };
+        let inside = &after[open + 1..];
+        let first = inside.trim_start();
+        first.starts_with("0x") || first.chars().next().is_some_and(|c| c.is_ascii_digit())
+    }
+
+    /// Every `.rs` file under `folder`, with its path relative to it.
+    fn every_source(folder: &std::path::Path) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        let mut waiting = vec![folder.to_path_buf()];
+        while let Some(here) = waiting.pop() {
+            let Ok(entries) = std::fs::read_dir(&here) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    waiting.push(path);
+                } else if path.extension().is_some_and(|kind| kind == "rs") {
+                    if let Ok(text) = std::fs::read_to_string(&path) {
+                        let name = path
+                            .strip_prefix(folder)
+                            .unwrap_or(&path)
+                            .to_string_lossy()
+                            .replace('\\', "/");
+                        out.push((name, text));
+                    }
+                }
+            }
+        }
+        assert!(!out.is_empty(), "components/ should hold some source");
+        out
+    }
+
+    /// And the test's own reading is checked, so it cannot pass by finding nothing.
+    #[test]
+    fn a_literal_is_told_from_a_colour_that_was_handed_in() {
+        assert!(writes_a_literal("from_rgb(0x1A, 0x1F, 0x26)"), "a hex triple is a literal");
+        assert!(writes_a_literal("from_rgb(26, 31, 38)"), "and so is a decimal one");
+        assert!(writes_a_literal("from_rgb( 0xFF, 0, 0)"), "however it is spaced");
+        assert!(!writes_a_literal("from_rgb(colour.r, colour.g, colour.b)"), "this is a conversion");
+        assert!(!writes_a_literal("from_rgb(found.r, found.g, found.b)"));
+        assert!(!writes_a_literal("from_rgb(mix(a), mix(b), mix(c))"));
+    }
+}

@@ -185,8 +185,9 @@ impl<D: Driver> Server<D> {
             Ok(call) => call,
             Err(problem) => return error(id, -32602, problem.0),
         };
+        let ignored = call.ignored.clone();
         match self.driver.run(call.command, call.arguments, call.instance.as_deref()) {
-            Ok(reply) => result(id, self.tool_result(call.command, &reply)),
+            Ok(reply) => result(id, self.tool_result(call.command, &reply, &ignored)),
             Err(problem) => {
                 result(id, refused(format!("{}: {}", problem.code, problem.message)))
             }
@@ -194,11 +195,31 @@ impl<D: Driver> Server<D> {
     }
 
     /// Turn what the window said into what an agent reads.
-    fn tool_result(&self, command: &'static Command, reply: &Reply) -> Value {
+    fn tool_result(
+        &self,
+        command: &'static Command,
+        reply: &Reply,
+        ignored: &[String],
+    ) -> Value {
         if let Some(failure) = &reply.error {
             return refused(format!("{}: {}", failure.code, failure.message));
         }
-        let mut content = vec![json!({ "type": "text", "text": spoken(reply) })];
+        let mut said = spoken(reply);
+        // **Named rather than dropped in silence.** `tools::sibling_keys` takes out the keys the
+        // grouped schema offered that belong to another verb of the area, so a call that would have
+        // been refused runs -- but a caller that meant them has to find out, or this becomes the
+        // fault `task-1794` was filed about wearing a different hat. `task-1804` §4.2.
+        if !ignored.is_empty() {
+            said.push_str(&format!(
+                "\\n\\nIgnored {}: {} of `{}`, not of `{}`. The tool's schema lists every command's \\
+                 keys together, which is why they were offered.",
+                ignored.join(", "),
+                if ignored.len() == 1 { "it is a key" } else { "they are keys" },
+                command.area,
+                command.typed(),
+            ));
+        }
+        let mut content = vec![json!({ "type": "text", "text": said })];
         if let Some(picture) = self.picture_from(command, reply) {
             content.push(picture);
         }

@@ -239,6 +239,24 @@ fn grouped() -> Vec<Tool> {
         if area == "editor" {
             description.push_str("\nFile verbs open, reload, save and close are aliases for the corresponding tab commands.\n");
         }
+        // The usage lines above say `command` and `arguments`, because that is what the command line
+        // calls them -- and inside *this* call those two names are already taken by the tool itself.
+        // Said here rather than left to be worked out: see `RENAMED_IN_A_GROUPED_CALL`.
+        let renamed: Vec<String> = RENAMED_IN_A_GROUPED_CALL
+            .iter()
+            .filter(|(real, _)| {
+                commands.iter().any(|command| {
+                    command.arguments.iter().any(|argument| argument.name == *real)
+                })
+            })
+            .map(|(real, offered)| format!("`{real}` as `{offered}`"))
+            .collect();
+        if !renamed.is_empty() {
+            description.push_str(&format!(
+                "\nInside `arguments`, write {}: the outer `command` and `arguments` are this tool's own.\n",
+                renamed.join(" and "),
+            ));
+        }
         out.push(Tool {
             name: tool_name(area, ""),
             title: format!("Unluminate: {}", catalogue::area_title(area)),
@@ -259,7 +277,9 @@ fn grouped_schema(commands: &[&'static Command], verbs: Vec<Value>) -> Value {
     let mut arguments = Map::new();
     for command in commands {
         for argument in command.arguments {
-            arguments.entry(argument.name.to_owned()).or_insert_with(|| {
+            // Under a name that cannot be mistaken for the tool's own. See
+            // `RENAMED_IN_A_GROUPED_CALL`.
+            arguments.entry(offered_as(argument.name).to_owned()).or_insert_with(|| {
                 json!({ "type": "string" })
             });
         }
@@ -297,8 +317,18 @@ fn semantic_aliases() -> Vec<Tool> {
     commands()
         .into_iter()
         .filter(|command| {
+            // `replace` joined the three on `task-1804`: the study watched a model asked to change
+            // every "width" to "span" reach straight for its own `read` and `edit`, which is the
+            // miss `task-1699` measured for the other three and fixed the same way. A broad area
+            // tool does not reliably compete with a dedicated generic tool merely because its long
+            // description is better; what competes is an equally specific name.
+            //
+            // **`find` is deliberately not here.** Every one of these costs about 700 tokens of the
+            // default preamble, and a model that reaches for `grep` to *read* is doing something
+            // harmless -- it is a model that reaches past `editor replace` to *write* that rewrites
+            // a file behind a window with it open. Add it the day the study measures a miss.
             command.area == "editor"
-                && matches!(command.verb, "definition" | "references" | "rename")
+                && matches!(command.verb, "definition" | "references" | "rename" | "replace")
         })
         .map(command_tool)
         .collect()
@@ -330,11 +360,32 @@ fn every() -> Vec<Tool> {
 fn command_tool(command: &'static Command) -> Tool {
     Tool {
         name: tool_name(command.area, command.verb),
-        title: format!("Unluminate: {}", command.typed()),
+        title: intent(command),
         description: command_description(command),
         schema: command_schema(command),
         target: Target::One(command),
     }
+}
+
+/// What the tool is *for*, in the title, rather than what it is called.
+///
+/// `task-1699`'s finding, applied: *"a broad area tool does not reliably compete with a dedicated
+/// generic tool merely because its long description is better. Put the exact intent in the title."*
+/// A chooser deciding between `edit` and `Unluminate: editor replace` is comparing a verb with a
+/// path; one deciding between `edit` and `Find and replace text in the open file` is comparing two
+/// descriptions of a job.
+///
+/// The five narrow tools are the only ones this applies to, because they are the only ones competing
+/// with a generic tool a model already has. Everything else keeps the plain name.
+fn intent(command: &'static Command) -> String {
+    let said = match command.typed().as_str() {
+        "editor definition" => "Go to where a name is defined, in this project",
+        "editor references" => "Find every place a name is used, in this project",
+        "editor rename" => "Rename a symbol everywhere it is used, in this project",
+        "editor replace" => "Find and replace text in the file that is open",
+        _ => return format!("Unluminate: {}", command.typed()),
+    };
+    format!("{said} (Unluminate: {})", command.typed())
 }
 
 fn command_description(command: &Command) -> String {
@@ -449,6 +500,11 @@ pub struct Call {
     pub arguments: Map<String, Value>,
     /// Which Unluminate the caller asked for, if it named one.
     pub instance: Option<String>,
+    /// Keys that belonged to a **sibling verb of the same area tool** and were left out.
+    ///
+    /// See [`sibling_keys`]. Reported in the tool's answer rather than silently dropped, because a
+    /// caller that meant them should find out.
+    pub ignored: Vec<String>,
 }
 
 /// Turn `tools/call` into the request `unluminate-cli` would have sent.
@@ -485,7 +541,7 @@ pub fn resolve_in(
         Target::One(command) => {
             let mut arguments = catalogue::normalise_arguments(given.clone());
             arguments.remove("instance");
-            Ok(Call { command, arguments, instance })
+            Ok(Call { command, arguments, instance, ignored: Vec::new() })
         }
         Target::Area(area) => {
             let Some(verb) = given.get("command").and_then(Value::as_str) else {
@@ -534,9 +590,103 @@ pub fn resolve_in(
             if let Some(given_timeout) = given.get("timeout") {
                 arguments.entry("timeout".to_owned()).or_insert_with(|| given_timeout.clone());
             }
-            Ok(Call { command, arguments, instance })
+            // The two names the tool used for itself, put back to what the command calls them.
+            unrename(&mut arguments);
+            let ignored = sibling_keys(area, command, &mut arguments);
+            Ok(Call { command, arguments, instance, ignored })
         }
     }
+}
+
+/// The two names a grouped area tool uses for itself, and what a command's own argument of that name
+/// is offered as instead.
+///
+/// **A collision that made two plugins unusable.** A grouped tool's call is
+/// `{ "command": <verb>, "arguments": { … } }` — and `plugins run`'s own arguments are, by an
+/// accident of naming, `command` (which of the plugin's commands to run) and `arguments` (the rest
+/// of the line). So the nested `command` and the outer `command` are different things with one name,
+/// and `task-1804` §4.2 watched a local model fail to express both across two scenarios: in
+/// `s25-database` and `s26-chat` it put the plugin's verb in `pane`, in `tab`, anywhere but the key
+/// it had already used, and never once added a data source or read the chat pane.
+///
+/// So inside a grouped call those two are offered under names that cannot collide, and mapped back
+/// here. **The command line and the wire are unchanged** — `plugins run` still takes `command` and
+/// `arguments`, `docs/commands.md` still says so, and every example still runs. What changed is only
+/// the shape of one tool's schema, which is generated and is read fresh from `tools/list` every time
+/// a client connects.
+const RENAMED_IN_A_GROUPED_CALL: [(&str, &str); 2] = [("command", "verb"), ("arguments", "words")];
+
+/// The name a command's argument is offered under inside a grouped area tool.
+fn offered_as(name: &str) -> &str {
+    RENAMED_IN_A_GROUPED_CALL
+        .iter()
+        .find(|(real, _)| *real == name)
+        .map(|(_, offered)| *offered)
+        .unwrap_or(name)
+}
+
+/// Put the renamed keys back to what the command really calls them.
+fn unrename(arguments: &mut Map<String, Value>) {
+    for (real, offered) in RENAMED_IN_A_GROUPED_CALL {
+        if arguments.contains_key(real) {
+            // The caller used the real name and got away with it, which happens when the outer key
+            // was not in its way. Believed as it stands.
+            continue;
+        }
+        if let Some(value) = arguments.remove(offered) {
+            arguments.insert(real.to_owned(), value);
+        }
+    }
+}
+
+/// Take out the keys that belong to another verb of the same area, and say which they were.
+///
+/// **This is a fault in the schema being answered rather than a rule being relaxed**, and the
+/// distinction is the whole of it. A grouped area tool's schema is a *union*: every argument and
+/// flag of every command in the area, in one object, which is what keeps the default preamble small
+/// enough to hand to a model at all. `run_cli` then refuses a key the chosen command does not name,
+/// which is `task-1794`'s rule and a good one — *"a mistyped flag quietly treated as text is a
+/// command that did the wrong thing without saying so"*.
+///
+/// Between those two, a model that fills in the keys the schema offered gets refused for doing what
+/// it was told. `task-1804` §4.2 measured what that costs: in the `s25-database` scenario the
+/// agent sent `plugins run` with `pane`, `show`, `side` and `tab` beside `id` and `command` --
+/// every one of them a real key of a *sibling* verb, every one offered by the tool's own schema --
+/// and was refused **sixty-eight times in one session**, trying variations of the same call until
+/// the turn ran out. The whole area was unusable.
+///
+/// So a key the schema advertised is dropped rather than refused, and named in the answer. A key
+/// that is **nothing at all** in the area is left where it is and reaches `run_cli`, which refuses
+/// it exactly as before: a typo is still a typo, and that is the case `task-1794` was about.
+fn sibling_keys(
+    area: &'static str,
+    command: &'static Command,
+    arguments: &mut Map<String, Value>,
+) -> Vec<String> {
+    let names = |command: &'static Command| -> Vec<&'static str> {
+        command
+            .arguments
+            .iter()
+            .map(|argument| argument.name)
+            .chain(command.flags.iter().map(|flag| flag.name))
+            .collect()
+    };
+    let mine = names(command);
+    let siblings: Vec<&'static str> = catalogue::in_area(area)
+        .into_iter()
+        .filter(|other| other.wire() != command.wire())
+        .flat_map(names)
+        .collect();
+    let mut ignored: Vec<String> = arguments
+        .keys()
+        .filter(|key| !mine.contains(&key.as_str()) && siblings.contains(&key.as_str()))
+        .cloned()
+        .collect();
+    ignored.sort();
+    for key in &ignored {
+        arguments.remove(key);
+    }
+    ignored
 }
 
 #[cfg(test)]
@@ -677,7 +827,10 @@ mod tests {
             for command in catalogue::in_area(area) {
                 if !offered(command) { continue }
                 for name in catalogue::value_names(command) {
-                    assert!(properties.contains_key(name), "{name} is missing from {area}");
+                    // Under the name the tool offers it as, which for `command` and `arguments` is
+                    // not the name the command uses -- see `RENAMED_IN_A_GROUPED_CALL`.
+                    let offered = offered_as(name);
+                    assert!(properties.contains_key(offered), "{offered} is missing from {area}");
                 }
             }
         }
@@ -982,6 +1135,130 @@ mod tests {
         .is_ok());
     }
 
+    /// **The call that was refused sixty-eight times**, from `task-1804` §4.2's own study run.
+    ///
+    /// The model asked `plugins run` and filled in `pane`, `show`, `side` and `tab` beside `id` and
+    /// `command` — every one a real key of a sibling verb, every one offered by the grouped tool's
+    /// own union schema — and `run_cli` refused it. It tried variations of the same call until the
+    /// turn ran out, and the whole `database` area went unused.
+    #[test]
+    fn a_key_the_grouped_schema_offered_is_dropped_with_its_name_rather_than_refusing_the_call() {
+        let given = Map::from_iter([
+            ("command".to_owned(), json!("run")),
+            (
+                "arguments".to_owned(),
+                json!({
+                    "id": "database",
+                    "command": "add-source",
+                    "pane": "add-source",
+                    "show": true,
+                    "side": "left",
+                    "tab": "sample",
+                }),
+            ),
+        ]);
+        let call = resolve(Shape::Grouped, "unluminate_plugins", &given).expect("it resolves now");
+        assert_eq!(call.command.typed(), "plugins run");
+        assert_eq!(
+            call.ignored,
+            vec!["pane".to_owned(), "show".to_owned(), "side".to_owned(), "tab".to_owned()],
+            "named, in order, so the answer can say which"
+        );
+        assert!(call.arguments.contains_key("id"), "and what it does take is still there");
+        assert!(call.arguments.contains_key("command"));
+        for gone in ["pane", "show", "side", "tab"] {
+            assert!(!call.arguments.contains_key(gone), "{gone} should have been taken out");
+        }
+    }
+
+    /// A key that is **nothing at all** is left alone, so `run_cli` still refuses it.
+    ///
+    /// This is `task-1794`'s rule and the reason the fix above is a filter rather than a relaxation:
+    /// a mistyped flag quietly treated as text is a command that did the wrong thing without saying
+    /// so. What changed is only that a key the schema itself advertised is no longer a typo.
+    #[test]
+    fn a_key_that_is_not_in_the_area_at_all_is_still_sent_and_still_refused() {
+        let given = Map::from_iter([
+            ("command".to_owned(), json!("run")),
+            (
+                "arguments".to_owned(),
+                json!({ "id": "database", "command": "reload", "purple": "yes" }),
+            ),
+        ]);
+        let call = resolve(Shape::Grouped, "unluminate_plugins", &given).expect("it resolves");
+        assert!(call.ignored.is_empty(), "nothing was quietly dropped");
+        assert!(
+            call.arguments.contains_key("purple"),
+            "it reaches the window, which refuses it by name"
+        );
+    }
+
+    /// And a key that is the command's own is never touched, however many siblings share the name.
+    #[test]
+    fn a_key_the_command_itself_takes_is_kept_even_when_a_sibling_takes_it_too() {
+        // `limit` belongs to `editor complete` and to `editor find`, which are siblings.
+        let given = Map::from_iter([
+            ("command".to_owned(), json!("find")),
+            ("arguments".to_owned(), json!({ "text": "draw", "limit": 5 })),
+        ]);
+        let call = resolve(Shape::Grouped, "unluminate_editor", &given).expect("it resolves");
+        assert!(call.ignored.is_empty());
+        assert_eq!(call.arguments.get("limit"), Some(&json!(5)));
+    }
+
+    /// **The collision that made two plugins unusable**, from `task-1804` §4.2's study run.
+    ///
+    /// A grouped call is `{ "command": <verb>, "arguments": { … } }`, and `plugins run`'s own
+    /// arguments happen to be `command` and `arguments` — so the model could not say both. Across
+    /// `s25-database` and `s26-chat` it put the plugin's verb in `pane` and in `tab`, never in
+    /// `command`, and neither plugin was ever reached.
+    #[test]
+    fn a_commands_own_command_argument_is_offered_under_a_name_the_tool_has_not_taken() {
+        // The schema offers the safe names and not the colliding ones.
+        let tool = tools(Shape::Grouped)
+            .into_iter()
+            .find(|tool| tool.name == "unluminate_plugins")
+            .expect("the plugins tool");
+        let inner = tool.schema["properties"]["arguments"]["properties"]
+            .as_object()
+            .expect("the arguments object");
+        assert!(inner.contains_key("verb"), "offered under a name of its own: {inner:?}");
+        assert!(inner.contains_key("words"));
+        assert!(!inner.contains_key("command"), "and not under the tool's own: {inner:?}");
+        assert!(!inner.contains_key("arguments"));
+        // And the description says so, because the usage lines above it say `command`.
+        assert!(tool.description.contains("`command` as `verb`"), "{}", tool.description);
+
+        // A call written the way the schema says resolves to what the command really takes.
+        let given = Map::from_iter([
+            ("command".to_owned(), json!("run")),
+            (
+                "arguments".to_owned(),
+                json!({ "id": "database", "verb": "add-source", "words": "sample data/sample.db" }),
+            ),
+        ]);
+        let call = resolve(Shape::Grouped, "unluminate_plugins", &given).expect("it resolves");
+        assert_eq!(call.command.typed(), "plugins run");
+        assert_eq!(call.arguments.get("command"), Some(&json!("add-source")));
+        assert_eq!(call.arguments.get("arguments"), Some(&json!("sample data/sample.db")));
+        assert_eq!(call.arguments.get("id"), Some(&json!("database")));
+        assert!(call.ignored.is_empty());
+    }
+
+    /// A caller that used the real name anyway is believed, so nothing already written breaks.
+    #[test]
+    fn the_real_names_still_work_when_a_caller_manages_to_send_them() {
+        let given = Map::from_iter([
+            ("command".to_owned(), json!("run")),
+            (
+                "arguments".to_owned(),
+                json!({ "id": "agent-chat", "command": "providers" }),
+            ),
+        ]);
+        let call = resolve(Shape::Grouped, "unluminate_plugins", &given).expect("it resolves");
+        assert_eq!(call.arguments.get("command"), Some(&json!("providers")));
+    }
+
     #[test]
     fn the_grouped_shape_is_the_cheaper_one_and_still_names_every_command() {
         // The measurement the default rests on, kept as a test so it cannot quietly stop being
@@ -995,18 +1272,23 @@ mod tests {
             every.len(),
             grouped.len()
         );
-        // 17,535 today, up from 16,199 when the ceiling was last set at 17,500 and from 11,900 when
-        // it was first set at 16,000. Twice now the real number has walked past the ceiling and the
-        // ceiling has moved with it rather than the test being loosened to nothing: `task-28`'s
-        // dozen `plugins` verbs the first time, and `task-1804`'s `editor find` and `editor replace`
-        // this time, which cost 35 tokens more than there was room for.
+        // 18,511 today. The history is worth keeping, because the ceiling has now moved three
+        // times and each move was a real cost being accepted rather than a test being loosened:
         //
-        // **This number being hard to hold is itself the finding.** `task-1804` §4.2 measured
-        // the default preamble at 18% of the local model's 96k window before a question is asked,
-        // and the answer is not a smaller catalogue -- it is `mcp serve --areas`, which lets an
-        // agent be equipped with the areas it needs and leave the rest out. The ceiling here goes on
-        // saying when the *default* has grown, which is what it is for.
-        assert!(grouped.len() / 4 < 18_500, "grouped MCP schema exceeded budget: {} bytes", grouped.len());
+        //   11,900   the first measurement, ceiling set at 16,000
+        //   16,199   `task-28`'s dozen `plugins` verbs for the Agent-Tasks board; ceiling 17,500
+        //   17,535   `task-1804`'s `editor find` and `editor replace`
+        //   18,231   the narrow `unluminate_editor_replace` tool, because the study watched a model
+        //            reach past `editor replace` for its own `edit` three times running
+        //   18,511   the sentence telling a caller what the `plugins` tool renamed, without which
+        //            two plugins were unreachable
+        //
+        // **The number being hard to hold is itself `task-1804` §4.2's finding**, and what
+        // changed with it is that there is now an answer: `mcp serve --areas` equips an agent with
+        // the areas it needs and leaves the rest out — the same catalogue at 4,491 tokens for
+        // `editor,git` rather than 18,511 for all of it. This ceiling goes on saying when the
+        // *default* has grown, which is what it is for; it is no longer the only lever there is.
+        assert!(grouped.len() / 4 < 19_000, "grouped MCP schema exceeded budget: {} bytes", grouped.len());
         for command in commands() {
             assert!(
                 grouped.contains(command.verb),

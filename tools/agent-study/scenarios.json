@@ -109,7 +109,7 @@
 
 {"id":"s24-browser","area":"browser","name":"Open a page in a browser tab",
  "expect":"Uses the browser area to open a tab and report the address it settled on, rather than curling the page in a terminal.",
- "prompts":["Open README.md rendered in a browser tab, and tell me the address the tab ended up on."]},
+ "prompts":["Open web/index.html in a browser tab, and tell me the address the tab ended up on."]},
 
 {"id":"s25-database","area":"database","name":"Run a query and read the answer back",
  "expect":"Uses the database area \u2014 add a source, run a statement, read the grid \u2014 rather than shelling out to sqlite3.",

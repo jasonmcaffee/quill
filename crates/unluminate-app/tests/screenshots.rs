@@ -2767,7 +2767,21 @@ fn double_click_at(harness: &mut Harness<'static, UnluminateApp>, at: egui::Pos2
             });
         }
     }
-    harness.run();
+    // **`pump`, not `Harness::run`**, which is the third of this file's three rules and the one this
+    // helper was breaking. `run` gives the window four steps to go quiet and panics otherwise, and
+    // this window never goes quiet on demand: `UnluminateApp::update` asks for a frame every frame
+    // through `request_repaint_after(HEARTBEAT)`, and a terminal's waker fires from another thread
+    // whenever a shell says anything. Measured on `task-1804`: with a terminal open,
+    // `two_presses_on_a_panels_header_fill_the_window_with_it_and_two_more_put_it_back` failed on
+    // **two runs in three** with "Harness::run exceeded max_steps (4)", naming exactly those two as
+    // the repaint causes.
+    //
+    // Running out of steps inside one attempt is not a failure; running out of attempts is, and a
+    // fixed number of frames is what a press needs — the press is delivered, the frames are drawn,
+    // and what the window did is asserted afterwards.
+    for _ in 0..8 {
+        pump(harness);
+    }
 }
 
 /// `task-1771`: *"we want every pane (file panel, folders, terminal, agent chat, agent tasks, etc) to be
