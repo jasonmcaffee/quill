@@ -1,7 +1,7 @@
 //! The environment a person's shell gives a command, which is not the environment this process was
 //! started with.
 //!
-//! A Unluminate started from the Finder or the Dock is started by launchd, and launchd gives it about a
+//! An Unluminate started from the Finder or the Dock is started by launchd, and launchd gives it about a
 //! dozen variables: `PATH=/usr/bin:/bin:/usr/sbin:/sbin`, `HOME`, `USER`, `SHELL` and little else.
 //! Nothing `~/.zshrc` or `~/.bash_profile` sets is there. Two things broke on that, and both were
 //! measured on a real window rather than reasoned about:
@@ -82,7 +82,7 @@ static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::n
 const NOT_CARRIED: &[&str] = &["PWD", "OLDPWD", "SHLVL", "_"];
 
 /// How long the shell is given. A profile that hangs — waiting on a network mount, asking for a
-/// password — must not be a Unluminate that never starts an agent, so the read is given up on and what
+/// password — must not be an Unluminate that never starts an agent, so the read is given up on and what
 /// this process already has is what is left. Ten seconds rather than two, because the read happens
 /// once on a thread and a slow machine's profile is slow rather than broken.
 const PATIENCE: std::time::Duration = std::time::Duration::from_secs(10);
@@ -101,7 +101,7 @@ pub fn start_reading() {
 
 /// What one variable is worth: the login shell's answer, then this process's own.
 ///
-/// The shell first, because a Unluminate started from the Dock has the launchd value and the shell has the
+/// The shell first, because an Unluminate started from the Dock has the launchd value and the shell has the
 /// person's. Where Unluminate was started from a terminal the two are the same value anyway.
 pub fn variable(name: &str) -> Option<String> {
     let from_the_shell = login()
@@ -139,7 +139,7 @@ pub fn path_variable() -> (String, String) {
 /// Everything a program Unluminate starts should be given, which is what a command typed in a terminal
 /// would have had.
 ///
-/// The `PATH` in it is [`search_path`] rather than the shell's own, so a Unluminate started from a
+/// The `PATH` in it is [`search_path`] rather than the shell's own, so an Unluminate started from a
 /// terminal does not lose a folder that shell had added. The caller lays its own values over the top:
 /// the board's gateway and key are the board's configuration and beat the profile, which is what the
 /// Settings page says they do.

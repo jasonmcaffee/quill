@@ -1892,7 +1892,7 @@ pub const COMMANDS: &[Command] = &[
     Command {
         area: "settings",
         verb: "reset",
-        summary: "Put a setting, or every setting, back to what a Unluminate that has never been run has.",
+        summary: "Put a setting, or every setting, back to what an Unluminate that has never been run has.",
         arguments: &[argument("key", false, "The setting. All of them when it is left out.")],
         flags: NO_FLAGS,
         examples: &["unluminate-cli settings reset appearance.font.size", "unluminate-cli settings reset"],

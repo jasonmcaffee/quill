@@ -70,7 +70,7 @@ Every knob the sample has. None of them.
 // Write the project out, putting every file back to what it should be.
 //
 // Called at the start of every round as well as by hand, so that a task which edited or added a file
-// cannot change what the next round measures. The folder itself is not removed and re-made: a Unluminate
+// cannot change what the next round measures. The folder itself is not removed and re-made: an Unluminate
 // is open on it, and on Windows a running terminal's working directory cannot be deleted from under
 // it. Files the sample does not own are removed one at a time instead, and a file that will not go
 // is left rather than made into a failure.

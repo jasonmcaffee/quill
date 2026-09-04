@@ -182,7 +182,7 @@ behaviour: the second window sees the port is taken, does not start a second lis
 |---|---|
 | `unluminate-cli/src/mcp/mod.rs` | What an MCP server is for, and the module comment carrying the decisions in §1. |
 | `unluminate-cli/src/mcp/tools.rs` | The catalogue turned into tool definitions. `Shape::Grouped` and `Shape::Every`. Pure — no socket, no process, no window. |
-| `unluminate-cli/src/mcp/server.rs` | The JSON-RPC methods, and turning a tool call into a `protocol::Request` and a `protocol::Reply` back into an MCP result. Takes a `Driver` so it can be tested without a Unluminate. |
+| `unluminate-cli/src/mcp/server.rs` | The JSON-RPC methods, and turning a tool call into a `protocol::Request` and a `protocol::Reply` back into an MCP result. Takes a `Driver` so it can be tested without an Unluminate. |
 | `unluminate-cli/src/mcp/stdio.rs` | Lines in on stdin, lines out on stdout. |
 | `unluminate-cli/src/mcp/http.rs` | The Streamable HTTP endpoint: a small HTTP/1.1 reader, `POST /mcp`, `GET`/`DELETE` → 405, loopback bind, origin checking. |
 | `unluminate-cli/src/mcp/install.rs` | The Claude Code and Codex configuration: what it should say, how to write it, and how to read back whether it is there. |

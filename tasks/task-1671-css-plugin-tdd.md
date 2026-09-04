@@ -13,7 +13,7 @@ the terminal.
 
 ## 1. What a CSS plugin has to get right, and what the tokeniser could not do
 
-A Unluminate plugin is data: a `plugin.conf` naming a language's extensions, its comments, its strings,
+An Unluminate plugin is data: a `plugin.conf` naming a language's extensions, its comments, its strings,
 two lists of words and a colour a token. Three of those manifests already exist, and writing a fourth
 for CSS is half an hour's typing. The half hour would have produced a bad plugin, and it is worth
 being precise about why, because the answer is what most of this ticket is.
@@ -33,7 +33,7 @@ in it, every custom property starts with two, and every vendor prefix is one. A 
 a word at a hyphen cannot recognise a single CSS property by name, so the whole point of the plugin —
 "colour the properties" — is unreachable.
 
-There is a fifth, subtler one. CSS has **three** kinds of word worth telling apart, and a Unluminate
+There is a fifth, subtler one. CSS has **three** kinds of word worth telling apart, and an Unluminate
 grammar had two lists:
 
 ```css

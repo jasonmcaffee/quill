@@ -272,7 +272,7 @@ impl Server {
     /// Start listening, and advertise it.
     ///
     /// `wake` is called when a request arrives, so the window draws a frame and answers it. Failing
-    /// to start is reported and returns `None`: a Unluminate that cannot open a port is still a text
+    /// to start is reported and returns `None`: an Unluminate that cannot open a port is still a text
     /// editor, and refusing to start would be the wrong trade.
     pub fn start(folder: PathBuf, wake: Arc<dyn Fn() + Send + Sync>) -> Option<Self> {
         let listener = match bind() {

@@ -9,7 +9,7 @@ This document is what you need to write a second client. If you only want to run
 
 ## Finding a running Unluminate
 
-A Unluminate that is listening writes one file into an `instances` folder inside the folder it keeps its
+An Unluminate that is listening writes one file into an `instances` folder inside the folder it keeps its
 settings in:
 
 | Platform | Folder |
@@ -31,7 +31,7 @@ started = 1756139112
 token = 4f1a9c2e77b3d051a8e6b40cf1927d3a
 ```
 
-A file whose port nothing answers on is a Unluminate that was killed rather than closed. `unluminate-cli`
+A file whose port nothing answers on is an Unluminate that was killed rather than closed. `unluminate-cli`
 removes such a file when it finds one; a client of your own should treat it as no instance.
 
 There is a file per window because **a project is a window** — `File -> New Window` starts a second
@@ -138,7 +138,7 @@ mode `600`. It does not defend against another program running as that person; n
 does. What it does defend against is a page in a browser, which can post to a loopback port but
 cannot read a file.
 
-**The channel can be closed.** `unluminate --control off` starts a Unluminate that does not listen, and
+**The channel can be closed.** `unluminate --control off` starts an Unluminate that does not listen, and
 `UNLUMINATE_CONTROL=off` in the environment does the same for every Unluminate started from that shell. It is
 open by default, because a command line that has to be switched on first is a command line an agent
 cannot rely on being there.

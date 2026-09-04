@@ -33,7 +33,7 @@ Unluminate's own state back, never by believing what the agent said it did.
    }
    ```
 
-3. **A Unluminate window open on the sample project**, and `unluminate-cli` built:
+3. **An Unluminate window open on the sample project**, and `unluminate-cli` built:
 
    ```sh
    cargo build --release -p unluminate-cli -p unluminate-app

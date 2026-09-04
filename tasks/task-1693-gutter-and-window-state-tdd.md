@@ -201,7 +201,7 @@ one window at all.
 ### 4.1 One window's own state
 
 Three additions to `.unluminate/workspace.conf`, in the comma-list shape `files.panes` already uses so
-that a Unluminate which has never heard of them reads the file unchanged:
+that an Unluminate which has never heard of them reads the file unchanged:
 
 ```text
 files.scrolls = 0,412.5,0
@@ -235,7 +235,7 @@ project last used on a second screen still opens.
 
 ### 4.2 Every window
 
-A Unluminate window is a process, which `services::launcher` records as a deliberate decision and which
+An Unluminate window is a process, which `services::launcher` records as a deliberate decision and which
 nothing here changes. So "the windows I had open" has to be written down somewhere both processes can
 see, and that is the person's own folder beside `recent.txt`:
 

@@ -588,7 +588,7 @@ impl UnluminateApp {
 
     /// Run one command on behalf of a plugin's tool call, and answer with what it said.
     ///
-    /// **The same `run_cli` a `unluminate-cli` request goes down**, so a model calling a tool and a person
+    /// **The same `run_cli` an `unluminate-cli` request goes down**, so a model calling a tool and a person
     /// pressing the same menu entry are the same thing rather than two paths that agree today. That is
     /// the whole reason `plugin_ui::Request::RunCommand` names a catalogue command rather than
     /// carrying a closure.
@@ -4026,7 +4026,7 @@ impl UnluminateApp {
             true => format!("Added {name}"),
             false => format!(
                 "Added {name}, but {program} could not be found on this window's PATH. It will not \
-                 start until it can be — a Unluminate opened from the desktop does not have a version \
+                 start until it can be — an Unluminate opened from the desktop does not have a version \
                  manager's directories on its PATH, so naming the program in full may be what is \
                  wanted."
             ),
@@ -7618,7 +7618,7 @@ fn unknown_setting(name: &str) -> String {
     format!("There is no setting called {name}. `settings list` names them all.")
 }
 
-/// What a setting is in a Unluminate that has never been run.
+/// What a setting is in an Unluminate that has never been run.
 fn fresh_value(name: &str, fresh: &crate::settings::Settings) -> String {
     let panes = crate::settings::Panes::new();
     match name {

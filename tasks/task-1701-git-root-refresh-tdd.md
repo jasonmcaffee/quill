@@ -154,7 +154,7 @@ VS Code and IntelliJ both support it, but it changes the window model, git panel
 ## Testing strategy
 
 1. Build a real ancestor repository in a unique temporary folder and create a project directory inside it.
-2. Open a Unluminate harness on the project and wait until it reports the ancestor.
+2. Open an Unluminate harness on the project and wait until it reports the ancestor.
 3. Run `git init` in the project, create several changed files, and ask through Unluminate's command path.
 4. Pump the window until the held status request completes, then assert the root is the project, the branch is the new repository's branch, the change count is non-zero, `projectRoot` matches, and `rootRelation` is `project`.
 5. Keep a separate ancestor test proving that a project with no repository of its own returns `rootRelation: ancestor` and a plain summary that names the relationship.

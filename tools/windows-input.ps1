@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  The one way a Unluminate script drives the real window with real keyboard and mouse input, written so
+  The one way an Unluminate script drives the real window with real keyboard and mouse input, written so
   that it cannot leave a key or a button held down.
 
 .DESCRIPTION

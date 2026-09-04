@@ -694,7 +694,7 @@ outside the repository. A plugin's commands are reachable three other ways.
 
 **A `when` expression language.** §2.4. Two named conditions instead, checked against a list.
 
-**Floating a contributed pane into a window of its own.** A Unluminate window is a project, and a floating
+**Floating a contributed pane into a window of its own.** An Unluminate window is a project, and a floating
 panel would be a second operating system window with no project behind it. That is true of the four
 panels Unluminate already has and is refused there for the same reason.
 

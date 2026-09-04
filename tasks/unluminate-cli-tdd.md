@@ -116,7 +116,7 @@ that agree today.
 | `unluminate-cli/src/parse.rs` | argv → a named argument map, against the catalogue. No argument-parsing library: the catalogue already says what each command takes, and a library would mean writing those facts down twice. |
 | `unluminate-cli/src/protocol.rs` | `Request`, `Reply`, the error codes, and `ask()`. |
 | `unluminate-cli/src/instances.rs` | The instance file: its format, where it lives, and reading the folder. |
-| `unluminate-cli/src/client.rs` | Choosing an instance, sweeping stale files, launching a Unluminate and waiting for it. |
+| `unluminate-cli/src/client.rs` | Choosing an instance, sweeping stale files, launching an Unluminate and waiting for it. |
 | `unluminate-cli/src/help.rs` | `--help` and `commands --json`, both printed from the catalogue. |
 | `crates/unluminate-app/src/services/control.rs` | The listener thread, the token, the instance file, and `Pending`. |
 | `crates/unluminate-app/src/app/cli.rs` | `run_cli`: what a command *means*. The only place a request turns into a change. |
@@ -157,7 +157,7 @@ line tomorrow with nobody adding anything. That is how G5 is met structurally ra
 
 ### The instance file
 
-A Unluminate that is listening writes `<settings folder>/instances/<pid>.conf` in the same `name = value`
+An Unluminate that is listening writes `<settings folder>/instances/<pid>.conf` in the same `name = value`
 format `services::store` already uses:
 
 ```

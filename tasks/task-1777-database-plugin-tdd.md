@@ -305,7 +305,7 @@ so a slow server makes a row show a spinner rather than making the window stop.
 
 The filter field narrows the loaded rows by substring, which is IntelliJ's speed search with a field
 instead of type-ahead, because Unluminate's panes do not have type-ahead anywhere and inventing it in a
-plugin would be the plugin deciding what a Unluminate pane is.
+plugin would be the plugin deciding what an Unluminate pane is.
 
 ## 6. The tab: consoles and row editors
 

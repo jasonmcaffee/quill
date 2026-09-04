@@ -402,8 +402,8 @@ pub fn beside_this_program(name: &str) -> String {
 ///
 /// `task-28` asked for "the iliad key from zshrc", and the second half of that only worked when Unluminate had
 /// been started from a terminal, because that is the only way `ANTHROPIC_API_KEY` was in this process at
-/// all. `services::login_shell::variable` reads the profile itself, so a Unluminate started from the Dock has the
-/// same key a Unluminate started from a terminal has — which is what the Settings page has claimed since it was
+/// all. `services::login_shell::variable` reads the profile itself, so an Unluminate started from the Dock has the
+/// same key an Unluminate started from a terminal has — which is what the Settings page has claimed since it was
 /// written, and what makes the keychain the place to put a key that is *not* in the profile rather than the
 /// only place a key can come from.
 ///
@@ -1536,7 +1536,7 @@ impl AgentTasks {
                 // the terminal tile runs with.
                 let mut environment = crate::services::login_shell::for_a_child();
                 // **A ticket's agent is a new conversation, so nothing naming another one may reach
-                // it.** A Unluminate started from a terminal that was itself running Claude Code has that
+                // it.** An Unluminate started from a terminal that was itself running Claude Code has that
                 // session's markers in its environment, and they are inherited: measured on a real
                 // window, the ticket's agent said `Transcript saving is off — inherited
                 // CLAUDE_CODE_...`, wrote no transcript of its own, and showed the parent's

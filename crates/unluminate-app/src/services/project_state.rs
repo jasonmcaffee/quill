@@ -21,7 +21,7 @@
 //! than as `files.open.07 = ...`.
 //!
 //! **The split from `task-1664` is three more keys in the conf and nothing in `open-files.txt`**,
-//! which matters: the file of paths stays a file of paths, and a Unluminate that has never heard of panes
+//! which matters: the file of paths stays a file of paths, and an Unluminate that has never heard of panes
 //! reads it unchanged.
 //!
 //! ```text

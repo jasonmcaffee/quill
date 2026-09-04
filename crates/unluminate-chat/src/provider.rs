@@ -142,7 +142,7 @@ pub struct Provider {
     pub command: String,
     /// The whole URL, including the path — because that is the part that differs between a hosted
     /// API and the llama.cpp on this machine, and a base URL that Unluminate appended a path to would be
-    /// a Unluminate that decided what somebody's gateway looks like.
+    /// an Unluminate that decided what somebody's gateway looks like.
     pub url: String,
     pub model: String,
     /// The environment variable the key is read from. Empty means the endpoint wants none.

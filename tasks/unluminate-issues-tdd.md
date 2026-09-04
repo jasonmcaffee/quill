@@ -663,7 +663,7 @@ session's transcript rather than the ticket's handoff. `--session-id` names a fr
 child session marker overrides it.
 
 That is about **where the tests were run from**, not about the board: these were run from inside a Claude
-Code session, so the agent Unluminate spawned was that session's grandchild. A Unluminate started from the Dock or a
+Code session, so the agent Unluminate spawned was that session's grandchild. An Unluminate started from the Dock or a
 plain terminal has no such marker.
 
 So the claim half of §13 is verified against a real agent — the ticket moves to `in_progress`, the session

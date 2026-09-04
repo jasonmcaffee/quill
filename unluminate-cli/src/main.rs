@@ -528,7 +528,7 @@ fn port_from(typed: &Typed) -> Result<u16, String> {
     Ok(port)
 }
 
-/// Everything else: find a Unluminate, send the command, print what came back.
+/// Everything else: find an Unluminate, send the command, print what came back.
 fn remotely(command: &'static Command, typed: Typed) -> i32 {
     let instance = match client::choose(typed.global.instance.as_deref()) {
         Ok(instance) => instance,

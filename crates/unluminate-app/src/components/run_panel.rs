@@ -265,7 +265,7 @@ impl RunPanel {
             args,
             working_directory: Some(configuration.working_directory(root)),
             // **What the person's shell would have given the command**, and the configuration's own
-            // variables after it so one that names the same variable still wins. A Unluminate started from
+            // variables after it so one that names the same variable still wins. An Unluminate started from
             // the Finder has about a dozen variables from launchd and a `PATH` of four folders, so
             // `node` and `cargo` under a version manager could not be found at all — the fault
             // `run_configurations::found_on_path` already describes and could only report — and a

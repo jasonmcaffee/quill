@@ -47,7 +47,7 @@ same terms: no user interface dependency, tests that run headless.
 | `unluminate-git` | **New.** Reading and changing a git repository. | Any user interface dependency, and any decision about what a dialog looks like. |
 | `unluminate-app` | The window: drawing, input, fonts, settings, menus, **the plugin registry**. | Editor behaviour, terminal emulation, or git plumbing. |
 
-`unluminate-git` is a crate rather than a `unluminate-app/services/git.rs` for one reason that matters: its
+`unluminate-git` is a crate rather than an `unluminate-app/services/git.rs` for one reason that matters: its
 tests make real repositories in a temporary folder, run real commands against them and assert on the
 results, and they must be able to do that with no window, no graphics card and no fonts — the same
 bar `unluminate-core` is held to. A module inside `unluminate-app` would drag `eframe` into every one of those

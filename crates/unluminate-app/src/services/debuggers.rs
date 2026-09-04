@@ -718,7 +718,7 @@ fn version_key(version: &str) -> Vec<u64> {
 ///
 /// The walking is `services::login_shell::find`, so the adapter search and the Agent-Tasks board look
 /// on one `PATH` rather than two that agree today. That module is also why the `PATH` it walks is not
-/// simply this process's own: a Unluminate started from the Finder has four folders on it and none of them
+/// simply this process's own: an Unluminate started from the Finder has four folders on it and none of them
 /// is one anybody installs a program into.
 pub fn on_path(program: &str) -> Option<PathBuf> {
     crate::services::login_shell::find(program)

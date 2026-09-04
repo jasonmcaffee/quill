@@ -1,6 +1,6 @@
 //! Finding the Unluminate a tool call is for, and sending it there.
 //!
-//! This is the only part of the MCP server that knows a Unluminate exists. It sends exactly what
+//! This is the only part of the MCP server that knows an Unluminate exists. It sends exactly what
 //! `unluminate-cli` sends — the same wire name, the same arguments object, the same token out of the
 //! same instance file, to the same port — so `UnluminateApp::run_cli` stays the one place a command
 //! turns into a change and a command run by an agent is the same command a person types.
@@ -99,7 +99,7 @@ impl Driver for Unluminates {
         arguments: Map<String, Value>,
         instance: Option<&str>,
     ) -> Result<Reply, Failure> {
-        // The commands the client answers on its own are answered here too, without a Unluminate. It is
+        // The commands the client answers on its own are answered here too, without an Unluminate. It is
         // what makes `commands` and `instances` usable at the start of a conversation, before the
         // agent knows whether anything is running.
         if let Some(reply) = locally(command, &arguments) {

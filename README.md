@@ -39,13 +39,13 @@ installer/macos/build.sh --install                        # macOS
 
 `installer/` builds a real installer for each platform out of the same drawn icon: on Windows a single
 `UnluminateSetup-<version>-x64.exe` that puts Unluminate in the Start Menu, on the PATH and in *Open with*, and
-on macOS a `Unluminate.app` and a disk image to drag into `/Applications`. `installer/README.md` says what
+on macOS an `Unluminate.app` and a disk image to drag into `/Applications`. `installer/README.md` says what
 each switch does; `tasks/unluminate-installer-tdd.md` says why it is built the way it is.
 
 ## Driving it from the command line
 
 ```sh
-unluminate-cli launch .                                   # start a Unluminate here and wait for it
+unluminate-cli launch .                                   # start an Unluminate here and wait for it
 unluminate-cli tab open README.md                         # open a file
 unluminate-cli editor view preview                        # look at its Markdown preview
 unluminate-cli browser open examples/site/index.html      # render a local web page
@@ -721,7 +721,7 @@ why a word-list plugin could not read HTML at all.
 
 Nine ship inside the binary: six languages — JavaScript, TypeScript, Rust, CSS, HTML and Mermaid —
 two that draw, Agent-Tasks and Agent-Chat, and one that carries themes, Themes Bundle 1. They are
-bundled so that a Unluminate that has just been installed colours a `.rs` file the first time it opens one,
+bundled so that an Unluminate that has just been installed colours a `.rs` file the first time it opens one,
 and so that the marketplace has something in it with no network involved.
 
 `Plugins::load` reads those first, then every folder under `<settings folder>/plugins`. **A plugin on

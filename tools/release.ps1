@@ -217,7 +217,7 @@ function Get-GitHubToken {
   believes a synthesised key is held until its key-up arrives, and the physical keyboard cannot clear
   it, because the physical key was never down.
 
-  Releasing it is one line, and the reason it is here is that this is the line a Unluminate task ends on.
+  Releasing it is one line, and the reason it is here is that this is the line an Unluminate task ends on.
   Anything that drove the real window has finished by now, so nothing legitimate is holding a
   modifier, and a person about to type into their own machine again should not have to know any of
   the above. It only reports under -WhatIf, which changes nothing by contract.

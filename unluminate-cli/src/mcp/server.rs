@@ -50,15 +50,15 @@ const COMMANDS_DOCUMENTATION: &str = include_str!("../../docs/commands.md");
 
 const COMMANDS_URI: &str = "unluminate://commands.md";
 
-/// Something that can run a Unluminate command and give back what the window said.
+/// Something that can run an Unluminate command and give back what the window said.
 ///
 /// A trait for two reasons. The protocol is worth testing without a window, a socket or an instance
-/// file, which a stub driver gives; and the window itself hosts this server, where "find a Unluminate"
+/// file, which a stub driver gives; and the window itself hosts this server, where "find an Unluminate"
 /// wants a different preference from the one a spawned server has.
 pub trait Driver {
     /// Run one command against whichever Unluminate `instance` names, or the one the driver would
-    /// choose. `Err` is for not being able to reach a Unluminate at all, which is a different thing from
-    /// a Unluminate refusing the command.
+    /// choose. `Err` is for not being able to reach an Unluminate at all, which is a different thing from
+    /// an Unluminate refusing the command.
     fn run(
         &self,
         command: &'static Command,
@@ -67,7 +67,7 @@ pub trait Driver {
     ) -> Result<Reply, Failure>;
 
     /// Read a file the window has just written, which is how a screenshot becomes a picture the
-    /// agent can see. On the driver because a server for a Unluminate somewhere else could not.
+    /// agent can see. On the driver because a server for an Unluminate somewhere else could not.
     fn read_file(&self, _path: &std::path::Path) -> Option<Vec<u8>> {
         None
     }

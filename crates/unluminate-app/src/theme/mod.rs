@@ -577,7 +577,7 @@ pub fn apply_scaled(ctx: &egui::Context, interface_scale: f32) {
         // **Set from egui's own defaults rather than multiplied in place**, because this function is
         // called again every time the theme changes: scaling what is already there would compound, so
         // choosing 16 points twice would land on 20. Reading the defaults each time makes it absolute,
-        // and at a scale of one it writes back exactly what egui had, so a Unluminate that names no size in
+        // and at a scale of one it writes back exactly what egui had, so an Unluminate that names no size in
         // its settings file is drawn exactly as it always was.
         let defaults = egui::Style::default();
         for (kind, font) in style.text_styles.iter_mut() {

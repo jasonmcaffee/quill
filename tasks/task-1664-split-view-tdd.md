@@ -313,7 +313,7 @@ which of four panes their typing is going to.
 ## 7. Remembering the split
 
 `.unluminate/workspace.conf` gains two keys and `open-files.txt` gains nothing, which matters: the file
-of paths stays a file of paths, and a Unluminate that has never heard of panes reads it unchanged.
+of paths stays a file of paths, and an Unluminate that has never heard of panes reads it unchanged.
 
 ```
 files.panes = 0,0,1,1

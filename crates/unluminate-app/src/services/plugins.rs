@@ -861,7 +861,7 @@ impl Grammars {
 /// owns the scheme now, which is what the reference editor does and is the whole reason a scheme can be switched at
 /// all.
 ///
-/// Unluminate's own theme names none, so a Unluminate nobody has chosen a theme in colours every file exactly as it
+/// Unluminate's own theme names none, so an Unluminate nobody has chosen a theme in colours every file exactly as it
 /// did before — which is the rule every key added since `task-1671` keeps, stated for colour.
 ///
 /// Asked at the moment of use, so choosing a theme recolours every open file in the same frame, the way
@@ -1649,7 +1649,7 @@ pub fn colour(text: &str) -> Option<Color> {
 
 /// The plugins that ship inside the binary.
 ///
-/// They are bundled so that a Unluminate that has just been installed colours a `.rs` file the first time
+/// They are bundled so that an Unluminate that has just been installed colours a `.rs` file the first time
 /// it opens one, and so that the marketplace has something in it with no network involved.
 pub mod bundled {
     /// Each entry is an id, its manifest, and its icon.

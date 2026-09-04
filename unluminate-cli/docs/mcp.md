@@ -167,7 +167,7 @@ The same names in `settings.conf`, on the Settings page, and in `unluminate-cli 
 takes effect at once: the listener starts, stops or moves in the same frame.
 
 `unluminate-cli mcp status --json` says what a window is actually doing, which is not always what the
-settings say — the port may be held by another Unluminate, and a Unluminate started with `--control off` has no
+settings say — the port may be held by another Unluminate, and an Unluminate started with `--control off` has no
 command channel for a server to drive.
 
 ## Writing a client of your own

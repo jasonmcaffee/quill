@@ -148,7 +148,7 @@ Three things, in the order they mattered:
 ## Reproducing it
 
 ```sh
-# a Unluminate on the sample project, and nothing else running
+# an Unluminate on the sample project, and nothing else running
 node unluminate-cli/agent-assessment/project.js _agent_output/task-1661-unluminate-cli/assessment-project
 unluminate-cli launch _agent_output/task-1661-unluminate-cli/assessment-project
 

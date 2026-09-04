@@ -59,7 +59,7 @@ optional things, all on one page and all remembered by the uninstaller:
 
 | | |
 |---|---|
-| Desktop icon | a **Unluminate** shortcut on the desktop |
+| Desktop icon | an **Unluminate** shortcut on the desktop |
 | PATH | `unluminate` opens a folder from any terminal |
 | Right click a file | *Open with Unluminate* |
 | Right click a folder | *Open with Unluminate*, on the folder and on the empty space inside it |

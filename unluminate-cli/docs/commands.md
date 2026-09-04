@@ -26,7 +26,7 @@ cannot fall behind. `unluminate-cli mcp install claude`, or the buttons in `Sett
 4. **`unluminate-cli status --json` tells you where you are** — the project, the tabs, the panes, the
    terminal, the modal that is open, the settings and git, in one answer. Start there.
 
-## Getting a Unluminate to talk to
+## Getting an Unluminate to talk to
 
 ```sh
 unluminate-cli instances --json          # the Unluminate windows that are running
@@ -2446,7 +2446,7 @@ unluminate-cli settings set appearance.font.family "Courier New"
 unluminate-cli settings reset [key]
 ```
 
-Put a setting, or every setting, back to what a Unluminate that has never been run has.
+Put a setting, or every setting, back to what an Unluminate that has never been run has.
 
 - `key` (optional) — The setting. All of them when it is left out.
 

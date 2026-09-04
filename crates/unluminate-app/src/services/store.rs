@@ -182,7 +182,7 @@ impl Store {
     /// The projects Unluminate had a window open on, oldest first.
     ///
     /// `task-1693` asks that quitting and starting again bring back "the windows/projects I had
-    /// open". A Unluminate window is a **process** — `services::launcher` records why — so the only place
+    /// open". An Unluminate window is a **process** — `services::launcher` records why — so the only place
     /// both of them can see is a file here, beside `recent.txt`.
     ///
     /// **A line is kept when a window closes.** That is the trade-off, and it is stated rather than

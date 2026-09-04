@@ -22,7 +22,7 @@ blank entry in Add or Remove Programs, and no installer can put that right from 
 Three rules the rest of this follows.
 
 **One folder, two platforms, one source for the picture.** The Windows installer and the macOS bundle
-must not each carry their own drawing of a unluminate, or they will drift apart. There is one generator
+must not each carry their own drawing of an unluminate, or they will drift apart. There is one generator
 and it writes every size and both container formats.
 
 **The build is a script, not a list of steps in a document.** `installer/windows/build.ps1` and
@@ -74,7 +74,7 @@ every size the two platforms ask for.
 **What is drawn.** A rounded square in the window's own two darks — `EDITOR` `#1A1F26` at the bottom
 lifting to `TITLE_BAR` `#2A313D` at the top, which is the vertical order the window itself has — with
 a hairline of `CONTROL_BORDER` round the edge so the icon keeps its shape against a light wallpaper.
-On it, a unluminate: a feather in `TEXT` `#E8EBF1` running from the top right down to a nib at the lower
+On it, an unluminate: a feather in `TEXT` `#E8EBF1` running from the top right down to a nib at the lower
 left, its underside in `TEXT_DIM` so it reads as a surface rather than a cut-out, barbs cut into its
 front edge and a shaft down its middle in the plate's own dark, and out of the nib a stroke of
 `ACCENT` `#489FF8` — the colour everything switched on is drawn in — as the ink it has just laid
@@ -201,7 +201,7 @@ today force-closes Unluminate for exactly the same reason. It is written down he
 
 So the installer stays polite — `CloseApplications=yes` shows a person the list and lets them close
 Unluminate and press Retry — and `build.ps1 -Install`, which is our own automation and not a person, closes
-a Unluminate running from the folder it is about to write to first, with the window's own close rather than
+an Unluminate running from the folder it is about to write to first, with the window's own close rather than
 a kill, and gives up with a message if it will not go. The politeness is in the installer where a
 stranger meets it, and the convenience is in the script where we do.
 

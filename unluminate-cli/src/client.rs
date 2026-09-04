@@ -1,4 +1,4 @@
-//! Finding a Unluminate to talk to, and starting one.
+//! Finding an Unluminate to talk to, and starting one.
 //!
 //! Everything here is about the connection rather than about the commands: which of the running
 //! windows a request goes to, what to say when the answer is none or too many, and how to start a
@@ -162,7 +162,7 @@ pub fn unluminate_program() -> PathBuf {
     PathBuf::from(name)
 }
 
-/// Start a Unluminate on `folder`, and wait until it is answering.
+/// Start an Unluminate on `folder`, and wait until it is answering.
 ///
 /// Waiting is the point. A script that starts a window and sends it a command straight away used to
 /// race the window's first frame; this returns when the new Unluminate has written its instance file and

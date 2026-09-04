@@ -17,7 +17,7 @@ HTML needs it to change its mind about whether a word means anything **at all**,
 
 ## 1. Why the half hour of typing would have produced an unusable plugin
 
-A Unluminate plugin is data: a `plugin.conf` naming a language's extensions, its comments, its strings,
+An Unluminate plugin is data: a `plugin.conf` naming a language's extensions, its comments, its strings,
 some lists of words and a colour a token. Five of those manifests exist. Writing a sixth for HTML by
 filling in the same keys takes half an hour, and this is what it produces:
 

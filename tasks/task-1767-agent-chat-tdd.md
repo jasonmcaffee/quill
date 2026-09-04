@@ -786,6 +786,6 @@ Each with its reason, so that a later ticket can pick one up knowing what it is 
 - **Retrying automatically on a 429.** The server says how long to wait and the pane says so; a
   client that retried on its own would be a client billing somebody's account while they were not
   looking.
-- **A conversation shared between two Unluminate windows.** A Unluminate window is a process, and the
+- **A conversation shared between two Unluminate windows.** An Unluminate window is a process, and the
   conversations are files in the person's own folder read when the pane opens. Two windows chatting
   into one conversation is the same problem `session.txt` has and is not worth it for this.

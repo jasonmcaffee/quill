@@ -1327,7 +1327,7 @@ Start-Sleep -Seconds 900"),
         // The test above states the contract and passes without the fix as often as not, because
         // whether closing a pseudoconsole happens to end a particular shell is a race — which is
         // exactly why the fix cannot rely on it. This one states the mechanism instead, and is the
-        // regression test: without the job there is nothing holding the program, and a Unluminate that
+        // regression test: without the job there is nothing holding the program, and an Unluminate that
         // crashes or is killed (which is most of how the 119 orphans of `task-1769` were made) takes
         // nothing with it.
         let settings = SessionSettings {

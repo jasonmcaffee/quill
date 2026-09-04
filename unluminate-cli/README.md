@@ -3,7 +3,7 @@
 Drive a running Unluminate window from the command line.
 
 ```sh
-unluminate-cli launch .                                  # start a Unluminate on this folder and wait for it
+unluminate-cli launch .                                  # start an Unluminate on this folder and wait for it
 unluminate-cli status --json                             # where am I?
 unluminate-cli tab open README.md                        # open a file
 unluminate-cli editor view preview                       # look at its Markdown preview

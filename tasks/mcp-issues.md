@@ -2,7 +2,7 @@
 
 ## What this records
 
-An agent was asked to drive a Unluminate window entirely through the Model Context Protocol (MCP) tools:
+An agent was asked to drive an Unluminate window entirely through the Model Context Protocol (MCP) tools:
 write a JavaScript file that prints prime numbers, open it in a tab, run it, read the output, edit
 it, save it and run it again. All of that worked. Five problems turned up while doing it, and this
 document records them with the code that causes each one.
@@ -380,7 +380,7 @@ Say in each tool's description that `timeout` in milliseconds is accepted on any
 should be able to fail faster than 15 seconds, use the passed value directly rather than taking the
 maximum of it and the default.
 
-## One note about the setup, which is not a Unluminate bug
+## One note about the setup, which is not an Unluminate bug
 
 The agent that found all of this was running inside the Unluminate window it was driving. The parent chain
 was Unluminate (process 88081) to `/bin/zsh` to `claude` to the shell each command ran in, and the hosting

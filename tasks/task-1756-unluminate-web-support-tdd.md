@@ -91,13 +91,13 @@ Each open browser tab can keep its page state, scroll position and JavaScript he
 
 `BrowserTab::source_path` is used only where a display relationship is intended, such as the tab icon and the explorer's selected row. The tab name is the document title when one exists, then the local filename or URL host. Save, formatting, folding, debugger and text commands are absent for a browser tab through the existing file-kind questions.
 
-The pane loop records a `BrowserPlacement` for every visible browser tab. `BrowserHost::reconcile` runs from `eframe::App::raw_input_hook`, before the egui pass rather than inside it, and creates the view if there is none, points it at the tab that is showing, updates logical bounds and hides it when nothing should be seen. It hides the native view while a Unluminate modal, popup or context menu is open — `egui::Popup::is_any_open` is what covers the menu bar and every dropdown and flyout in one answer — because native child windows paint above egui and would otherwise cover the control.
+The pane loop records a `BrowserPlacement` for every visible browser tab. `BrowserHost::reconcile` runs from `eframe::App::raw_input_hook`, before the egui pass rather than inside it, and creates the view if there is none, points it at the tab that is showing, updates logical bounds and hides it when nothing should be seen. It hides the native view while an Unluminate modal, popup or context menu is open — `egui::Popup::is_any_open` is what covers the menu bar and every dropdown and flyout in one answer — because native child windows paint above egui and would otherwise cover the control.
 
 **A window has one native view, however many rendered tabs are open**, and it is pointed at whichever tab is showing. This replaces the per-tab views this document originally specified; §"What the runtime pass found" records the measurement that forced the change. Where a tab has been is therefore remembered in `BrowserTab` — an address list and a position — rather than read back from the engine, so `Back` in one tab can never land on another tab's page, and a tab ignores the page the view reports while it is leaving it.
 
 ### Local resource origin
 
-Local HTML uses a `unluminate://tab-<id>/...` custom origin. Wry maps that to an HTTP-shaped origin on Windows and keeps the custom scheme on macOS, while relative URL resolution continues to work on both. The initial path is relative to the project root when the file is inside the project, or relative to its containing folder when it isn't.
+Local HTML uses an `unluminate://tab-<id>/...` custom origin. Wry maps that to an HTTP-shaped origin on Windows and keeps the custom scheme on macOS, while relative URL resolution continues to work on both. The initial path is relative to the project root when the file is inside the project, or relative to its containing folder when it isn't.
 
 ```mermaid
 flowchart TD

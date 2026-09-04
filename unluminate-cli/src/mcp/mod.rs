@@ -54,7 +54,7 @@ pub use driver::Unluminates;
 pub use server::{Driver, Server};
 pub use tools::Shape;
 
-/// The port a Unluminate hosting the HTTP endpoint listens on unless somebody chose another.
+/// The port an Unluminate hosting the HTTP endpoint listens on unless somebody chose another.
 ///
 /// Fixed rather than chosen by the operating system, which is the opposite of what
 /// `services::control` does and for the opposite reason: a control channel is found by reading the

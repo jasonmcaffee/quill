@@ -1,4 +1,4 @@
-# agent-tasks-plugin — the task board as a Unluminate plugin
+# agent-tasks-plugin — the task board as an Unluminate plugin
 
 > For our next plugin, we want rebuild our entire Tasks project (terminals, tasks, jira, etc) as a
 > plugin called Agent-Tasks in rust. The db should be a built in sql-lite db that is stored somewhere

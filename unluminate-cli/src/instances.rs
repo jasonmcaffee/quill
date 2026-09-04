@@ -1,6 +1,6 @@
 //! Where a running Unluminate says how to reach it, and how the client finds one.
 //!
-//! A Unluminate that is listening writes one small file into `<settings folder>/instances`, named after
+//! An Unluminate that is listening writes one small file into `<settings folder>/instances`, named after
 //! its process id. The file holds the port it is listening on, the token a request has to carry,
 //! the folder it has open and when it started. It is the same `name = value` format the settings
 //! file uses, so it can be read by eye and by three lines of any language.
@@ -31,7 +31,7 @@
 //!
 //! ## Stale files
 //!
-//! A Unluminate that is killed rather than closed leaves its file behind. Nothing sweeps them on a
+//! An Unluminate that is killed rather than closed leaves its file behind. Nothing sweeps them on a
 //! timer: [`running`] treats a file it cannot connect to as not being an instance, and removes it.
 //! That is the only sweep there is, and it happens when somebody is looking.
 
@@ -176,7 +176,7 @@ pub fn listed_in(folder: &Path) -> Vec<Instance> {
     out
 }
 
-/// Remove an instance's file, which a Unluminate does as it stops and the client does when it finds one
+/// Remove an instance's file, which an Unluminate does as it stops and the client does when it finds one
 /// that no longer answers.
 pub fn forget(instance: &Instance) {
     let _ = std::fs::remove_file(instance.path_in(&folder()));

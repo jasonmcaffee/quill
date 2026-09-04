@@ -1,4 +1,4 @@
-//! A B-tree rope: the text buffer behind a Unluminate document.
+//! A B-tree rope: the text buffer behind an Unluminate document.
 //!
 //! Leaf nodes hold a short run of UTF-8 bytes. Internal nodes hold their children plus, next to each
 //! child, a summary of that child's text. The summary is three counts: bytes, characters and line

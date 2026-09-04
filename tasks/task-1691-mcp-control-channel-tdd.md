@@ -1,6 +1,6 @@
 # task-1691 — The command channel answers a window that is not drawing, and says so when it cannot
 
-An agent was asked to drive a Unluminate window entirely through the Model Context Protocol: write a
+An agent was asked to drive an Unluminate window entirely through the Model Context Protocol: write a
 JavaScript file that prints prime numbers, open it in a tab, run it, read the output, edit it, save
 it and run it again. All of that worked. Five faults turned up on the way, and `tasks/mcp-issues.md`
 is the report — what was seen, measured on a real session, with the code that causes each one. This

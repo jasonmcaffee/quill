@@ -106,7 +106,7 @@ pub const TERMINAL_FONT_SIZES: &[f32] = &[10.0, 11.0, 12.0, 13.0, 14.0, 16.0, 18
 
 /// The point size egui sets a body of text in, which is what the window's own text has always been.
 ///
-/// The default of `appearance.ui.font.size`, so a Unluminate that names no size in its settings file is drawn
+/// The default of `appearance.ui.font.size`, so an Unluminate that names no size in its settings file is drawn
 /// exactly as it was before `task-1776` — `theme::apply_scaled` does nothing at all at a scale of one.
 pub const DEFAULT_UI_FONT_SIZE: f32 = 12.5;
 /// The sizes the interface font size control offers, which is the reference editor's own list around its default.
@@ -272,7 +272,7 @@ pub enum Page {
     /// A page of its own rather than a section on Appearance, because the Settings window is one size for
     /// every page, no page scrolls, and Appearance already fills its 640 points. The reference editor separates them
     /// too — Appearance holds the theme and Editor holds the colour scheme — and here the two are one
-    /// question, because a Unluminate theme carries both.
+    /// question, because an Unluminate theme carries both.
     Theme,
     /// The editing area itself: the gutter, and the colour scheme code is set in.
     Editor,
@@ -441,7 +441,7 @@ pub struct Settings {
 }
 
 impl Settings {
-    /// The settings a Unluminate that has never been run has. The family is decided by the renderer, because
+    /// The settings an Unluminate that has never been run has. The family is decided by the renderer, because
     /// it depends on what the system has installed, so it is left empty here and filled in by the window.
     pub fn new() -> Self {
         Self {
@@ -475,7 +475,7 @@ impl Settings {
             mcp_enabled: false,
             mcp_port: unluminate_cli::mcp::DEFAULT_PORT,
             mcp_tools: unluminate_cli::mcp::Shape::default(),
-            // The four `task-1776` added, each empty or at the number that changes nothing, so a Unluminate
+            // The four `task-1776` added, each empty or at the number that changes nothing, so an Unluminate
             // that has never been run is painted in exactly the palette it always was.
             theme: String::new(),
             accent: String::new(),
@@ -1080,7 +1080,7 @@ mod tests {
         assert_eq!(values.text("appearance.theme"), Some("themes-bundle-1/monokai-pro"));
         assert_eq!(values.text("debug.lldb"), Some(r"C:\tools\codelldb.exe"));
 
-        // And now put every one of them back to what a Unluminate that has never been run has.
+        // And now put every one of them back to what an Unluminate that has never been run has.
         Settings::new().write_into(&mut values);
         for name in [
             "appearance.theme",

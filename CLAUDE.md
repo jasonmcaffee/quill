@@ -146,7 +146,7 @@ never lives in `OpenFile`. An `OpenFile` holds only a testable `BrowserTab`, whi
 `BrowserHost` owns the browser profile, the view and the constrained local resource roots. Keep that
 split: everything about a tab that can be tested with no window is in `BrowserTab`.
 
-Local HTML uses a `unluminate://` project origin. Resolve every requested resource under the registered
+Local HTML uses an `unluminate://` project origin. Resolve every requested resource under the registered
 canonical root, refuse traversal and write methods, and expose no JavaScript host bridge. Linked CSS,
 scripts and images are remembered, so a changed resource reloads the page that used it and an
 untouched project costs nothing.
@@ -622,7 +622,7 @@ against a dark ground.
 **The colour scheme moved off the language plugins.** Rust, JavaScript, TypeScript, CSS and HTML each
 carried their own copy of Dracula — five copies, and a sixth language would have arrived with a sixth.
 `plugins::scheme_of` answers with the theme's nine if it names them and the plugin's own otherwise, and
-**Unluminate Dark names none**, so a Unluminate nobody has chosen a theme in colours every file exactly as it did
+**Unluminate Dark names none**, so an Unluminate nobody has chosen a theme in colours every file exactly as it did
 before.
 
 `themes-bundle-1` is five dark themes whose every number was read out of the IntelliJ plugin jars on
@@ -1438,7 +1438,7 @@ reads it back from egui once a frame rather than having the title bar's drag, th
 platform's snap and `unluminate-cli window position` each remember to report — `follow_the_open_file`'s
 rule about a list whose next entry is the one that forgets.
 
-**And `session.txt`, beside `recent.txt`, is the windows Unluminate had open.** A Unluminate window is a
+**And `session.txt`, beside `recent.txt`, is the windows Unluminate had open.** An Unluminate window is a
 process, so the only place two of them can both see is the person's own settings folder. A window
 adds its project when it opens and **leaves its line behind when it closes**; starting Unluminate with no
 folder named — the shortcut launch, which is the same condition `starting_folder` already tests —
@@ -3003,7 +3003,7 @@ built so that it cannot leave anything held:
 
 `tools/unstick-keyboard.ps1` is that repair as a command a person runs — `-Check` says what is held
 and changes nothing — and `tools/release.ps1` runs it before it does anything else, because that is
-the line a Unluminate task ends on and a person about to type into their own machine again should not have
+the line an Unluminate task ends on and a person about to type into their own machine again should not have
 to know any of the above. `tools/test-windows-input.ps1` is the proof: it strands a key on purpose,
 in each of the ways a script can, and asks Windows through `GetAsyncKeyState` whether it came back.
 

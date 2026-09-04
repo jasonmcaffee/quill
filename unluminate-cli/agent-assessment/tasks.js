@@ -2,7 +2,7 @@
 //
 // Every task is one instruction, phrased the way a person would say it — never using the name of the
 // command, because a task that names the command is measuring copying rather than understanding.
-// `check` runs a `unluminate-cli` command against the live window afterwards and tests the answer, so a
+// `check` runs an `unluminate-cli` command against the live window afterwards and tests the answer, so a
 // task passes only if the window really ended up in the state the instruction asked for.
 //
 // `setup` puts the window into a known state first. It is run through the CLI directly and is not

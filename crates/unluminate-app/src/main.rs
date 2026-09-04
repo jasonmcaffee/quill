@@ -170,7 +170,7 @@ fn main() -> eframe::Result {
     }
     unluminate_app::services::crash_log::install(unluminate_app::services::store::folder_for_this_person());
 
-    // Started here, and by nothing else, because it runs the person's shell profile: a Unluminate started
+    // Started here, and by nothing else, because it runs the person's shell profile: an Unluminate started
     // from the Finder or the Dock has `PATH=/usr/bin:/bin:/usr/sbin:/sbin` and cannot find a program
     // installed under the home folder, which is where `claude` and `codex` install themselves. It runs
     // on a thread and takes about a second and a half, so it is asked for as early as there is
@@ -204,7 +204,7 @@ fn main() -> eframe::Result {
     // is the same rule `starting_folder` keeps about reopening the last project.
     //
     // The list is oldest first, so the **last** entry is the project this process opens itself and
-    // every other entry gets a process of its own — a Unluminate window is a process, which
+    // every other entry gets a process of its own — an Unluminate window is a process, which
     // `services::launcher` records as a deliberate decision.
     let restoring = arguments.path.is_none()
         && unluminate_app::started_from_the_desktop(&current_directory, program.as_deref());

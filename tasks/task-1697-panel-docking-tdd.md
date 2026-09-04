@@ -285,7 +285,7 @@ older spelling of two of these, and removing them would break every script that 
 ## 11. Deliberately not here
 
 - **Floating panels.** A panel torn off into a window of its own is a second operating system window
-  with no project behind it, and `services::launcher` says a Unluminate window *is* a project. It is a
+  with no project behind it, and `services::launcher` says an Unluminate window *is* a project. It is a
   feature of its own.
 - **Panels as tabs of one another.** VS Code stacks views in one region and shows one at a time; that
   is a second arrangement of the same panels and would need a strip of its own to switch between
