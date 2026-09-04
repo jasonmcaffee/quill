@@ -109,3 +109,52 @@ that is all of them.
 `Unluminous → About Unluminous` says the same, one row in Add or Remove Programs, `cargo test
 --workspace` green, the built executable free of the old byte string, both sites verified on prod, and
 the release published with the installer attached.
+
+---
+
+## What actually happened
+
+Released as **Unluminous 0.37.0** — https://github.com/jasonmcaffee/unluminous/releases/tag/v0.37.0
+
+**The numbers.** 8,701 occurrences across 406 files and 89 renamed paths in the product repo; 222
+across 16 files in ai-service; 21 across 4 in claude-settings; 83 across 11 in blackrainbowlabs. Only
+three casings existed anywhere, which is why a scripted substitution was the right tool for the prose.
+
+**The three assertions, and how each one behaved.**
+
+1. `typing_in_find_in_files_leaves_the_document_alone` **failed**, exactly as predicted:
+   `left: "unluminou"`, `right: "unluminat"`. Fixed.
+2. `an_unresolved_segment_answers_nothing_rather_than_everything` **passed while still being wrong**,
+   which the last rename did not have to deal with. It asserts that `unluminat_core` resolves to
+   `None`, and a stale misspelling of a *renamed* crate still resolves to `None` — so the assertion
+   held while no longer testing what it was written to test. The suite could not catch it in either
+   direction. It was found by grepping for near-misses of the name once the suite had proved that
+   shape of test existed, and is now `unluminou_core`. **A test that cannot fail is not evidence**, and
+   this is the one place where "run the suite" was not enough.
+3. `a_module_path_is_read_back_to_its_keyword` **passed untouched**. `stem: 21..25` counts the letters
+   of `unluminous_core`, which is the same length as `unluminate_core`. The ten-character coincidence
+   was real and it paid.
+
+A fourth test, `the_case_of_a_search_can_be_insisted_on`, failed once with kittest's
+`Harness::run exceeded max_steps (4)` and passed on the two runs either side of it — the known repaint
+flake, not the rename.
+
+**The snapshots.** 163 of the 165 failures were images: the menu bar and the project folder are drawn
+in nearly every screenshot. Regenerated with `UPDATE_SNAPSHOTS=1`, then re-run **without** it —
+because an update run cannot fail an image test, so only the second run is evidence. **2,779 pass, 0
+fail.**
+
+**The binary grep came back clean this time.** `cargo clean --release` removed 7,199 files / 4.4 GiB
+before the rebuild, and both `unluminous.exe` and `unluminous-cli.exe` — built and installed — contain
+zero occurrences of the old name, with no generated file under `target/release/build` carrying an old
+path.
+
+**The settings migration held.** The installed 0.37.0 came up with the stored font, background
+opacity, pane sizes, both terminal tabs, all three plugins and `debug.lldb` pointing into the copied
+adapter tree — not factory-fresh. The WebView2 `browser/` profile was deliberately not copied: it is
+Chromium's own leveldb keyed to the old origin, it cannot be rewritten, and the pane rebuilds it.
+
+**One surprise worth writing down.** Copying `%APPDATA%\Unluminate\plugins` into a destination that
+already had a `plugins` directory — the test runs had created one under the new name hours earlier —
+produced `Unluminous\plugins\plugins\…` rather than merging. `Copy-Item -Recurse <dir> <existing dir>`
+nests instead of merging on Windows. Caught by the file count (13 before, 13 after) once flattened.
