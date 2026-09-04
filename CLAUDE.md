@@ -816,6 +816,149 @@ function is what stops a sixth field being the sixth chance to get it wrong.
 so opening the second shuts the first — which is why the three line spacings in the text options
 panel are three buttons rather than the dropdown they used to be.
 
+## Find is a bar and Replace is one undo step, and neither is a modal
+
+`task-1804` §3.1: *"An editor that ships without Ctrl+F is an editor that gets one review."* There was
+`Find in Files` on `Ctrl/Cmd+Shift+F` and nothing at all on `Ctrl/Cmd+F`, and no Replace anywhere —
+`editor rename` renames a *symbol*, which is a different and better thing and does not help with a
+string, a comment, a URL or a number.
+
+**A bar rather than a modal**, and that is the one design decision worth writing down. `Go to File`
+and `Find in Files` are modals because they are about the *project* and their answer is a list you
+read; find in the current file is about the text you are looking at, and a modal over it would cover
+the thing being searched.
+
+Four rules the implementation keeps:
+
+- **Nothing about the search is decided in the component.** `services::find` holds the needle, the
+  matches and which one is current and is a unit test with no window; `components::find_bar` draws it.
+  That is `go_to_file`'s arrangement and `find_in_files`'s.
+- **The matches are recomputed rather than shifted.** An edit moves every offset after it, and
+  shifting them would be a second implementation of the rule `Document::insert` already keeps for the
+  marks, the folds and the breakpoints — and unlike those, a search match is *derived* from the text,
+  so there is nothing a fresh reading would not give.
+- **The current match is the selection; the others carry `find_match`.** Two colours for two meanings,
+  which is why the palette gained a name. And `Find::refresh` answers whether the *search* changed
+  rather than whether the *text* did, so typing in the box walks the file and typing in the file does
+  not pull the caret away.
+- **Replace All is one `Command::ReplaceMany`**, which is what `editor rename` is applied by and which
+  exists for exactly this: one undo step whether it changes one match or four hundred.
+
+**Replacing across the project is the `Find in Files` modal's**, because that modal already lists
+every file it would write. It keeps `apply_rename`'s two rules — an open tab is edited as a *document*
+and left unsaved rather than written behind somebody's back, and a closed file is read, checked and
+written once with every byte outside the ranges untouched — and it checks each file by **recomputing
+its matches**, which a case-insensitive search needs, since the text at a match is very often not the
+needle.
+
+`Find` is a menu of its own in the bar. It was a submenu of `Edit` for about an hour, and that did not
+work: `controls::menu_rows` draws a submenu as a heading with its entries in the same list rather than
+as a flyout, which is right for a menu this shape and is why the Edit menu was already at the limit of
+a 740 point window. Four more entries pushed `Settings` off the bottom where nothing could reach it.
+
+## Every control has a name, and now something reads them
+
+`design/style-guide.md` has required a name on every control since `task-1655`, there are 112
+`widget_info` calls in `components/`, and the 483 screenshot tests find controls *by that name*.
+
+**And none of them reached anything until `task-1804`.** `eframe` was configured
+`default-features = false, features = ["wgpu", "default_fonts"]`, and `accesskit` is one of the
+default features that turns off with them — so the accessibility tree existed in the test build,
+because `egui_kittest` enables it for the harness, and in no shipped binary. Narrator, UI Automation,
+VoiceOver and NSAccessibility all received nothing.
+
+It is on. `design/accessibility.md` is what is still missing, what the contrast really measures — 23
+of 28 pairs meet WCAG 2.2 and the word on the primary button is 2.77:1 — and the plain answer to
+whether screen-reader support ships in 1.0, which is **no**.
+
+`node tools/contrast.mjs` computes every ratio from the palette itself, so it can be run again the day
+a colour moves, and `--check` fails when an ordinary-text pair is under 4.5:1.
+
+## A file is written back the way it was read, and the document is what remembers
+
+`task-1804` measured what it cost not to. A three line file with Windows line breaks, opened, one
+character typed, saved:
+
+```
+before:  l i n e   o n e \r \n l i n e   t w o \r \n
+after:   X l i n e   o n e \n   l i n e   t w o \n
+```
+
+Every line ending rewritten by a one character edit. On this machine, whose `core.autocrlf` is set, a
+git checkout is enough to put every file in that state, so **any edit to any file produced a whole
+file diff**; on a repository not using it the conversion is permanent.
+
+The normalisation itself is right and `task-1794` explains why: offsets and line counts need one
+meaning, and a breakpoint sent to a debugger from a file read raw landed about fifty bytes early. The
+fault was only that the write did not undo it. So `unluminate-core::encoding` is what a file **was**,
+kept beside the text: a `LineEnding` — `Lf`, `Crlf`, or a lone `Cr`, which nothing has written since
+2001 and which is therefore kept rather than converted — and an `Encoding`.
+
+Three things follow, and each is a rule rather than a detail:
+
+- **Whichever ending there are most of wins, and a file with none gets the platform's.** A file is
+  very often mixed, and in that case there is no answer that leaves every line alone; counting is the
+  reading that changes the fewest of them.
+- **A file that is not UTF-8 opens read-only rather than being refused.** A UTF-16 byte order mark and
+  Latin-1 — which cannot fail, because every byte is a code point there — are read, named in the
+  status bar, and never written back. Re-encoding somebody's file into a scheme this version has not
+  been asked to get right is worse than saying no. `Encoding::writable` is where that is decided.
+- **`editor.line_ending` is `keep` and should stay that way.** Any other default rewrites somebody's
+  file the first time they type in it. The other two exist for the project that has decided.
+
+`a_round_trip_leaves_every_line_ending_exactly_as_it_was` is the measurement above, made a test: open,
+type, save, compare **bytes**, for each of CRLF, LF, CRLF with no trailing newline, and CR.
+
+## Colouring reads the part that changed, and `set_in` is the half nobody expected
+
+`task-1666` §12 named this in advance — *"the tokeniser reads the whole file after every edit… it is
+the next thing to become the largest item"* — and `task-1804` measured it becoming that: **73.8 ms a
+keystroke at 2 MB**, four times what the same keystroke costs at 500 KB.
+
+It is now **34.9 ms**, and it took two changes rather than one:
+
+- `unluminate-core::incremental` tokenises from the start of the line the edit was on and stops once
+  the tokens agree with what was there before — 17 tokens read a keystroke instead of about 700,000.
+  It may start part way through a file because `syntax`'s loop is **position-independent**: at each
+  byte it looks only at `&text[at..]`. What proves the scanner was *between tokens* at that byte is
+  the previous reading — if no old token straddles it, it was — and it walks back a line at a time
+  until it finds one. **A markup grammar never takes the fast path**, because `markup::walk` is a
+  different reading with state of its own, and that is written down rather than assumed.
+- `StyleSpans::set_in`, and this was the **larger** half. Once the tokeniser stopped reading the file,
+  what was left was the span list being rebuilt: `set_many` writes a fresh vector cloning each span's
+  style into it, and a `CharStyle` owns its family name — so a 2 MB file coloured into 234,000 spans
+  cost **234,000 string allocations to describe a change of one letter**. It is `task-1666` §12's
+  third bullet arriving from a direction nobody expected.
+
+**Five hundred random edits, each checked against the whole-file reading**, is what keeps the first
+one honest, and a differential test against `set` plus `set_many` is what keeps the second one honest.
+Neither is the kind of thing to change on reasoning alone: a file coloured wrongly from the middle
+down is visible and hard to attribute.
+
+## An area tool's schema is a union, and two things follow from that
+
+`unluminate_editor` and its siblings take `{ "command": <verb>, "arguments": { … } }`, and the nested
+object is **every argument and flag of every command in the area**. That is what keeps the default
+preamble small enough to hand to a model at all, and `task-1804`'s study run measured what it costs
+when nobody thinks about it.
+
+- **A key the schema offered is dropped, not refused.** The model sent `plugins run` with `pane`,
+  `show`, `side` and `tab` — all real keys of *sibling* verbs, all in the schema — and `run_cli`
+  refused it, because `task-1794`'s rule is that a key a command does not name is a usage refusal. It
+  tried the same call **68 times** and the whole `database` area went unused. `tools::sibling_keys`
+  takes those out and **names them in the answer**; a key that is nothing at all still reaches the
+  window and is still refused, so a typo is still a typo.
+- **A command whose own argument shares a name with the tool's is renamed inside the call.**
+  `plugins run` takes `command` and `arguments`, which are exactly the tool's own two keys, so the
+  model could not say both — it put the plugin's verb anywhere but the key it had already used.
+  `RENAMED_IN_A_GROUPED_CALL` offers those as `verb` and `words` and maps them back. The command line
+  and the wire are unchanged.
+
+**And `mcp serve --areas` is how an agent is equipped with less than all of it.** The default grouped
+preamble is about 18,500 tokens, 18% of the local model's 96k window, spent before a question is
+asked; `--areas editor,git` is 4,491. The commands with no area — `status`, `launch`, `quit` — are
+always offered, because an agent that cannot ask `status` cannot use any of the others.
+
 ## Two ways of searching a project, and both of them are the modal's
 
 `task-1659` asks for IntelliJ's two: `Go to File` on `Ctrl/Cmd+Shift+O`, which narrows the project's
@@ -3130,6 +3273,13 @@ trade that away to be a shade nearer a screenshot.
   and the Settings page — each a real capture, its state built through `unluminate-cli` against a small
   SQLite fixture made for the page.
 - `design/style-guide.md` — how a control in Unluminate is built, and what the baselines are.
+- `design/accessibility.md` — what the accessibility tree does and does not do, every contrast ratio
+  measured against WCAG 2.2, the work that is left in the order it would have to be done, and the
+  plain answer about 1.0.
+- `documentation/README.md` — what re-taking either picture gallery needs, and why the scripts that
+  took the first one have to move into `tools/` before it happens.
+- `CHANGELOG.md` — what changed in each release, written from the ticket-prefixed commits by
+  `tools/changelog.mjs` and rewritten by both release scripts, so it cannot fall behind.
 - `design/icons.md` — how the `material` icon set was designed: the two Krea 2 sheets, the prompts
   that made them, what was measured off each mark, and the one the sheet got wrong.
 - `tasks/unluminate-ide-tdd.md` — the line numbers, the tabs, the explorer's menu, git and the plugins:

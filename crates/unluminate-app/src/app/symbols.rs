@@ -1028,7 +1028,7 @@ mod tests {
     fn a_definition_in_another_file_opens_that_file_with_the_name_selected() {
         // Scenario 2.
         let (folder, mut app) = a_window("unluminate-symbols-another-file");
-        app.open_path_permanently(&folder.join("caret.rs"));
+        app.open_path_permanently(&folder.join("caret.rs")).expect("the file opens");
         let offset = at(&app, "layout.draw()") + "layout.".len();
         app.go_to_definition(offset);
         assert_eq!(
@@ -1045,7 +1045,7 @@ mod tests {
     fn a_word_with_no_definition_says_so_rather_than_guessing() {
         // Scenario 6, the menu path. The click path shows no underline and so rarely gets here.
         let (folder, mut app) = a_window("unluminate-symbols-no-definition");
-        app.open_path_permanently(&folder.join("caret.rs"));
+        app.open_path_permanently(&folder.join("caret.rs")).expect("the file opens");
         // `Self` is a keyword, so asking about it is not a question about a symbol at all.
         let keyword = at(&app, "-> Self") + 3;
         app.go_to_definition(keyword);
@@ -1074,7 +1074,7 @@ mod tests {
     fn asking_from_the_definition_itself_pivots_to_the_references() {
         // Scenario 8. Going to a definition from the definition has no other meaning.
         let (folder, mut app) = a_window("unluminate-symbols-pivot");
-        app.open_path_permanently(&folder.join("layout.rs"));
+        app.open_path_permanently(&folder.join("layout.rs")).expect("the file opens");
         let offset = at(&app, "fn draw") + 3;
         app.go_to_definition(offset);
         let modal = app.references.as_ref().expect("the references modal opened");
@@ -1087,7 +1087,7 @@ mod tests {
     fn two_files_defining_one_name_offer_both_rather_than_choosing() {
         // Scenario 3. Nothing silently jumps to a guess when the mechanism knows it guessed.
         let (folder, mut app) = a_window("unluminate-symbols-two-candidates");
-        app.open_path_permanently(&folder.join("caret.rs"));
+        app.open_path_permanently(&folder.join("caret.rs")).expect("the file opens");
         // `new` is defined in both files. Write a call to it somewhere that is neither definition,
         // so the question is asked from a use rather than from one of the answers.
         let use_site = app.document().text().to_string().find("layout.draw()").expect("the call");
@@ -1121,7 +1121,7 @@ mod tests {
     fn an_open_tab_owns_its_definitions_and_the_index_does_not_answer_for_it() {
         // Scenario 13. The one rule underneath all of this.
         let (folder, mut app) = a_window("unluminate-symbols-open-owns");
-        app.open_path_permanently(&folder.join("layout.rs"));
+        app.open_path_permanently(&folder.join("layout.rs")).expect("the file opens");
         // Rename the definition in the tab without saving it.
         let offset =
             app.document().text().to_string().find("fn draw").expect("the definition") + "fn ".len();
@@ -1142,7 +1142,7 @@ mod tests {
     fn a_definition_that_moved_on_the_disk_is_found_again_at_the_moment_of_the_jump() {
         // Scenario 11. A stale index entry costs one file read and can never land on the wrong bytes.
         let (folder, mut app) = a_window("unluminate-symbols-moved-on-disk");
-        app.open_path_permanently(&folder.join("caret.rs"));
+        app.open_path_permanently(&folder.join("caret.rs")).expect("the file opens");
         // Push `draw` a long way down layout.rs behind the index's back.
         let moved = format!("{}\n{}", "// a new comment line\n".repeat(20), std::fs::read_to_string(folder.join("layout.rs")).expect("read"));
         std::fs::write(folder.join("layout.rs"), &moved).expect("write");
@@ -1162,7 +1162,7 @@ mod tests {
     fn a_file_deleted_since_it_was_indexed_reports_and_does_not_crash() {
         // Scenario 12.
         let (folder, mut app) = a_window("unluminate-symbols-deleted");
-        app.open_path_permanently(&folder.join("caret.rs"));
+        app.open_path_permanently(&folder.join("caret.rs")).expect("the file opens");
         std::fs::remove_file(folder.join("layout.rs")).expect("delete it");
         let offset = at(&app, "layout.draw()") + "layout.".len();
         app.go_to_definition(offset);
@@ -1179,7 +1179,7 @@ mod tests {
     fn going_back_through_two_jumps_and_forward_again() {
         // Scenario 18.
         let (folder, mut app) = a_window("unluminate-symbols-navigate");
-        app.open_path_permanently(&folder.join("caret.rs"));
+        app.open_path_permanently(&folder.join("caret.rs")).expect("the file opens");
         let started = app.document().selection().head;
         let offset = at(&app, "layout.draw()") + "layout.".len();
         app.document_mut().apply(unluminate_core::Command::PlaceCaret { offset, extend: false });
@@ -1209,7 +1209,7 @@ mod tests {
     #[test]
     fn there_is_nowhere_to_go_back_to_at_the_start_and_it_says_so() {
         let (folder, mut app) = a_window("unluminate-symbols-nowhere");
-        app.open_path_permanently(&folder.join("caret.rs"));
+        app.open_path_permanently(&folder.join("caret.rs")).expect("the file opens");
         app.navigate(true);
         assert!(app.message.as_deref().is_some_and(|said| said.contains("nowhere")), "{:?}", app.message);
         std::fs::remove_dir_all(&folder).ok();
@@ -1219,7 +1219,7 @@ mod tests {
     fn asking_with_the_caret_on_nothing_says_so_and_opens_no_modal() {
         // Scenario 26.
         let (folder, mut app) = a_window("unluminate-symbols-whitespace");
-        app.open_path_permanently(&folder.join("layout.rs"));
+        app.open_path_permanently(&folder.join("layout.rs")).expect("the file opens");
         let blank = at(&app, "\n\nimpl");
         app.find_references(blank);
         assert!(app.references.is_none(), "no modal opened");
@@ -1243,19 +1243,19 @@ mod tests {
                 })
                 .collect()
         };
-        app.open_path_permanently(&folder.join("layout.rs"));
+        app.open_path_permanently(&folder.join("layout.rs")).expect("the file opens");
         assert_eq!(
             names(&app.menu_state()),
             vec!["Go to Definition", "Find References", "Rename Symbol..."],
             "a Rust file has all three"
         );
-        app.open_path_permanently(&folder.join("site.css"));
+        app.open_path_permanently(&folder.join("site.css")).expect("the file opens");
         assert_eq!(
             names(&app.menu_state()),
             vec!["Find References", "Rename Symbol..."],
             "a stylesheet has no definitions, and keeps the other two"
         );
-        app.open_path_permanently(&folder.join("notes.md"));
+        app.open_path_permanently(&folder.join("notes.md")).expect("the file opens");
         assert!(names(&app.menu_state()).is_empty(), "a note has none of them");
         // And the editing area's own menu asks the same function, so it cannot disagree.
         let state = app.menu_state();
@@ -1275,7 +1275,7 @@ mod tests {
         // Scenarios 33, 40 and 50's split: the open half is one undo step and is left unsaved; the
         // closed half is written once and its bytes outside the ranges are untouched.
         let (folder, mut app) = a_window("unluminate-symbols-rename-split");
-        app.open_path_permanently(&folder.join("layout.rs"));
+        app.open_path_permanently(&folder.join("layout.rs")).expect("the file opens");
         let before = std::fs::read_to_string(folder.join("caret.rs")).expect("read caret.rs");
         let open_before = app.document().text().to_string();
         let change = RenameChange {
@@ -1459,7 +1459,7 @@ mod tests {
         // they had just taken off, which on a long list is a change nobody asked for and nobody
         // sees.
         let (folder, mut app) = a_window("unluminate-symbols-streaming-ticks");
-        app.open_path_permanently(&folder.join("layout.rs"));
+        app.open_path_permanently(&folder.join("layout.rs")).expect("the file opens");
         let offset =
             app.document().text().to_string().find("fn draw").expect("the definition") + 3;
         app.rename_symbol(offset);
@@ -1509,9 +1509,9 @@ mod tests {
         // Scenario 50. Each pane's document is edited once, because a rename is applied per file
         // rather than per pane and a file has one document however many panes are showing it.
         let (folder, mut app) = a_window("unluminate-symbols-two-panes");
-        app.open_path_permanently(&folder.join("layout.rs"));
+        app.open_path_permanently(&folder.join("layout.rs")).expect("the file opens");
         app.files.split_right();
-        app.open_path_permanently(&folder.join("caret.rs"));
+        app.open_path_permanently(&folder.join("caret.rs")).expect("the file opens");
         assert_eq!(app.files.pane_count(), 2, "two panes");
         let layout = app.files.index_of(&folder.join("layout.rs")).expect("layout.rs is open");
         let caret = app.files.index_of(&folder.join("caret.rs")).expect("caret.rs is open");
@@ -1555,7 +1555,7 @@ mod tests {
     fn a_reference_search_reads_an_open_tab_as_it_stands_and_the_disk_for_the_rest() {
         // Scenario 27. What the search is handed is what the window really holds.
         let (folder, mut app) = a_window("unluminate-symbols-open-texts");
-        app.open_path_permanently(&folder.join("layout.rs"));
+        app.open_path_permanently(&folder.join("layout.rs")).expect("the file opens");
         app.document_mut().apply(unluminate_core::Command::MoveDocumentEnd { extend: false });
         app.document_mut().apply(unluminate_core::Command::Insert("\n// draw again\n".to_owned()));
         let open = app.open_texts();
@@ -1589,7 +1589,7 @@ mod tests {
         // real reply — everything but the socket.
         let (folder, mut app) = a_window("unluminate-symbols-cli");
         let context = egui::Context::default();
-        app.open_path_permanently(&folder.join("caret.rs"));
+        app.open_path_permanently(&folder.join("caret.rs")).expect("the file opens");
         let line = app.document().text().to_string()[..at(&app, "layout.draw()")]
             .matches('\n')
             .count()
@@ -1632,7 +1632,7 @@ mod tests {
         let layout = folder.join("layout.rs");
         let text = std::fs::read_to_string(&layout).expect("read layout.rs");
         std::fs::write(&layout, text.replace('\n', "\r\n")).expect("write Windows line endings");
-        app.open_path_permanently(&folder.join("notes.md"));
+        app.open_path_permanently(&folder.join("notes.md")).expect("the file opens");
         let reply = app
             .run_command_line("editor definition draw --open", &context)
             .expect("an answer");
@@ -1654,7 +1654,7 @@ mod tests {
         // the alternative is a syntax error somebody has to find by compiling.
         let (folder, mut app) = a_window("unluminate-symbols-cli-refusal");
         let context = egui::Context::default();
-        app.open_path_permanently(&folder.join("layout.rs"));
+        app.open_path_permanently(&folder.join("layout.rs")).expect("the file opens");
         let offset = app.document().text().to_string().find("fn draw").expect("it") + 4;
         app.document_mut().apply(unluminate_core::Command::PlaceCaret { offset, extend: false });
         let reply = app.run_command_line("editor rename match", &context).expect("an answer");
@@ -1675,14 +1675,14 @@ mod tests {
     {
         let (folder, mut app) = a_window("unluminate-symbols-cli-not-applicable");
         let context = egui::Context::default();
-        app.open_path_permanently(&folder.join("notes.md"));
+        app.open_path_permanently(&folder.join("notes.md")).expect("the file opens");
         let reply = app.run_command_line("editor definition", &context).expect("an answer");
         assert!(!reply.ok);
         assert!(reply.message.contains("definition"), "{}", reply.message);
         let reply = app.run_command_line("editor references", &context).expect("an answer");
         assert!(!reply.ok, "no plugin claims a note, so one of its words is not a symbol");
         // A stylesheet has no definitions and keeps the other two.
-        app.open_path_permanently(&folder.join("site.css"));
+        app.open_path_permanently(&folder.join("site.css")).expect("the file opens");
         let reply = app.run_command_line("editor definition", &context).expect("an answer");
         assert!(!reply.ok, "a custom property is defined by position rather than by a keyword");
         std::fs::remove_dir_all(&folder).ok();

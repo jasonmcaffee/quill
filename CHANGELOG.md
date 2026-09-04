@@ -12,6 +12,7 @@ bumps the release script makes are left out, because they are the boundaries rat
 - The seven defects, Find and Replace, and the keystroke at 2 MB (`task-1804`)
 - CI, code signing, an update check, the licences and a changelog (`task-1804`)
 - Equip an agent with some of the catalogue, and configure a plugin from one (`task-1804`)
+- The study's findings acted on, accessibility scoped, the palette enforced (`task-1804`)
 
 ## 0.34.2 — 2026-09-04
 

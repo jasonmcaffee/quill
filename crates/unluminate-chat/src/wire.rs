@@ -1159,6 +1159,13 @@ mod tests {
             "claude-opus-5",
         )
     }
+    /// The Responses shape's own endpoint, for a test that wants one.
+    ///
+    /// Kept beside its two siblings even while nothing reads it: the three together are what say the
+    /// module has three address shapes, and a helper deleted for being unused is one the next test
+    /// has to write again. `task-1804` cleared the four warnings this file had and left this one on
+    /// purpose, which is why it says so.
+    #[allow(dead_code)]
     fn responses() -> Provider {
         endpoint(
             Wire::Responses,

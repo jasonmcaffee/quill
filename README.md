@@ -903,7 +903,17 @@ Unluminates sharing one `mcp.port` is the behaviour rather than a collision.
 cargo test
 ```
 
-Four layers, 1,199 tests, and a change should leave all four green.
+Four layers, **2,776 tests**, and a change should leave all four green. They run on every push and
+every pull request, on Windows and on macOS — `.github/workflows/ci.yml`. The macOS screenshot
+baselines are stale and that job is red until somebody accepts them once on a Mac with the images
+open, which is said in the workflow rather than hidden behind `continue-on-error`: a job that is
+allowed to fail is a job nobody reads.
+
+There is a fifth workflow, `nightly.yml`, and one script beside it. The six end-to-end tests in
+`crates/unluminate-app/tests/agent_board.rs` start a real agent, so they cost money and minutes and
+are `#[ignore]`d — which left the deepest tests in the repository with no scheduled run at all. They
+have one now: the workflow for a repository with a key on it, and `tools/nightly.ps1 -Register` for
+the machine that already has one. Both say plainly when they covered nothing.
 
 There is a fifth thing, which is not a layer because nothing fails it: **`tools/agent-study/` watches
 an agent drive a real window** through instructions phrased the way a person speaks, and grades what
@@ -912,24 +922,27 @@ layers prove an agent *can* reach a feature. The study is how you find out wheth
 first run found an agent doing 24% of its work with `grep` and `bash` in a window that had a command
 for every job. Add a scenario when you add a feature.
 
-**1. The crates with no window.** `unluminate-core` has 481 unit tests, including the Markdown parser, the
+**1. The crates with no window.** `unluminate-core` has 767 unit tests, including the Markdown parser, the
 syntax tokeniser, every Mermaid diagram type, and a randomised comparison of the rope against a plain
 `String` over 1,500 edits with the tree invariants checked after every one. Layout tests measure
 through a fixed width stub, so their expected numbers are arithmetic a reader can check and are the
-same on every machine. `unluminate-terminal` has 77: every key in the encoding table, the sixteen named
+same on every machine. `unluminate-terminal` has 104: every key in the encoding table, the sixteen named
 colours and the colour cube, what the screen holds after a run of escape sequences, the alternate
 screen, scrollback, resizing, the mouse reports and the tabs. Two of them start a real shell and wait
 for its output, which is what proves the pseudoterminal, the reader thread and the writing work
-together. `unluminate-git` has 43 unit tests and 23 more that build real repositories in a temporary folder
-and ask **git** what happened afterwards. `unluminate-cli` has 51, and among them are the ones that make the
-documentation a test rather than a promise.
+together. `unluminate-git` has 66 tests, and the ones that build real repositories in a temporary folder and ask
+**git** what happened afterwards are among them. `unluminate-dap` has 87, `unluminate-db` 83 and
+`unluminate-chat` 87, each against a scripted adapter or a scripted server rather than a real one.
+`unluminate-cli` has 144, and among them are the ones that make the documentation a test rather than a
+promise, the ones that hold the tool preamble to a budget, and the ones that say what an agent
+equipped with two areas of the catalogue is given.
 
-**2. The window's own logic.** `unluminate-app` has 305 unit tests covering the file explorer and its
+**2. The window's own logic.** `unluminate-app` has 955 unit tests covering the file explorer and its
 filter, what counts as a text file or a picture, the settings file, the project's own state, the
 plugins and their manifests, the menus and their shortcuts, the panes and the tabs in them, real font
 measurement and glyph packing.
 
-**3. The whole window, rendered.** `crates/unluminate-app/tests/screenshots.rs` has 219 tests that build
+**3. The whole window, rendered.** `crates/unluminate-app/tests/screenshots.rs` has 483 tests that build
 the entire application through `egui_kittest`, feed it real events, render it through `wgpu` and write
 a PNG for each one. **Look at the images.** They are how a person or an agent confirms that bold text
 is bolder, that the settings window is laid out like the design, and that the terminal's colours are

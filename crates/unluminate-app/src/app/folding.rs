@@ -439,7 +439,6 @@ impl UnluminateApp {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::app::UnluminateApp;
 
     /// The study's own shape: a function holding a `for` holding an `if`, and a second function
@@ -459,7 +458,7 @@ mod tests {
     fn a_window(name: &str) -> (std::path::PathBuf, UnluminateApp) {
         let folder = a_nested_project(name);
         let mut app = UnluminateApp::new(&folder);
-        app.open_path_permanently(&folder.join("area.rs"));
+        app.open_path_permanently(&folder.join("area.rs")).expect("the file opens");
         (folder, app)
     }
 

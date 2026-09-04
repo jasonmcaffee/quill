@@ -998,7 +998,7 @@ mod tests {
         let folder = a_project(name);
         let mut app = UnluminateApp::new(&folder);
         build_the_index(&mut app);
-        app.open_path_permanently(&folder.join("layout.rs"));
+        app.open_path_permanently(&folder.join("layout.rs")).expect("the file opens");
         let end = app.document().text().len_bytes();
         app.document_mut().apply(Command::PlaceCaret { offset: end, extend: false });
         (folder, app)
@@ -1087,7 +1087,7 @@ mod tests {
         // Scenario 13. Absent rather than dimmed, which is Unluminate's rule for a control that can never
         // apply: the menu entry is not there either.
         let (folder, mut app) = a_window("unluminate-completion-prose");
-        app.open_path_permanently(&folder.join("notes.md"));
+        app.open_path_permanently(&folder.join("notes.md")).expect("the file opens");
         let end = app.document().text().len_bytes();
         app.document_mut().apply(Command::PlaceCaret { offset: end, extend: false });
         typing(&mut app, "draw");
@@ -1105,7 +1105,7 @@ mod tests {
             "the menu entry is absent for a note"
         );
         // A stylesheet is the opposite: no definers, but its own words and keywords are real offers.
-        app.open_path_permanently(&folder.join("site.css"));
+        app.open_path_permanently(&folder.join("site.css")).expect("the file opens");
         assert!(app.completion_applies_here(), "CSS completes");
         let entries = crate::app::actions::completion_entries(&app.menu_state());
         assert!(entries.iter().any(|entry| matches!(
@@ -1120,7 +1120,7 @@ mod tests {
         // The other half of scenario 9, in the window: CSS names no definers, so source 1 — this
         // file's words — is the only thing it has, and it is enough.
         let (folder, mut app) = a_window("unluminate-completion-css");
-        app.open_path_permanently(&folder.join("site.css"));
+        app.open_path_permanently(&folder.join("site.css")).expect("the file opens");
         let end = app.document().text().len_bytes();
         app.document_mut().apply(Command::PlaceCaret { offset: end, extend: false });
         typing(&mut app, "--br");
@@ -1221,7 +1221,7 @@ mod tests {
         typing(&mut app, "w");
         typing(&mut app, "_");
         assert!(app.completion().is_some(), "{:?}", offered(&app));
-        app.open_path_permanently(&folder.join("caret.rs"));
+        app.open_path_permanently(&folder.join("caret.rs")).expect("the file opens");
         a_quiet_frame(&mut app);
         assert!(app.completion().is_none(), "the popup goes with the tab it belonged to");
         std::fs::remove_dir_all(&folder).ok();
@@ -1274,7 +1274,7 @@ mod tests {
         // Scenario 23. One `Option` on the window is what makes "at most one" true by construction;
         // what has to be shown is that it belongs to the pane being typed into.
         let (folder, mut app) = a_window("unluminate-completion-split");
-        app.open_path_permanently(&folder.join("caret.rs"));
+        app.open_path_permanently(&folder.join("caret.rs")).expect("the file opens");
         let context = egui::Context::default();
         app.run_action(Action::SplitRight, &context);
         assert_eq!(app.files.pane_count(), 2, "the editing area is split");
@@ -1491,10 +1491,10 @@ mod tests {
         assert_eq!(here[0].source, Source::ThisFile);
 
         // Open the file the index knew about, and the index's copy of it stops being offered.
-        app.open_path_permanently(&folder.join("distant.rs"));
+        app.open_path_permanently(&folder.join("distant.rs")).expect("the file opens");
         let index = app.files.active_index();
         let _ = index;
-        app.open_path_permanently(&folder.join("layout.rs"));
+        app.open_path_permanently(&folder.join("layout.rs")).expect("the file opens");
         let rows = app.completion_rows("dra", 0);
         let everything: Vec<&Row> =
             rows.iter().filter(|row| row.name == "draw_everything").collect();
@@ -1530,7 +1530,7 @@ mod tests {
         )
         .expect("write page.html");
         let mut app = UnluminateApp::new(&folder);
-        app.open_path_permanently(&folder.join("page.html"));
+        app.open_path_permanently(&folder.join("page.html")).expect("the file opens");
 
         // Inside the first word of a tag, so the element names are on offer.
         let tag_name = app.completion_rows("ta", 3);
@@ -1588,7 +1588,7 @@ mod tests {
         let folder = a_web_project(name);
         let mut app = UnluminateApp::new(&folder);
         build_the_index(&mut app);
-        app.open_path_permanently(&folder.join("src/app/mod.ts"));
+        app.open_path_permanently(&folder.join("src/app/mod.ts")).expect("the file opens");
         (folder, app)
     }
 
@@ -1622,7 +1622,7 @@ mod tests {
         let folder = a_workspace(name);
         let mut app = UnluminateApp::new(&folder);
         build_the_index(&mut app);
-        app.open_path_permanently(&folder.join("crates/unluminate-app/src/app/mod.rs"));
+        app.open_path_permanently(&folder.join("crates/unluminate-app/src/app/mod.rs")).expect("the file opens");
         (folder, app)
     }
 
@@ -1683,11 +1683,11 @@ mod tests {
         // Scenario 45, which is `task-1675` §3.3's ownership rule reaching one more feature: a
         // function added in the tab beside this one is offered before it is saved.
         let (folder, mut app) = a_web_window("unluminate-import-live");
-        app.open_path_permanently(&folder.join("src/app/layout.ts"));
+        app.open_path_permanently(&folder.join("src/app/layout.ts")).expect("the file opens");
         let end = app.document().text().len_bytes();
         app.document_mut().apply(Command::PlaceCaret { offset: end, extend: false });
         app.document_mut().apply(Command::Insert("\nexport function justAdded() {}\n".to_owned()));
-        app.open_path_permanently(&folder.join("src/app/mod.ts"));
+        app.open_path_permanently(&folder.join("src/app/mod.ts")).expect("the file opens");
         ask_at(&mut app, "import { just| } from './layout'");
         assert_eq!(offered(&app), vec!["justAdded".to_owned()]);
         assert_eq!(app.completion().expect("open").rows[0].source, Source::OpenTab);
@@ -1813,7 +1813,7 @@ mod tests {
         std::fs::write(folder.join("theme.css"), ".card { color: red; }\n").expect("write theme");
         let mut app = UnluminateApp::new(&folder);
         build_the_index(&mut app);
-        app.open_path_permanently(&folder.join("site.css"));
+        app.open_path_permanently(&folder.join("site.css")).expect("the file opens");
         typing(&mut app, "@import '");
         assert_eq!(offered(&app), vec!["./theme.css".to_owned()], "written out, and never itself");
         std::fs::remove_dir_all(&folder).ok();

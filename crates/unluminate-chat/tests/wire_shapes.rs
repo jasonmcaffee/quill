@@ -30,7 +30,9 @@ fn replies_from(name: &str, wire: Wire) -> Vec<Reply> {
             replies.extend(decoder.event(&event));
         }
     }
-    for event in reader.finish() {
+    // `finish` answers the one event a stream that ended mid-frame still had, or nothing -- an
+    // `Option` rather than a list, so it is read as one.
+    if let Some(event) = reader.finish() {
         replies.extend(decoder.event(&event));
     }
     replies.extend(decoder.finish());

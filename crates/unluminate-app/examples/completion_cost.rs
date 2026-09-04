@@ -71,7 +71,7 @@ fn main() {
     };
 
     let mut app = UnluminateApp::new(&folder);
-    app.open_path_permanently(&path);
+    app.open_path_permanently(&path).expect("the file opens");
     let start = Instant::now();
     build_the_index(&mut app);
     let index_build = start.elapsed().as_secs_f64() * 1000.0;

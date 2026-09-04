@@ -398,10 +398,16 @@ mod icon_tests {
         // rail button that quietly draws the wrong picture — which is what happened the first time
         // `database` and `table` were added, and it is invisible in every test that does not open the
         // image. This is that check as an assertion.
-        let fallback = pane_icon("nothing-like-this") as usize;
-        assert_eq!(fallback, icon::board as usize, "the fallback is still the board");
+        // A function item cast to an integer is the whole of the question here -- two names draw
+        // the same picture when they are the same function -- so the lint is answered rather than
+        // worked around. `fn_addr_comparisons` is about *comparing* addresses across crates, which
+        // this is not: both are `fn(&Painter, Pos2, Color32)` from this module.
+        #[allow(clippy::fn_to_numeric_cast_any)]
+        let address = |drawing: fn(&egui::Painter, egui::Pos2, egui::Color32)| drawing as usize;
+        let fallback = address(pane_icon("nothing-like-this"));
+        assert_eq!(fallback, address(icon::board), "the fallback is still the board");
         for name in PANE_ICONS {
-            let drawn = pane_icon(name) as usize;
+            let drawn = address(pane_icon(name));
             if *name == "board" {
                 continue;
             }
