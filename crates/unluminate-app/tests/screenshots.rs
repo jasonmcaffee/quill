@@ -1911,6 +1911,79 @@ fn the_update_setting_is_read_and_written_and_is_off_until_it_is_set() {
     assert!(!harness.state().settings.update_check.at_start());
 }
 
+// task-1804 §4.2: the two newest plugins are configurable by an agent as well as by a person.
+
+/// **The gap the ticket measured, closed.** `settings list` named 23 keys and not one belonged to
+/// the Agent-Chat or the Database plugin, so a person could configure both from a Settings page and
+/// an agent could configure neither.
+///
+/// It is asserted through `settings` rather than through a `chat` and a `database` area, because the
+/// fault was general: every `ui` plugin keeps its configuration in its own `settings.conf`, and a
+/// pair of areas would have answered for two of them and left the next one exactly where these were.
+#[test]
+fn a_plugins_own_configuration_is_listed_read_and_written_through_settings() {
+    let store = scratch_folder("plugin-settings-store");
+    let mut harness = harness("");
+    harness.state_mut().use_store(unluminate_app::services::store::Store::at(&store));
+    harness.run();
+
+    // Nothing yet: a plugin nobody has configured has no file, and what is listed is what is in one.
+    // A key made up here would be a default this window claimed on the plugin's behalf.
+    let named = |harness: &mut Harness<'static, UnluminateApp>| -> Vec<String> {
+        did(harness, "settings list")["lines"]
+            .as_array()
+            .expect("the rows")
+            .iter()
+            .map(|row| row.as_str().unwrap_or_default().split_whitespace().next().unwrap_or_default().to_owned())
+            .collect()
+    };
+    assert!(
+        !named(&mut harness).iter().any(|name| name.starts_with("plugins.agent-chat.")),
+        "a plugin with no file names nothing"
+    );
+
+    // A chat row's program, which is one of the four things §4.2 says a person can set and an
+    // agent could not.
+    did(&mut harness, "settings set plugins.agent-chat.provider.0.program claude");
+    assert_eq!(
+        did(&mut harness, "settings get plugins.agent-chat.provider.0.program")["value"],
+        serde_json::json!("claude")
+    );
+    assert!(
+        named(&mut harness).iter().any(|name| name == "plugins.agent-chat.provider.0.program"),
+        "and now it is listed"
+    );
+
+    // And a data source, which is the other half of the same complaint.
+    did(&mut harness, "settings set plugins.database.source.0.engine sqlite");
+    assert_eq!(
+        did(&mut harness, "settings get plugins.database.source.0.engine")["value"],
+        serde_json::json!("sqlite")
+    );
+
+    // Written into the **plugin's** own file, not the window's, and merged rather than replacing it.
+    let file = store.join("plugins").join("agent-chat").join("settings.conf");
+    let text = std::fs::read_to_string(&file).expect("the plugin's own file");
+    assert!(text.contains("provider.0.program"), "{text}");
+    did(&mut harness, "settings set plugins.agent-chat.tools true");
+    let text = std::fs::read_to_string(&file).expect("still there");
+    assert!(text.contains("provider.0.program"), "the first key survived the second: {text}");
+    assert!(text.contains("tools"), "{text}");
+
+    // An empty value takes the key out, so a setting goes back to the plugin's own default rather
+    // than being pinned to nothing.
+    did(&mut harness, "settings set plugins.agent-chat.tools \"\"");
+    assert!(
+        !named(&mut harness).iter().any(|name| name == "plugins.agent-chat.tools"),
+        "cleared, so the plugin's own default is what applies"
+    );
+
+    // A plugin that is not installed is a setting that is not there, rather than a file written into
+    // a folder nobody asked for.
+    assert_eq!(refused(&mut harness, "settings get plugins.nothing.at-all"), "not-found");
+    assert_eq!(refused(&mut harness, "settings set plugins.nothing.at-all yes"), "not-found");
+}
+
 /// Open the Settings window the way a person does on Windows: `Edit` in the bar, then `Settings`.
 fn open_settings(harness: &mut Harness<'static, UnluminateApp>) {
     harness.state_mut().menu_placement = MenuPlacement::InWindow;
@@ -7144,6 +7217,7 @@ const SETTINGS_HELP: &[&str] = &[
     "Whether this Unluminate serves MCP over HTTP. An agent that launches the server itself needs neither this nor a port.",
     "The port it serves on when it does.",
     "One tool an area, or one tool a command. `mcp tools --count` says what each costs.",
+    "Which areas of the catalogue the MCP server offers, so an agent is not handed the whole of it. Empty means all of them. `mcp tools --count --areas editor,git` says what a choice costs; the whole catalogue is about 18 per cent of a 96k context window before a question is asked.",
     "Where the LLDB adapter lives, for Rust and native code. Empty means Unluminate looks for codelldb then lldb-dap on PATH. `tools/get-debug-adapter.ps1` fetches one and prints the line.",
     "Where js-debug lives, for JavaScript and TypeScript. There is no default: js-debug is a script rather than a program, so Unluminate has nothing to look for until it is told.",
     "How wide the file explorer is.",

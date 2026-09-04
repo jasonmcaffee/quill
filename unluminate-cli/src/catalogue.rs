@@ -2232,13 +2232,18 @@ pub const COMMANDS: &[Command] = &[
     Command {
         area: "mcp",
         verb: "tools",
-        summary: "The tools the MCP server offers, exactly as it would answer `tools/list`. This is how to see what an agent will be given, and how the cost of the two shapes is compared.",
+        summary: "The tools the MCP server offers, exactly as it would answer `tools/list`. This is how to see what an agent will be given, and how the cost of the two shapes is compared. With --areas it says what equipping an agent with only some of the catalogue would cost, which is the number `mcp serve --areas` is chosen against.",
         arguments: NO_ARGUMENTS,
         flags: &[
             option("tools", "grouped|every", "Which shape to print. `grouped` by default."),
+            option("areas", "list", "Only the areas named, separated by commas. All of them when it is left out."),
             switch("count", "Print how many tools and how large the list is, rather than the list."),
         ],
-        examples: &["unluminate-cli mcp tools --json", "unluminate-cli mcp tools --tools every --count"],
+        examples: &[
+            "unluminate-cli mcp tools --json",
+            "unluminate-cli mcp tools --tools every --count",
+            "unluminate-cli mcp tools --count --areas editor,git",
+        ],
         local: true,
     },
 ];

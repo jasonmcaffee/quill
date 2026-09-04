@@ -2940,17 +2940,19 @@ Answered by the CLI itself; no Unluminate needs to be running.
 ### mcp tools
 
 ```
-unluminate-cli mcp tools [--tools <grouped|every>] [--count]
+unluminate-cli mcp tools [--tools <grouped|every>] [--areas <list>] [--count]
 ```
 
-The tools the MCP server offers, exactly as it would answer `tools/list`. This is how to see what an agent will be given, and how the cost of the two shapes is compared.
+The tools the MCP server offers, exactly as it would answer `tools/list`. This is how to see what an agent will be given, and how the cost of the two shapes is compared. With --areas it says what equipping an agent with only some of the catalogue would cost, which is the number `mcp serve --areas` is chosen against.
 
 - `--tools <grouped|every>` — Which shape to print. `grouped` by default.
+- `--areas <list>` — Only the areas named, separated by commas. All of them when it is left out.
 - `--count` — Print how many tools and how large the list is, rather than the list.
 
 ```sh
 unluminate-cli mcp tools --json
 unluminate-cli mcp tools --tools every --count
+unluminate-cli mcp tools --count --areas editor,git
 ```
 
 Answered by the CLI itself; no Unluminate needs to be running.

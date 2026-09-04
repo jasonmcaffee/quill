@@ -31,6 +31,7 @@ pub mod mcp;
 pub mod mermaid_scene;
 pub mod native_menu;
 pub mod picture;
+pub mod plugin_settings;
 pub mod plugin_ui;
 pub mod plugins;
 pub mod preview_images;

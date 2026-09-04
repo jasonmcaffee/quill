@@ -1014,6 +1014,36 @@ impl UnluminateApp {
         Some((slot, measure))
     }
 
+    /// Where the installed plugins keep their own folders, when this window has a settings store.
+    ///
+    /// `None` in a test with no store, which is the rule `UnluminateApp::new` already keeps: a test
+    /// must never read or write the settings of the person running it.
+    fn plugin_folder(&self) -> Option<std::path::PathBuf> {
+        self.store.as_ref().map(|store| store.folder().join(crate::services::plugins::FOLDER))
+    }
+
+    /// The ids of every plugin that is installed, whether or not it is switched on.
+    ///
+    /// Switched off as well as on, because its configuration is still its configuration -- a person
+    /// switching a plugin off has not thrown away the data source they added to it, and an agent
+    /// asked to set one up before turning it on should be able to.
+    fn plugin_ids(&self) -> Vec<String> {
+        self.plugins.all().iter().map(|plugin| plugin.id.clone()).collect()
+    }
+
+    /// `plugins.<plugin>.<key>`, when this is one. `task-1804` §4.2.
+    fn plugin_setting(&self, name: &str) -> Option<crate::services::plugin_settings::Key> {
+        crate::services::plugin_settings::read(name, &self.plugin_ids())
+    }
+
+    /// Every key in every installed plugin's own file, for `settings list`.
+    fn plugin_settings(&self) -> Vec<(String, String)> {
+        let Some(folder) = self.plugin_folder() else {
+            return Vec::new();
+        };
+        crate::services::plugin_settings::every(&folder, &self.plugin_ids())
+    }
+
     /// Every one of those keys, in slot order, for `settings list`.
     fn pane_settings(&self) -> Vec<(String, &'static str, String)> {
         let mut out = Vec::new();
@@ -1243,20 +1273,31 @@ fn split_line(line: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut word = String::new();
     let mut quote: Option<char> = None;
+    // **An explicitly quoted empty string is a word.** Without this, `settings set terminal.shell ""`
+    // arrived as two words and was refused with "Say a setting and a value" -- so a setting whose
+    // documented meaning of *empty* is "whatever this machine's own default is" could be set from a
+    // Settings page and never cleared from the command line. `terminal.shell`, `appearance.theme`,
+    // `appearance.accent`, `appearance.icons`, `editor.exclude` and `mcp.areas` all say that about
+    // themselves. `task-1804`.
+    let mut quoted = false;
     for character in line.chars() {
         match (quote, character) {
             (Some(open), c) if c == open => quote = None,
             (Some(_), c) => word.push(c),
-            (None, c @ ('"' | '\'')) => quote = Some(c),
+            (None, c @ ('"' | '\'')) => {
+                quote = Some(c);
+                quoted = true;
+            }
             (None, c) if c.is_whitespace() => {
-                if !word.is_empty() {
+                if !word.is_empty() || quoted {
                     out.push(std::mem::take(&mut word));
+                    quoted = false;
                 }
             }
             (None, c) => word.push(c),
         }
     }
-    if !word.is_empty() {
+    if !word.is_empty() || quoted {
         out.push(word);
     }
     out
@@ -6423,15 +6464,34 @@ impl UnluminateApp {
                 named.extend(
                     self.pane_settings().into_iter().map(|(name, _, help)| (name, help)),
                 );
-                let values: Vec<String> =
-                    named.iter().map(|(name, _)| self.setting_text(name)).collect();
+                // And every installed plugin's own configuration, which before `task-1804` §4.2
+                // was reachable from a Settings page and from nowhere else -- so an agent could open
+                // the Agent-Chat pane and not configure it, and add a data source only by hand.
+                let plugin_values = self.plugin_settings();
+                named.extend(plugin_values.iter().map(|(name, _)| {
+                    (name.clone(), "A key in this plugin's own configuration file.".to_owned())
+                }));
+                let values: Vec<String> = named
+                    .iter()
+                    .map(|(name, _)| match plugin_values.iter().find(|(key, _)| key == name) {
+                        Some((_, value)) => value.clone(),
+                        None => self.setting_text(name),
+                    })
+                    .collect();
                 let widest = values.iter().map(|value| value.len()).max().unwrap_or(0).max(16);
+                // **The name column is measured too**, and it is `task-1704`'s own fix applied to the
+                // other column: 34 was wide enough for every key there was, and
+                // `plugins.agent-chat.provider.0.program` is 37 -- so the name ran straight into its
+                // value with no space at all between them. A width taken from the widest name cannot
+                // go out of date the way a number chosen once did.
+                let longest =
+                    named.iter().map(|(name, _)| name.len()).max().unwrap_or(0).max(34);
                 let rows: Vec<String> = named
                     .iter()
                     .zip(values)
                     .map(|((name, help), value)| {
                         let padded = format!("{value:<width$}  ", width = widest);
-                        format!("{name:<34}{padded}{help}")
+                        format!("{name:<longest$}  {padded}{help}")
                     })
                     .collect();
                 let count = named.len();
@@ -6457,7 +6517,18 @@ impl UnluminateApp {
                                 "accepts": measure.accepts(),
                             }),
                         ),
-                        None => no(request, code::NOT_FOUND, unknown_setting(&name)),
+                        None => match self.plugin_setting_value(&name) {
+                            Some(value) => ok(
+                                request,
+                                value.clone(),
+                                json!({
+                                    "key": name,
+                                    "value": value,
+                                    "accepts": "whatever this plugin's own configuration takes",
+                                }),
+                            ),
+                            None => no(request, code::NOT_FOUND, unknown_setting(&name)),
+                        },
                     },
                 }
             }
@@ -6493,7 +6564,12 @@ impl UnluminateApp {
                     .map(|hosted| hosted.state().clone())
                     .unwrap_or(crate::services::mcp::State::Off);
                 let shape = self.settings.mcp_tools;
-                let tools = unluminate_cli::mcp::tools::tools(shape).len();
+                // What is really offered, not what the catalogue holds: `mcp.areas` may have cut it
+                // down, and a count that ignored that would be the one number here nobody could act
+                // on. `task-1804` §4.2.
+                let areas = self.settings.mcp_area_filter();
+                let tools = unluminate_cli::mcp::tools::tools_in(shape, &areas).len();
+                let every = unluminate_cli::mcp::tools::tools(shape).len();
                 let endpoint = state.port().map(unluminate_cli::mcp::endpoint);
                 ok(
                     request,
@@ -6503,7 +6579,14 @@ impl UnluminateApp {
                         "enabled": self.settings.mcp_enabled,
                         "port": self.settings.mcp_port,
                         "endpoint": endpoint,
-                        "tools": { "shape": shape.name(), "count": tools },
+                        "tools": {
+                            "shape": shape.name(),
+                            "count": tools,
+                            "areas": areas.names(),
+                            // What it would be with every area, so the saving is a number rather
+                            // than something to work out.
+                            "countWithEveryArea": every,
+                        },
                         "controlChannel": self.control.is_some(),
                         // What an agent that launches the server itself should be told to run. It is
                         // the answer whether or not anything is listening, which is the point of it.
@@ -6518,10 +6601,53 @@ impl UnluminateApp {
         }
     }
 
+    /// What a plugin's own file holds for this key, when it is one and it has a value.
+    fn plugin_setting_value(&self, name: &str) -> Option<String> {
+        let key = self.plugin_setting(name)?;
+        let folder = self.plugin_folder()?;
+        crate::services::plugin_settings::values(&folder, &key.plugin)
+            .text(&key.key)
+            .map(str::to_owned)
+    }
+
+    /// Write one key into a plugin's own file and make the change take effect.
+    ///
+    /// **The plugins are read again afterwards**, which is what makes this a change rather than an
+    /// edit to a file: a provider holds its configuration in memory and re-reads it when the plugin
+    /// is reloaded, so without this an agent would set a value, see it in `settings get`, and find
+    /// the pane still behaving the way it did. `plugins reload` is the same call a person makes.
+    fn set_plugin_setting(&mut self, name: &str, value: &str) -> Result<(), String> {
+        let key = self
+            .plugin_setting(name)
+            .ok_or_else(|| format!("{name} is not a plugin's setting."))?;
+        let folder = self
+            .plugin_folder()
+            .ok_or_else(|| "This window has no settings folder, so a plugin has none.".to_owned())?;
+        crate::services::plugin_settings::write(&folder, &key.plugin, &key.key, value)
+            .map_err(|problem| format!("{name} could not be written: {problem}"))?;
+        let _ = self.reload_the_plugins();
+        Ok(())
+    }
+
     fn cli_settings_set(&mut self, request: &Request) -> Outcome {
         let (Some(name), Some(value)) = (request.text("key"), request.text("value")) else {
             return no(request, code::USAGE, "Say a setting and a value.");
         };
+        // A plugin's own configuration is written into the plugin's own file rather than into the
+        // window's, and the plugins are read again afterwards so the change takes effect in the pane
+        // rather than only on disk. `task-1804` §4.2.
+        if let Some(key) = self.plugin_setting(&name) {
+            let before = self.plugin_setting_value(&name).unwrap_or_default();
+            if let Err(problem) = self.set_plugin_setting(&name, value.trim()) {
+                return no(request, code::FAILED, problem);
+            }
+            let after = self.plugin_setting_value(&name).unwrap_or_default();
+            return ok(
+                request,
+                format!("{name} is now {after} (was {before})"),
+                json!({ "key": name, "plugin": key.plugin, "value": after, "was": before }),
+            );
+        }
         if !SETTINGS.iter().any(|key| key.name == name) && self.pane_setting(&name).is_none() {
             return no(request, code::NOT_FOUND, unknown_setting(&name));
         }
@@ -6620,6 +6746,7 @@ impl UnluminateApp {
             "mcp.enabled" => self.settings.mcp_enabled.to_string(),
             "mcp.port" => self.settings.mcp_port.to_string(),
             "mcp.tools" => self.settings.mcp_tools.name().to_owned(),
+            "mcp.areas" => self.settings.mcp_areas.clone(),
             "debug.lldb" => self.settings.debug_adapter("lldb").unwrap_or_default().to_owned(),
             "debug.node" => self.settings.debug_adapter("node").unwrap_or_default().to_owned(),
             "panes.explorer.width" => format!("{:.0}", self.panes.explorer_width),
@@ -6785,6 +6912,13 @@ impl UnluminateApp {
                 settings.mcp_tools = unluminate_cli::mcp::Shape::parse(value).ok_or_else(|| {
                     format!("{name} wants grouped or every, and {value} is neither.")
                 })?
+            }
+            // Checked here, unlike when it is read off the disk: a person or an agent setting it now
+            // can be told, and `Settings::mcp_area_filter` explains why the two differ.
+            "mcp.areas" => {
+                unluminate_cli::mcp::tools::Areas::parse(value)
+                    .map_err(|problem| format!("{name}: {problem}"))?;
+                settings.mcp_areas = value.trim().to_owned();
             }
             "panes.explorer.width" => {
                 self.panes.explorer_width =
@@ -7942,6 +8076,11 @@ const SETTINGS: &[SettingKey] = &[
         help: "The port it serves on when it does.",
     },
     SettingKey {
+        name: "mcp.areas",
+        accepts: "comma separated area names, or empty for all of them",
+        help: "Which areas of the catalogue the MCP server offers, so an agent is not handed the whole of it. Empty means all of them. `mcp tools --count --areas editor,git` says what a choice costs; the whole catalogue is about 18 per cent of a 96k context window before a question is asked.",
+    },
+    SettingKey {
         name: "mcp.tools",
         accepts: "grouped or every",
         help: "One tool an area, or one tool a command. `mcp tools --count` says what each costs.",
@@ -8006,6 +8145,7 @@ fn fresh_value(name: &str, fresh: &crate::settings::Settings) -> String {
         "mcp.enabled" => fresh.mcp_enabled.to_string(),
         "mcp.port" => fresh.mcp_port.to_string(),
         "mcp.tools" => fresh.mcp_tools.name().to_owned(),
+        "mcp.areas" => fresh.mcp_areas.clone(),
         "panes.explorer.width" => format!("{:.0}", panes.explorer_width),
         "panes.terminal.height" => format!("{:.0}", panes.terminal_height),
         "panes.preview.fraction" => format!("{:.3}", panes.preview_fraction),
@@ -8070,6 +8210,17 @@ mod tests {
     #[test]
     fn a_command_line_is_split_the_way_a_shell_splits_one() {
         assert_eq!(split_line("tab open README.md"), vec!["tab", "open", "README.md"]);
+        // An explicitly quoted empty string is a word, so a setting can be cleared from here.
+        assert_eq!(
+            split_line(r#"settings set terminal.shell """#),
+            vec!["settings", "set", "terminal.shell", ""]
+        );
+        assert_eq!(
+            split_line(r#"settings set editor.exclude "" --json"#),
+            vec!["settings", "set", "editor.exclude", "", "--json"]
+        );
+        // And plain whitespace still makes no word at all.
+        assert_eq!(split_line("   tab   list   "), vec!["tab", "list"]);
         assert_eq!(
             split_line("settings set appearance.font.family \"Courier New\""),
             vec!["settings", "set", "appearance.font.family", "Courier New"]

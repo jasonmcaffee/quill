@@ -22,7 +22,7 @@
 
 use std::path::{Path, PathBuf};
 
-use unluminate_cli::mcp::{self, http::Endpoint, Unluminates, Server, Shape};
+use unluminate_cli::mcp::{self, http::Endpoint, tools::Areas, Unluminates, Server, Shape};
 
 /// What the window is doing about MCP, which is what the page and `mcp status` both read.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,7 +83,7 @@ pub struct Hosted {
     /// What was asked for last, so a frame that changed nothing does nothing. The folder is in it
     /// because `project open` changes which project this window is showing, and the endpoint's
     /// preference for which Unluminate to drive is that folder.
-    wanted: Option<(u16, Shape, PathBuf)>,
+    wanted: Option<(u16, Shape, Areas, PathBuf)>,
     state: State,
 }
 
@@ -108,6 +108,7 @@ impl Hosted {
         enabled: bool,
         port: u16,
         shape: Shape,
+        areas: &Areas,
         has_channel: bool,
         folder: &Path,
     ) {
@@ -123,14 +124,15 @@ impl Hosted {
             self.state = State::NoChannel;
             return;
         }
-        let wanted = (port, shape, folder.to_path_buf());
+        let wanted = (port, shape, areas.clone(), folder.to_path_buf());
         if self.wanted.as_ref() == Some(&wanted) && self.endpoint.is_some() {
             return;
         }
         // Dropped **before** the new one is started, or a change of tool shape on the same port
         // would be a listener trying to bind a port the old one still holds.
         self.endpoint = None;
-        let server = Server::new(shape, Unluminates::for_window(folder.to_path_buf()));
+        let server =
+            Server::equipped(shape, areas.clone(), Unluminates::for_window(folder.to_path_buf()));
         match Endpoint::start(port, server) {
             Ok(endpoint) => {
                 self.state = State::Listening(endpoint.port());
@@ -165,7 +167,7 @@ mod tests {
     #[test]
     fn nothing_listens_until_the_setting_is_on() {
         let mut hosted = a_host();
-        hosted.reconcile(false, 0, Shape::Grouped, true, &a_project());
+        hosted.reconcile(false, 0, Shape::Grouped, &Areas::all(), true, &a_project());
         assert_eq!(hosted.state(), &State::Off);
         assert!(hosted.endpoint.is_none());
     }
@@ -175,24 +177,24 @@ mod tests {
         let mut hosted = a_host();
         // Port zero, so the operating system finds a free one and two tests can run at once. What
         // is being checked is the reconciling rather than the number.
-        hosted.reconcile(true, 0, Shape::Grouped, true, &a_project());
+        hosted.reconcile(true, 0, Shape::Grouped, &Areas::all(), true, &a_project());
         let port = match hosted.state() {
             State::Listening(port) => *port,
             other => panic!("it should be listening, not {other:?}"),
         };
         assert!(port > 0, "the operating system should have chosen one");
 
-        hosted.reconcile(false, 0, Shape::Grouped, true, &a_project());
+        hosted.reconcile(false, 0, Shape::Grouped, &Areas::all(), true, &a_project());
         assert_eq!(hosted.state(), &State::Off);
     }
 
     #[test]
     fn a_frame_that_changed_nothing_does_not_restart_the_listener() {
         let mut hosted = a_host();
-        hosted.reconcile(true, 0, Shape::Grouped, true, &a_project());
+        hosted.reconcile(true, 0, Shape::Grouped, &Areas::all(), true, &a_project());
         let first = hosted.state().port().expect("a port");
         for _ in 0..5 {
-            hosted.reconcile(true, first, Shape::Grouped, true, &a_project());
+            hosted.reconcile(true, first, Shape::Grouped, &Areas::all(), true, &a_project());
         }
         assert_eq!(hosted.state().port(), Some(first), "it should still be the same listener");
     }
@@ -200,7 +202,7 @@ mod tests {
     #[test]
     fn a_window_with_no_command_channel_says_so_rather_than_listening_uselessly() {
         let mut hosted = a_host();
-        hosted.reconcile(true, 0, Shape::Grouped, false, &a_project());
+        hosted.reconcile(true, 0, Shape::Grouped, &Areas::all(), false, &a_project());
         assert_eq!(hosted.state(), &State::NoChannel);
         assert!(hosted.endpoint.is_none());
         assert!(hosted.state().message().contains("--control off"));
@@ -213,7 +215,7 @@ mod tests {
         let held = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind");
         let port = held.local_addr().expect("an address").port();
         let mut hosted = a_host();
-        hosted.reconcile(true, port, Shape::Grouped, true, &a_project());
+        hosted.reconcile(true, port, Shape::Grouped, &Areas::all(), true, &a_project());
         match hosted.state() {
             State::PortTaken(taken, _) => assert_eq!(*taken, port),
             other => panic!("it should have reported the port as taken, not {other:?}"),

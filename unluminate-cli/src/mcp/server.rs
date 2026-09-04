@@ -83,16 +83,29 @@ pub struct Failure {
 /// The server. It holds no session and no conversation, only what shape its tools are.
 pub struct Server<D: Driver> {
     shape: Shape,
+    /// Which areas this server offers. Empty means all of them, which is what every configuration
+    /// written before `task-1804` §4.2 keeps meaning. See `tools::Areas`.
+    areas: tools::Areas,
     driver: D,
 }
 
 impl<D: Driver> Server<D> {
     pub fn new(shape: Shape, driver: D) -> Self {
-        Self { shape, driver }
+        Self { shape, areas: tools::Areas::all(), driver }
+    }
+
+    /// The same, equipped with some of the areas rather than all of them.
+    pub fn equipped(shape: Shape, areas: tools::Areas, driver: D) -> Self {
+        Self { shape, areas, driver }
     }
 
     pub fn shape(&self) -> Shape {
         self.shape
+    }
+
+    /// What this server offers.
+    pub fn areas(&self) -> &tools::Areas {
+        &self.areas
     }
 
     /// Answer one JSON-RPC message.
@@ -110,7 +123,9 @@ impl<D: Driver> Server<D> {
         match method {
             "initialize" => Some(result(&id, self.initialize(&parameters))),
             "ping" => Some(result(&id, json!({}))),
-            "tools/list" => Some(result(&id, json!({ "tools": tools::as_json(self.shape) }))),
+            "tools/list" => {
+                Some(result(&id, json!({ "tools": tools::as_json_in(self.shape, &self.areas) })))
+            }
             "tools/call" => Some(self.call(&id, &parameters)),
             "resources/list" => Some(result(&id, json!({ "resources": [resource()] }))),
             "resources/templates/list" => Some(result(&id, json!({ "resourceTemplates": [] }))),
@@ -166,7 +181,7 @@ impl<D: Driver> Server<D> {
         // that was never in `tools/list`. Everything after this point is the tool running and
         // failing, which is `isError` instead — the distinction the specification draws, and the
         // one that lets an agent try something else rather than the connection being torn down.
-        let call = match tools::resolve(self.shape, name, &given) {
+        let call = match tools::resolve_in(self.shape, &self.areas, name, &given) {
             Ok(call) => call,
             Err(problem) => return error(id, -32602, problem.0),
         };

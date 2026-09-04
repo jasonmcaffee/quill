@@ -10,6 +10,7 @@ bumps the release script makes are left out, because they are the boundaries rat
 
 - A release evaluation, measured rather than asserted (`task-1803`)
 - The seven defects, Find and Replace, and the keystroke at 2 MB (`task-1804`)
+- CI, code signing, an update check, the licences and a changelog (`task-1804`)
 
 ## 0.34.2 — 2026-09-04
 

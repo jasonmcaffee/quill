@@ -515,6 +515,12 @@ pub struct Settings {
     pub mcp_port: u16,
     /// How many tools the catalogue is cut into for an agent. See `unluminate_cli::mcp::tools`.
     pub mcp_tools: unluminate_cli::mcp::Shape,
+    /// Which areas of the catalogue the hosted server offers, separated by commas.
+    ///
+    /// Empty means all of them, which is what it always did. `task-1804` §4.2 measured what all
+    /// of them costs -- 18% of a local model's window before a question is asked -- and this is the
+    /// same lever `mcp serve --areas` gives the server an agent launches itself.
+    pub mcp_areas: String,
     /// Which theme the window is painted in, as `<plugin>/<theme>` — `themes-bundle-1/dracula`.
     ///
     /// Empty means `unluminate/dark`, which is the palette Unluminate shipped with. Empty rather than the key
@@ -588,6 +594,8 @@ impl Settings {
             mcp_enabled: false,
             mcp_port: unluminate_cli::mcp::DEFAULT_PORT,
             mcp_tools: unluminate_cli::mcp::Shape::default(),
+            // Empty: every area, which is what a configuration that names none has always meant.
+            mcp_areas: String::new(),
             // The four `task-1776` added, each empty or at the number that changes nothing, so an Unluminate
             // that has never been run is painted in exactly the palette it always was.
             theme: String::new(),
@@ -650,6 +658,9 @@ impl Settings {
         {
             settings.mcp_tools = shape;
         }
+        if let Some(areas) = values.text("mcp.areas") {
+            settings.mcp_areas = areas.trim().to_owned();
+        }
         if let Some(theme) = values.text("appearance.theme") {
             settings.theme = theme.trim().to_owned();
         }
@@ -704,6 +715,7 @@ impl Settings {
         values.set("mcp.enabled", if self.mcp_enabled { "true" } else { "false" });
         values.set("mcp.port", self.mcp_port.to_string());
         values.set("mcp.tools", self.mcp_tools.name());
+        values.set_or_clear("mcp.areas", &self.mcp_areas);
         // Written only once one has been chosen, exactly as the shell is, so a settings file does
         // not name a path that exists on one machine and not on the next — and taken out again when it
         // is cleared, for the reason at the top of this function. The list is walked rather than the
@@ -711,6 +723,25 @@ impl Settings {
         for name in crate::services::plugins::DEBUGGERS {
             values.set_or_clear(&format!("debug.{name}"), self.debug_adapter(name).unwrap_or_default());
         }
+    }
+
+    /// Which areas the hosted MCP server offers, read into the type that does the filtering.
+    ///
+    /// A name the catalogue has not got is **dropped here** rather than refusing the whole line,
+    /// which is the opposite of what `mcp serve --areas` does with the same text -- and deliberately
+    /// so: a command line is a person typing now and can be told; a settings file is read at
+    /// startup, may have been written by an older or newer Unluminate, and the rule this file already
+    /// keeps for a value it does not recognise is to fall back rather than refuse to start.
+    pub fn mcp_area_filter(&self) -> unluminate_cli::mcp::tools::Areas {
+        unluminate_cli::mcp::tools::Areas::parse(&self.mcp_areas).unwrap_or_else(|_| {
+            let kept: Vec<&str> = self
+                .mcp_areas
+                .split(',')
+                .map(str::trim)
+                .filter(|name| unluminate_cli::catalogue::areas().iter().any(|area| area.eq_ignore_ascii_case(name)))
+                .collect();
+            unluminate_cli::mcp::tools::Areas::parse(&kept.join(",")).unwrap_or_default()
+        })
     }
 
     /// The path this machine's settings give for the debug adapter called `name`, or nothing when
@@ -1177,6 +1208,7 @@ mod tests {
             mcp_enabled: true,
             mcp_port: 9001,
             mcp_tools: unluminate_cli::mcp::Shape::Every,
+            mcp_areas: "editor,git".to_owned(),
             theme: "themes-bundle-1/monokai-pro".to_owned(),
             accent: "#FF79C6".to_owned(),
             icons: "material".to_owned(),

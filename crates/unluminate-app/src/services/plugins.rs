@@ -56,7 +56,7 @@ use unluminate_core::Color;
 use crate::services::store::{Store, Values};
 
 /// The folder under the settings folder that installed plugins live in.
-const FOLDER: &str = "plugins";
+pub const FOLDER: &str = "plugins";
 /// The file inside a plugin folder that describes it.
 const MANIFEST: &str = "plugin.conf";
 /// The picture a plugin puts in front of its files.

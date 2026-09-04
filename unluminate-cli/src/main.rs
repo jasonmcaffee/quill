@@ -243,6 +243,13 @@ fn serve(typed: &Typed) -> i32 {
             return USAGE;
         }
     };
+    let areas = match areas_from(typed) {
+        Ok(areas) => areas,
+        Err(problem) => {
+            complain(&problem, &typed.global);
+            return USAGE;
+        }
+    };
     let transport = match transport_from(typed) {
         Ok(transport) => transport,
         Err(problem) => {
@@ -256,7 +263,7 @@ fn serve(typed: &Typed) -> i32 {
         .and_then(Value::as_str)
         .map(str::to_owned)
         .or_else(|| typed.global.instance.clone());
-    let server = mcp::Server::new(shape, mcp::Unluminates::new(named));
+    let server = mcp::Server::equipped(shape, areas, mcp::Unluminates::new(named));
     match transport {
         mcp::Transport::Stdio => match mcp::stdio::serve(&server) {
             Ok(()) => OK,
@@ -407,6 +414,13 @@ fn mcp_tools(typed: &Typed) -> i32 {
             return USAGE;
         }
     };
+    let areas = match areas_from(typed) {
+        Ok(areas) => areas,
+        Err(problem) => {
+            complain(&problem, &typed.global);
+            return USAGE;
+        }
+    };
     if typed.arguments.contains_key("count") {
         // Both shapes, always, because the number that matters is the comparison rather than either
         // figure on its own. Bytes divided by four is the usual rule of thumb for tokens and is
@@ -414,7 +428,7 @@ fn mcp_tools(typed: &Typed) -> i32 {
         let counted: Vec<Value> = [mcp::Shape::Grouped, mcp::Shape::Every]
             .iter()
             .map(|shape| {
-                let tools = mcp::tools::as_json(*shape);
+                let tools = mcp::tools::as_json_in(*shape, &areas);
                 let bytes = serde_json::to_string(&tools).unwrap_or_default().len();
                 json!({
                     "shape": shape.name(),
@@ -425,7 +439,11 @@ fn mcp_tools(typed: &Typed) -> i32 {
             })
             .collect();
         if typed.global.json {
-            say(&json!({ "ok": true, "command": "mcp.tools", "result": { "shapes": counted } }));
+            say(&json!({
+                "ok": true,
+                "command": "mcp.tools",
+                "result": { "shapes": counted, "areas": areas.names() },
+            }));
         } else if !typed.global.quiet {
             for shape in &counted {
                 let number = |name: &str| shape[name].as_u64().unwrap_or_default();
@@ -440,12 +458,17 @@ fn mcp_tools(typed: &Typed) -> i32 {
         }
         return OK;
     }
-    let tools = mcp::tools::as_json(shape);
+    let tools = mcp::tools::as_json_in(shape, &areas);
     if typed.global.json {
         say(&json!({
             "ok": true,
             "command": "mcp.tools",
-            "result": { "shape": shape.name(), "count": tools.len(), "tools": tools },
+            "result": {
+                "shape": shape.name(),
+                "areas": areas.names(),
+                "count": tools.len(),
+                "tools": tools,
+            },
         }));
     } else if !typed.global.quiet {
         for tool in &tools {
@@ -496,6 +519,17 @@ fn shape_from(typed: &Typed) -> Result<mcp::Shape, String> {
         Some(named) => mcp::Shape::parse(named)
             .ok_or_else(|| format!("`{named}` is not a tool shape. It is `grouped` or `every`.")),
         None => Ok(mcp::Shape::default()),
+    }
+}
+
+/// Which areas the server was equipped with, or all of them.
+///
+/// `task-1804` §4.2. Refused rather than ignored when a name is not an area -- see
+/// `mcp::tools::Areas::parse` for why.
+fn areas_from(typed: &Typed) -> Result<mcp::tools::Areas, String> {
+    match typed.arguments.get("areas").and_then(Value::as_str) {
+        Some(named) => mcp::tools::Areas::parse(named),
+        None => Ok(mcp::tools::Areas::all()),
     }
 }
 

@@ -7883,9 +7883,10 @@ impl UnluminateApp {
         let has_channel = self.control.is_some();
         let (enabled, port, shape) =
             (self.settings.mcp_enabled, self.settings.mcp_port, self.settings.mcp_tools);
+        let areas = self.settings.mcp_area_filter();
         let folder = self.tree.root().to_path_buf();
         if let Some(hosted) = &mut self.mcp {
-            hosted.reconcile(enabled, port, shape, has_channel, &folder);
+            hosted.reconcile(enabled, port, shape, &areas, has_channel, &folder);
         }
     }
 

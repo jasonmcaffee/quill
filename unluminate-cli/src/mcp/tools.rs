@@ -97,6 +97,77 @@ impl Tool {
 
 /// The one command that is not offered as a tool, and why.
 ///
+/// Which areas of the catalogue an agent is equipped with.
+///
+/// `task-1804` §4.2 measured the cost of being equipped with all of them: the default grouped
+/// preamble is **17,535 tokens, 18% of the local model's 96k window**, spent before a question is
+/// asked, and `mcp serve` took `--tools grouped|every` and nothing else -- so there was no way to
+/// hand an agent the editor and git and leave the database, the debugger and the browser out. For
+/// the local lane, which is where this product's agent story is strongest, that was the dominant
+/// cost of using it.
+///
+/// **Empty means all of them**, which is what every existing configuration keeps meaning. It is a
+/// filter over the tools rather than a second catalogue: an area that is not equipped is not
+/// offered, and calling one is refused by name rather than being quietly answered.
+///
+/// The narrow semantic tools -- `unluminate_definition` and its two -- follow the area they belong
+/// to, which is `editor`. `task-1699` added them so that a dedicated Unluminate answer competes with
+/// a generic `grep`, and an agent that was not given the editor has no use for them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Areas(Vec<String>);
+
+impl Areas {
+    /// Everything the catalogue has, which is what naming none means.
+    pub fn all() -> Self {
+        Self(Vec::new())
+    }
+
+    /// Read a comma separated list, refusing a name the catalogue has not got.
+    ///
+    /// Refused rather than ignored, for the reason `Request::from_json` refuses a flag a command
+    /// does not take: a name quietly dropped is an agent equipped with less than whoever wrote the
+    /// configuration believed, and nothing anywhere would say so.
+    pub fn parse(named: &str) -> Result<Self, String> {
+        let mut chosen: Vec<String> = Vec::new();
+        for part in named.split(',') {
+            let part = part.trim().to_lowercase();
+            if part.is_empty() {
+                continue;
+            }
+            if !catalogue::areas().iter().any(|area| *area == part) {
+                return Err(format!(
+                    "`{part}` is not an area. They are: {}.",
+                    catalogue::areas().join(", ")
+                ));
+            }
+            if !chosen.contains(&part) {
+                chosen.push(part);
+            }
+        }
+        Ok(Self(chosen))
+    }
+
+    /// True when nothing was named, so everything is offered.
+    pub fn is_everything(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Whether this area is offered.
+    ///
+    /// The commands with no area of their own -- `status`, `launch`, `quit` and the rest of what
+    /// `catalogue::in_area("")` holds -- are **always** offered, however narrow the equipment.
+    /// They are how an agent finds out what it is looking at and how it reaches the window at all,
+    /// and an agent that cannot ask `status` cannot use any of the others.
+    pub fn includes(&self, area: &str) -> bool {
+        area.is_empty() || self.0.is_empty() || self.0.iter().any(|chosen| chosen == area)
+    }
+
+    /// What was named, for a reply that says what it was equipped with.
+    pub fn names(&self) -> &[String] {
+        &self.0
+    }
+}
+
 /// `mcp serve` starts an MCP server. Calling it from inside one would either hang the tool call for
 /// ever or fail on a port that is already held, and there is no reading of it that is useful to an
 /// agent. Everything else is offered, including `quit` and `launch`, which really are things an
@@ -113,15 +184,34 @@ pub fn commands() -> Vec<&'static Command> {
 
 /// The tools, in the shape asked for.
 pub fn tools(shape: Shape) -> Vec<Tool> {
-    match shape {
+    tools_in(shape, &Areas::all())
+}
+
+/// The same, cut to the areas an agent was equipped with. See [`Areas`].
+pub fn tools_in(shape: Shape, areas: &Areas) -> Vec<Tool> {
+    let all = match shape {
         Shape::Grouped => grouped(),
         Shape::Every => every(),
+    };
+    if areas.is_everything() {
+        return all;
     }
+    all.into_iter()
+        .filter(|tool| match tool.target {
+            Target::Area(area) => areas.includes(area),
+            Target::One(command) => areas.includes(command.area),
+        })
+        .collect()
 }
 
 /// The `tools` array `tools/list` answers with.
 pub fn as_json(shape: Shape) -> Vec<Value> {
-    tools(shape).iter().map(Tool::to_json).collect()
+    as_json_in(shape, &Areas::all())
+}
+
+/// The same, for an agent equipped with some of the areas.
+pub fn as_json_in(shape: Shape, areas: &Areas) -> Vec<Value> {
+    tools_in(shape, areas).iter().map(Tool::to_json).collect()
 }
 
 /// One tool an area, the verbs as an `enum` and the usage lines in the description.
@@ -367,9 +457,27 @@ pub struct Call {
 /// from `arguments`, and a command tool takes the values from the call itself. Everything after
 /// that is the same, which is why there is one function rather than two.
 pub fn resolve(shape: Shape, name: &str, given: &Map<String, Value>) -> Result<Call, Unresolved> {
-    let Some(tool) = tools(shape).into_iter().find(|tool| tool.name == name) else {
+    resolve_in(shape, &Areas::all(), name, given)
+}
+
+/// The same, for a server equipped with some of the areas.
+///
+/// A tool that was not offered is refused **by name**, rather than being answered because the
+/// catalogue still has it: an agent that guessed at a tool it was never given should be told so,
+/// which is `task-1804` §7.2's rule about a command that could not do what it was asked.
+pub fn resolve_in(
+    shape: Shape,
+    areas: &Areas,
+    name: &str,
+    given: &Map<String, Value>,
+) -> Result<Call, Unresolved> {
+    let Some(tool) = tools_in(shape, areas).into_iter().find(|tool| tool.name == name) else {
+        let equipped = match areas.is_everything() {
+            true => String::new(),
+            false => format!(" This server is equipped with: {}.", areas.names().join(", ")),
+        };
         return Err(Unresolved(format!(
-            "There is no tool called `{name}`. `tools/list` names them all."
+            "There is no tool called `{name}`. `tools/list` names them all.{equipped}"
         )));
     };
     let instance = given.get("instance").and_then(Value::as_str).map(str::to_owned);
@@ -780,6 +888,98 @@ mod tests {
         )
         .expect_err("mcp serve is held back");
         assert!(problem.0.contains("serve"), "{}", problem.0);
+    }
+
+    /// **The measurement `--areas` exists for.** `task-1804` §4.2: the default preamble is 18% of
+    /// the local model's 96k window, spent before a question is asked.
+    ///
+    /// The ratio is asserted rather than the byte count, for the reason the budget below gives: the
+    /// numbers move whenever a summary is reworded, and a test of the constants would be a test of
+    /// nothing anybody can see. What has to stay true is that choosing two areas out of twenty is
+    /// worth most of the preamble -- measured at the time of writing at 17,930 tokens down to 4,491.
+    #[test]
+    fn equipping_an_agent_with_two_areas_costs_a_fraction_of_the_whole_catalogue() {
+        let everything = serde_json::to_string(&as_json(Shape::Grouped)).expect("json");
+        let two = Areas::parse("editor,git").expect("both are areas");
+        let narrowed = serde_json::to_string(&as_json_in(Shape::Grouped, &two)).expect("json");
+        assert!(
+            narrowed.len() * 3 < everything.len(),
+            "two areas should cost well under a third of all of them: {} vs {}",
+            narrowed.len(),
+            everything.len()
+        );
+    }
+
+    #[test]
+    fn naming_no_areas_is_every_area_which_is_what_every_configuration_already_means() {
+        assert!(Areas::all().is_everything());
+        assert!(Areas::parse("").expect("empty is fine").is_everything());
+        assert_eq!(tools_in(Shape::Grouped, &Areas::all()).len(), tools(Shape::Grouped).len());
+        assert_eq!(tools_in(Shape::Every, &Areas::all()).len(), tools(Shape::Every).len());
+    }
+
+    #[test]
+    fn only_the_areas_named_are_offered_and_the_commands_with_no_area_always_are() {
+        let two = Areas::parse("editor,git").expect("both are areas");
+        let offered = tools_in(Shape::Grouped, &two);
+        let names: Vec<&str> = offered.iter().map(|tool| tool.name.as_str()).collect();
+        assert!(names.iter().any(|name| name.contains("editor")), "{names:?}");
+        assert!(names.iter().any(|name| name.contains("git")), "{names:?}");
+        assert!(!names.iter().any(|name| name.contains("database")), "{names:?}");
+        assert!(!names.iter().any(|name| name.contains("debug")), "{names:?}");
+        // The commands with no area of their own -- `status`, `launch`, `quit` -- are how an agent
+        // finds out what it is looking at, so they are always there however narrow the equipment.
+        assert!(
+            offered.iter().any(|tool| matches!(tool.target, Target::Area(""))),
+            "the arealess tool is always offered: {names:?}"
+        );
+    }
+
+    /// The narrow semantic tools follow the area they belong to.
+    #[test]
+    fn the_semantic_tools_go_with_the_editor_and_not_without_it() {
+        let editor = Areas::parse("editor").expect("an area");
+        let git = Areas::parse("git").expect("an area");
+        let named = |areas: &Areas| -> Vec<String> {
+            tools_in(Shape::Grouped, areas).into_iter().map(|tool| tool.name).collect()
+        };
+        assert!(named(&editor).iter().any(|name| name.contains("definition")), "{:?}", named(&editor));
+        assert!(!named(&git).iter().any(|name| name.contains("definition")), "{:?}", named(&git));
+    }
+
+    /// A name that is not an area is refused with the list, rather than dropped.
+    ///
+    /// Dropped, an agent would be equipped with less than whoever wrote the configuration believed
+    /// and nothing anywhere would say so -- which is the rule `Request::from_json` already keeps
+    /// about a flag a command does not take.
+    #[test]
+    fn an_area_this_version_has_not_got_is_refused_with_the_ones_it_has() {
+        let problem = Areas::parse("editor,purple").expect_err("purple is not an area");
+        assert!(problem.contains("purple"), "{problem}");
+        assert!(problem.contains("editor"), "it lists what there is: {problem}");
+        // And a real one is still accepted with odd spacing and case, because a person types both.
+        assert_eq!(
+            Areas::parse(" Editor , GIT ").expect("both are areas").names(),
+            ["editor".to_owned(), "git".to_owned()]
+        );
+    }
+
+    /// Calling a tool that was not offered is refused by name rather than answered.
+    #[test]
+    fn a_tool_that_was_not_offered_is_refused_and_the_refusal_says_what_was() {
+        let two = Areas::parse("editor,git").expect("both are areas");
+        let problem = resolve_in(Shape::Grouped, &two, "unluminate_database", &Map::new())
+            .expect_err("the database was not offered");
+        assert!(problem.0.contains("unluminate_database"), "{}", problem.0);
+        assert!(problem.0.contains("editor, git"), "it says what it does have: {}", problem.0);
+        // And one that was offered still resolves.
+        assert!(resolve_in(
+            Shape::Grouped,
+            &two,
+            "unluminate_git",
+            &Map::from_iter([("command".to_owned(), json!("status"))]),
+        )
+        .is_ok());
     }
 
     #[test]
