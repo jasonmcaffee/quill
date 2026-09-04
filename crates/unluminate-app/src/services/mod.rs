@@ -41,6 +41,7 @@ pub mod store;
 pub mod symbol_index;
 pub mod text_renderer;
 pub mod text_search;
+pub mod update;
 pub mod vello_canvas;
 pub mod wake;
 

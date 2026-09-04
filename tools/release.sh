@@ -178,7 +178,12 @@ bash "${build[@]}"
 echo "Kept $image"
 
 step "Committing and tagging v$next"
-git add -- Cargo.toml Cargo.lock
+# Written from the history rather than kept by hand, so it cannot fall behind. See the same step in
+# tools/release.ps1, and tools/changelog.mjs for why it is one script rather than two.
+step "Writing CHANGELOG.md"
+node "$repo/tools/changelog.mjs"
+
+git add -- Cargo.toml Cargo.lock CHANGELOG.md
 git commit -m "Unluminate $next" > /dev/null
 git tag -a "v$next" -m "Unluminate $next"
 git push origin "$branch"

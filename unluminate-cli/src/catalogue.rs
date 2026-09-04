@@ -836,6 +836,15 @@ pub const COMMANDS: &[Command] = &[
         local: false,
     },
     Command {
+        area: "update",
+        verb: "check",
+        summary: "Whether a newer Unluminate has been released, and what this one is. One request to the GitHub releases page, made only when this is run or when a person asks in the window - Unluminate sends nothing at startup unless the update.check setting says to. It reports the version and never installs anything.",
+        arguments: NO_ARGUMENTS,
+        flags: &[option("timeout", "milliseconds", "How long to wait for the answer. 15000 by default.")],
+        examples: &["unluminate-cli update check --json"],
+        local: false,
+    },
+    Command {
         area: "editor",
         verb: "find",
         summary: "Find text in the file that is showing, the way Ctrl+F does: the count, every match's line and column, and the one that is current selected in the window so a screenshot shows it. Use this rather than reading the whole file to locate a string. --replace turns it into an edit; without it nothing is changed.",

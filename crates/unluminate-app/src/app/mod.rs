@@ -823,6 +823,12 @@ pub struct UnluminateApp {
     pub prompt: Option<Prompt>,
     /// The `Go to File` modal, when it is open.
     pub go_to_file: Option<GoToFile>,
+    /// A check for a newer release, while one is running. `task-1804` §6.
+    ///
+    /// `None` unless somebody asked, which is the whole of the design: see `services::update`.
+    pub(crate) update: Option<crate::services::update::Check>,
+    /// What the last check came to, so the About box can say it without asking again.
+    pub(crate) update_answer: Option<crate::services::update::Answer>,
     /// The Find bar over the file that is showing, when it is open. `task-1804` §3.1.
     ///
     /// A bar rather than a modal, and it holds no thread: the file being searched is already in
@@ -1058,6 +1064,8 @@ impl UnluminateApp {
             explorer_menu: None,
             prompt: None,
             go_to_file: None,
+            update: None,
+            update_answer: None,
             find: None,
             find_in_files: None,
             references: None,
@@ -1197,6 +1205,12 @@ impl UnluminateApp {
         // What this project leaves out of the searchable list, which reloads the tree when it moved.
         // `task-1804` §7.3.
         self.tree.set_exclude(&self.settings.exclude);
+        // And whether there is a newer Unluminate, **only if the settings say to ask**. This is the
+        // one place anything is sent without somebody pressing something, and it happens because
+        // they turned it on. `task-1804` §6; see `services::update` for the whole of the rule.
+        if self.settings.update_check.at_start() {
+            self.check_for_updates();
+        }
         store.remember_project(self.tree.root());
         // And that this project has a window open, which is what `task-1693` asks Unluminate to bring
         // back next time. A window that is already in the list writes nothing — `Store::open_windows`
@@ -1498,6 +1512,51 @@ impl UnluminateApp {
     /// Where the caret is, as the status bar reports it.
     pub fn caret_position(&self) -> status_bar::Position {
         status_bar::position_of(self.document().text(), self.document().selection().head)
+    }
+
+    /// Ask the releases page whether a newer Unluminate exists.
+    ///
+    /// **A person pressing the menu entry, or `update.check` set to `start`, or an agent running
+    /// `update check`. Nothing else.** See `services::update` for why that list is the whole of it.
+    ///
+    /// A check already running is left to finish rather than started again, so holding the menu
+    /// entry down does not open twenty sockets.
+    pub(crate) fn check_for_updates(&mut self) {
+        if self.update.as_ref().is_some_and(|check| check.is_asking()) {
+            return;
+        }
+        self.message = Some("Asking whether there is a newer Unluminate...".to_owned());
+        self.update = Some(crate::services::update::Check::start(self.thread_waker()));
+    }
+
+    /// Take in the answer, if one has arrived.
+    ///
+    /// Called once a frame, beside the git replies and the search results, which is where every
+    /// other thread's answer is taken. True when something changed and the window has to draw.
+    pub(crate) fn take_the_update_answer(&mut self) -> bool {
+        let Some(check) = self.update.as_mut() else {
+            return false;
+        };
+        let Some(answer) = check.poll() else {
+            return false;
+        };
+        self.message = Some(answer.sentence());
+        self.update_answer = Some(answer);
+        true
+    }
+
+    /// What the About box says about updates: the answer, or that it is still asking, or nothing.
+    pub fn update_line(&self) -> Option<String> {
+        if self.update.as_ref().is_some_and(|check| check.is_asking()) {
+            return Some("Checking...".to_owned());
+        }
+        self.update_answer.as_ref().map(|answer| match answer {
+            crate::services::update::Answer::Newer(release) => {
+                format!("{} is available", release.version)
+            }
+            crate::services::update::Answer::Current(_) => "This is the newest release".to_owned(),
+            crate::services::update::Answer::Failed(problem) => format!("Could not check: {problem}"),
+        })
     }
 
     /// Draw the Find bar and act on what was pressed.
@@ -2351,6 +2410,7 @@ impl UnluminateApp {
                 self.close_every_modal();
                 self.about = Some(About::current());
             }
+            Action::CheckForUpdates => self.check_for_updates(),
         }
     }
 
@@ -7362,6 +7422,10 @@ impl UnluminateApp {
                 ui.ctx().request_repaint();
             }
         }
+        // And whether there is a newer Unluminate, if somebody asked. `task-1804` §6.
+        if self.take_the_update_answer() {
+            ui.ctx().request_repaint();
+        }
         // The one confirmation, drawn over whatever asked it and before every other modal.
         self.show_the_confirmation(ui.ctx());
         if let Some(chosen) = self.show_git_windows(ui.ctx()) {
@@ -7443,7 +7507,14 @@ impl UnluminateApp {
         // so where it is drawn among the others decides nothing; it is here because it is the same
         // kind of thing as the two above, a small window over the project rather than about a file.
         if let Some(about) = self.about.take() {
-            if !about_dialog::show(ui.ctx(), &about) {
+            // What a check found, read fresh every frame: a check started from the box itself
+            // answers while the box is still open, and the line changes under it. `task-1804` §6.
+            let showing = about.clone().with_update(self.update_line());
+            let outcome = about_dialog::show(ui.ctx(), &showing);
+            if outcome.check {
+                self.check_for_updates();
+            }
+            if !outcome.close {
                 self.about = Some(about);
             }
         }

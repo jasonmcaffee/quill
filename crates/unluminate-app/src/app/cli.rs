@@ -663,6 +663,7 @@ impl UnluminateApp {
             "action" => self.cli_action(request, verb, ctx),
             "project" => self.cli_project(request, verb),
             "mcp" => self.cli_mcp(request, verb),
+            "update" => self.cli_update(request, verb),
             _ => no(
                 request,
                 code::UNKNOWN_COMMAND,
@@ -2578,6 +2579,52 @@ impl UnluminateApp {
             "navigate-back" => self.cli_navigate(request, true),
             "navigate-forward" => self.cli_navigate(request, false),
             _ => unknown(request),
+        }
+    }
+
+    /// `update check` -- whether a newer Unluminate has been released.
+    ///
+    /// **It asks on this thread and waits**, unlike the window's own check, and that is the right
+    /// shape here rather than a shortcut: a command line caller has asked a question and is waiting
+    /// for the answer, so a reply saying "started asking" would be a reply they then have to poll
+    /// for. The window's check is on a thread because a window that stops drawing looks like a
+    /// crash; a command that takes a second does not.
+    ///
+    /// The answer is also kept on the window, so opening the About box after running this shows what
+    /// it found -- one place a check's answer lives, which is `run_cli`'s rule.
+    fn cli_update(&mut self, request: &Request, verb: &str) -> Outcome {
+        if verb != "check" {
+            return unknown(request);
+        }
+        let answer = crate::services::update::ask();
+        self.message = Some(answer.sentence());
+        self.update_answer = Some(answer.clone());
+        let said = answer.sentence();
+        match answer {
+            crate::services::update::Answer::Newer(release) => ok(
+                request,
+                said,
+                json!({
+                    "current": crate::build_info::VERSION,
+                    "latest": release.version,
+                    "newer": true,
+                    "url": release.url,
+                    "notes": release.notes,
+                }),
+            ),
+            crate::services::update::Answer::Current(version) => ok(
+                request,
+                said,
+                json!({
+                    "current": crate::build_info::VERSION,
+                    "latest": version,
+                    "newer": false,
+                    "url": crate::services::update::RELEASES_PAGE,
+                }),
+            ),
+            // A check that could not be made is a failure rather than "no update", which is
+            // `task-1804` §7.2's rule: a caller told there is nothing newer would believe it.
+            crate::services::update::Answer::Failed(problem) => no(request, code::FAILED, problem),
         }
     }
 
@@ -6566,6 +6613,7 @@ impl UnluminateApp {
             "editor.line_numbers" => self.settings.line_numbers.to_string(),
             "editor.suggestions" => self.settings.suggestions.name().to_owned(),
             "editor.line_ending" => self.settings.line_endings.name().to_owned(),
+            "update.check" => self.settings.update_check.name().to_owned(),
             "editor.exclude" => self.settings.exclude.clone(),
             "debug.value_tooltip" => self.settings.value_tooltip.name().to_owned(),
             "plugins.chrome" => self.settings.plugin_chrome.to_string(),
@@ -6693,6 +6741,12 @@ impl UnluminateApp {
                 settings.line_endings =
                     crate::settings::LineEndings::parse(value).ok_or_else(|| {
                         format!("{name} wants keep, lf or crlf, and {value} is none of them.")
+                    })?
+            }
+            "update.check" => {
+                settings.update_check =
+                    crate::settings::UpdateCheck::parse(value).ok_or_else(|| {
+                        format!("{name} wants off or start, and {value} is neither.")
                     })?
             }
             // Not checked, for `terminal.shell`'s reason turned round: a pattern naming nothing in
@@ -7858,6 +7912,11 @@ const SETTINGS: &[SettingKey] = &[
         help: "What line breaks a file is written back with. `keep` writes it the way it was read, which is what leaves a one character edit as a one line diff. A new file gets the platform's own either way.",
     },
     SettingKey {
+        name: "update.check",
+        accepts: "off or start",
+        help: "Whether Unluminate asks the releases page for a newer version when it opens. Off, and it asks nothing until somebody presses Check for Updates or runs `update check`. It never installs anything either way.",
+    },
+    SettingKey {
         name: "editor.exclude",
         accepts: "comma separated .gitignore patterns",
         help: "Patterns Go to File, Find in Files, completion, Go to Definition and Find References leave out, beside the project's own .gitignore, which is read already. The explorer goes on showing everything.",
@@ -7940,6 +7999,7 @@ fn fresh_value(name: &str, fresh: &crate::settings::Settings) -> String {
         "editor.line_numbers" => fresh.line_numbers.to_string(),
         "editor.suggestions" => fresh.suggestions.name().to_owned(),
         "editor.line_ending" => fresh.line_endings.name().to_owned(),
+        "update.check" => fresh.update_check.name().to_owned(),
         "editor.exclude" => fresh.exclude.clone(),
         "debug.value_tooltip" => fresh.value_tooltip.name().to_owned(),
         "plugins.chrome" => fresh.plugin_chrome.to_string(),

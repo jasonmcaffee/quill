@@ -299,8 +299,16 @@ $kept = Join-Path $ReleasesDir "UnluminateSetup-$next-x64.exe"
 Copy-Item -Path $setup -Destination $kept -Force
 Write-Host "Kept $kept"
 
+# **Written from the history rather than kept by hand**, so it cannot fall behind. `task-1804` §6:
+# 201 commits and 34 minor versions with no record of what changed that a person could read. It runs
+# before the commit so the changelog for this release is in the release's own commit -- the entries
+# for the work are already in the history, and the version this makes is the boundary they sit under.
+Write-Step 'Writing CHANGELOG.md'
+& node (Join-Path $Repo 'tools\changelog.mjs')
+if ($LASTEXITCODE -ne 0) { throw 'tools/changelog.mjs failed.' }
+
 Write-Step "Committing and tagging v$next"
-Invoke-Checked 'git add' { & git add -- Cargo.toml Cargo.lock }
+Invoke-Checked 'git add' { & git add -- Cargo.toml Cargo.lock CHANGELOG.md }
 Invoke-Checked 'git commit' { & git commit -m "Unluminate $next" | Out-Null }
 Invoke-Checked 'git tag' { & git tag -a "v$next" -m "Unluminate $next" }
 Invoke-Checked 'git push' { & git push origin $branch }

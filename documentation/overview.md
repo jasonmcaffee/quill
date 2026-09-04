@@ -5,19 +5,52 @@ offscreen, and cropped with a margin of desktop left round the edge. The margin 
 Unluminate's background is translucent, and a picture cropped tight to the window cannot show that the
 green in it is the desktop rather than a shade someone chose.
 
-They were taken from `unluminate 0.1.0` after `task-1658`, on a 3840 by 2160 screen, with the window at
-1800 by 1160. Nothing in them is a mock up; every one is a photograph of the program working.
+They were taken from **`unluminate 0.1.0`**, after `task-1658`, on a 3840 by 2160 screen with the
+window at 1800 by 1160. Nothing in them is a mock up; every one is a photograph of the program
+working.
 
-`README.md` says what Unluminate is and how to run it. This file is the same ground covered in pictures.
+`README.md` says what Unluminate is and how to run it. This file is the same ground covered in
+pictures.
 
-Some things came after these were taken and so are not in them: `Go to File`, `Find in Files`,
-pictures drawn in the Markdown preview rather than shown as their alt text, everything `task-1685`
-did to that preview — tables drawn as tables, fenced code coloured by its language on a panel, and a
-passage of the preview that can be selected and copied — and **themes**, which `task-1776` added and
-which change every colour in every picture below. The rail and the explorer in these captures are
-drawn in the `classic` icon set, which is no longer the one a window comes up in. All of them are
-described in `README.md` and in the task designs under `tasks/`, and the gallery is due a pass to add
-them — a capture here has a clear desktop behind it, which is most of the work of taking one.
+## What these pictures are, and what they are behind
+
+**They are 0.1.0.** The product has had thirty-four minor versions since, and this page is honest
+about the gap rather than quiet about it: what is in a picture is what 0.1.0 looked like, and the
+list below is what has changed. `task-1804` §6 asked for this pass, and the part of it that is words
+is done — what is not done is a re-shoot, and `documentation/README.md` beside this file says exactly
+what one needs and why it was not done in the session that wrote this.
+
+Two things changed in every picture at once:
+
+- **Themes**, added by `task-1776`. A theme says what every colour in Unluminate's own palette means,
+  and one that names the nine token colours also colours code. `Themes Bundle 1` ships five. Every
+  colour in every picture below is `unluminate/dark`, which is still the default and still what a
+  fresh window comes up in — but it is now one of six rather than the only one.
+- **The icon set.** The rail and the explorer's folder arrow are drawn in `classic` in these
+  captures, and `material` is what a window comes up in now.
+
+And these came after, so they are in none of them:
+
+| | Added by |
+|---|---|
+| `Go to File` and `Find in Files` | `task-1659` |
+| **Find and Replace in the open file**, on `Ctrl/Cmd+F` and `Ctrl/Cmd+H`, and the `Find` menu they live on | `task-1804` |
+| Pictures drawn in the Markdown preview rather than shown as their alt text | `task-1659` |
+| Tables drawn as tables, fenced code coloured by its language, a preview that can be selected and copied | `task-1685` |
+| Folding, breakpoints and the gutter's marks | `task-1686`, `task-1687` |
+| The debugger: stepping, stack frames, value tooltips and inline values | `task-1688` |
+| Split panes, and the explorer following the tab | `task-1664` |
+| Go to Definition, Find References and Rename Symbol | `task-1675` |
+| Auto-complete, and completing an import | `task-1678`, `task-1680` |
+| Panels docked to any edge, and dragged between them | `task-1697` |
+| A **browser** tab, on WebView2 and WKWebView | `task-1756` |
+| The **Agent-Tasks** board, drawn with depth | `task-1765` |
+| The **Agent-Chat** pane | `task-1767` |
+| The **Database** plugin | `task-1777` |
+
+The Database plugin has a gallery of its own, and it is current:
+[`documentation/database.md`](database.md), nine captures taken the same way after `task-1777`. The
+browser tab, the chat pane and the board have none, which is the largest hole in this page.
 
 ---
 
@@ -211,7 +244,11 @@ pasting onto a name that is already taken adds a number rather than overwriting 
 
 ## The menus, and a project is a window
 
-`Unluminate`, `File`, `Edit`, `View` and `Git`. On macOS they are in the bar along the top of the screen,
+`Unluminate`, `File`, `Edit`, `Find`, `View`, `Run` and `Git`, and one more for each plugin that
+contributes one — `Agent-Chat`, `Agent-Tasks` and `Database` all do. The pictures below are from
+0.1.0 and show five of them: `Run` arrived with the run configurations, and `Find` with
+`task-1804`, which took Find, Replace, Find in Files and the three symbol entries out of an Edit menu
+that had run off the bottom of a short window. On macOS they are in the bar along the top of the screen,
 where macOS puts menus; on Windows they are drawn at the left of Unluminate's own title bar and the three
 window buttons move to the right hand end, where Windows puts them. Both bars are built from one
 list, so they hold the same entries with the same shortcuts, and adding an entry adds it to both.
@@ -230,8 +267,10 @@ in the settings folder, so copying the project copies its state.
 ![The File menu, with the recent projects listed in it](images/18-file-menu.jpg)
 
 The `View` menu holds the three Markdown modes, the explorer, the line numbers, the editor's font
-size, the file tabs and the terminal. The three modes are dimmed for a file there is nothing to
-preview of, which is the same question the buttons in the title bar are drawn from.
+size, the file tabs and the terminal — and, since these pictures, the panes each plugin contributes,
+splitting the editing area, and filling the window with one pane. The three modes are dimmed for a
+file there is nothing to preview of, which is the same question the buttons in the title bar are
+drawn from.
 
 ![The View menu open](images/20-view-menu.jpg)
 
@@ -316,17 +355,26 @@ same window offscreen and writes a PNG for each of its tests, and those images a
 checking that a control moved or a colour changed; they cannot show that the operating system
 honoured the window's transparency, because there is no desktop behind them.
 
-So each of these was taken by starting the real `unluminate.exe`, putting the window at a fixed rectangle,
-driving it with real mouse clicks and key presses, and copying the screen. The crop is the window's
-rectangle grown by 48 pixels on every side, which is the margin of desktop you can see. The scripts
-that do it are in `_agent_output/task-1658-screenshots/`, which is not tracked:
-`build-fixture.ps1` builds the project, `unluminate-capture.ps1` starts the window and drives it, and
-`capture-all.ps1` runs the seven stages that take the twenty-two pictures.
+So each of these was taken by starting the real `unluminate.exe`, putting the window at a fixed
+rectangle, driving it with real mouse clicks and key presses, and copying the screen. The crop is the
+window's rectangle grown by 48 pixels on every side, which is the margin of desktop you can see.
 
-The two diagram pictures were taken the same way, by
-`_agent_output/task-1660-mermaid/capture-diagram.ps1`, which is the same recipe cut down to one
-stage. It does one thing the earlier scripts did not have to: it puts every other window out of the
-way first, so what shows through is the desktop picture rather than whatever happened to be open.
+**The scripts that did it are not in this repository**, and that is the reason the gallery went stale
+rather than an excuse for it. They live in `_agent_output/task-1658-screenshots/`, which is
+gitignored — `build-fixture.ps1`, `unluminate-capture.ps1` and the seven `stage-*.ps1` files, plus
+`_agent_output/task-1660-mermaid/capture-diagram.ps1` for the two diagram pictures. They exist on one
+machine, they are not in any checkout, and a page whose recipe only one computer has is a page nobody
+else can bring up to date.
+
+They also predate `task-1762`, which is the other half of why they cannot simply be committed as they
+stand: they press keys with `keybd_event` directly, and `CLAUDE.md` now says that
+**`tools/windows-input.ps1` is the one way a script sends keyboard or mouse input**, because a run
+that stops between a key going down and coming up leaves that key held for the rest of the session
+with nothing on the screen to say so. Moving them into `tools/` means putting them through that file
+first.
+
+[`documentation/README.md`](README.md) is what a re-shoot needs, written down where the next person
+will look for it.
 
 Two things those scripts do that matter. The project in the pictures is a fixture built under the
 temporary folder rather than a real one, because `sample/` lives inside Unluminate's own repository, so

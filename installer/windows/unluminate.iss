@@ -72,6 +72,18 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
 
+; The uninstaller is signed too, when build.ps1 was given a certificate.
+;
+; Inno builds `unins000.exe` while it compiles, so it is the one file in the install that this script
+; cannot sign afterwards -- it does not exist until the setup runs. `SignTool` names a command Inno
+; runs on it, `build.ps1` passes that command in as `/Sunluminate=...`, and `SignedUninstaller` is
+; what asks for it to be used. Without the define nothing here changes, which is what an unsigned
+; build has always done. `task-1804` §6.
+#ifdef SignCommand
+SignTool=unluminate
+SignedUninstaller=yes
+#endif
+
 ; Upgrading while Unluminate is open asks to close it through the Restart Manager, rather than failing on
 ; a locked file half way through.
 CloseApplications=yes

@@ -47,6 +47,10 @@ muda.workspace = true
 image.workspace = true
 # The Agent-Tasks plugin's board. One file on disk, with SQLite compiled in.
 rusqlite.workspace = true
+# The one request Unluminate makes on its own behalf: whether a newer release exists, asked only when
+# somebody asks for it. `services::update` uses `unluminate-chat`'s own TLS configuration rather than
+# a second one -- see the note at the top of that file.
+ureq = { workspace = true }
 libc.workspace = true
 
 # The application menu on macOS takes its name from the running program, and the program is `unluminate`. Setting

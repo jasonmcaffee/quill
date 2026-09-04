@@ -101,6 +101,127 @@ function Get-UnluminateVersion {
     return $package.version
 }
 
+<#
+.SYNOPSIS
+  The path to signtool.exe, or nothing when the Windows SDK is not installed.
+.DESCRIPTION
+  It lives under the SDK in a folder named after the SDK version, so the newest one is taken. Not
+  installed here the way Inno Setup is: the SDK is a large download and a machine that cannot sign
+  should say so rather than fetching two gigabytes without being asked.
+#>
+function Get-SignTool {
+    if ($env:UNLUMINATE_SIGNTOOL -and (Test-Path $env:UNLUMINATE_SIGNTOOL)) {
+        return $env:UNLUMINATE_SIGNTOOL
+    }
+    $roots = @(
+        (Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'),
+        (Join-Path $env:ProgramFiles 'Windows Kits\10\bin')
+    )
+    foreach ($root in $roots) {
+        if (-not (Test-Path $root)) { continue }
+        $found = Get-ChildItem -Path $root -Recurse -Filter 'signtool.exe' -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '\\x64\\' } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+        if ($found) { return $found.FullName }
+    }
+    return $null
+}
+
+<#
+.SYNOPSIS
+  The signtool command line Inno runs on the uninstaller, or nothing when there is no certificate.
+.DESCRIPTION
+  `unins000.exe` is built while the setup is compiled and does not exist until it runs, so it is the
+  one file `Add-Signature` cannot reach. Inno signs it itself, given a command with `$f` where the
+  file goes -- which is what this builds, in exactly the shape `Add-Signature` uses so the two cannot
+  come to sign things differently.
+#>
+function Get-UninstallerSignCommand {
+    $thumbprint = $env:UNLUMINATE_SIGN_THUMBPRINT
+    $certificate = $env:UNLUMINATE_SIGN_CERT
+    if (-not $thumbprint -and -not $certificate) { return $null }
+    $signtool = Get-SignTool
+    if (-not $signtool) { return $null }
+    $timestamp = if ($env:UNLUMINATE_SIGN_TIMESTAMP) { $env:UNLUMINATE_SIGN_TIMESTAMP } else { 'http://timestamp.digicert.com' }
+    $parts = @("`"$signtool`"", 'sign', '/fd', 'SHA256', '/td', 'SHA256', '/tr', $timestamp)
+    if ($thumbprint) {
+        $parts += @('/sha1', $thumbprint)
+    } else {
+        $parts += @('/f', "`"$certificate`"")
+        if ($env:UNLUMINATE_SIGN_PASSWORD) { $parts += @('/p', "`"$env:UNLUMINATE_SIGN_PASSWORD`"") }
+    }
+    $parts += '$f'
+    return ($parts -join ' ')
+}
+
+<#
+.SYNOPSIS
+  Sign the given files with Authenticode, if this machine has been given a certificate.
+.DESCRIPTION
+  `task-1804` §6: the Windows installer is not signed, so every download meets a SmartScreen
+  warning saying Windows protected your PC, and the only way past it is More info then Run anyway.
+  macOS has been handled properly since the beginning -- `installer/macos/build.sh` does ad-hoc,
+  Developer ID and full notarisation with `notarytool` and stapling -- so this is a gap on one
+  platform rather than a missing idea.
+
+  **It needs a certificate, which is a purchase with a lead time, and there is not one yet.** So this
+  is written now and does nothing until there is: name a certificate and it signs, name none and it
+  says once, plainly, that the build is unsigned and what that means for whoever downloads it. That
+  is the shape the ticket asked for -- "signtool in installer/windows/build.ps1 once a certificate
+  exists, start the purchase early" -- with the code waiting rather than the code being the thing
+  that has to be written when the certificate arrives.
+
+  Two ways to name one, because the two ways certificates are held are genuinely different:
+
+  - `UNLUMINATE_SIGN_THUMBPRINT` -- a certificate already in this machine's store, which is what a
+    hardware token or an EV certificate is. This is the one to prefer: the key never leaves the
+    token.
+  - `UNLUMINATE_SIGN_CERT` and `UNLUMINATE_SIGN_PASSWORD` -- a `.pfx` file and its password. Read
+    from the environment at the moment of use and never written anywhere, which is
+    `services::agent_tasks::keychain`'s rule about a secret: what is written down is the name of the
+    place the key is.
+
+  `UNLUMINATE_SIGN_TIMESTAMP` names the timestamping service, and it defaults to DigiCert's. A
+  signature without a timestamp stops being valid the day the certificate expires, which for a
+  download somebody keeps is the whole point of signing it.
+#>
+function Add-Signature([string[]] $Paths) {
+    $thumbprint = $env:UNLUMINATE_SIGN_THUMBPRINT
+    $certificate = $env:UNLUMINATE_SIGN_CERT
+    if (-not $thumbprint -and -not $certificate) {
+        Write-Host ''
+        Write-Warning 'This build is NOT signed. Whoever downloads it will meet a SmartScreen warning.'
+        Write-Host '         Set UNLUMINATE_SIGN_THUMBPRINT (a certificate in this machine''s store) or' -ForegroundColor DarkGray
+        Write-Host '         UNLUMINATE_SIGN_CERT and UNLUMINATE_SIGN_PASSWORD (a .pfx and its password).' -ForegroundColor DarkGray
+        return
+    }
+    $signtool = Get-SignTool
+    if (-not $signtool) {
+        throw 'A signing certificate is named but signtool.exe is not on this machine. It comes with the Windows SDK.'
+    }
+    $timestamp = if ($env:UNLUMINATE_SIGN_TIMESTAMP) { $env:UNLUMINATE_SIGN_TIMESTAMP } else { 'http://timestamp.digicert.com' }
+    foreach ($path in $Paths) {
+        if (-not (Test-Path $path)) { throw "There is nothing to sign at $path." }
+        $arguments = @('sign', '/fd', 'SHA256', '/td', 'SHA256', '/tr', $timestamp)
+        if ($thumbprint) {
+            $arguments += @('/sha1', $thumbprint)
+        } else {
+            $arguments += @('/f', $certificate)
+            if ($env:UNLUMINATE_SIGN_PASSWORD) { $arguments += @('/p', $env:UNLUMINATE_SIGN_PASSWORD) }
+        }
+        $arguments += $path
+        & $signtool @arguments
+        if ($LASTEXITCODE -ne 0) { throw "signtool failed on $path." }
+        # Asked back rather than believed. A `sign` that returns zero and leaves an unsigned file is
+        # not a thing that happens, but a certificate that has expired signs happily and verifies as
+        # a failure -- and a release is not the moment to find that out.
+        & $signtool 'verify' '/pa' '/q' $path
+        if ($LASTEXITCODE -ne 0) { throw "signtool signed $path and then would not verify it." }
+        Write-Host "Signed $(Split-Path -Leaf $path)" -ForegroundColor Green
+    }
+}
+
 # ---------------------------------------------------------------------------------------------
 
 if ($Icon) {
@@ -155,17 +276,32 @@ if ($info.ProductName -ne 'Unluminate') {
     throw "unluminate.exe has no version block, so it has no icon either. Install the Windows SDK (it comes with the C++ build tools) and build again."
 }
 
+# **The binaries first, then the installer.** An installer is signed as one file, and what it holds
+# is signed separately or not at all -- so a person who runs `unluminate.exe` from the install folder
+# would meet the warning the signed installer just took away.
+Write-Step 'Signing'
+Add-Signature @($exe, $cli)
+
 Write-Step 'Compiling the installer'
 New-Item -ItemType Directory -Force -Path $Dist | Out-Null
-& $compiler `
-    "/DAppVersion=$version" `
-    "/DBinaryDir=$BinaryDir" `
-    "/DOutputDir=$Dist" `
-    $Script
+$compilerArguments = @(
+    "/DAppVersion=$version",
+    "/DBinaryDir=$BinaryDir",
+    "/DOutputDir=$Dist"
+)
+$uninstallerSigning = Get-UninstallerSignCommand
+if ($uninstallerSigning) {
+    # `/S<name>=<command>` is how Inno is given a signing program, and `/DSignCommand` is what turns
+    # on the `SignTool` directive in the script that uses it.
+    $compilerArguments += "/Sunluminate=$uninstallerSigning"
+    $compilerArguments += '/DSignCommand'
+}
+& $compiler @compilerArguments $Script
 if ($LASTEXITCODE -ne 0) { throw 'ISCC failed.' }
 
 $setup = Join-Path $Dist "UnluminateSetup-$version-x64.exe"
 if (-not (Test-Path $setup)) { throw "ISCC reported success but $setup is not there." }
+Add-Signature @($setup)
 $size = [math]::Round((Get-Item $setup).Length / 1MB, 1)
 Write-Host ''
 Write-Host "Built $setup ($size MB)" -ForegroundColor Green

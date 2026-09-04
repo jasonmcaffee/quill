@@ -220,6 +220,46 @@ impl Suggestions {
     }
 }
 
+/// Whether Unluminate asks the releases page for a newer version when it starts.
+///
+/// **Off, and that is the whole design rather than a cautious default.** `task-1692` drew the line
+/// the chat pane keeps -- *"there is no discovery, no model list, no telemetry and nothing at
+/// startup"* -- and an editor that phones home the moment it opens is exactly what that rule exists
+/// to prevent. `Unluminate -> Check for Updates` is a person asking, and it works either way; this
+/// is a person saying *ask every time I open it*, once. `task-1804` §6.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UpdateCheck {
+    /// Nothing is ever sent unless somebody asks.
+    #[default]
+    Off,
+    /// Ask once, when the window opens.
+    Start,
+}
+
+impl UpdateCheck {
+    /// The word the settings file, the command line and a test spell it with.
+    pub fn name(self) -> &'static str {
+        match self {
+            UpdateCheck::Off => "off",
+            UpdateCheck::Start => "start",
+        }
+    }
+
+    /// Read a value, or nothing when the file holds something this version does not have.
+    pub fn parse(name: &str) -> Option<Self> {
+        match name.trim().to_lowercase().as_str() {
+            "off" | "never" => Some(UpdateCheck::Off),
+            "start" | "startup" | "on" => Some(UpdateCheck::Start),
+            _ => None,
+        }
+    }
+
+    /// True when the window should ask as it opens.
+    pub fn at_start(self) -> bool {
+        self == UpdateCheck::Start
+    }
+}
+
 /// What line breaks a file is written back with.
 ///
 /// `task-1804` §7.1 made the line ending a value the document carries, read from the file when it is
@@ -448,6 +488,8 @@ pub struct Settings {
     pub suggestions: Suggestions,
     /// What line breaks a file is written back with. See [`LineEndings`].
     pub line_endings: LineEndings,
+    /// Whether the window asks for a newer version as it opens. See [`UpdateCheck`].
+    pub update_check: UpdateCheck,
     /// Extra patterns the project index leaves out, beyond `.gitignore` and the build folders.
     ///
     /// `task-1804` §7.3: the index skipped three hardcoded folder names and read no ignore file at
@@ -525,6 +567,8 @@ impl Settings {
             // Keep, and the type's own comment argues it: any other default rewrites somebody's file
             // the first time they type in it.
             line_endings: LineEndings::Keep,
+            // Off. See the type's own comment: nothing is sent unless somebody asks.
+            update_check: UpdateCheck::Off,
             // Empty. `.gitignore` is read whether or not this names anything, and a pattern here is
             // an addition to it rather than a replacement for it.
             exclude: String::new(),
@@ -585,6 +629,9 @@ impl Settings {
         }
         if let Some(chosen) = values.text("editor.line_ending").and_then(LineEndings::parse) {
             settings.line_endings = chosen;
+        }
+        if let Some(chosen) = values.text("update.check").and_then(UpdateCheck::parse) {
+            settings.update_check = chosen;
         }
         if let Some(patterns) = values.text("editor.exclude") {
             settings.exclude = patterns.trim().to_owned();
@@ -650,6 +697,7 @@ impl Settings {
         values.set("editor.line_numbers", if self.line_numbers { "true" } else { "false" });
         values.set("editor.suggestions", self.suggestions.name());
         values.set("editor.line_ending", self.line_endings.name());
+        values.set("update.check", self.update_check.name());
         values.set_or_clear("editor.exclude", &self.exclude);
         values.set("debug.value_tooltip", self.value_tooltip.name());
         values.set("plugins.chrome", if self.plugin_chrome { "true" } else { "false" });
@@ -1122,6 +1170,7 @@ mod tests {
             line_numbers: false,
             suggestions: Suggestions::Manual,
             line_endings: LineEndings::Crlf,
+            update_check: UpdateCheck::Start,
             exclude: "dist/, vendor/".to_owned(),
             value_tooltip: ValueTooltip::Manual,
             plugin_chrome: false,

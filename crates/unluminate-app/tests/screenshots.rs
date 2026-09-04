@@ -1817,6 +1817,8 @@ fn a_fixed_about() -> About {
         developer: "Jason McAffee".to_owned(),
         version: "0.2.0".to_owned(),
         built: "2026-08-25 10:45pm".to_owned(),
+        // Nothing has been asked, which is what a fresh window has. `task-1804` §6.
+        update: None,
     }
 }
 
@@ -1865,6 +1867,48 @@ fn opening_the_about_box_shuts_whatever_else_was_open() {
     harness.run();
     assert!(harness.state().about.is_some());
     assert!(!harness.state().settings_window.open, "the Settings window went away");
+}
+
+/// The About box offers a check, and Unluminate asks for nothing until it is pressed.
+///
+/// `task-1804` §6. **The assertion that matters is the second one**: a test can watch a button
+/// appear, and what this feature has to be right about is that opening the window, opening the
+/// About box and reading it send nothing at all. `update.check` is off in a fresh Unluminate, and
+/// `UnluminateApp::update` is `None` until somebody asks -- so `None` is the evidence.
+#[test]
+fn the_about_box_offers_a_check_and_nothing_is_asked_until_it_is_pressed() {
+    let mut harness = harness("");
+    assert!(
+        !harness.state().settings.update_check.at_start(),
+        "a fresh Unluminate does not ask the releases page anything"
+    );
+    let ctx = harness.ctx.clone();
+    harness.state_mut().run_action(Action::About, &ctx);
+    harness.run();
+    assert!(harness.state().about.is_some());
+    // The version and the build date this build really has would put a different picture in front
+    // of the comparison every time the binary was rebuilt, which is what `a_fixed_about` is for.
+    harness.state_mut().about = Some(a_fixed_about());
+    harness.run();
+    harness.get_by_label("Check for Updates");
+    // Nothing has been asked, so the box says nothing about updates.
+    assert_eq!(harness.state().update_line(), None, "opening the box asked nothing");
+    harness.snapshot(shot("about_updates"));
+}
+
+/// The setting is what makes the window ask as it opens, and it is off unless it is set.
+#[test]
+fn the_update_setting_is_read_and_written_and_is_off_until_it_is_set() {
+    let mut harness = harness("");
+    assert_eq!(did(&mut harness, "settings get update.check")["value"], serde_json::json!("off"));
+    did(&mut harness, "settings set update.check start");
+    assert!(harness.state().settings.update_check.at_start());
+    assert_eq!(did(&mut harness, "settings get update.check")["value"], serde_json::json!("start"));
+    // A value this version has not got is refused with what it does take, rather than being taken
+    // as "off" -- which would be a settings file that quietly stopped meaning what it said.
+    assert_eq!(refused(&mut harness, "settings set update.check weekly"), "usage");
+    did(&mut harness, "settings set update.check off");
+    assert!(!harness.state().settings.update_check.at_start());
 }
 
 /// Open the Settings window the way a person does on Windows: `Edit` in the bar, then `Settings`.
@@ -7094,6 +7138,7 @@ const SETTINGS_HELP: &[&str] = &[
     "Whether the completion popup arrives as you type. Ctrl+Space works either way.",
     "What line breaks a file is written back with. `keep` writes it the way it was read, which is what leaves a one character edit as a one line diff. A new file gets the platform's own either way.",
     "Patterns Go to File, Find in Files, completion, Go to Definition and Find References leave out, beside the project's own .gitignore, which is read already. The explorer goes on showing everything.",
+    "Whether Unluminate asks the releases page for a newer version when it opens. Off, and it asks nothing until somebody presses Check for Updates or runs `update check`. It never installs anything either way.",
     "Whether resting the pointer on a name while the program is stopped shows its value. Show Value on the Debug menu works either way.",
     "Whether a plugin that asked for it draws depth: the soft shadows, gradients and pressed edges behind its own pane. Off, it draws flat.",
     "Whether this Unluminate serves MCP over HTTP. An agent that launches the server itself needs neither this nor a port.",

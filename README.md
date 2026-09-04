@@ -163,9 +163,11 @@ print the colour of each region of that image.
 The window is dragged by its title bar and resized by any of its four edges or four corners, which Unluminate
 draws itself because a window with no operating system frame has none of its own.
 
-`documentation/overview.md` is the whole of this file in pictures: twenty-two captures of the running
+`documentation/overview.md` is the whole of this file in pictures: twenty-four captures of the running
 window, each cropped with a margin of desktop round it so that what shows through the background is
-visible.
+visible. **They are of 0.1.0**, and the page says so at the top and lists what has changed since;
+`documentation/database.md` is current. `documentation/README.md` is what taking either of them again
+needs.
 
 `design/verification/live-window-over-desktop.png` is a capture of the running window over a real desktop.
 The wallpaper is visible through the explorer, the editing area and the status bar, and every piece of text
@@ -1039,7 +1041,8 @@ Each stands on its own, and states any fact it needs rather than pointing at ano
 
 | Document | What is in it |
 |---|---|
-| `documentation/overview.md` | What Unluminate looks like: captures of each part of the window, over a real desktop. |
+| `documentation/overview.md` | What Unluminate looks like: captures of each part of the window, over a real desktop. They are of 0.1.0, and the page says what has changed since. |
+| `documentation/README.md` | What re-taking either gallery needs, and why the scripts that took the first one have to move into `tools/` before it happens. |
 | `design/style-guide.md` | How a control in Unluminate is built: the closed palette, the row heights, the one shape a modal has, and the plain name every control carries. Read it before drawing anything new. |
 | `CLAUDE.md` | The conventions the code already follows, written for whoever changes it next. |
 | `unluminate-cli/docs/commands.md` | The command line reference, written to be handed to an AI agent whole. |

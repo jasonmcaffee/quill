@@ -21,13 +21,13 @@ use crate::build_info;
 use crate::components::modal;
 use crate::theme::color;
 
-/// The size the box asks for. Three lines and a button need no more, and the height is what leaves
+/// The size the box asks for. Four lines and two buttons need no more, and the height is what leaves
 /// the same room under the last line as `modal::body` leaves over the first: a modal that is mostly
 /// empty looks like one that failed to load.
-const WIDTH: f32 = 400.0;
-const HEIGHT: f32 = 208.0;
+const WIDTH: f32 = 440.0;
+const HEIGHT: f32 = 234.0;
 
-/// How far apart the three lines sit.
+/// How far apart the lines sit.
 const LINE: f32 = 26.0;
 
 /// What the About box says. Text rather than the constants themselves, so a test can fix it.
@@ -36,6 +36,11 @@ pub struct About {
     pub developer: String,
     pub version: String,
     pub built: String,
+    /// What the last check for a newer release came to, when one has been asked for.
+    ///
+    /// **The box does not ask on its own**, which is `services::update`'s rule: it shows what a
+    /// check found if there has been one, and offers the button either way. `task-1804` §6.
+    pub update: Option<String>,
 }
 
 impl About {
@@ -45,13 +50,30 @@ impl About {
             developer: build_info::DEVELOPER.to_owned(),
             version: build_info::VERSION.to_owned(),
             built: build_info::BUILD_DATE.to_owned(),
+            update: None,
         }
     }
 
-    /// The three lines, in the order they are read. The first has no label of its own, which is why
-    /// this is a list of pairs rather than a table with a heading.
-    fn lines(&self) -> [(&'static str, &str); 3] {
-        [("Developed by", self.developer.as_str()), ("Version:", &self.version), ("Build Date:", &self.built)]
+    /// The same, saying what a check found.
+    pub fn with_update(self, update: Option<String>) -> Self {
+        Self { update, ..self }
+    }
+
+    /// The lines, in the order they are read. The first has no label of its own, which is why this
+    /// is a list of pairs rather than a table with a heading.
+    ///
+    /// The fourth is there only once a check has been made, because a row reading `Updates: —` says
+    /// nothing and a row that is absent says the same thing more quietly.
+    fn lines(&self) -> Vec<(&'static str, &str)> {
+        let mut lines = vec![
+            ("Developed by", self.developer.as_str()),
+            ("Version:", self.version.as_str()),
+            ("Build Date:", self.built.as_str()),
+        ];
+        if let Some(update) = self.update.as_deref() {
+            lines.push(("Updates:", update));
+        }
+        lines
     }
 }
 
@@ -59,8 +81,9 @@ impl About {
 ///
 /// The caller owns whether there is one at all, which is the shape `go_to_file` and `find_in_files`
 /// already have: the window takes it, draws it, and puts it back unless it closed.
-pub fn show(ctx: &egui::Context, about: &About) -> bool {
-    let (pressed, closed) = modal::show(ctx, "unluminate-about", WIDTH, HEIGHT, |ui, area| {
+pub fn show(ctx: &egui::Context, about: &About) -> Outcome {
+    let mut outcome = Outcome::default();
+    let (closing, closed) = modal::show(ctx, "unluminate-about", WIDTH, HEIGHT, |ui, area| {
         let crossed = modal::header(ui, area, "About Unluminate");
         let body = modal::body(area);
         for (index, (label, value)) in about.lines().iter().enumerate() {
@@ -69,10 +92,35 @@ pub fn show(ctx: &egui::Context, about: &About) -> bool {
         // `Done` rather than `Close`, for the reason the Settings window's footer says `Done`: the
         // header already draws a `Close` cross, and `design/style-guide.md` forbids two controls in
         // one window sharing a name.
-        let pressed = modal::footer(ui, area, &[("Done", true)]).is_some();
-        pressed || crossed
+        //
+        // `Check for Updates` is beside it rather than on a line of its own, because it is the one
+        // thing this box *does* and the footer is where a modal keeps what it does. It is the same
+        // entry as the one on the application menu, reaching the same code -- there is one place a
+        // check starts, which is `UnluminateApp::check_for_updates`.
+        // **`Done` last**, because `modal::footer` gives the keyboard to the last button -- *"the
+        // one that does the thing"* -- and the thing an About box does is close. Putting the check
+        // last took Enter away from Done, which is what `enter_presses_the_button_that_does_the_thing`
+        // is there to notice, and it noticed.
+        match modal::footer(ui, area, &[("Check for Updates", true), ("Done", true)]) {
+            Some(0) => {
+                outcome.check = true;
+                false
+            }
+            Some(1) => true,
+            _ => crossed,
+        }
     });
-    pressed || closed
+    outcome.close = closing || closed;
+    outcome
+}
+
+/// What the About box asked for this frame.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Outcome {
+    /// Put the box away.
+    pub close: bool,
+    /// Ask the releases page whether there is a newer Unluminate.
+    pub check: bool,
 }
 
 /// One line of the box: its label in the ordinary control colour, its value in the strong one.
@@ -102,21 +150,45 @@ fn line(ui: &mut egui::Ui, body: Rect, index: usize, label: &str, value: &str) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_three_lines_are_the_ones_the_ticket_asks_for() {
-        let about = About {
+    fn an_about(update: Option<&str>) -> About {
+        About {
             developer: "Jason McAffee".to_owned(),
             version: "0.2.0".to_owned(),
             built: "2026-08-25 10:45pm".to_owned(),
-        };
-        let read: Vec<String> =
-            about.lines().iter().map(|(label, value)| format!("{label} {value}")).collect();
+            update: update.map(str::to_owned),
+        }
+    }
+
+    fn read(about: &About) -> Vec<String> {
+        about.lines().iter().map(|(label, value)| format!("{label} {value}")).collect()
+    }
+
+    #[test]
+    fn the_three_lines_are_the_ones_the_ticket_asks_for() {
         assert_eq!(
-            read,
+            read(&an_about(None)),
             vec![
                 "Developed by Jason McAffee".to_owned(),
                 "Version: 0.2.0".to_owned(),
                 "Build Date: 2026-08-25 10:45pm".to_owned(),
+            ]
+        );
+    }
+
+    /// The fourth line arrives only once a check has been made, and never before.
+    ///
+    /// `task-1804` §6: the box does not ask on its own, and a row reading `Updates:` with
+    /// nothing after it would say it had asked and found nothing.
+    #[test]
+    fn the_update_line_is_absent_until_something_has_been_asked() {
+        assert_eq!(read(&an_about(None)).len(), 3, "nothing has been asked");
+        assert_eq!(
+            read(&an_about(Some("0.35.0 is available"))),
+            vec![
+                "Developed by Jason McAffee".to_owned(),
+                "Version: 0.2.0".to_owned(),
+                "Build Date: 2026-08-25 10:45pm".to_owned(),
+                "Updates: 0.35.0 is available".to_owned(),
             ]
         );
     }

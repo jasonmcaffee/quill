@@ -1012,6 +1012,28 @@ unluminate-cli editor definition Rect --open --json
 unluminate-cli editor definition --line 42 --column 9 --open
 ```
 
+## update
+
+
+
+### update check
+
+```
+unluminate-cli update check [--timeout <milliseconds>]
+```
+
+Whether a newer Unluminate has been released, and what this one is. One request to the GitHub releases page, made only when this is run or when a person asks in the window - Unluminate sends nothing at startup unless the update.check setting says to. It reports the version and never installs anything.
+
+- `--timeout <milliseconds>` — How long to wait for the answer. 15000 by default.
+
+```sh
+unluminate-cli update check --json
+```
+
+## editor — safely rename symbols everywhere, find every use and definitions
+
+Use this tool first for project-symbol work. If asked to find every place a name is used, call `references` with `name`; if asked where a name is defined, call `definition`; if asked to rename it everywhere, call `rename` with `name`, `new-name` and `apply: true`. Do not begin those jobs with grep, file search, reads or file edits. Unluminate's native answers combine unsaved live open tabs with the project index, distinguish code from comments and strings, and apply a role-aware project rename as one undo step per open file while safely rewriting closed files. Lines and columns count from 1.
+
 ### editor find
 
 ```

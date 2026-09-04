@@ -1,0 +1,84 @@
+# The six end-to-end tests that start a real agent, once a night.
+#
+# `task-1804` §2.2: *"the deepest tests in the repository have no scheduled run at all, and a release
+# is exactly the moment they should have one."*
+#
+# `crates/unluminate-app/tests/agent_board.rs` holds the tests that start a real agent, walk the
+# watchdog against a board on disk, and prove a ticket's conversation survives its terminal being
+# closed — including, by its own comment, *"the test that would have caught the fault `task-28`
+# reported"*. Every one is `#[ignore]`d and the reasons given there are sound: they take minutes, and
+# they cost tokens, so `cargo test` has to stay quick enough that somebody runs it and a test that
+# spends money should be one somebody asked for.
+#
+# **A nightly is somebody asking, once.** That is the whole of what this changes.
+#
+# ## What it needs, and what it does without it
+#
+# `claude` on the path, and a key. The tests themselves **skip with a message naming what was
+# missing** rather than failing when `claude` is not there, which is what `services::debuggers`'s own
+# tests do about `lldb-dap` — so a fork with no secret gets a green run that says plainly it ran
+# nothing, rather than a red one nobody can fix.
+#
+# The summary at the end says which of the two happened, because a scheduled job that quietly does
+# nothing is worse than no scheduled job: it reads as coverage.
+#
+# ## One at a time
+#
+# `--test-threads=1`, because each test starts an agent that reads and writes files in its own
+# temporary folder and there is one key with one rate limit behind it. That is the file's own rule
+# and it is repeated here rather than trusted to be remembered.
+
+name: Nightly
+
+on:
+  schedule:
+    # 03:00 UTC. Late enough that a day's work is in, early enough to be read with the coffee.
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  agent-board:
+    name: The end-to-end agent tests
+    runs-on: windows-latest
+    # They take minutes each and there are six of them. The default of six hours is not a limit, it
+    # is an absence of one.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install the agent
+        if: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+        run: npm install --global @anthropic-ai/claude-code
+
+      - name: Run them, one at a time
+        if: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Empty unless the repository sets it, which is what a gateway needs and a direct key does not.
+          ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+          UNLUMINATE_TEST_MODEL: ${{ vars.UNLUMINATE_TEST_MODEL }}
+        run: cargo test -p unluminate-app --test agent_board -- --ignored --test-threads=1
+
+      - name: Say what happened
+        if: always()
+        shell: bash
+        run: |
+          if [ -z "${{ secrets.ANTHROPIC_API_KEY }}" ]; then
+            echo "### Nothing ran" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "There is no \`ANTHROPIC_API_KEY\` secret on this repository, so the six end-to-end" >> "$GITHUB_STEP_SUMMARY"
+            echo "agent tests were **not run**. This job is green and it covered nothing." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### The six end-to-end agent tests ran" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "\`cargo test -p unluminate-app --test agent_board -- --ignored --test-threads=1\`" >> "$GITHUB_STEP_SUMMARY"
+          fi

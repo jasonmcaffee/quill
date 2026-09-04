@@ -16,7 +16,7 @@ use crate::components::modal;
 use crate::components::mcp_page::{self, McpState};
 use crate::components::plugins_page::{self, PluginsOutcome, PluginsState};
 use crate::services::plugins::Plugins;
-use crate::settings::{LineEndings, 
+use crate::settings::{UpdateCheck, LineEndings, 
     Page, Settings, Suggestions, ValueTooltip, FONT_SIZES, MIN_OPACITY, TERMINAL_FONT_SIZES,
     UI_FONT_SIZES,
 };
@@ -914,11 +914,28 @@ fn editor_page(ui: &mut egui::Ui, area: Rect, settings: &mut Settings) -> bool {
         pen,
         "Patterns Go to File, Find in Files, completion and Go to Definition leave out, separated by commas, written the way a .gitignore line is.",
     );
-    note(
+    pen = note(
         ui,
         area,
         pen + 8.0,
         "The project's own .gitignore is read already; this is a list beside it. The explorer goes on showing everything either way.",
+    );
+
+    // `task-1804` §6. Off, and the tick box is how it stops being off -- see `UpdateCheck`.
+    pen = section(ui, area, pen + 12.0, "Updates");
+    let row = row_at(area, pen);
+    let mut at_start = settings.update_check.at_start();
+    if checkbox(ui, row, "Check for a newer version at startup", &mut at_start) {
+        settings.update_check =
+            if at_start { UpdateCheck::Start } else { UpdateCheck::Off };
+        changed = true;
+    }
+    pen += 32.0;
+    note(
+        ui,
+        area,
+        pen,
+        "One request to the releases page as the window opens. Off, Unluminate sends nothing at all until you ask: Check for Updates on the Unluminate menu works either way, and nothing is ever installed for you.",
     );
     changed
 }

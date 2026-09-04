@@ -38,6 +38,8 @@ pub enum Action {
     GoToFile,
     /// Open the `Find in Files` modal: search every file in the project for some text.
     FindInFiles,
+    /// Ask the releases page whether a newer Unluminate exists. `task-1804` §6.
+    CheckForUpdates,
     /// Open the Find bar over the file that is showing. `task-1804` §3.1.
     Find,
     /// The same bar with its Replace row already open.
@@ -1310,6 +1312,10 @@ fn unluminate_menu() -> Menu {
         // only, because two menu items claiming one key equivalent is a fault on macOS.
         entries: vec![
             Entry::item("About Unluminate", Action::About),
+            // **A person asking**, which is the only thing that makes Unluminate send anything on its
+            // own behalf. `update.check` is off until somebody turns it on, and this entry works
+            // either way. See `services::update`. `task-1804` §6.
+            Entry::item("Check for Updates", Action::CheckForUpdates),
             Entry::Separator,
             Entry::item("Settings", Action::Settings),
             Entry::Separator,
