@@ -14313,6 +14313,26 @@ fn a_contributed_panes_size_is_settable_from_the_command_line() {
         "the refusal should name the panes there are: {}",
         refused.message
     );
+
+    // And the **sentence** names the pane too, not just the payload beside it. `Panel::label` is a
+    // `&'static str` and answered "Plugin pane" for every contributed pane, so with two of them
+    // installed the reply read the same whichever one was asked about — unactionable for the caller
+    // reading the plain shape rather than the JSON. It is the pane's own header wording, which is
+    // what the manifest's `label` is for.
+    for said in [
+        run(&mut harness, "panel size agent-chat/chat --width 1150").message,
+        run(&mut harness, "panel dock agent-chat/chat right").message,
+        run(&mut harness, "panel zoom agent-chat/chat").message,
+    ] {
+        assert!(
+            said.starts_with("Agent-Chat"),
+            "the sentence should name the pane it is about, not `Plugin pane`: {said}"
+        );
+    }
+    // Unluminate's own four are unchanged by that, which is what keeps `Resize explorer` meaning what
+    // it meant — the wording here is the label, not the wire name.
+    assert!(run(&mut harness, "panel dock explorer left").message.starts_with("Project"));
+    did(&mut harness, "panel dock explorer left");
 }
 
 /// The other half of the same ticket: a pane that cannot be drawn is **refused**, not reported as

@@ -705,7 +705,7 @@ impl UnluminateApp {
                             // is its `<plugin id>/<pane id>`, not `plugin-2`, which would make an
                             // agent count slots to use what it had just been told — `task-1794`.
                             "panel": self.panel_wire_name(panel),
-                            "label": panel.label(),
+                            "label": self.panel_label(panel),
                             "side": self.panes.dock.side_of(panel).name(),
                             "position": self.panes.dock.order_of(panel),
                             "showing": self.panel_is_showing(panel),
@@ -760,7 +760,7 @@ impl UnluminateApp {
                 self.dock_the_panel(panel, side, position);
                 ok(
                     request,
-                    format!("{} is on the {}", panel.label(), side.name()),
+                    format!("{} is on the {}", self.panel_label(panel), side.name()),
                     json!({
                         "panel": self.panel_wire_name(panel),
                         "side": side.name(),
@@ -788,7 +788,7 @@ impl UnluminateApp {
                     request,
                     format!(
                         "{} is {:.0} points wide and {:.0} tall",
-                        panel.label(),
+                        self.panel_label(panel),
                         self.panes.width_of(panel),
                         self.panes.height_of(panel)
                     ),
@@ -841,11 +841,11 @@ impl UnluminateApp {
                 let said = match tile {
                     true => format!(
                         "{} is a character grid at {:.0} points",
-                        panel.label(),
+                        self.panel_label(panel),
                         self.settings.terminal_font_size
                     ),
                     false => {
-                        format!("{} is at {:.2}x", panel.label(), self.panes.zoom_of(panel))
+                        format!("{} is at {:.2}x", self.panel_label(panel), self.panes.zoom_of(panel))
                     }
                 };
                 ok(
@@ -956,6 +956,26 @@ impl UnluminateApp {
                 .cloned()
                 .unwrap_or_else(|| panel.name().to_owned()),
             None => panel.name().to_owned(),
+        }
+    }
+
+    /// What a `panel` reply calls this panel in its sentence.
+    ///
+    /// `Panel::label` is a `&'static str` and so cannot name a contributed pane — its own comment says
+    /// it is the fallback for a slot with no plugin in it. The sentence was therefore answering "Plugin
+    /// pane is on the left" for every one of them, while the payload beside it named the pane properly.
+    /// With two panes contributed that sentence is unactionable: it is the same wording whichever one
+    /// was asked about. So a pane is called what its own header and the rail's tooltip call it, which is
+    /// the manifest's `label` — `task-1794`, whose whole subject is a command that reported something
+    /// other than what was true.
+    fn panel_label(&self, panel: dock::Panel) -> String {
+        match panel.plugin_slot() {
+            Some(slot) => self
+                .plugin_ui
+                .pane(slot)
+                .map(|pane| pane.label.clone())
+                .unwrap_or_else(|| panel.label().to_owned()),
+            None => panel.label().to_owned(),
         }
     }
 
