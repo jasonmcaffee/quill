@@ -1,6 +1,7 @@
 # Unluminous — the product video
 
-**task-1793.** A 4K demo of Unluminous for the Unluminous section of jasonmcaffee.com.
+**task-1793**, re-shot by **task-1811**. A 4K demo of Unluminous for jasonmcaffee.com,
+blackrainbowlabs.com and unluminous.com.
 
 This is the script and the shot list. It is also the thing the recording harness reads: every beat
 below names the exact `unluminous-cli` commands that produce it, so the video is *driven* rather than
@@ -32,16 +33,25 @@ who stays to the end saw the argument.
 |---|---|
 | Resolution | 3840 x 2160 (native panel, no upscale) |
 | Frame rate | 60 fps capture, 60 fps delivery |
-| Length | ~3 min 45 s |
+| Length | ~4 min 10 s |
 | Codec | H.264 (`h264_nvenc`, CQ 19, high profile) + AAC 192k, `+faststart` |
 | Audio | one music bed, no voice-over |
-| Composition | full-desktop capture: wallpaper, then Unluminous inset **72 px** on every edge, at **0.83** background opacity |
+| Composition | full-desktop capture: wallpaper, then Unluminous at **3296 x 1840**, placed at 272,160, at **0.87** background opacity |
+| Type in the window | editor 41, UI 29, terminal 34 |
 | Text | overlay cards rendered as HTML at 4K with alpha, composited in post |
 
 **Why a margin and not a full-screen window.** The transparency is the thing to notice first, and it
 is only legible against something. A window filling the screen has no edge, so the wallpaper reads as
-Unluminous's own background rather than as the desktop behind it. 72 px on a 2160-tall frame is a hair
-under 3.4% — enough to see the tree through the gap, not enough to look like a floating toy.
+Unluminous's own background rather than as the desktop behind it.
+
+**Why the window is not as big as the panel (task-1811).** The first cut used 3696 x 2016 inside the
+3840 x 2160 frame — a 72 px margin, a hair under 3.4% — and the type in it was hard to read. The font
+size was part of that and is now 20% larger throughout, but the window was the bigger half: at 96% of
+the frame, a glyph is a small fraction of what a viewer is looking at, and smaller again once a site
+scales the video down to fit a column. 3296 x 1840 gives up 11% of the width and 9% of the height, so
+the same glyph is about **1.35x** larger relative to the window it sits in, and the margin grows from
+72 px to 272 x 160 — which happens to serve the first claim rather than fight it, because there is
+now plainly more wallpaper to see through.
 
 **Why no voice-over.** The overlay text says the sentence and the window proves it in the same
 second. A narrator would have to say it slower than the window can show it.
@@ -96,9 +106,12 @@ moves for a beat; the viewer is allowed to look at it.
 
 **Setup.**
 ```
-unluminous-cli settings set appearance.background.opacity 0.83
-unluminous-cli window position --x 72 --y 72
-unluminous-cli window size --width 3696 --height 2016
+unluminous-cli settings set appearance.background.opacity 0.87
+unluminous-cli settings set appearance.font.size 41
+unluminous-cli settings set appearance.ui.font.size 29
+unluminous-cli settings set terminal.font.size 34
+unluminous-cli window position --x 272 --y 160
+unluminous-cli window size --width 3296 --height 1840
 unluminous-cli tab open src/telemetry.rs
 unluminous-cli panel reset
 ```
@@ -254,14 +267,18 @@ The longest beat, because it is the one people do not believe an editor written 
 **On screen, in order.** A breakpoint appears in the gutter at `report.rs:48`. `fleet report` starts
 under the debugger. The program stops; the current line lights. The debug tile shows the call stack,
 and the variables tree opens `flights` — a `HashMap` with keys, then a `Vec<Flight>` under one of
-them, then a `Flight`'s own fields. The pointer rests on `health` and a tooltip gives its value. A
-watch on `flights.len()` is added and answers. Step over twice; the highlight moves and a value in
-the tree changes. Continue.
+them, then a `Flight`'s own fields. A watch on `flights.len()` is added and answers. Step over twice;
+the highlight moves and a value in the tree changes. Continue.
+
+There is no hover in this beat, and task-1811 took the one it had out. `debug hover` is a value the
+**command line** answers — the window paints no tooltip for it, and the capture draws no pointer — so
+on camera it was a three-second pause in the middle of the longest beat with nothing to look at. The
+variables tree shows the same values and shows them being opened.
 
 **Overlay.** Three cards through the beat:
 
 > A real debugger. Breakpoints, frames, variables.
-> Hover a name while it is stopped.
+> Walk the values while it is stopped — a map, a vector inside it, a struct inside that.
 > Watch an expression. Step. Continue.
 
 **Script.**
@@ -271,7 +288,6 @@ unluminous-cli debug start
 unluminous-cli debug status
 unluminous-cli debug frames
 unluminous-cli debug variables --expand flights
-unluminous-cli debug hover --name health
 unluminous-cli debug watch add "flights.len()"
 unluminous-cli debug step-over
 unluminous-cli debug step-over
@@ -445,10 +461,27 @@ floor), and the file plays from the site's own `<video>` element on prod.
 
 ## 6. Where it goes
 
-A new **Unluminous** section on jasonmcaffee.com, between Apps and Articles: a short description of what
-Unluminous is, the video as the section's centrepiece with a poster frame, and a link to the GitHub
-release. The section follows the site's existing reveal-on-scroll pattern and its `VideoPlayer`
+Three sites, all of which already have a section built around it (`scripts/publish.mjs` writes to all
+three from one encode, because three sites serving three encodes of one take is a thing that drifts):
+
+| Site | Clip | Poster |
+|---|---|---|
+| jasonmcaffee.com | `public/videos/unluminous.mp4` | `public/images/video/unluminous.webp` |
+| blackrainbowlabs.com | `public/videos/unluminous.mp4` | `public/images/unluminous-poster.webp` |
+| unluminous.com | `public/videos/unluminous.mp4` | `public/images/unluminous-poster.webp` |
+
+On jasonmcaffee.com it is an **Unluminous** section between Apps and Articles: a short description of
+what Unluminous is, the video as the section's centrepiece with a poster frame, and a link to the
+GitHub release. The section follows the site's existing reveal-on-scroll pattern and its `VideoPlayer`
 component, so it behaves like everything else on the page rather than like an embed.
+
+unluminous.com's section 05 holds `DEMO.clip = null` until there is a take that names the product
+correctly, and prints `DEMO.pending` instead. Publishing sets that object.
+
+What the site gets is a **1440p** encode rather than the 4K master: a four minute 4K H.264 is a few
+hundred megabytes and the other videos on that page are 16-81 MB, so a 4K one would be the slowest
+thing there by an order of magnitude. x264 rather than NVENC for this one encode, because it is judged
+on bytes for a given look and x264 is meaningfully smaller at the same visual quality.
 
 ---
 
@@ -507,8 +540,83 @@ setting — while `panes.agent-chat/chat.width` is a line in `settings.conf`. Th
   not what a demo should show; beat 12 defines a one-line shim off camera so the commands on screen
   are the ones somebody with one window would really type.
 
-### No music
+### No music, on the first cut
 
 `scripts/music.mjs` generates a bed on this machine with ACE-Step, seeded so it is reproducible. It
-was not used: GPU 1 had 1.4 GB free against the 4.8 GB it needed, and freeing it would have meant
-stopping the machine's LLM for a background track. The cut is overlay-driven and reads silent.
+was not used: the render reported 1.4 GB free against the 4.8 GB it needed, and that was read at the
+time as the machine's LLM being in the way. It was not — see section 8.
+
+---
+
+## 8. The task-1811 pass
+
+Everything above was shot under the product's previous name, and the name is in the pixels: the title
+card, the closing card, the window's own menu bar in every frame, and the transcript in the on-screen
+terminal. No edit reaches that, so the cut is re-shot rather than re-trimmed. Three things changed
+besides the name.
+
+### The type was too small, and the window was most of the reason
+
+Covered in section 2. Fonts up 20%, window down to 3296 x 1840. Both, because either alone leaves it
+readable-if-you-lean-in rather than readable.
+
+### The hover came out
+
+Covered in beat 8. `debug hover` answers on the command line and paints nothing.
+
+### There is music now, and the reason there was not is not the one written down
+
+ACE-Step loads its 12.8 GB DiT **and** a 4B chain-of-thought LM, and that LM is a vLLM pool sized as a
+*ratio of the whole card* rather than as a fixed number of gigabytes. So freeing VRAM does not help:
+the pool simply grows to match, and the render is left with the same two or three gigabytes it had
+before. Measured on this pass — with the machine's LLM stopped and its GPU completely clear, the
+pre-flight still failed at 2.93 GB free against 4.92 GB needed.
+
+The bed asks for no chain-of-thought at all (`thinking:false`, every `useCot*:false`), so the LM is
+9.9 GB held for something the request never uses. Skipping it renders **265 seconds of audio in 29
+seconds**, on a card that also had the desktop on it.
+
+Two smaller things came out of the same hour:
+
+- **`music.mjs` was polling an endpoint that cannot be polled that way.** It called ACE-Step's own API
+  directly and asked `GET /query_result`, which that server answers **405 Method Not Allowed**. Every
+  poll therefore read `unknown`, the script gave up after twenty minutes, and the job it was waiting
+  for had failed in the first second. It now goes through the ai-service backend — `POST
+  /music/generate`, `GET /music/jobs/:id` — which is the path the Music Creator page uses, so the
+  track lands in the music library and the status is one the caller can actually read.
+- **One render is not enough.** The first seed had an eight-second hole in the middle of it: RMS fell
+  to −60 dB at 119 seconds, which under a video reads as the audio having broken rather than as an
+  arrangement choice. `scripts/music-candidates.mjs` renders a set of seeds and reports the quiet
+  stretches in each; seed **8807** holds an even level for the whole 4:25 and is what is pinned.
+
+### Section 7's defect list, re-checked on 0.37.1
+
+| | |
+|---|---|
+| A breakpoint added while the editor is scrolled never binds | **fixed** — it binds and pauses, with the scroll confirmed at 1927 px before the add |
+| A plugin pane's width cannot be set from the command line | **fixed** — `settings set panes.agent-chat/chat.width` takes, and `panel size agent-chat/chat --width` now knows plugin panes too |
+| `editor insert` does not auto-indent | **still true**, and the harness still types its own leading spaces |
+| `editor rename --apply` writes files that are not open | **still true** — `src/main.rs` went to disk unopened; the harness still puts the project back |
+| `editor complete --choose` takes the name | as documented, and the harness already does |
+| The Agent-Chat pane stops drawing | checked on camera during the shoot; it is not a thing the command line can report on, which was the original finding |
+
+**And a new one, which cost the first hour of this pass.** The debugger refused *every* breakpoint,
+scrolled or not, and said so only in `debug output`:
+
+```
+Breakpoint at ...	ask-1793-unluminous-videoleet\src
+eport.rs:50 could not be resolved,
+but a valid location was found at ...	ask-1793-quill-videoleet\src
+eport.rs:50
+```
+
+`fleet.exe` and `fleet.pdb` were built in September under the old folder name, and a PDB records the
+absolute source paths it was compiled from. Renaming the folder left the debug information pointing at
+a directory that no longer exists, so LLDB could not match a single breakpoint. `cargo build` does not
+notice — the sources are unchanged, so it answers "Finished in 0.01s" and leaves the stale PDB in
+place. Touching the sources forces the rebuild that fixes it.
+
+It is worth writing down because it is invisible from every surface an agent would check: the
+breakpoint is listed, the file is right, the line is right, the stored offset is right, and the only
+place the truth appears is the debug console's own text. **Any beat that renames or moves this project
+has to rebuild it before the debugger beat is shot.**
