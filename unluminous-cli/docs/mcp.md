@@ -89,7 +89,7 @@ Two more things an agent gets:
 
 ## Which window a call goes to
 
-A project is a window — `File -> New Window` starts a second process — so several Unluminouss may be
+A project is a window — `File -> New Window` starts a second process — so several Unluminous windows may be
 running. In order, first answer wins:
 
 1. `instance` on the tool call, `--instance` on `mcp serve`, or `UNLUMINOUS_INSTANCE` in the environment.
@@ -126,8 +126,8 @@ running Unluminous host it. Either way the endpoint is `http://127.0.0.1:7345/mc
 - `GET /mcp` — `405`. There is no server-initiated stream; Unluminous has nothing to push.
 - `DELETE /mcp` — `405`. There are no sessions.
 
-One server drives every window, because it finds Unluminouss through the instance files rather than
-through its own process. So two Unluminouss and one `mcp.port` is not a collision to fix: the second
+One server drives every window, because it finds Unluminous windows through the instance files rather than
+through its own process. So two Unluminous windows and one `mcp.port` is not a collision to fix: the second
 window sees the port is held, does not start a second listener, and says so on the page.
 
 ## Which revision of the protocol

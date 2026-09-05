@@ -274,7 +274,7 @@ Unluminous is a text editor. These tools drive a window that is already open on 
 files in tabs, read and change the text, run commands in its terminals, search the project, drive \
 its dialogs, change its settings, work its Git menu, and take a screenshot of the real window.\n\n\
 Three things worth knowing. A relative path is resolved against the project folder, never against \
-your working directory. A project is a window, so several Unluminouss may be running and `instance` says \
+your working directory. A project is a window, so several Unluminous windows may be running and `instance` says \
 which one you mean. And `window screenshot` gives you the picture itself, which is how to see what \
 a command actually did.";
 

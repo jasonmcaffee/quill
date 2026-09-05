@@ -443,7 +443,7 @@ fn command_schema(command: &Command) -> Value {
 
 /// The first of the two properties every tool has, in both shapes.
 ///
-/// A project is a window — `File -> New Window` starts a second process — so several Unluminouss run at
+/// A project is a window — `File -> New Window` starts a second process — so several Unluminous windows run at
 /// once and a call may have to say which one it means.
 fn instance_property() -> Value {
     json!({

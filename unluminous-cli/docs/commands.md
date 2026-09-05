@@ -55,7 +55,7 @@ absolute path it used, so there is never any doubt.
 | 1 | Unluminous refused it: no such file, no such tab, nothing to undo. |
 | 2 | The command line was wrong: no such command, no such flag, a missing argument. |
 | 3 | No Unluminous is running, or the one named could not be reached. |
-| 4 | Several Unluminouss are running and none was named with `--instance`. |
+| 4 | Several Unluminous windows are running and none was named with `--instance`. |
 | 5 | Unluminous was reached but did not answer in time. |
 
 `2` is your mistake, `1` is Unluminous's answer, and `3`, `4` and `5` are about the connection.

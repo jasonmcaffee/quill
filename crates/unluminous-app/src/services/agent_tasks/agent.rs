@@ -324,7 +324,7 @@ pub const ENV_CLI: &str = "UNLUMINOUS_CLI";
 
 /// The variable that carries which window to drive, as the window's own process id.
 ///
-/// Several Unluminouss may be running, each on its own project, and `unluminous-cli` with no `--instance` given
+/// Several Unluminous windows may be running, each on its own project, and `unluminous-cli` with no `--instance` given
 /// several has no way to know which board the ticket is on.
 pub const ENV_INSTANCE: &str = "UNLUMINOUS_INSTANCE";
 

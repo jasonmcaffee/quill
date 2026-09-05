@@ -8,15 +8,23 @@
 //!
 //! Usage: `unluminous [path] [--opacity N] [--view raw|side|preview] [--menu-bar native|in-window] [--terminal] [--control on|off]`
 //!
-//! `--print-menus` prints the menus and their shortcuts and stops. The macOS menu bar cannot be looked at
-//! from a test, so this is how what it was built from can be read.
+//! **What the command line means is `unluminous_app::arguments`, not this file.** It is read there so
+//! that a test can run it, which is the same reason `resolve_target` and `starting_folder` live in the
+//! library; `main` is left with what a test cannot do anyway — printing, exiting, and building a
+//! window. `task-1812` is why: the loop that used to be here treated an argument it did not recognise
+//! as a path, so `unluminous --version` opened a window on a folder called `--version` and created it.
+//!
+//! `--version` prints the version and the build date and stops. `--print-menus` prints the menus and
+//! their shortcuts and stops; the macOS menu bar cannot be looked at from a test, so this is how what
+//! it was built from can be read. Both go through `services::console` first, because a program in the
+//! windows subsystem has no console to print to until it borrows one.
 //!
 //! `path` is a folder to show in the explorer, or a file to open, in which case the explorer shows the
 //! folder that file is in. With no path at all it is the current directory — or, when Unluminous was started
 //! from the desktop and the current directory is only wherever the shortcut points, the project that was
 //! open last time. `unluminous_app::starting_folder` is that rule and says why it is drawn so narrowly.
-//! Several Unluminouss can run at once, each on its own project, which is what `File -> New Window` and
-//! `File -> Recent Projects` start.
+//! Several Unluminous windows can run at once, each on its own project, which is what `File -> New Window`
+//! and `File -> Recent Projects` start.
 //!
 //! `--control off` closes the command channel `unluminous-cli` drives the window down. It is open by
 //! default, because a command line that needs to be switched on first is a command line an agent
@@ -33,80 +41,33 @@
 
 use std::path::PathBuf;
 
-use unluminous_app::app::ViewMode;
+use unluminous_app::arguments::{self, Arguments, Start};
 use unluminous_app::components::title_bar::MenuPlacement;
+use unluminous_app::services::console;
 use unluminous_app::UnluminousApp;
 
-struct Arguments {
-    path: Option<PathBuf>,
-    opacity: Option<f32>,
-    view: Option<ViewMode>,
-    menu_bar: Option<MenuPlacement>,
-    terminal: bool,
-    print_menus: bool,
-    /// False when `--control off` was given, or `UNLUMINOUS_CONTROL=off` is in the environment.
-    control: bool,
-}
-
-fn parse_arguments() -> Arguments {
-    let mut path = None;
-    let mut opacity = None;
-    let mut view = None;
-    let mut menu_bar = None;
-    let mut terminal = false;
-    let mut print_menus = false;
-    // The environment first, so that a switch on the command line beats it, which is the order
-    // `clig.dev` sets out for configuration: a flag, then the environment, then a file.
-    let mut control = !matches!(
-        std::env::var("UNLUMINOUS_CONTROL").unwrap_or_default().trim(),
-        "off" | "no" | "0" | "false"
-    );
-    let mut rest = std::env::args().skip(1);
-    while let Some(argument) = rest.next() {
-        match argument.as_str() {
-            "--opacity" => {
-                opacity = rest.next().and_then(|value| value.parse::<f32>().ok());
-            }
-            "--view" => {
-                view = rest.next().and_then(|value| match value.as_str() {
-                    "raw" => Some(ViewMode::Raw),
-                    "side" | "side-by-side" => Some(ViewMode::SideBySide),
-                    "preview" => Some(ViewMode::Preview),
-                    _ => None,
-                });
-            }
-            "--menu-bar" => {
-                menu_bar = rest.next().and_then(|value| match value.as_str() {
-                    "native" | "screen" => Some(MenuPlacement::Native),
-                    "in-window" | "window" => Some(MenuPlacement::InWindow),
-                    _ => None,
-                });
-            }
-            "--terminal" => terminal = true,
-            "--control" => {
-                control = !matches!(
-                    rest.next().unwrap_or_default().trim(),
-                    "off" | "no" | "0" | "false"
-                );
-            }
-            "--print-menus" => print_menus = true,
-            "--help" | "-h" => {
-                println!(
-                    "Usage: unluminous [path] [--opacity N] [--view raw|side|preview] [--menu-bar native|in-window] [--terminal] [--control on|off] [--print-menus]"
-                );
-                println!("  path            a folder to show, or a file to open");
-                println!("  --opacity N     background opacity from 0.05 to 1.0");
-                println!("  --view MODE     raw, side or preview");
-                println!("  --menu-bar WHERE  native for the screen's own bar, in-window for the title bar");
-                println!("  --terminal      open the terminal at the bottom");
-                println!("  --control WHICH on to let unluminous-cli drive this window, off to close the channel. On by default.");
-                println!("  --print-menus   print the menus and their shortcuts, and stop");
-                std::process::exit(0);
-            }
-            other => path = Some(PathBuf::from(other)),
+/// Read the command line, and answer it here if it was a question rather than a request for a window.
+///
+/// Printing and exiting is all this adds to `arguments::read`: the reading itself is a rule with
+/// tests over it, and this is the part that has to happen in a real process.
+fn settings_or_stop() -> Arguments {
+    let line = std::env::args().skip(1);
+    let control = std::env::var("UNLUMINOUS_CONTROL").ok();
+    match arguments::read(line, control.as_deref()) {
+        Start::Window(settings) => settings,
+        Start::Answer(said) => {
+            console::attach_to_the_calling_terminal();
+            println!("{said}");
+            std::process::exit(0);
+        }
+        // Two, rather than one, so that a script can tell a command line it got wrong from one that
+        // worked. `unluminous-cli` uses its own exit codes for the same reason.
+        Start::Refuse(why) => {
+            console::attach_to_the_calling_terminal();
+            eprintln!("{why}");
+            std::process::exit(2);
         }
     }
-    Arguments { path, opacity, view, menu_bar, terminal, print_menus, control }
 }
 
 /// Print the menus, the way both menu bars are built from them.
@@ -150,10 +111,11 @@ fn print_menus() {
 }
 
 fn main() -> eframe::Result {
-    let arguments = parse_arguments();
+    let arguments = settings_or_stop();
     unluminous_app::services::frame_trace::mark("arguments");
 
     if arguments.print_menus {
+        console::attach_to_the_calling_terminal();
         print_menus();
         std::process::exit(0);
     }
@@ -216,7 +178,7 @@ fn main() -> eframe::Result {
         true => store.open_windows(),
         false => Vec::new(),
     };
-    // A project that already has a window is left alone. Two Unluminouss on one folder would be two
+    // A project that already has a window is left alone. Two Unluminous windows on one folder would be two
     // processes writing one `.unluminous` folder, and whichever wrote last would win — which is the same
     // reason `OpenFiles::open` shows a file that is already open rather than opening it twice. The
     // instance files are how a running window says which project it is on; `unluminous-cli instances`

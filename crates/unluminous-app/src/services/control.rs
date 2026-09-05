@@ -360,7 +360,7 @@ impl Drop for Server {
 
 /// Open the listener.
 ///
-/// Loopback only, and port zero so the operating system finds a free one. Several Unluminouss run at
+/// Loopback only, and port zero so the operating system finds a free one. Several Unluminous windows run at
 /// once, so a fixed port would be a fixed collision. Split out from [`Server::start`] so that a
 /// test can assert on the address it binds without starting a thread: a command channel reachable
 /// from the network would be a text editor anybody could type into, and that is the one thing here

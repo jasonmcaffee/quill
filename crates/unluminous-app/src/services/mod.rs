@@ -9,6 +9,9 @@ pub mod agent_chat;
 pub mod agent_tasks;
 pub mod breakpoint_store;
 pub mod browser;
+// Borrowing the terminal's console so that `--version` and `--help` can be read, which on
+// Windows a program in the windows subsystem has to ask for. Nothing anywhere else.
+pub mod console;
 pub mod control;
 pub mod crash_log;
 // The Database plugin: the data sources, the connections, the tree and the pages.

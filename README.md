@@ -140,8 +140,15 @@ possible to capture the window in a particular state:
 | `--menu-bar native\|in-window` | Where the menus are drawn. macOS uses the bar along the top of the screen and everything else uses Unluminous's own title bar; naming it is how the bar inside the window can be looked at on a Mac. |
 | `--control on\|off` | Whether this window listens for the command line. On unless it is turned off, which closes the channel `unluminous-cli` drives it down. |
 | `--print-menus` | Print the menus and their shortcuts, and stop. The macOS menu bar cannot be read by a test, so this is how what went into it can be checked. |
+| `--version` | Print the version and the build date, and stop. The same two facts `Unluminous -> About Unluminous` shows. |
 
-Several Unluminouss can run at once, each on its own project. `File -> New Window` opens another window on the
+An argument beginning with a dash that is not one of those is refused, and Unluminous exits with status 2
+rather than opening anything. It used to be taken for the folder to open, so a mistyped switch got a
+window on a folder of that name — and, because a project's state is kept beside the project, the folder
+was then created. If you have a file or folder whose name really does start with a dash, put a folder in
+front of it: `unluminous ./-notes`.
+
+Several Unluminous windows can run at once, each on its own project. `File -> New Window` opens another window on the
 same project, `File -> Open Folder` opens one on a folder you choose, and `File -> Recent Projects` opens
 one on a folder that has been open before. Each is its own process, so they share nothing but the settings
 file. What each project had open — its tabs, which of them was showing, which folders in the explorer were
@@ -882,7 +889,7 @@ summary. `mcp.tools = every` is there for a client that permits tools by name an
 **It is a client of the channel above, not a peer of it.** A tool call becomes exactly the request
 `unluminous-cli` would have sent, down the same socket with the same token, so `run_cli` stays the one
 place a command becomes a change. It also means one server drives every open window, which is why two
-Unluminouss sharing one `mcp.port` is the behaviour rather than a collision.
+Unluminous windows sharing one `mcp.port` is the behaviour rather than a collision.
 
 ## Where a change goes
 

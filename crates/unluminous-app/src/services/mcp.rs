@@ -11,9 +11,9 @@
 //! the token out of the instance file. It happens to be running inside one of the windows it can
 //! drive, and that is all. Two consequences fall out of it and both are wanted:
 //!
-//! - **One server drives every window.** It finds Unluminouss by reading the instances folder, so the
+//! - **One server drives every window.** It finds Unluminous windows by reading the instances folder, so the
 //!   endpoint hosted by this window answers for the one next to it too, with `instance` saying
-//!   which. That turns the obvious collision — two Unluminouss, one `mcp.port` — from a bug into the
+//!   which. That turns the obvious collision — two Unluminous windows, one `mcp.port` — from a bug into the
 //!   behaviour: the second window sees the port is held, does not start a second listener, and says
 //!   so on the page.
 //! - **`--control off` means there is nothing to serve.** A window with no command channel has no
@@ -22,7 +22,7 @@
 
 use std::path::{Path, PathBuf};
 
-use unluminous_cli::mcp::{self, http::Endpoint, tools::Areas, Unluminouss, Server, Shape};
+use unluminous_cli::mcp::{self, http::Endpoint, tools::Areas, Server, Shape, UnluminousWindows};
 
 /// What the window is doing about MCP, which is what the page and `mcp status` both read.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -132,7 +132,7 @@ impl Hosted {
         // would be a listener trying to bind a port the old one still holds.
         self.endpoint = None;
         let server =
-            Server::equipped(shape, areas.clone(), Unluminouss::for_window(folder.to_path_buf()));
+            Server::equipped(shape, areas.clone(), UnluminousWindows::for_window(folder.to_path_buf()));
         match Endpoint::start(port, server) {
             Ok(endpoint) => {
                 self.state = State::Listening(endpoint.port());
@@ -159,7 +159,7 @@ mod tests {
     }
 
     /// A folder that need not exist: nothing here reads it, it is only the preference passed to the
-    /// driver when several Unluminouss are running.
+    /// driver when several Unluminous windows are running.
     fn a_project() -> PathBuf {
         PathBuf::from("/a/project")
     }

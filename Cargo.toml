@@ -123,6 +123,11 @@ windows-sys = { version = "0.61", features = [
     # `OpenProcess`, the Windows half of `owner_is_gone`'s `kill(pid, 0)` question. See
     # `services/agent_tasks/mod.rs`.
     "Win32_System_Threading",
+    # `AttachConsole` and `SetStdHandle`, which is how a program in the windows subsystem answers
+    # `--version` into the terminal that asked. See `services/console.rs`.
+    "Win32_System_Console",
+    # `CreateFileW`, for `CONOUT$` in the same place.
+    "Win32_Storage_FileSystem",
 ] }
 objc2-foundation = { version = "0.3", default-features = false, features = [
     "std",

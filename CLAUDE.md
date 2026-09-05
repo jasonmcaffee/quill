@@ -2588,6 +2588,24 @@ desktop shortcut, where it is only wherever the shortcut points. `unluminous_app
 the last project **only** when the current directory is the folder `unluminous.exe` itself lives in. Narrow
 on purpose: `unluminous` typed in a folder has to open that folder.
 
+**And the rest of the command line is `unluminous_app::arguments`, not `main.rs`.** The same reason:
+what a switch means is a rule, and a rule that only a real process can run is a rule nothing tests.
+`main` is left with printing, exiting and building a window. The loop this replaced ended
+`other => path = Some(PathBuf::from(other))`, so **anything it did not recognise became the project** —
+`unluminous --version` opened a window on a folder called `--version` and, because a project's state
+is written beside the project, created it. `task-1812` found one of those in a repository. So an
+argument beginning with a dash is a switch: known ones are read, `--version` and `--help` are answered,
+and an unknown one is refused with a sentence and exit status 2. Never add a switch by reaching into
+`main` — add an arm and a test beside the others.
+
+**A program in the windows subsystem has no console, so an answer nobody can read is not an answer.**
+`--version`, `--help` and `--print-menus` all printed into nothing when they were run from a terminal on
+Windows, because a released Unluminous is built `windows_subsystem = "windows"` and starts with no
+standard handles. `services::console::attach_to_the_calling_terminal` borrows the caller's console, and
+is called **only** on the paths that print and exit — a window that attached itself would write wgpu's
+chatter over somebody's prompt for the rest of its life. It leaves a standard handle that is already
+set alone, so `unluminous --version > file` still writes the file.
+
 **What a menu calls a key is not what a terminal sends.** `actions::key_name` spells the punctuation as
 words — `Backslash`, `OpenBracket` — because `Ctrl+Backslash` reads better in a menu. The key encoder
 used to ask it, and a word is not one character, so `Ctrl+]`, `Ctrl+\` and `Ctrl+Space` were sent as
@@ -3055,7 +3073,7 @@ one code path. Do not add a version switch, and do not add a session.
 **A tool call goes down the control channel.** It becomes exactly the request `unluminous-cli` would have
 sent — same wire name, same arguments, same token, same port — so `run_cli` stays the one place a
 command becomes a change. Two things follow, and both are wanted: one server drives every open window,
-so two Unluminouss sharing one `mcp.port` is the behaviour rather than a collision; and a window started
+so two Unluminous windows sharing one `mcp.port` is the behaviour rather than a collision; and a window started
 with `--control off` has nothing for a server to drive, which the page says rather than listening
 uselessly.
 

@@ -12,8 +12,10 @@
 //!   settings and recent projects on disk, starting a second window, and the macOS menu bar.
 //! - `theme` is the palette, the measurements and the drawn icons.
 //! - `build_info` is what this build is: the version and the date it was built.
+//! - `arguments` is what the command line asked for, read where a test can run it.
 
 pub mod app;
+pub mod arguments;
 pub mod build_info;
 pub mod components;
 pub mod naming;
@@ -22,6 +24,7 @@ pub mod settings;
 pub mod theme;
 
 pub use app::{UnluminousApp, ViewMode};
+pub use arguments::{Arguments, Start};
 pub use services::file_tree::FileTree;
 pub use services::text_renderer::TextRenderer;
 pub use settings::Settings;

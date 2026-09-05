@@ -33,7 +33,7 @@ impl Unreachable {
     }
 }
 
-/// The Unluminouss that are running, stale files swept as they are found.
+/// The Unluminous windows that are running, stale files swept as they are found.
 ///
 /// A file naming a port nothing answers on is a window that was killed rather than closed. It is
 /// removed here rather than on a timer, because the only moment it matters is the moment somebody
@@ -87,7 +87,7 @@ pub fn choose(wanted: Option<&str>) -> Result<Instance, Unreachable> {
             _ => Err(Unreachable::new(
                 code::SEVERAL,
                 format!(
-                    "{} Unluminouss are running, so say which one with --instance:\n{}",
+                    "{} Unluminous windows are running, so say which one with --instance:\n{}",
                     alive.len(),
                     alive
                         .iter()
@@ -124,7 +124,7 @@ pub fn choose(wanted: Option<&str>) -> Result<Instance, Unreachable> {
         1 => Ok(matched.into_iter().next().expect("one")),
         _ => Err(Unreachable::new(
             code::SEVERAL,
-            format!("--instance {wanted} matches {} running Unluminouss.", matched.len()),
+            format!("--instance {wanted} matches {} running Unluminous windows.", matched.len()),
         )),
     }
 }

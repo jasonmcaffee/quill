@@ -100,7 +100,7 @@ listing already laid out one row a line. `unluminous-cli` prints those and nothi
 | `failed` | It was tried and it did not work. The message says why. |
 | `timed-out` | It was still going when the time ran out. |
 | `not-running` | Unluminous is closing, or could not be reached. |
-| `several-instances` | Several Unluminouss are running and none was named. |
+| `several-instances` | Several Unluminous windows are running and none was named. |
 
 ## In Python, whole
 

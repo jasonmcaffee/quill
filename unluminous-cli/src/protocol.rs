@@ -247,7 +247,7 @@ impl Reply {
 pub mod code {
     /// No Unluminous is running, or the one named is not answering.
     pub const NOT_RUNNING: &str = "not-running";
-    /// Several Unluminouss are running and none was named.
+    /// Several Unluminous windows are running and none was named.
     pub const SEVERAL: &str = "several-instances";
     /// There is no command by that name.
     pub const UNKNOWN_COMMAND: &str = "unknown-command";

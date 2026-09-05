@@ -7,7 +7,7 @@
 //!
 //! ## Which window
 //!
-//! A project is a window, so several Unluminouss run at once and something has to choose. In order,
+//! A project is a window, so several Unluminous windows run at once and something has to choose. In order,
 //! first answer wins:
 //!
 //! 1. What the tool call said in `instance`, or `--instance` on `mcp serve`, or `UNLUMINOUS_INSTANCE` in
@@ -42,14 +42,14 @@ const DEFAULT_TIMEOUT: Duration = client::DEFAULT_TIMEOUT;
 const SLACK: Duration = Duration::from_secs(5);
 
 /// The driver a real server uses.
-pub struct Unluminouss {
+pub struct UnluminousWindows {
     /// The project this server would rather drive when several are running. See the module comment.
     preference: Option<PathBuf>,
     /// A window named on the command line or in the environment, which beats everything.
     named: Option<String>,
 }
 
-impl Unluminouss {
+impl UnluminousWindows {
     /// A driver with the preference a spawned server has: what it was told, then what the agent
     /// told it, then wherever it was started.
     pub fn new(named: Option<String>) -> Self {
@@ -92,7 +92,7 @@ impl Unluminouss {
     }
 }
 
-impl Driver for Unluminouss {
+impl Driver for UnluminousWindows {
     fn run(
         &self,
         command: &'static Command,
@@ -167,7 +167,7 @@ fn locally(command: &'static Command, arguments: &Map<String, Value>) -> Option<
                 match running.len() {
                     0 => "No Unluminous is running.".to_owned(),
                     1 => "1 Unluminous is running.".to_owned(),
-                    several => format!("{several} Unluminouss are running."),
+                    several => format!("{several} Unluminous windows are running."),
                 },
                 serde_json::json!({ "count": running.len(), "instances": listed }),
             ))

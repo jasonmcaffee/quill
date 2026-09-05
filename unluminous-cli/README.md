@@ -39,7 +39,7 @@ itself, which is where a build and an installation both put it; `UNLUMINOUS_BIN`
 A running Unluminous listens on `127.0.0.1` on a port the operating system chose, and writes that port and
 a per-run token into a small file in its settings folder. `unluminous-cli` reads that file, sends one JSON
 object, and reads one back. The window answers at the top of its next frame, which is why a
-screenshot taken straight after a command shows what the command did. Several Unluminouss can run at once
+screenshot taken straight after a command shows what the command did. Several Unluminous windows can run at once
 — a project is a window — so `unluminous-cli instances` lists them and `--instance` picks one.
 
 The channel is open by default and is closed with `unluminous --control off` or `UNLUMINOUS_CONTROL=off`.

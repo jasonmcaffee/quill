@@ -256,7 +256,7 @@ list, so they hold the same entries with the same shortcuts, and adding an entry
 The `File` menu opens another window, opens a file or a folder, and lists the folders that have been
 open before. **Opening a folder opens it in a window of its own**, the way `Recent Projects` does and
 the way the reference editor works, so the project you were in stays where it was. Each window is its own
-process, so several Unluminouss can run at once on different projects and share nothing but the settings
+process, so several Unluminous windows can run at once on different projects and share nothing but the settings
 file.
 
 What each project had open — its tabs, which of them was showing, which folders in the explorer were

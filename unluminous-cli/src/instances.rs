@@ -16,7 +16,7 @@
 //!
 //! ## Why a file rather than a fixed port
 //!
-//! Several Unluminouss run at once — a project is a window, and `File -> New Window` starts a second
+//! Several Unluminous windows run at once — a project is a window, and `File -> New Window` starts a second
 //! process — so a fixed port would be a fixed collision. Each window asks the operating system for
 //! a free port, and the file is how the client is told which one. It is also how `unluminous-cli
 //! instances` can list every running Unluminous without talking to any of them.
