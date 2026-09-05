@@ -589,6 +589,49 @@ Two smaller things came out of the same hour:
   arrangement choice. `scripts/music-candidates.mjs` renders a set of seeds and reports the quiet
   stretches in each; seed **8807** holds an even level for the whole 4:25 and is what is pinned.
 
+### The Agent-Chat beat was broken, and the command line could not say so
+
+Worth its own heading because it would have cost the video its crescendo, and because the way it was
+found is the point.
+
+Section 7's last open item was *the Agent-Chat pane stops drawing, and the command line still says it
+is showing*, marked as needing the camera. It does not: **`unluminous-cli window screenshot` renders the
+whole 3296 x 1840 window on a machine whose desktop is 1024 x 768**, so the pane can be looked at with
+no monitor attached at all. Looking found that the pane is fixed — it draws completely on a fresh
+window, after a `--hide`/`--show` cycle and after a full baseline — and that something worse had taken
+its place.
+
+**Assistant answers rendered with no text in them.** `agent-chat state` said `finished`, `agent-chat
+last` returned the whole paragraph, and the bubble on screen was an empty rounded rectangle. The
+user's own message beside it rendered normally. It reproduced on a long markdown answer and on a
+one-character one.
+
+The cause is a unit mix-up in `message.rs`. `pieces` is documented as working in unscaled points that
+the caller multiplies by `Look::scale` — `Piece::Picture` already divides by the scale for exactly
+that reason — and two quantities going into that arithmetic were in scaled pixels:
+
+- `measure` answers in the pixels the words will really be drawn at, and the padding and slack added
+  to it were not scaled. A one-character answer therefore fell to the smallest bubble allowed, sixty
+  *unscaled* points, while `show` subtracts *scaled* padding from that same bubble before laying the
+  markdown into what is left. At 41 pt that is 61 points taken out of a 60 point bubble, `inside`
+  clamps to its 24 point floor, and the answer is laid out into less room than one glyph needs.
+- `rendered_height` returned the markdown's pixel height into an otherwise unscaled sum that the
+  caller multiplies by the scale again — the tall empty capsule, about 2.5x too tall at 41 pt.
+
+**At 16 pt the scale is 1 and all of it is arithmetically correct**, which is why 2,779 tests and 363
+screenshots, every one taken at 16 pt, agreed with a bubble that is wrong at 41. It is also why the
+first shoot got away with it: that beat asked a question with a long answer, so the bubble was sized
+by its words and never touched the floor. The regression test written for it fails at **34 pt**, the
+first shoot's own font size, so short answers were already wrong then and simply never went on camera.
+
+Fixed and released as **Unluminous 0.37.2**, and verified by looking rather than by asking: the beat
+re-driven on the installed build at the video's own 41 pt renders the full answer with its inline code
+coloured, and the one-character answer draws its `7`.
+
+**The rule this leaves behind:** a beat that films a plugin pane is checked with `window screenshot`
+before the shoot, not after it. Every command in beat 13 answered correctly on a build that drew
+nothing, twice, a year apart.
+
 ### Three things the dry run and the card render found
 
 Every beat was driven against 0.37.1 without recording before the shoot, which is cheap and caught
