@@ -121,11 +121,20 @@ fn pieces(
     // cent of the pane would not read as a short question. Measured with egui's own layout of the
     // plain text, which is within a point or two of what `unluminous_core` will lay the markdown out at,
     // plus a little slack so the two cannot disagree about where a line wraps.
+    // `measure` answers in the pixels the words will really be drawn at, so the padding and the
+    // slack added to it are scaled too, and so is the smallest a bubble is allowed to be. They were
+    // not, and at the default font size that is invisible because `scale` is 1 — which is why 2,779
+    // tests and 363 screenshots, all taken at 16 pt, agree with a bubble that is wrong at 41 pt.
+    // Unscaled, the sixty-point floor collides with the scaled padding `show` subtracts from it:
+    // at 41 pt that is 61 points taken out of a 60 point bubble, `inside` clamps to 24, and a
+    // one-character answer is laid out into less room than one character needs. The bubble is drawn,
+    // and it is empty.
+    let smallest = 60.0 * scale;
     let natural = match text.is_empty() {
         true => 0.0,
-        false => measure(look, &text, most - PAD_X * 2.0) + PAD_X * 2.0 + 8.0,
+        false => measure(look, &text, most - PAD_X * 2.0 * scale) + (PAD_X * 2.0 + 8.0) * scale,
     };
-    let bubble = natural.clamp(60.0_f32.min(most), most).max(60.0_f32.min(most));
+    let bubble = natural.clamp(smallest.min(most), most).max(smallest.min(most));
     let inside = (bubble - PAD_X * 2.0 * scale).max(24.0);
     // **A tool block, a failure and the thinking are as wide as the row allows, whatever the words
     // above them are.** They are reports rather than speech: sized to their own message, a tool called
@@ -741,8 +750,15 @@ fn rendered<'a>(
 }
 
 /// The same, as a height, which is what the measuring pass wants.
+///
+/// **In unscaled points**, because that is what a [`Piece`] holds — `Piece::height` adds `PAD_Y` and
+/// `TOOL_ROW` to it unscaled and every caller multiplies the total by `Look::scale` afterwards, and
+/// `Piece::Picture` already divides by the scale for the same reason. The rendered markdown measures
+/// itself in the pixels it will be drawn at, so it was the one quantity going into that arithmetic
+/// still scaled, and it was therefore multiplied by the scale a second time. At 16 pt the scale is 1
+/// and nothing is wrong; at 41 pt a bubble came out two and a half times too tall.
 fn rendered_height(state: &mut PaneState, look: &Look<'_>, key: &str, source: &str, width: f32) -> f32 {
-    rendered(state, look, key, source, width).height()
+    rendered(state, look, key, source, width).height() / look.scale()
 }
 
 /// How wide `text` wants to be, up to `most`.
@@ -774,6 +790,41 @@ mod tests {
         let long = measure(&look, &"a word ".repeat(60), 400.0);
         assert!(short < 60.0, "{short}");
         assert_eq!(long, 400.0, "a long line takes the whole share");
+    }
+
+    #[test]
+    fn a_short_answer_still_has_room_for_its_words_at_a_large_font() {
+        // task-1811. The bubble a one-character answer gets is the smallest one allowed, and `show`
+        // takes scaled padding back out of it before laying the markdown into what is left. While
+        // the smallest was sixty *unscaled* points, that subtraction took more out than there was:
+        // at 41 pt the padding is 61 points, `inside` fell to its 24 point floor, and the answer was
+        // laid out into less room than one glyph of a 37 pt font needs. The bubble drew; the word in
+        // it did not, and neither `agent-chat state` nor `agent-chat last` could see that - both
+        // report the answer quite happily. It cost the product video its Agent-Chat beat.
+        //
+        // Asked of `pieces` rather than of the arithmetic, and at five sizes rather than one,
+        // because the whole reason this shipped is that every existing test and all 363 screenshots
+        // are taken at 16 pt, where `Look::scale` is 1 and a scaled and an unscaled point are the
+        // same thing.
+        let renderer = crate::services::text_renderer::TextRenderer::new();
+        let mut answer = Message::new(1, Role::Assistant);
+        answer.parts.push(Part::Text("7".to_string()));
+
+        for font_size in [16.0_f32, 24.0, 34.0, 41.0, 64.0] {
+            let mut settings = crate::settings::Settings::new();
+            settings.font_size = font_size;
+            let look = Look::of(&settings, &renderer);
+            let mut state = PaneState::default();
+            let (_, bubble, _, _) = pieces(&answer, &mut state, &look, 900.0);
+
+            // What `show` will lay the words into, computed the way `show` computes it.
+            let inside = bubble - PAD_X * 2.0 * look.scale();
+            assert!(
+                inside > font_size * 0.9,
+                "at {font_size} pt the bubble is {bubble} points wide and leaves {inside} inside,                  which is less than one glyph of the {} pt the body is drawn at",
+                font_size * 0.9,
+            );
+        }
     }
 
     #[test]
