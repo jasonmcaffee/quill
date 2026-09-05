@@ -589,6 +589,31 @@ Two smaller things came out of the same hour:
   arrangement choice. `scripts/music-candidates.mjs` renders a set of seeds and reports the quiet
   stretches in each; seed **8807** holds an even level for the whole 4:25 and is what is pinned.
 
+### Three things the dry run and the card render found
+
+Every beat was driven against 0.37.1 without recording before the shoot, which is cheap and caught
+two things that would each have cost a take:
+
+- **`panel dock` no longer takes `--side`.** It is `panel dock terminal right`, positionally. Both
+  calls in beat 9 were being refused, so the beat about panels docking to any edge would have filmed
+  a window that never moved. Nothing else in the sixteen beats was refused.
+- **The terminal was putting its own scratch path on camera.** The demo project lives under
+  `_agent_output/task-1793-unluminous-video/fleet`, so the default prompt printed sixty characters of
+  that in every beat that shows the terminal. Beat 12 already shortened it to `fleet>` off camera for
+  its own reasons; that is a shared step now and beats 9 and 15 use it too.
+
+And one in the overlay cards, which shipped in the first cut:
+
+- **Every corner card's scrim was being clipped into a hard-edged box.** The scrim carried the same
+  placement class as the card box — `top-right`, `bottom-left` — so `.top-right { top: 300px; right:
+  260px }` was landing on the scrim too and overriding two sides of its `inset: 0`. The full-frame
+  gradient was therefore laid out in a 3580 x 1860 box and cut off dead where that box ended:
+  measured on the shipped PNGs, the alpha goes **142 -> 0 in one pixel at x=3580**, and 90 -> 0 at
+  y=1860. A hard vertical edge at better than half opacity, 260 px in from the right of the frame.
+  Over dark code it is nearly invisible, which is how it shipped; over a bright patch of wallpaper it
+  is a black box with a corner in it. The scrim's classes are `scrim--top-right` and friends now, and
+  the alpha runs smoothly to the frame edge with no jump anywhere.
+
 ### Section 7's defect list, re-checked on 0.37.1
 
 | | |
