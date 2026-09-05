@@ -8,6 +8,12 @@ bumps the release script makes are left out, because they are the boundaries rat
 
 ## Unreleased
 
+- Re-cut the video storyboard for the re-shoot (`task-1811`)
+- Three defects the dry run and the card render found (`task-1811`)
+- An answer with no words in it, above 16 pt (`task-1811`)
+
+## 0.37.1 — 2026-09-04
+
 - Record what the rename actually hit (`task-1808`)
 - `--version`, a refusal instead of a folder, and one Unluminous window (`task-1812`)
 

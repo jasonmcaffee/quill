@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/unluminous-core", "crates/unluminous-chat", "crates/unluminous-db", "crates/unluminous-dap", "crates/unluminous-git", "crates/unluminous-terminal", "crates/unluminous-app", "unluminous-cli"]
 
 [workspace.package]
-version = "0.37.1"
+version = "0.37.2"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
