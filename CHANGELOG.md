@@ -8,6 +8,11 @@ bumps the release script makes are left out, because they are the boundaries rat
 
 ## Unreleased
 
+- Record what the rename actually hit (`task-1808`)
+- `--version`, a refusal instead of a folder, and one Unluminous window (`task-1812`)
+
+## 0.37.0 — 2026-09-04
+
 - Rename Unluminate to Unluminous (`task-1808`)
 
 ## 0.36.0 — 2026-09-04
